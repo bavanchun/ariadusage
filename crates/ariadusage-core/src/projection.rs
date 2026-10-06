@@ -2,7 +2,7 @@
 //!
 //! Enforces honesty invariants (no synthetic placeholders, unknown usage, loading states,
 //! or errors without kept data ever render as real numeric values), the identity silo,
-//! safe static error messages (decision 12), and window-duration clamping.
+//! safe static error messages, and window-duration clamping.
 
 use ariadusage_protocol::{
     Confidence, Cost, Identity, Metric, MetricSource, MetricState, NamedWindow, Pace, PaceStage,
@@ -61,7 +61,7 @@ pub struct ProjectionInput {
     pub pace: Option<UsagePace>,
 }
 
-/// Returns the safe static message for a provider error category (decision 12).
+/// Returns the safe static message for a provider error category.
 pub fn category_safe_message(category: ProviderErrorCategory) -> &'static str {
     category.safe_description()
 }
