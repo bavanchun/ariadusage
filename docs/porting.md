@@ -94,6 +94,11 @@ it changes the architecture, also add a Decision Log row.
 | Application settings section | App-level settings mixed with provider configuration or defaults | Dedicated top-level `settings` object preserved byte-for-byte as raw JSON | Isolates global application settings from provider records without data loss |
 | Unknown top-level configuration keys | Silently discarded or unsupported | Preserved byte-for-byte in `extra_top` map on decode and re-encode | Forward compatibility for future schema extensions |
 | Hooks configuration section | Shell command hooks parsed and validated by config model | Preserved byte-for-byte as raw JSON until Milestone 7 | Lifecycle hooks execution engine and validation deferred to M7 |
+| Config path override | `CODEXBAR_CONFIG` environment variable | `ARIADUSAGE_CONFIG` (trimmed, tilde-expanded, must be absolute after expansion, relative values return an error) | AriadUsage namespace; strict absolute validation |
+| Config path resolution | Probes `$HOME/.config/codexbar`, then legacy `$HOME/.codexbar`, with filesystem existence checks | Pure resolver: `XDG_CONFIG_HOME` if absolute (relative ignored) -> `$HOME/.config/ariadusage/config.json`. No legacy or existing-file probing, never any CodexBar path | Clean XDG resolution without filesystem probes or coupling to old paths |
+| Locked read-modify-write | Separate read and write with write-only lock | `update` and `try_update` hold lock across load, modify, and write; `try_update` skips on contention | Prevents lost updates during concurrent refresh or CLI changes |
+| Parent directory fsync | Fsyncs staged file descriptor only | Fsyncs staged file descriptor AND parent directory after atomic rename | Guarantees rename metadata durability across crashes |
+| Config file and lock trust | Follows symlinks, basic file checks | `O_NOFOLLOW` opens, `fstat`, regular file and effective UID ownership checks on both files; the configuration file additionally must not be group- or world-writable, while the lock file is only checked for symlink, regular file and owner; parent directory must not be group- or world-writable or owned by another user | Hardened security: prevents symlink traversal, privilege escalation, or unauthorized file overwrites |
 
 ## Upstream drift
 

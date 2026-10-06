@@ -32,10 +32,22 @@ It never reads CodexBar's configuration, cache or state.
 
 | Location | Contents |
 |---|---|
-| `$XDG_CONFIG_HOME/ariadusage/config.json` (default `~/.config/ariadusage/`) | The single settings file |
+| `$XDG_CONFIG_HOME/ariadusage/config.json` (default `~/.config/ariadusage/`) | The single settings file; overridden by `ARIADUSAGE_CONFIG` |
+| `$XDG_CONFIG_HOME/ariadusage/config.json.lock` | Mode 0600 lock file, owner-only, never unlinked, used for write serialization |
+| `$XDG_CONFIG_HOME/ariadusage/.ariadusage-staged-*` | Mode 0700 temporary staging directories beside target, cleaned up immediately after atomic rename |
 | `$XDG_STATE_HOME/ariadusage/` (default `~/.local/state/ariadusage/`) | State such as usage history and notification episodes |
 | `$XDG_CACHE_HOME/ariadusage/` (default `~/.cache/ariadusage/`) | Rebuildable caches such as cost scan results and pricing data |
 | `$XDG_RUNTIME_DIR/ariadusage/engine.sock` | The engine's owner-only socket, removed at logout |
+
+The configuration path can be customized via the `ARIADUSAGE_CONFIG` environment variable
+(trimmed, tilde-expanded, must resolve to an absolute path).
+Before reading or modifying the configuration or lock file, trust checks enforce that:
+- Neither the configuration file nor its lock file is a symlink (`O_NOFOLLOW`);
+- Both are regular files owned by the effective UID; the configuration file additionally must not be group- or world-writable, while the lock file is only checked for symlink, regular file and owner;
+- The parent directory is owned by the effective UID and is neither group- nor world-writable.
+Writes are staged in an owner-only temporary directory (`0700`) beside the destination and written
+to a `0600` file with `fchmod` before the first byte, synced to disk, atomically renamed,
+and followed by an `fsync` of the parent directory.
 
 Nothing is ever written inside the Omarchy plugin directory. Files that hold
 secrets are created with mode 0600 before any bytes are written.
