@@ -143,7 +143,7 @@ The plugin is a client: it never fetches, never holds a secret and never owns da
 | `schemas/` | JSON Schemas generated from `ariadusage-protocol`, with example messages | M0 |
 | `integrations/omarchy/` | Source of the Omarchy plugin, published to its own repository | Contract spike in M0; full UI in M9 |
 | `brand/` | Design-as-code logo pipeline and vendored provider logos | M0 |
-| `fixtures/` | Fixtures ported from CodexBar and AriadUsage's own, with provenance in `fixtures/manifest.toml` | M1 |
+| `fixtures/` | Fixtures ported from CodexBar and AriadUsage's own, with provenance in `fixtures/manifest.toml` | Now; M1 |
 
 The plugin's publishing workflow and the engine's release workflow live in `.github/workflows/`.
 
@@ -308,7 +308,7 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 | Milestone | Scope | Acceptance | Status |
 |---|---|---|---|
 | **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | Done |
-| **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Planned |
+| **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Done |
 | **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Planned |
 | **M3 · Claude** | Every Claude source mode | Claude golden tests and a local live smoke test pass | Planned |
 | **M4 · Codex** | Every Codex source mode, app-server RPC, managed accounts | Codex golden tests and a local live smoke test pass | Planned |
@@ -404,3 +404,5 @@ Logos and icons are generated as code under `brand/`, following the same process
 11. **Systemd user socket activation.** Should production installations use systemd socket activation (`ariadusage.socket` / `ariadusage.service`) so the daemon starts on-demand when frontends connect? (Spike recommendation for M8/M9).
 12. **Multi-monitor bar height adaptation.** The bar widget currently uses fixed `implicitHeight: 16` designed for Omarchy's standard 32 px bar. How should it scale dynamically if users configure non-standard bar heights? (Spike recommendation for M9).
 13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
+14. **`cookieSource: auto` on Linux.** What strategy does `cookieSource: auto` follow on Linux when both Chromium and Firefox profiles exist, or when none is found? (M2/M3).
+15. **Rename of `CODEXBAR_CLAUDE_OAUTH_TOKEN`.** Should `CODEXBAR_CLAUDE_OAUTH_TOKEN` environment variable support be renamed to `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` with a fallback during migration? (M3).
