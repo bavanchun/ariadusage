@@ -17,9 +17,9 @@ pub mod fixture;
 
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{
-    negotiate_protocol, parse_client_message, parse_server_message, ClientInfo, ClientMessage,
-    ErrorCode, IpcError, IpcMessage, NoticeLevel, RawEnvelope, ServerMessage, Topic, PROTOCOL_V1,
-    SUPPORTED_PROTOCOLS,
+    ClientInfo, ClientMessage, ErrorCode, IpcError, IpcMessage, NoticeLevel, PROTOCOL_V1,
+    RawEnvelope, SUPPORTED_PROTOCOLS, ServerMessage, Topic, negotiate_protocol,
+    parse_client_message, parse_server_message,
 };
 pub use metric::{
     Confidence, Metric, MetricError, MetricInvariantError, MetricSource, MetricState, SourceKind,
@@ -30,13 +30,15 @@ pub use settings::{
     NumberConfig, SettingCondition, SettingDescriptor, SettingsPage, SettingsScope,
     SettingsSection, TextConfig, TokenAccountRow, TokenAccountsConfig,
 };
-pub use snapshot::{AccountSnapshot, EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows};
+pub use snapshot::{
+    AccountSnapshot, EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows,
+};
 pub use usage::{
     Chart, ChartKind, ChartPoint, Cost, Credits, DetailRow, DetailSection,
-    DetailSectionValidationError, Identity, NamedWindow, Pace, PaceStage, ProviderError,
-    ProviderErrorCategory, ProviderErrorKind, RateWindow, RowProgress, StatusIndicator,
-    MAXIMUM_POINTS_PER_CHART, MAXIMUM_ROWS_PER_SECTION, MAXIMUM_SECTIONS_PER_SNAPSHOT,
-    MAXIMUM_STRING_LENGTH,
+    DetailSectionValidationError, Identity, MAXIMUM_POINTS_PER_CHART, MAXIMUM_ROWS_PER_SECTION,
+    MAXIMUM_SECTIONS_PER_SNAPSHOT, MAXIMUM_STRING_LENGTH, NamedWindow, Pace, PaceStage,
+    ProviderError, ProviderErrorCategory, ProviderErrorKind, RateWindow, RowProgress,
+    StatusIndicator,
 };
 
 #[cfg(feature = "codec")]
@@ -44,6 +46,6 @@ pub use codec::{IpcCodec, IpcCodecError, MAX_FRAME_BYTES};
 
 #[cfg(all(feature = "fixture", unix))]
 pub use fixture::{
-    ensure_socket_directory, generate_scenario_snapshot, start_fixture_server, FixtureConfig,
-    FixtureServerHandle, MisbehaveMode,
+    FixtureConfig, FixtureServerHandle, MisbehaveMode, ensure_socket_directory,
+    generate_scenario_snapshot, start_fixture_server,
 };
