@@ -1,5 +1,6 @@
 //! Core domain model, provider descriptors, and pure business logic for AriadUsage.
 
+pub mod config;
 pub mod error;
 pub mod model;
 pub mod pace;
@@ -7,6 +8,7 @@ pub mod projection;
 pub mod providers;
 pub mod settings_value;
 
+pub use config::*;
 pub use error::ModelError;
 pub use model::*;
 pub use pace::*;
