@@ -81,10 +81,12 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Browser cookie crypto | aes, cbc, pbkdf2, sha1, sha2 | Chromium's Linux cookie encryption, implemented in-house |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
 | Process and port discovery | procfs | Antigravity language-server discovery, agent sessions and the probe reaper |
-| Paths | etcetera | XDG on Linux and macOS, as CodexBar does; ignores relative `XDG_*` values |
+| Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
+| File descriptor safety (Unix) | rustix (`fs`, `process`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod` in the engine without unsafe code under `unsafe_code = "deny"` |
+| Staging directories | tempfile | Task-owned private staging directories (0700) for atomic private writes; also tests |
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
 | Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
-| Tests | insta, httpmock (HTTPS), assert_cmd, tempfile, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
+| Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
 
@@ -374,6 +376,8 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Plugin lint gate | `qmllint -W 0` with Omarchy's qmldir imports | Plain `qmllint -I` | The plain form exits 0 on broken imports and unknown properties |
 | Detail string length | Grapheme cluster count (`unicode-segmentation`) | Unicode scalar count / char count | Swift `String.count` counts extended grapheme clusters; scalar/char counting rejects valid multi-byte emoji within the 120-limit |
 | Extra windows on the wire | `NamedWindow.window` becomes `Metric<RateWindow>` at provider and account level; schemas re-blessed | Keeping `window: RateWindow` without metric freshness/honesty envelopes on extra windows | Extra windows must enforce the exact same honesty and freshness invariants as positional windows, ensuring no synthetic or unknown quota state renders as a real value |
+| File locking and atomic writes | `std::fs::File::lock`/`try_lock` with rustix (`fstat`, `geteuid`, `O_NOFOLLOW`) and tempfile (0700 staging directory) | `fs4`, `libc` with unsafe | std covers file locking since 1.89; rustix provides safe syscall bindings for file descriptor validation without unsafe code in a deny-unsafe workspace; tempfile isolates staging directories |
+| Config path resolution | Pure path resolver over injected environment and home; etcetera and `std::env` only in production wrapper | Calling etcetera or `std::env` directly in resolver | etcetera reads process env directly and cannot be injected; edition 2024 makes `set_var` unsafe under `unsafe_code = "deny"` |
 
 ---
 
