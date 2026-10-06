@@ -40,7 +40,7 @@ portable:
 
 ci-linux: lint test deny
 
-ci: ci-linux brand-ci secrets
+ci: ci-linux brand-ci omarchy-check secrets
 
 push: secrets
     git push -u origin HEAD
@@ -60,5 +60,17 @@ brand-ci: js
     just brand
     just brand-check
     git diff --exit-code brand/svg
+
+omarchy-check:
+    bash scripts/omarchy-plugin.sh check
+
+omarchy-dev:
+    bash scripts/omarchy-plugin.sh dev
+
+omarchy-dev-enable:
+    bash scripts/omarchy-plugin.sh dev-enable
+
+omarchy-dev-remove:
+    bash scripts/omarchy-plugin.sh dev-remove
 
 
