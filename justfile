@@ -44,3 +44,7 @@ push: secrets
 js:
     pnpm install --frozen-lockfile
 
+brand:
+    pnpm --dir brand build
+
+
