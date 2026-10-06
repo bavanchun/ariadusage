@@ -14,13 +14,15 @@ use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
 use crate::codec::{IpcCodec, IpcCodecError};
-use crate::ids::{ProviderId, SettingId};
+use crate::ids::{ActionId, ProviderId, SettingId};
 use crate::ipc::{
     ClientMessage, ErrorCode, IpcError, PROTOCOL_V1, ServerMessage, Topic, parse_client_message,
 };
 use crate::metric::{Confidence, Metric, MetricSource, MetricState, SourceKind};
 use crate::settings::{
-    ChoiceOption, DescriptorKind, SettingDescriptor, SettingsPage, SettingsScope, SettingsSection,
+    ActionConfirmation, ActionItem, ActionStyle, ChoiceOption, DescriptorKind, MultiChoiceEntry,
+    NumberConfig, SettingDescriptor, SettingsPage, SettingsScope, SettingsSection, TextConfig,
+    TokenAccountRow, TokenAccountsConfig,
 };
 use crate::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows};
 use crate::usage::{
@@ -491,15 +493,113 @@ async fn generate_settings_page(scope: &SettingsScope, shared: &ServerShared) ->
         .await
         .contains(&SettingId::new("providers.claude.apiKey").unwrap());
 
-    let descriptors = vec![
+    let settings = shared.settings.lock().await;
+
+    let source_mode = settings
+        .get(&SettingId::new("sourceMode").unwrap())
+        .and_then(|v| v.as_str())
+        .unwrap_or("cli")
+        .to_string();
+
+    let notif_enabled = settings
+        .get(&SettingId::new("notifications.enabled").unwrap())
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let refresh_interval = settings
+        .get(&SettingId::new("refreshInterval").unwrap())
+        .and_then(|v| v.as_f64())
+        .unwrap_or(900.0);
+
+    let device_id = settings
+        .get(&SettingId::new("syncDeviceId").unwrap())
+        .and_then(|v| v.as_str())
+        .unwrap_or("primary-workstation")
+        .to_string();
+
+    let sync_paths = settings
+        .get(&SettingId::new("syncDirs").unwrap())
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_else(|| vec!["/var/log/ariadusage".to_string()]);
+
+    let accent_color = settings
+        .get(&SettingId::new("accentColor").unwrap())
+        .and_then(|v| v.as_str())
+        .unwrap_or("#cacccc")
+        .to_string();
+
+    let general_descriptors = vec![
         SettingDescriptor::new(
             SettingId::new("sourceMode").unwrap(),
             "Source Mode",
             DescriptorKind::Choice {
-                selected: "cli".to_string(),
+                selected: source_mode,
                 options: vec![
                     ChoiceOption::new("cli", "CLI Tool"),
                     ChoiceOption::new("web", "Web Session"),
+                ],
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("notifications.enabled").unwrap(),
+            "Desktop Notifications",
+            DescriptorKind::Toggle {
+                value: notif_enabled,
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("refreshInterval").unwrap(),
+            "Refresh Interval",
+            DescriptorKind::Number {
+                value: refresh_interval,
+                config: NumberConfig {
+                    min: Some(30.0),
+                    max: Some(3600.0),
+                    step: Some(30.0),
+                    unit: Some("s".to_string()),
+                },
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("syncDeviceId").unwrap(),
+            "Device Identifier",
+            DescriptorKind::Text {
+                value: device_id,
+                config: TextConfig {
+                    placeholder: Some("device-name".to_string()),
+                    max_length: Some(64),
+                },
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("syncDirs").unwrap(),
+            "Sync Directories",
+            DescriptorKind::PathList { paths: sync_paths },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("accentColor").unwrap(),
+            "Custom Accent Color",
+            DescriptorKind::Color {
+                value: accent_color,
+                default: "#cacccc".to_string(),
+            },
+        ),
+    ];
+
+    let provider_descriptors = vec![
+        SettingDescriptor::new(
+            SettingId::new("providers.active").unwrap(),
+            "Active Providers",
+            DescriptorKind::MultiChoice {
+                entries: vec![
+                    MultiChoiceEntry::new("claude", "Claude", false, true),
+                    MultiChoiceEntry::new("codex", "Codex", false, true),
+                    MultiChoiceEntry::new("antigravity", "Antigravity", false, true),
                 ],
             },
         ),
@@ -511,10 +611,74 @@ async fn generate_settings_page(scope: &SettingsScope, shared: &ServerShared) ->
                 source: Some("Keychain".to_string()),
             },
         ),
+        SettingDescriptor::new(
+            SettingId::new("accounts.codex").unwrap(),
+            "Codex Accounts",
+            DescriptorKind::TokenAccounts {
+                config: TokenAccountsConfig {
+                    accounts: vec![
+                        TokenAccountRow {
+                            id: "acc-1".to_string(),
+                            label: "Work Account".to_string(),
+                            active: true,
+                            token_is_set: true,
+                        },
+                        TokenAccountRow {
+                            id: "acc-2".to_string(),
+                            label: "Personal Account".to_string(),
+                            active: false,
+                            token_is_set: false,
+                        },
+                    ],
+                    supports_add: true,
+                    supports_remove: true,
+                    supports_activate: true,
+                },
+            },
+        ),
+    ];
+
+    let actions_descriptors = vec![
+        SettingDescriptor::new(
+            SettingId::new("diagnostics").unwrap(),
+            "Maintenance Actions",
+            DescriptorKind::Actions {
+                actions: vec![
+                    ActionItem {
+                        id: ActionId::new("refreshAll").unwrap(),
+                        label: "Refresh All Providers".to_string(),
+                        style: ActionStyle::Button,
+                        confirmation: None,
+                    },
+                    ActionItem {
+                        id: ActionId::new("resetUsage").unwrap(),
+                        label: "Reset Local Cache".to_string(),
+                        style: ActionStyle::Button,
+                        confirmation: Some(ActionConfirmation {
+                            title: "Confirm Cache Reset".to_string(),
+                            message: "Are you sure you want to clear the local usage cache?"
+                                .to_string(),
+                            confirm_label: "Reset".to_string(),
+                        }),
+                    },
+                ],
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("experimental.customWidget").unwrap(),
+            "Experimental Widget",
+            DescriptorKind::Unknown {
+                kind: "customWidget".to_string(),
+            },
+        ),
     ];
 
     SettingsPage::new(
         scope.clone(),
-        vec![SettingsSection::new("general", "General", descriptors)],
+        vec![
+            SettingsSection::new("general", "General Settings", general_descriptors),
+            SettingsSection::new("providers", "Provider Configurations", provider_descriptors),
+            SettingsSection::new("actions", "System Actions", actions_descriptors),
+        ],
     )
 }

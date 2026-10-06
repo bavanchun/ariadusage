@@ -45,7 +45,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         server.socket_path.display()
     );
 
+    let log_sink = std::sync::Arc::clone(&server.log_sink);
+    let log_task = tokio::spawn(async move {
+        let mut last_len = 0;
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            let logs = log_sink.lock().await;
+            while last_len < logs.len() {
+                println!("{}", logs[last_len]);
+                last_len += 1;
+            }
+        }
+    });
+
     tokio::signal::ctrl_c().await?;
+    log_task.abort();
     println!("Shutting down fixture server...");
     server.stop().await;
     Ok(())
