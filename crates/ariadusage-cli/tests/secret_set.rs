@@ -1,5 +1,7 @@
 //! Integration test for `ariadusage secret set` with non-interactive stdin pipe.
 
+#![cfg(unix)]
+
 use std::path::PathBuf;
 
 use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};

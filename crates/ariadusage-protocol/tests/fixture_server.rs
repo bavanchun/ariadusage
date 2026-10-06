@@ -1,5 +1,7 @@
 //! Integration tests for the in-process Unix domain socket fixture server.
 
+#![cfg(unix)]
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;

@@ -1,16 +1,24 @@
 //! Redaction integration tests verifying that secrets are never leaked in Debug, logs, or error responses.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-
-use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};
 use ariadusage_protocol::ids::SettingId;
 use ariadusage_protocol::ipc::ClientMessage;
 use ariadusage_protocol::secret::SecretString;
+
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
+use std::sync::Arc;
+
+#[cfg(unix)]
+use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::net::UnixStream;
+#[cfg(unix)]
 use tokio::sync::Mutex;
 
+#[cfg(unix)]
 fn unique_temp_socket_path(test_name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("ariadusage-redact-{}", std::process::id()));
     dir.join(format!("{test_name}.sock"))
@@ -34,6 +42,7 @@ fn test_debug_format_does_not_leak_secret() {
     );
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn test_secret_not_in_logs_or_error_responses() {
     let secret_val = "sk-ant-api03-live-token-998877";

@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::io::IsTerminal;
 
 use clap::{Parser, Subcommand};
