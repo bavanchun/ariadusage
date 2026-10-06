@@ -12,6 +12,9 @@ pub mod usage;
 #[cfg(feature = "codec")]
 pub mod codec;
 
+#[cfg(all(feature = "fixture", unix))]
+pub mod fixture;
+
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{
     negotiate_protocol, parse_client_message, parse_server_message, ClientInfo, ClientMessage,
@@ -38,3 +41,9 @@ pub use usage::{
 
 #[cfg(feature = "codec")]
 pub use codec::{IpcCodec, IpcCodecError, MAX_FRAME_BYTES};
+
+#[cfg(all(feature = "fixture", unix))]
+pub use fixture::{
+    ensure_socket_directory, generate_scenario_snapshot, start_fixture_server, FixtureConfig,
+    FixtureServerHandle, MisbehaveMode,
+};
