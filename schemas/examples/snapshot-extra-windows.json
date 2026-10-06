@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-06T12:00:00Z",
+  "staleAfterSeconds": 15,
+  "engine": {
+    "version": "0.1.0",
+    "refreshing": false
+  },
+  "providers": [
+    {
+      "id": "claude",
+      "displayName": "Claude",
+      "enabled": true,
+      "sourceMode": "cli",
+      "windows": {
+        "primary": {
+          "state": "value",
+          "confidence": "exact",
+          "source": {
+            "kind": "cli",
+            "label": "claude-cli"
+          },
+          "value": {
+            "usedPercent": 25.0,
+            "windowMinutes": 300,
+            "resetsAt": "2026-10-06T18:00:00Z",
+            "resetDescription": "Resets in 6 hours"
+          }
+        },
+        "extra": [
+          {
+            "id": "burst",
+            "title": "1-Hour Burst",
+            "window": {
+              "state": "value",
+              "confidence": "exact",
+              "source": {
+                "kind": "cli",
+                "label": "claude-cli"
+              },
+              "value": {
+                "usedPercent": 15.0,
+                "windowMinutes": 60,
+                "resetsAt": "2026-10-06T13:00:00Z",
+                "resetDescription": "Resets in 1 hour"
+              }
+            }
+          },
+          {
+            "id": "preview-features",
+            "title": "Preview Features",
+            "window": {
+              "state": "unknown",
+              "confidence": "unknown"
+            }
+          }
+        ]
+      },
+      "details": [],
+      "accounts": [
+        {
+          "id": "org-work",
+          "label": "Work Workspace",
+          "active": true,
+          "windows": {
+            "primary": {
+              "state": "value",
+              "confidence": "exact",
+              "value": {
+                "usedPercent": 30.0,
+                "windowMinutes": 300
+              }
+            },
+            "extra": [
+              {
+                "id": "shared-pool",
+                "title": "Shared Pool",
+                "window": {
+                  "state": "value",
+                  "confidence": "exact",
+                  "value": {
+                    "usedPercent": 50.0,
+                    "windowMinutes": 1440
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
