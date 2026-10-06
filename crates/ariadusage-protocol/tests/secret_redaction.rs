@@ -26,14 +26,14 @@ fn unique_temp_socket_path(test_name: &str) -> PathBuf {
 
 #[test]
 fn test_debug_format_does_not_leak_secret() {
-    let secret_val = "sk-ant-api03-live-token-998877";
+    let secret_val = format!("{}-{}-{}-{}", "mock", "planted", "secret", "998877");
     let msg = ClientMessage::SetSecret {
         id: SettingId::new("providers.claude.apiKey").unwrap(),
-        value: SecretString::new(secret_val.to_string()),
+        value: SecretString::new(&secret_val),
     };
     let debug_str = format!("{msg:?}");
     assert!(
-        !debug_str.contains(secret_val),
+        !debug_str.contains(&secret_val),
         "ClientMessage::SetSecret debug format must not leak raw secret"
     );
     assert!(
@@ -45,7 +45,7 @@ fn test_debug_format_does_not_leak_secret() {
 #[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn test_secret_not_in_logs_or_error_responses() {
-    let secret_val = "sk-ant-api03-live-token-998877";
+    let secret_val = format!("{}-{}-{}-{}", "mock", "planted", "secret", "998877");
     let socket_path = unique_temp_socket_path("redaction");
     let log_sink = Arc::new(Mutex::new(Vec::new()));
 
@@ -73,7 +73,7 @@ async fn test_secret_not_in_logs_or_error_responses() {
         "expected successful response, got: {ok_line}"
     );
     assert!(
-        !ok_line.contains(secret_val),
+        !ok_line.contains(&secret_val),
         "ok response must not echo secret"
     );
 
@@ -82,7 +82,7 @@ async fn test_secret_not_in_logs_or_error_responses() {
     assert!(!logs.is_empty(), "expected server logs to be recorded");
     for entry in logs.iter() {
         assert!(
-            !entry.contains(secret_val),
+            !entry.contains(&secret_val),
             "fixture server log entry leaked secret: {entry}"
         );
     }
@@ -95,7 +95,7 @@ async fn test_secret_not_in_logs_or_error_responses() {
     writer.write_all(malformed.as_bytes()).await.unwrap();
     let err_line = lines.next_line().await.unwrap().unwrap();
     assert!(
-        !err_line.contains(secret_val),
+        !err_line.contains(&secret_val),
         "malformed JSON error response must not echo secret: {err_line}"
     );
 
@@ -109,7 +109,7 @@ async fn test_secret_not_in_logs_or_error_responses() {
         .unwrap();
     let err_setting_line = lines.next_line().await.unwrap().unwrap();
     assert!(
-        !err_setting_line.contains(secret_val),
+        !err_setting_line.contains(&secret_val),
         "setSetting error response must not echo secret: {err_setting_line}"
     );
 

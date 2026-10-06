@@ -184,7 +184,7 @@ Securely transmit a sensitive credential token to the engine. Sent exclusively b
 {
   "type": "setSecret",
   "id": "providers.claude.apiKey",
-  "value": "sk-ant-api03-sample-token"
+  "value": "sample-secret-token-12345"
 }
 ```
 
