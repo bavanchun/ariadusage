@@ -36,7 +36,7 @@ portable:
 
 ci-linux: lint test deny
 
-ci: ci-linux secrets
+ci: ci-linux brand-ci secrets
 
 push: secrets
     git push -u origin HEAD
@@ -46,5 +46,15 @@ js:
 
 brand:
     pnpm --dir brand build
+
+brand-check:
+    node brand/scripts/check-contrast.mjs
+    node brand/scripts/simulate-cvd.mjs
+
+brand-ci: js
+    pnpm audit --audit-level high
+    just brand
+    just brand-check
+    git diff --exit-code brand/svg
 
 
