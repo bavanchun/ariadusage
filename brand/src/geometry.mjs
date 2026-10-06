@@ -25,10 +25,11 @@ export const R_DIAL = 94;
 export const R_INNER = 46;
 export const R_ARC = 64;
 
-// High-contrast thread dimensions (tuned for 16px/32px legibility)
-export const THREAD_WIDTH = 18;
-export const RING = { r: 14.5, stroke: 8.5 };
-export const BEAD_R = 16.5;
+// High-contrast thread dimensions (asymmetric gauge needle & datum ring)
+export const THREAD_WIDTH = 22;
+export const GLASS_THREAD_WIDTH = 19;
+export const NEEDLE_TIP_W = 3.5;
+export const RING = { cx: 82.75, cy: 173.25, r: 16, stroke: 10, holeR: 11 };
 
 // Arc coordinates: 135 deg to 45 deg (270 deg clockwise sweep)
 const SQRT1_2 = Math.SQRT1_2;
@@ -42,6 +43,58 @@ export const END = {
 };
 
 export const THREAD = `M ${START.cx} ${START.cy} A ${R_ARC} ${R_ARC} 0 1 1 ${END.cx} ${END.cy}`;
+
+/** Generates a continuous tapered gauge needle path from ring center to quota point. */
+export function generateTaperedArc({
+  baseW = THREAD_WIDTH,
+  tipW = NEEDLE_TIP_W,
+  taperStartT = 0.68,
+  steps = 64,
+  startDeg = 135,
+  endDeg = 405,
+} = {}) {
+  const ptsOuter = [];
+  const ptsInner = [];
+  const startA = startDeg * (Math.PI / 180);
+  const endA = endDeg * (Math.PI / 180);
+  const totalSweep = endA - startA;
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const a = startA + t * totalSweep;
+    let w = baseW;
+    if (t > taperStartT) {
+      const taperT = (t - taperStartT) / (1 - taperStartT);
+      w = baseW * (1 - taperT) + tipW * taperT;
+    }
+    const rOut = R_ARC + w / 2;
+    const rIn = R_ARC - w / 2;
+    ptsOuter.push(`${(CX + rOut * Math.cos(a)).toFixed(2)} ${(CY + rOut * Math.sin(a)).toFixed(2)}`);
+    ptsInner.unshift(`${(CX + rIn * Math.cos(a)).toFixed(2)} ${(CY + rIn * Math.sin(a)).toFixed(2)}`);
+  }
+  const tipPt = `${(CX + R_ARC * Math.cos(endA)).toFixed(2)} ${(CY + R_ARC * Math.sin(endA)).toFixed(2)}`;
+  return `M ${ptsOuter[0]} L ${ptsOuter.slice(1).join(' L ')} L ${tipPt} L ${ptsInner.join(' L ')} Z`;
+}
+
+export const TAPERED_THREAD_MONO = generateTaperedArc({ baseW: 22, tipW: 3.5, taperStartT: 0.68 });
+export const TAPERED_THREAD_GLASS = generateTaperedArc({ baseW: 19, tipW: 3, taperStartT: 0.65 });
+
+/** Centerline arc for Liquid Glass specular tube reflections. */
+export function generateCenterline({ startDeg = 145, endDeg = 400 } = {}) {
+  const startA = startDeg * (Math.PI / 180);
+  const endA = endDeg * (Math.PI / 180);
+  const startPt = {
+    x: Number((CX + R_ARC * Math.cos(startA)).toFixed(2)),
+    y: Number((CY + R_ARC * Math.sin(startA)).toFixed(2)),
+  };
+  const endPt = {
+    x: Number((CX + R_ARC * Math.cos(endA)).toFixed(2)),
+    y: Number((CY + R_ARC * Math.sin(endA)).toFixed(2)),
+  };
+  return `M ${startPt.x} ${startPt.y} A ${R_ARC} ${R_ARC} 0 1 1 ${endPt.x} ${endPt.y}`;
+}
+
+export const SPINE_PATH = generateCenterline();
 
 // Top reset notch on dial plate
 export const NOTCH = {

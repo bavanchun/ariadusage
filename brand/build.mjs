@@ -9,7 +9,7 @@ import { Resvg } from '@resvg/resvg-js';
 import opentype from 'opentype.js';
 import { optimize } from 'svgo';
 import {
-  BEAD_R, COLOR, CX, CY, END, NOTCH, R_ARC, R_DIAL, R_INNER, RING, START, THREAD, THREAD_WIDTH,
+  COLOR, CX, CY, END, NOTCH, R_ARC, R_DIAL, R_INNER, RING, START, TAPERED_THREAD_GLASS, TAPERED_THREAD_MONO,
   notchPath, svgDoc,
 } from './src/geometry.mjs';
 import { glassIcon } from './src/glass-icon.mjs';
@@ -22,13 +22,19 @@ const OUT = {
   layers: path.join(ROOT, 'icon-composer'),
 };
 
-/** Single-color mono mark: high-contrast gauge arc with datum ring, quota bead & reset notch. */
+/** Single-color mono mark: high-contrast gauge arc with datum ring, tapered needle & reset notch. */
 export function markMono(fill = 'currentColor') {
+  const ringOut = RING.r + RING.stroke / 2;
   return svgDoc(256, 256, `
-  <g fill="${fill}">
-    <path d="${THREAD}" fill="none" stroke="${fill}" stroke-width="24" stroke-linecap="round"/>
-    <circle cx="${START.cx}" cy="${START.cy}" r="18" fill="none" stroke="${fill}" stroke-width="12"/>
-    <circle cx="${END.cx}" cy="${END.cy}" r="20" fill="${fill}"/>
+  <defs>
+    <mask id="monoHole" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#fff"/>
+      <circle cx="${START.cx}" cy="${START.cy}" r="${RING.holeR}" fill="#000"/>
+    </mask>
+  </defs>
+  <g fill="${fill}" mask="url(#monoHole)">
+    <path d="${TAPERED_THREAD_MONO}" fill="${fill}"/>
+    <circle cx="${START.cx}" cy="${START.cy}" r="${ringOut}" fill="${fill}"/>
     <rect x="${CX - 5}" y="24" width="10" height="22" rx="3" fill="${fill}"/>
   </g>`);
 }
@@ -39,7 +45,7 @@ function iconComposerLayers() {
   const off = 512 - 128 * k;
   const layer = (body) =>
     svgDoc(1024, 1024, `<g transform="translate(${off.toFixed(2)} ${off.toFixed(2)}) scale(${k.toFixed(4)})">${body}</g>`);
-  const ringHole = RING.r - RING.stroke / 2 + 0.4;
+  const ringHole = RING.holeR || (RING.r - RING.stroke / 2 + 0.4);
 
   return {
     '0-background.svg': svgDoc(1024, 1024, `
@@ -56,9 +62,10 @@ function iconComposerLayers() {
         <rect width="256" height="256" fill="#fff"/>
         <circle cx="${START.cx}" cy="${START.cy}" r="${ringHole}" fill="#000"/>
       </mask>
-      <path d="${THREAD}" stroke="${COLOR.gold[1]}" stroke-width="${THREAD_WIDTH}" stroke-linecap="round" mask="url(#hole)"/>
-      <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="${COLOR.gold[1]}" stroke-width="${RING.stroke}"/>
-      <circle cx="${END.cx}" cy="${END.cy}" r="${BEAD_R}" fill="${COLOR.gold[1]}"/>`),
+      <g fill="${COLOR.gold[1]}" mask="url(#hole)">
+        <path d="${TAPERED_THREAD_GLASS}" fill="${COLOR.gold[1]}"/>
+        <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="${COLOR.gold[1]}" stroke-width="${RING.stroke}"/>
+      </g>`),
   };
 }
 
