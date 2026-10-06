@@ -1,0 +1,7 @@
+AriadUsage
+Copyright (c) 2026 VChun
+
+AriadUsage is an independent Rust reimplementation of CodexBar
+(https://github.com/steipete/CodexBar). Code, tests and fixtures ported
+from CodexBar are Copyright (c) 2026 Peter Steinberger and are used under
+the MIT License; see LICENSES/CodexBar-MIT.txt.
