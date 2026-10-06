@@ -1,0 +1,15 @@
+{
+  "name": "@ariadusage/brand",
+  "private": true,
+  "type": "module",
+  "description": "AriadUsage logo, app icon and wordmark generated as code.",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@fontsource/plus-jakarta-sans": "catalog:",
+    "@resvg/resvg-js": "catalog:",
+    "opentype.js": "catalog:",
+    "svgo": "catalog:"
+  }
+}
