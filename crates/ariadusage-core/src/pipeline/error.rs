@@ -29,6 +29,10 @@ impl TransportClass {
     pub const fn is_startup_retryable(&self) -> bool {
         !matches!(self, Self::Cancelled)
     }
+
+    pub const fn is_cancellation(&self) -> bool {
+        matches!(self, Self::Cancelled)
+    }
 }
 
 /// A classified provider fetch failure.
@@ -149,6 +153,22 @@ pub enum FetchError {
 }
 
 impl FetchError {
+    pub fn is_preservable(&self) -> bool {
+        match self {
+            Self::Cancelled => true,
+            Self::NoAvailableStrategy(_) => false,
+            Self::Classified(c) => c.transport.is_some_and(|t| t.is_preservable()),
+        }
+    }
+
+    pub fn is_cancellation(&self) -> bool {
+        match self {
+            Self::Cancelled => true,
+            Self::NoAvailableStrategy(_) => false,
+            Self::Classified(c) => matches!(c.transport, Some(TransportClass::Cancelled)),
+        }
+    }
+
     pub fn clone_fallback(&self) -> Self {
         match self {
             Self::Cancelled => Self::Cancelled,

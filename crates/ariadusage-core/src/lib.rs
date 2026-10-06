@@ -7,6 +7,7 @@ pub mod pace;
 pub mod pipeline;
 pub mod projection;
 pub mod providers;
+pub mod refresh;
 pub mod settings_value;
 
 pub use config::*;
@@ -18,4 +19,5 @@ pub use projection::*;
 pub use providers::{
     ProviderDescriptor, SourceMode, find_by_id, find_by_id_str, first_party_order,
 };
+pub use refresh::*;
 pub use settings_value::SettingsValue;
