@@ -12,6 +12,10 @@ default = []
 codec = ["dep:tokio-util", "tokio-util?/codec"]
 fixture = ["codec", "dep:tokio"]
 
+[[example]]
+name = "fixture_server"
+required-features = ["fixture"]
+
 [dependencies]
 schemars = { workspace = true }
 serde = { workspace = true }
