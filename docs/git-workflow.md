@@ -72,8 +72,8 @@ build(deps): pin secret-service
 
 ## Before you commit
 
-1. Run the narrowest check for what you touched, then broaden it.
-2. Before a push, run `just ci`: it is the same gate CI runs. It arrives with the Cargo workspace in the first milestone; until then, review the diff and check every link by hand.
+1. Run the narrowest check for what you touched, then broaden it (`just fmt`, `just lint`, `just test`, `just deny`).
+2. Run `just ci`: it runs the complete quality gate (`fmt-check`, `clippy` with warnings denied, `typos`, `nextest`, `cargo-deny`, and `secrets`). Recipes are defined in [justfile](../justfile), and toolchain requirements are pinned in [rust-toolchain.toml](../rust-toolchain.toml).
 3. Check `git status` for stray files: editor backups, `target/`, `node_modules/`.
 
 ## Staging
@@ -92,6 +92,7 @@ Never commit `.env*` files, credentials, private keys, tokens, cookies, real acc
 
 ## Pushing
 
+- Commits leave the machine through `just push`: it runs `just secrets` (including `scripts/gitleaks-selftest.sh` and a gitleaks scan over committed history) and then pushes the current branch (`git push -u origin HEAD`).
 - Push your branch after a group of green commits, and at least at the end of each working session, so CI checks your work early.
 - Watch the run with `gh run watch`. A red branch is fixed on that branch before new work is stacked on it.
 - To fix an unpushed commit, use `git commit --amend` for the latest one. Once a commit is pushed, fix it with a new commit.

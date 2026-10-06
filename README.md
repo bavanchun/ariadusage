@@ -30,6 +30,24 @@ The planned install route has two parts, neither of which exists yet:
 - [Git workflow](docs/git-workflow.md)
 - [Security reporting](docs/SECURITY.md)
 
+## Development
+
+AriadUsage uses `just` to run development tasks. The toolchain pin is defined in [rust-toolchain.toml](rust-toolchain.toml), and all development and CI recipes are defined in [justfile](justfile).
+
+To run the full local quality gate:
+
+```bash
+just ci
+```
+
+To run secrets scanning and push the current branch:
+
+```bash
+just push
+```
+
+For individual checks (formatting, clippy, tests, license checks), see [justfile](justfile) and [docs/git-workflow.md](docs/git-workflow.md).
+
 ## Credits
 
 - [CodexBar](https://github.com/steipete/CodexBar) by Peter Steinberger, MIT.

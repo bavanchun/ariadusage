@@ -4,8 +4,16 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Current state
 
-- The repository holds documentation only. There is no Cargo workspace, `justfile`, CI workflow or test suite yet.
-- Do not invent build, test or lint commands. This file names each command when the change that creates it lands.
+- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`) and the `justfile` quality gate.
+- Build, test, lint and security commands are defined in [justfile](justfile). Toolchain configuration is pinned in [rust-toolchain.toml](rust-toolchain.toml).
+- Common commands:
+  - `just ci`: runs the full local quality gate (`lint`, `test`, `deny`, and `secrets`).
+  - `just push`: runs `secrets` then pushes the current branch.
+  - `just fmt`: formats code with `cargo fmt`.
+  - `just lint`: runs format check, clippy with warnings denied, and typos spell check.
+  - `just test`: runs nextest across the workspace.
+  - `just deny`: runs cargo-deny checks for advisories, licenses, bans and sources.
+  - `just portable`: runs clippy on portable workspace crates.
 
 ## Architecture changes
 
