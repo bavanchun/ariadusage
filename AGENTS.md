@@ -4,22 +4,25 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Current state
 
-- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`) and the `justfile` quality gate.
-- Build, test, lint and security commands are defined in [justfile](justfile). Toolchain configuration is pinned in [rust-toolchain.toml](rust-toolchain.toml).
-- Common commands:
-  - `just ci`: runs the full local quality gate (`lint`, `test`, `deny`, and `secrets`).
+- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
+- Build, test, lint, schema, brand and plugin recipes are defined in [justfile](justfile). Toolchain and runtime versions are pinned in [rust-toolchain.toml](rust-toolchain.toml) and [.node-version](.node-version).
+- Commands:
+  - `just ci`: runs the full local quality gate (`ci-linux`, `brand-ci`, `omarchy-check`, and `secrets`).
   - `just push`: runs `secrets` then pushes the current branch.
-  - `just fmt`: formats code with `cargo fmt`.
-  - `just lint`: runs format check, clippy with warnings denied, and typos spell check.
-  - `just test`: runs nextest across the workspace.
-  - `just deny`: runs cargo-deny checks for advisories, licenses, bans and sources.
-  - `just portable`: runs clippy on portable workspace crates.
+  - `just schemas`: regenerates and blesses JSON schemas for Snapshot v1 and IPC v1.
+  - `pnpm --dir brand build`: builds brand SVG and PNG assets.
+  - `just brand-ci`: runs frozen pnpm audit, brand build, contrast checks and SVG git diff.
+  - `just omarchy-dev`: assembles the plugin and syncs it to `~/.config/omarchy/plugins/`.
+  - `just omarchy-dev-enable`: snapshots `shell.json` and enables the plugin in Omarchy.
+  - `just omarchy-dev-remove`: disables the plugin, cleans backups and restores `shell.json`.
+  - `just omarchy-check`: runs `omarchy-plugin-validate`, strict `qmllint -W 0`, and source contract scans.
 
-## Architecture changes
+## Architecture and protocol rules
 
 - Do not add a crate, dependency, service or boundary that contradicts ARCHITECTURE.md. If a change is warranted, update ARCHITECTURE.md, including its "Decision Log" table, in the same change.
 - Providers are modules of `ariadusage-engine`, never their own crates. `ariadusage-protocol` and `ariadusage-core` stay free of I/O and `cfg(target_os)` in their default features. The one exception is `ariadusage-protocol`'s dev-only `fixture` feature, which no shipped crate may enable.
 - Create a crate only together with its first real code.
+- IPC v1 is a draft until frozen before the first plugin release in M9. Changes to protocol types must pass schema drift checks and be blessed with `just schemas`.
 
 ## Parity with CodexBar
 
@@ -62,7 +65,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 ## Brand assets
 
 - `brand/svg/`, `brand/png/`, `brand/icon-composer/` and `brand/preview.png` are generated. The build deletes and rewrites them, so never hand-edit them.
-- Change `brand/src/*.mjs`, `brand/scripts/*.mjs` or `brand/build.mjs`, then run `just brand`.
+- Change `brand/src/*.mjs`, `brand/scripts/*.mjs` or `brand/build.mjs`, then run `pnpm --dir brand build` or `just brand-ci`.
 - After a build, inspect `brand/preview.png` and verify the 16 px and 32 px tiles before committing.
 - Commit the sources and the regenerated outputs together.
 - Keep SVGO's `prefixIds` plugin enabled. Without it, symbol and gradient IDs collide when multiple SVG assets are inlined into a single document.

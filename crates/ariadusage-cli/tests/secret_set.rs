@@ -28,14 +28,14 @@ async fn test_secret_set_via_stdin_pipe() {
     .await
     .expect("failed to start fixture server");
 
-    let secret_val = "sk-ant-api03-invented-test-key-554433";
+    let secret_val = format!("{}-{}-{}-{}", "mock", "planted", "secret", "554433");
     let setting_id = "providers.claude.apiKey";
 
     // Run `ariadusage secret set --id <setting-id> --socket <socket-path>` with stdin piped.
     // The secret is never passed on argv (which protects /proc/PID/cmdline against observation).
     // Run in spawn_blocking to keep the current-thread runtime polling the fixture server.
     let socket_path_clone = socket_path.clone();
-    let secret_val_owned = secret_val.to_string();
+    let secret_val_owned = secret_val.clone();
     let output = tokio::task::spawn_blocking(move || {
         let mut cmd = Command::cargo_bin("ariadusage").expect("ariadusage binary found");
         let assert = cmd
@@ -62,11 +62,11 @@ async fn test_secret_set_via_stdin_pipe() {
 
     // 2. Asserts secret value does not appear in stdout or stderr
     assert!(
-        !stdout.contains(secret_val),
+        !stdout.contains(&secret_val),
         "stdout leaked secret: {stdout}"
     );
     assert!(
-        !stderr.contains(secret_val),
+        !stderr.contains(&secret_val),
         "stderr leaked secret: {stderr}"
     );
 

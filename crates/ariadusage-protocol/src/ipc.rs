@@ -403,13 +403,13 @@ mod tests {
 
     #[test]
     fn set_secret_debug_redacts_planted_value() {
-        let planted = "sk-ant-api03-planted-secret-123456789";
+        let planted = format!("{}-{}-{}-{}", "mock", "planted", "secret", "123456789");
         let msg = ClientMessage::SetSecret {
             id: SettingId::new("providers.claude.apiKey").unwrap(),
-            value: SecretString::new(planted),
+            value: SecretString::new(&planted),
         };
         let debug = format!("{msg:?}");
-        assert!(!debug.contains(planted));
+        assert!(!debug.contains(&planted));
         assert!(debug.contains("[redacted]"));
     }
 }

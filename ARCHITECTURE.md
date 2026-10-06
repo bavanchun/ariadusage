@@ -304,7 +304,7 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 
 | Milestone | Scope | Acceptance | Status |
 |---|---|---|---|
-| **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | In progress |
+| **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | Done |
 | **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Planned |
 | **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Planned |
 | **M3 · Claude** | Every Claude source mode | Claude golden tests and a local live smoke test pass | Planned |
@@ -342,6 +342,9 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Names and paths | Repo `bavanchun/ariadusage`; plugin repo `bavanchun/ariadusage-omarchy`; plugin id `io.github.bavanchun.ariadusage`; one binary `ariadusage`; unit `ariadusage.service`; XDG paths; `ARIADUSAGE_` prefix; AUR `ariadusage` from source | Separate daemon and CLI binaries; `-bin` package first | One package and one absolute path for the plugin; source builds give clear provenance |
 | Provider logos | lobe-icons, tinted with the theme foreground on the bar, color in the panel; monogram fallback | Hand-drawn or no logos | MIT-licensed real logos meet the marketplace's redistribution rule |
 | Brand | Design-as-code to the AriadShift standard; three concepts, owner chooses | Image-generation models | Same family, same craft level, reproducible assets |
+| Brand concept and geometry | Concept 1 (The Gauge Arc) with asymmetric needle geometry: continuous smooth taper from 30° to an acute 3.5 px needle point at 45°, paired with a hollow datum ring at 135° with an aperture mask and a 12 o'clock calibration notch | Concept 2 (The Labyrinth Clew), Concept 3 (The Horizon Strata), symmetric terminal bead (headphone resemblance defect), Variant A (chisel taper), Variant B (micro-bead dot) | Direct token-gauge metaphor, 3:1 contrast on all 22 Omarchy themes, 16/32 px legibility, and complete elimination of headphone resemblance |
+| Socket process relay | No Process-relay fallback needed; direct Unix socket connection between Quickshell and engine retained | Spawning a helper process to chunk frames or bound buffer memory | 50 MiB continuous frame test proved Quickshell drops oversized frames and releases buffer memory without unbound RSS growth (+1.4 MiB permanent delta over baseline); SplitParser guard drops lines > 1 MiB |
+| Quickshell strict typing | `root.bar as PluginBarApi` projection, top-level `Color`/`Style` property lookups, `pragma ComponentBehavior: Bound` with `required property` delegates, and connection-state timer backoff | Plain `qmllint -I`, `.qmllint.ini` warning suppressions | Enables all 14 QML components to pass strict `qmllint -W 0` with zero warnings and no compiler warning suppressions |
 | Notification defaults | CodexBar macOS behavior: 50 % and 20 % remaining warnings off by default, depleted and restored on, credential expiry off, episodes persisted | CodexBar Linux's single in-memory threshold | The richer, persisted model; reversible default |
 | Display direction | "Remaining" by default with a used/remaining toggle | "Used" by default | Matches CodexBar; reversible default |
 | Config ownership | AriadUsage's own XDG config; no import; first run rescans | Sharing or importing CodexBar's config | No concurrent writers from two codebases |
@@ -373,7 +376,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 
 ## 15. Branding
 
-Logos and icons will be generated as code under `brand/`, following the same process and craft standard as AriadShift. The design direction is recorded in `docs/brand/design-direction.md`, which arrives in M0.
+Logos and icons are generated as code under `brand/`, following the same process and craft standard as AriadShift. The design direction is recorded in [docs/brand/design-direction.md](docs/brand/design-direction.md).
 
 ---
 
@@ -387,5 +390,8 @@ Logos and icons will be generated as code under `brand/`, following the same pro
 6. **Codex dashboard extras.** Can CodexBar's WebView-only Codex data be fetched over HTTP with a session cookie, or does it wait for the macOS phase?
 7. **Adaptive refresh inputs.** Which Linux signals feed CodexBar's adaptive cadence (panel open, power profile)?
 8. **CLI JSON compatibility.** Should `ariadusage usage --json` match CodexBar's output byte for byte, or only semantically?
-9. **Plugin README.** May the plugin README name the AUR install command, which puts the submission into the `review-required` baseline, or should it point to this repository instead?
+9. **Plugin README.** May the plugin README name the AUR install command, which puts the submission into the `review-required` baseline, or should it point to this repository instead? (M0 resolution: plugin carries `manual-setup` label since engine is packaged on AUR; plugin README points to the engine repository).
 10. **Minimum Rust version.** Keep `rust-version` at the pinned toolchain, or lower it before other distributions are targeted?
+11. **Systemd user socket activation.** Should production installations use systemd socket activation (`ariadusage.socket` / `ariadusage.service`) so the daemon starts on-demand when frontends connect? (Spike recommendation for M8/M9).
+12. **Multi-monitor bar height adaptation.** The bar widget currently uses fixed `implicitHeight: 16` designed for Omarchy's standard 32 px bar. How should it scale dynamically if users configure non-standard bar heights? (Spike recommendation for M9).
+13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
