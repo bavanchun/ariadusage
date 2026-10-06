@@ -40,3 +40,7 @@ ci: ci-linux secrets
 
 push: secrets
     git push -u origin HEAD
+
+js:
+    pnpm install --frozen-lockfile
+
