@@ -84,6 +84,9 @@ it changes the architecture, also add a Decision Log row.
 | Snapshot and IPC | CodexBar's own JSON and placeholder flags | AriadUsage Snapshot v1 with an explicit metric state envelope | Honest data in every client; the contract is semantic, not byte-compatible |
 | Configuration | CodexBar's `config.json` | AriadUsage's own XDG config, with no import and no shared file | No two codebases writing one file |
 | Secret storage on Linux | Secrets in the config file | Secret Service keyring; a 0600 file only with consent | Keep secrets out of plain config |
+| Error text on wire | Free-form provider exception and diagnostic strings | Fixed static safe description of the error category (`ProviderErrorCategory`) | Owner decision 12: free-form provider detail or raw tokens must never reach clients or UI over IPC |
+| Rate window duration on wire | Unbounded signed integers or negative durations | Clamped: non-positive (`<= 0`) or overflowing (`> u32::MAX`) durations project to `None` | Wire protocol `RateWindow.windowMinutes` is unsigned `Option<u32>` and represents meaningful positive durations |
+| Extreme numeric boundary tests | `TestsLinux/ProviderNumericBoundaryTests.swift:79` constructs resets at `8e23` seconds | Re-expressed as monthly boundary calculation at `jiff::Timestamp::MAX` (year 9999) without overflow | `jiff::Timestamp` cannot represent years beyond 9999; verified safe at the maximum representable boundary |
 
 ## Upstream drift
 

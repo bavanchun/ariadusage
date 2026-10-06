@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 use ariadusage_protocol::ProviderId;
 use serde::{Deserialize, Serialize};
 
+use crate::pace::{ProviderPaceCapability, ProviderPaceDurationRule, ProviderPaceWindowRule};
+
 /// Mode through which usage metrics are acquired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,6 +32,7 @@ pub struct ProviderDescriptor {
     pub supports_workspace: bool,
     pub supports_enterprise_host: bool,
     pub token_account_support: bool,
+    pub pace_capability: ProviderPaceCapability,
 }
 
 static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::new(|| {
@@ -53,6 +56,11 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_workspace: false,
             supports_enterprise_host: false,
             token_account_support: false,
+            pace_capability: ProviderPaceCapability {
+                reset_window_pace: ProviderPaceWindowRule::Unsupported,
+                inferred_monthly_duration: ProviderPaceDurationRule::Unsupported,
+                shows_headroom_hint: true,
+            },
         },
         // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:134, 234)
         ProviderDescriptor {
@@ -73,6 +81,7 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_workspace: false,
             supports_enterprise_host: false,
             token_account_support: true,
+            pace_capability: ProviderPaceCapability::unsupported(),
         },
         // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:36, 102)
         ProviderDescriptor {
@@ -87,6 +96,7 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_workspace: false,
             supports_enterprise_host: false,
             token_account_support: true,
+            pace_capability: ProviderPaceCapability::unsupported(),
         },
     ]
 });
