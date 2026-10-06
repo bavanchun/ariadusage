@@ -1,0 +1,5 @@
+{
+  "type": "getSettings",
+  "scope": "app",
+  "id": "req-sett-01"
+}

@@ -1,0 +1,34 @@
+[package]
+name = "ariadusage-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[features]
+default = []
+codec = ["dep:tokio-util", "tokio-util?/codec"]
+fixture = ["codec", "dep:tokio"]
+
+[[example]]
+name = "fixture_server"
+required-features = ["fixture"]
+
+[dependencies]
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zeroize = { workspace = true }
+jiff = { workspace = true }
+
+tokio-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+jsonschema = { workspace = true }
+tokio = { workspace = true }
+
+[lints]
+workspace = true

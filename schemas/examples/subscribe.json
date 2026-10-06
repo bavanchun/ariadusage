@@ -1,0 +1,9 @@
+{
+  "type": "subscribe",
+  "topics": [
+    "snapshot",
+    "settings",
+    "notices"
+  ],
+  "id": "req-sub-01"
+}

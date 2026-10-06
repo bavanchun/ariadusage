@@ -5,3 +5,11 @@ AriadUsage is an independent Rust reimplementation of CodexBar
 (https://github.com/steipete/CodexBar). Code, tests and fixtures ported
 from CodexBar are Copyright (c) 2026 Peter Steinberger and are used under
 the MIT License; see LICENSES/CodexBar-MIT.txt.
+
+Provider logos in brand/vendor/lobe-icons/ are Copyright (c) 2023 LobeHub
+and are used under the MIT License; see LICENSES/lobe-icons-MIT.txt.
+Respective trademarks belong to their owners.
+
+Theme palettes in brand/data/omarchy-themes.json are derived from Omarchy
+(https://github.com/basecamp/omarchy), Copyright (c) 37signals LLC,
+used under the MIT License.

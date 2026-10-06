@@ -21,6 +21,10 @@ typos:
 
 test:
     cargo nextest run --workspace --all-features --locked
+    cargo test --doc --workspace --all-features --locked
+
+schemas:
+    ARIADUSAGE_BLESS_SCHEMAS=1 cargo test -p ariadusage-protocol --test schema_drift --locked
 
 deny:
     cargo deny check
@@ -36,7 +40,37 @@ portable:
 
 ci-linux: lint test deny
 
-ci: ci-linux secrets
+ci: ci-linux brand-ci omarchy-check secrets
 
 push: secrets
     git push -u origin HEAD
+
+js:
+    pnpm install --frozen-lockfile
+
+brand:
+    pnpm --dir brand build
+
+brand-check:
+    node brand/scripts/check-contrast.mjs
+    node brand/scripts/simulate-cvd.mjs
+
+brand-ci: js
+    pnpm audit --audit-level high
+    just brand
+    just brand-check
+    git diff --exit-code brand/svg
+
+omarchy-check:
+    bash scripts/omarchy-plugin.sh check
+
+omarchy-dev:
+    bash scripts/omarchy-plugin.sh dev
+
+omarchy-dev-enable:
+    bash scripts/omarchy-plugin.sh dev-enable
+
+omarchy-dev-remove:
+    bash scripts/omarchy-plugin.sh dev-remove
+
+

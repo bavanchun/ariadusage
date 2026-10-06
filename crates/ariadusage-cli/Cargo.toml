@@ -12,10 +12,15 @@ name = "ariadusage"
 path = "src/main.rs"
 
 [dependencies]
+ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
 clap = { workspace = true }
+rpassword = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol", features = ["fixture"] }
 assert_cmd = { workspace = true }
+tokio = { workspace = true }
 
 [lints]
 workspace = true

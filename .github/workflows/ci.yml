@@ -98,9 +98,75 @@ jobs:
       - name: Run portable checks
         run: just portable
 
+  brand:
+    name: Brand
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install command-line tools
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: just@1.58.0
+          fallback: none
+
+      - name: Run brand asset checks
+        run: just brand-ci
+
+  omarchy:
+    name: Omarchy
+    runs-on: ubuntu-26.04
+    container:
+      image: archlinux@sha256:4e77cf2ea5f410e6f8be5abf93ccf17ce2436e87a138c167208356711a405dbd
+    timeout-minutes: 15
+    steps:
+      - name: Configure pinned Arch Linux Archive
+        run: |
+          echo 'Server=https://archive.archlinux.org/repos/2026/09/01/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+          pacman -Syy --noconfirm
+          pacman -S --noconfirm --needed git jq just qt6-declarative quickshell
+          pacman -Q git jq just qt6-declarative quickshell
+          test "$(pacman -Q qt6-declarative)" = "qt6-declarative 6.11.2-1"
+          test "$(pacman -Q quickshell)" = "quickshell 0.3.1-1"
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out Omarchy reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: omacom/omarchy
+          ref: c668141e9c42b13c80c9ca4ea108e11708c5e8a5
+          path: .omarchy
+          persist-credentials: false
+
+      - name: Run Omarchy plugin checks
+        env:
+          OMARCHY_PATH: ${{ github.workspace }}/.omarchy
+          QMLLINT: /usr/lib/qt6/bin/qmllint
+        run: |
+          git config --global --add safe.directory "${{ github.workspace }}"
+          git config --global --add safe.directory "${{ github.workspace }}/.omarchy"
+          just omarchy-check
+
   ci-result:
     name: CI result
-    needs: [linux, secrets, portable]
+    needs: [linux, secrets, portable, brand, omarchy]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -110,6 +176,8 @@ jobs:
           LINUX: ${{ needs.linux.result }}
           SECRETS: ${{ needs.secrets.result }}
           PORTABLE: ${{ needs.portable.result }}
+          BRAND: ${{ needs.brand.result }}
+          OMARCHY: ${{ needs.omarchy.result }}
         run: |
-          printf 'linux=%s secrets=%s portable=%s\n' "$LINUX" "$SECRETS" "$PORTABLE"
-          [ "$LINUX" = "success" ] && [ "$SECRETS" = "success" ] && [ "$PORTABLE" = "success" ] || exit 1
+          printf 'linux=%s secrets=%s portable=%s brand=%s omarchy=%s\n' "$LINUX" "$SECRETS" "$PORTABLE" "$BRAND" "$OMARCHY"
+          [ "$LINUX" = "success" ] && [ "$SECRETS" = "success" ] && [ "$PORTABLE" = "success" ] && [ "$BRAND" = "success" ] && [ "$OMARCHY" = "success" ] || exit 1
