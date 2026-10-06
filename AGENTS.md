@@ -59,6 +59,16 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 - Start every ported source or test file with: `Ported from CodexBar <path> at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt`. Record ported fixtures in `fixtures/manifest.toml`.
 - Do not add a dependency whose license `deny.toml` does not allow. Never link GPL, LGPL or AGPL code.
 
+## Brand assets
+
+- `brand/svg/`, `brand/png/`, `brand/icon-composer/` and `brand/preview.png` are generated. The build deletes and rewrites them, so never hand-edit them.
+- Change `brand/src/*.mjs`, `brand/scripts/*.mjs` or `brand/build.mjs`, then run `just brand`.
+- After a build, inspect `brand/preview.png` and verify the 16 px and 32 px tiles before committing.
+- Commit the sources and the regenerated outputs together.
+- Keep SVGO's `prefixIds` plugin enabled. Without it, symbol and gradient IDs collide when multiple SVG assets are inlined into a single document.
+- Design rules, color tokens and rationale live in [docs/brand/design-direction.md](docs/brand/design-direction.md). Update that document whenever brand design decisions evolve.
+- Never use an image-generation model for brand assets; all marks and icons are produced deterministically through design-as-code scripts.
+
 ## Docs and language
 
 - Write every repository file in English. Reply to the owner in Vietnamese.
