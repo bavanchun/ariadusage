@@ -1,7 +1,7 @@
 // Liquid Glass rendering of the AriadUsage app icon: frosted circular dial lens that refracts
 // what lies behind it, specular rims, layered shadows and a golden gauge arc thread.
 import {
-  BEAD_R, COLOR, CX, CY, END, NOTCH, R_ARC, R_DIAL, R_INNER, RING, START, THREAD, THREAD_WIDTH,
+  COLOR, CX, CY, END, NOTCH, R_ARC, R_DIAL, R_INNER, RING, SPINE_PATH, START, TAPERED_THREAD_GLASS,
   notchPath, squircle, svgDoc,
 } from './geometry.mjs';
 
@@ -37,7 +37,7 @@ export function glassIcon({ appearance = 'light', inset = 0, outerShadow = false
   const off = SIZE / 2 - 128 * k;
   const mark = `translate(${off.toFixed(2)} ${off.toFixed(2)}) scale(${k.toFixed(4)})`;
   const box = `x="${SIZE / 2 - half}" y="${SIZE / 2 - half}" width="${half * 2}" height="${half * 2}"`;
-  const ringHole = RING.r - RING.stroke / 2 + 0.4;
+  const ringHole = RING.holeR || (RING.r - RING.stroke / 2 + 0.4);
 
   const defs = `
   <defs>
@@ -66,8 +66,8 @@ export function glassIcon({ appearance = 'light', inset = 0, outerShadow = false
     <linearGradient id="gold" gradientUnits="userSpaceOnUse" x1="50" y1="50" x2="210" y2="210">
       <stop offset="0" stop-color="${COLOR.gold[0]}"/><stop offset=".5" stop-color="${COLOR.gold[1]}"/><stop offset="1" stop-color="${COLOR.gold[2]}"/>
     </linearGradient>
-    <radialGradient id="bead" cx=".35" cy=".3" r=".75">
-      <stop offset="0" stop-color="#fff"/><stop offset=".45" stop-color="${COLOR.gold[1]}"/><stop offset="1" stop-color="${COLOR.gold[2]}"/>
+    <radialGradient id="tipGleam" cx=".4" cy=".4" r=".6">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset=".6" stop-color="${COLOR.gold[0]}"/><stop offset="1" stop-color="${COLOR.gold[1]}" stop-opacity="0"/>
     </radialGradient>
     <clipPath id="icon"><path d="${squircle(SIZE / 2, SIZE / 2, half)}"/></clipPath>
     <clipPath id="dialClip"><circle cx="${CX}" cy="${CY}" r="${R_DIAL}"/></clipPath>
@@ -77,7 +77,7 @@ export function glassIcon({ appearance = 'light', inset = 0, outerShadow = false
       <circle cx="${START.cx}" cy="${START.cy}" r="${ringHole}" fill="#000"/>
     </mask>
     <mask id="tube" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
-      <path d="${THREAD}" stroke="#fff" stroke-width="${THREAD_WIDTH}" stroke-linecap="round"/>
+      <path d="${TAPERED_THREAD_GLASS}" fill="#fff"/>
       <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="#fff" stroke-width="${RING.stroke}"/>
       <circle cx="${START.cx}" cy="${START.cy}" r="${ringHole}" fill="#000"/>
     </mask>
@@ -102,22 +102,20 @@ export function glassIcon({ appearance = 'light', inset = 0, outerShadow = false
 
   const thread = `
   <g mask="url(#ringHole)">
-    <path d="${THREAD}" stroke="${a.shadowColor}" stroke-opacity=".45" stroke-width="${THREAD_WIDTH}" stroke-linecap="round" filter="url(#lift)"/>
-    <path d="${THREAD}" stroke="${COLOR.goldGlow}" stroke-opacity=".6" stroke-width="${THREAD_WIDTH + 4}" stroke-linecap="round" filter="url(#glow)"/>
-    <path d="${THREAD}" stroke="${a.shadowColor}" stroke-opacity=".42" stroke-width="${THREAD_WIDTH + 4}" stroke-linecap="round" filter="url(#contour)"/>
-    <path d="${THREAD}" stroke="url(#gold)" stroke-width="${THREAD_WIDTH}" stroke-linecap="round"/>
+    <path d="${TAPERED_THREAD_GLASS}" fill="${a.shadowColor}" fill-opacity=".45" filter="url(#lift)"/>
+    <path d="${TAPERED_THREAD_GLASS}" fill="${COLOR.goldGlow}" fill-opacity=".6" filter="url(#glow)"/>
+    <path d="${TAPERED_THREAD_GLASS}" stroke="${a.shadowColor}" stroke-opacity=".42" stroke-width="3" filter="url(#contour)"/>
+    <path d="${TAPERED_THREAD_GLASS}" fill="url(#gold)"/>
   </g>
   <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="${a.shadowColor}" stroke-opacity=".42" stroke-width="${RING.stroke + 4}" filter="url(#contour)"/>
   <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="url(#gold)" stroke-width="${RING.stroke}"/>
   <g mask="url(#tube)">
-    <path d="${THREAD}" stroke="#fff" stroke-opacity=".8" stroke-width="4.8" stroke-linecap="round" transform="translate(-2 -2.5)"/>
-    <path d="${THREAD}" stroke="#6E3E04" stroke-opacity=".18" stroke-width="4.8" stroke-linecap="round" transform="translate(2 2.8)"/>
-    <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="#fff" stroke-opacity=".75" stroke-width="3" transform="translate(-1.6 -2)"/>
+    <path d="${SPINE_PATH}" fill="none" stroke="#fff" stroke-opacity=".8" stroke-width="4.2" stroke-linecap="round" transform="translate(-1.8 -2.2)"/>
+    <path d="${SPINE_PATH}" fill="none" stroke="#6E3E04" stroke-opacity=".2" stroke-width="4.2" stroke-linecap="round" transform="translate(1.8 2.5)"/>
+    <circle cx="${START.cx}" cy="${START.cy}" r="${RING.r}" stroke="#fff" stroke-opacity=".75" stroke-width="2.8" transform="translate(-1.4 -1.8)"/>
   </g>
-  <circle cx="${END.cx}" cy="${END.cy + 3}" r="${BEAD_R - 0.5}" fill="${a.shadowColor}" opacity=".35" filter="url(#glow)"/>
-  <circle cx="${END.cx}" cy="${END.cy}" r="${BEAD_R + 2}" fill="${a.shadowColor}" opacity=".42" filter="url(#contour)"/>
-  <circle cx="${END.cx}" cy="${END.cy}" r="${BEAD_R}" fill="url(#bead)"/>
-  <ellipse cx="${END.cx - 4.5}" cy="${END.cy - 5.5}" rx="5" ry="3.5" fill="#fff" opacity=".9"/>`;
+  <circle cx="${END.cx}" cy="${END.cy}" r="5.5" fill="url(#tipGleam)"/>
+  <circle cx="${END.cx - 0.7}" cy="${END.cy - 0.7}" r="2" fill="#FFFFFF" opacity=".95"/>`;
 
   const body = `${defs}
   <g${outerShadow ? ' filter="url(#outer)"' : ''}>
