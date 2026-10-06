@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Install command-line tools
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: just@1.58.0,cargo-nextest@0.9.146,cargo-deny@0.20.2,typos@1.50.3
+          fallback: none
+
+      - name: Run Linux quality gate
+        run: just ci-linux
+
+  secrets:
+    name: Secrets
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install command-line tools
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: just@1.58.0
+          fallback: none
+
+      - name: Install Gitleaks
+        run: |
+          curl -sSfL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin" "$HOME/.cargo/bin"
+          tar -xzf gitleaks.tar.gz -C "$RUNNER_TEMP/bin" gitleaks
+          cp "$RUNNER_TEMP/bin/gitleaks" "$HOME/.cargo/bin/gitleaks"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Run secret scans
+        run: just secrets
+
+  portable:
+    name: Portable (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache-save-if: ${{ github.ref == 'refs/heads/dev' }}
+
+      - name: Install command-line tools
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: just@1.58.0
+          fallback: none
+
+      - name: Run portable checks
+        run: just portable
+
+  ci-result:
+    name: CI result
+    needs: [linux, secrets, portable]
+    if: always()
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Check required job results
+        env:
+          LINUX: ${{ needs.linux.result }}
+          SECRETS: ${{ needs.secrets.result }}
+          PORTABLE: ${{ needs.portable.result }}
+        run: |
+          printf 'linux=%s secrets=%s portable=%s\n' "$LINUX" "$SECRETS" "$PORTABLE"
+          [ "$LINUX" = "success" ] && [ "$SECRETS" = "success" ] && [ "$PORTABLE" = "success" ] || exit 1
