@@ -1,0 +1,9 @@
+* text=auto eol=lf
+*.snap text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.woff2 binary

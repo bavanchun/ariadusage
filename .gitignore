@@ -1,0 +1,35 @@
+# Build and dependency output
+/target/
+node_modules/
+# Plans and reports that agent tooling writes into the checkout it runs in
+/[p]lans/
+# Per-worktree and personal agent state
+.agent/
+**/.claude/
+CLAUDE.local.md
+# Snapshot leftovers
+*.pending-snap
+*.snap.new
+# Local environment, keys and signing material
+.env*
+*.pem
+*.key
+*.p12
+# Credential stores and session data that provider tools write.
+# Fixtures are synthetic or redacted; a redacted capture is named *.redacted.*
+auth.json
+.credentials.json
+credentials.json
+*.jsonl
+*.sqlite3
+*.vscdb
+Cookies
+Cookies-journal
+cookies.sqlite*
+cookies.txt
+!fixtures/**/*.redacted.*
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
