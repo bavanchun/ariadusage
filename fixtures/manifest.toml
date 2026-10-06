@@ -1,0 +1,104 @@
+baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+
+[[fixture]]
+path = "codexbar/usage-snapshot-current.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/usage-snapshot-current.json"
+commit = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[ported]]
+path = "crates/ariadusage-protocol/src/usage.rs"
+sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
+
+[[ported]]
+path = "crates/ariadusage-protocol/tests/detail_sections.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-protocol/tests/ids.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/settings_value.rs"
+sources = ["Sources/CodexBarCore/Config/SettingsValue.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/providers.rs"
+sources = ["Sources/CodexBarCore/Providers/Providers.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/percent.rs"
+sources = ["Sources/CodexBarCore/UsagePercent.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/window.rs"
+sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/identity.rs"
+sources = ["Sources/CodexBarCore/ProviderIdentitySnapshot.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/cost.rs"
+sources = ["Sources/CodexBarCore/ProviderCostSnapshot.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/snapshot.rs"
+sources = [
+    "Sources/CodexBarCore/UsageFetcher.swift",
+    "Sources/CodexBarCore/UsageSnapshot+AccountLabel.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/backfill.rs"
+sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/settings_value.rs"
+sources = ["TestsLinux/SettingsValueTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/rate_window_synthetic.rs"
+sources = ["Tests/CodexBarTests/RateWindowSyntheticPlaceholderTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/detail_sections_snapshot.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/provider_id.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/reset_backfill.rs"
+sources = ["Tests/CodexBarTests/ResetTimeBackfillTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/confidence.rs"
+sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/antigravity_named_windows.rs"
+sources = ["Tests/CodexBarTests/AntigravityStatusProbeTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/snapshot_copy.rs"
+sources = ["Tests/CodexBarTests/CodexbarTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/usage_percent.rs"
+sources = ["Tests/CodexBarTests/UsagePercentTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/cost_window.rs"
+sources = ["Tests/CodexBarTests/ProviderCostWindowTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/identity_silo.rs"
+sources = ["TestsLinux/UsageSnapshotAccountLabelTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/snapshot_fixture.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
