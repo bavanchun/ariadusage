@@ -192,7 +192,7 @@ These come from CodexBar and are pinned by ported tests:
 
 - One refresh batch at a time; per-provider requests coalesce, and a stale generation never publishes.
 - Cancellation is not a failure and never triggers the next strategy.
-- Keep last-good data through transient failures, with its original timestamp. Authentication failures and account changes invalidate it.
+- Keep last-good data through transient failures, with its original timestamp. The first consecutive failure is hidden when prior data exists; a surfaced non-preservable error, such as an authentication failure, drops it; account changes drop it and reset the gate.
 - Identity is siloed: one provider's account or plan never appears under another.
 - Hooks and notifications are edge-triggered; the first sample only sets a baseline.
 
@@ -379,6 +379,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | File locking and atomic writes | `std::fs::File::lock`/`try_lock` with rustix (`fstat`, `geteuid`, `O_NOFOLLOW`) and tempfile (0700 staging directory) | `fs4`, `libc` with unsafe | std covers file locking since 1.89; rustix provides safe syscall bindings for file descriptor validation without unsafe code in a deny-unsafe workspace; tempfile isolates staging directories |
 | Config path resolution | Pure path resolver over injected environment and home; etcetera and `std::env` only in production wrapper | Calling etcetera or `std::env` directly in resolver | etcetera reads process env directly and cannot be injected; edition 2024 makes `set_var` unsafe under `unsafe_code = "deny"` |
 | Provider fetch pipeline strategy dispatch | Boxed futures (`Pin<Box<dyn Future<Output = T> + Send + 'a>>`) | `async-trait` proc-macro crate; native `async fn` in traits with static dispatch enum | Heterogeneous strategy lists require dyn-compatible dispatch; boxed future is zero-dependency std Rust, avoiding extra proc-macro dependencies while keeping strategy lists dynamic and open to future plugin expansion |
+| Last-good and failure policy | §6.4 corrected to CodexBar's code: gate hides first failure with prior data; non-preservable error drops snapshot; account changes drop snapshot and reset gate | Strict "auth drops immediately" wording in early draft §6.4 | Follows CodexBar's code and tests verbatim; transient first-failure auth flakes are hidden by the gate if prior data exists, while second-consecutive failure or account changes drop data |
 
 ---
 
