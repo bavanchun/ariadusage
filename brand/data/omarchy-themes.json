@@ -1,0 +1,160 @@
+{
+  "omarchyVersion": "4.0.4-1",
+  "themeCount": 22,
+  "themes": [
+    {
+      "id": "catppuccin",
+      "mode": "dark",
+      "background": "#1e1e2e",
+      "foreground": "#cdd6f4",
+      "accent": "#89b4fa"
+    },
+    {
+      "id": "catppuccin-latte",
+      "mode": "light",
+      "background": "#eff1f5",
+      "foreground": "#4c4f69",
+      "accent": "#1e66f5"
+    },
+    {
+      "id": "ethereal",
+      "mode": "dark",
+      "background": "#060B1E",
+      "foreground": "#ffcead",
+      "accent": "#7d82d9"
+    },
+    {
+      "id": "everforest",
+      "mode": "dark",
+      "background": "#2d353b",
+      "foreground": "#d3c6aa",
+      "accent": "#7fbbb3"
+    },
+    {
+      "id": "flexoki-light",
+      "mode": "light",
+      "background": "#FFFCF0",
+      "foreground": "#100F0F",
+      "accent": "#205EA6"
+    },
+    {
+      "id": "gruvbox",
+      "mode": "dark",
+      "background": "#282828",
+      "foreground": "#d4be98",
+      "accent": "#7daea3"
+    },
+    {
+      "id": "hackerman",
+      "mode": "dark",
+      "background": "#0B0C16",
+      "foreground": "#ddf7ff",
+      "accent": "#82FB9C"
+    },
+    {
+      "id": "kanagawa",
+      "mode": "dark",
+      "background": "#1f1f28",
+      "foreground": "#dcd7ba",
+      "accent": "#dcd7ba"
+    },
+    {
+      "id": "last-horizon",
+      "mode": "dark",
+      "background": "#0c0b0c",
+      "foreground": "#FAFCFB",
+      "accent": "#b59790"
+    },
+    {
+      "id": "lumon",
+      "mode": "dark",
+      "background": "#16242d",
+      "foreground": "#d6e2ee",
+      "accent": "#8bc9eb"
+    },
+    {
+      "id": "lupine",
+      "mode": "light",
+      "background": "#fafafa",
+      "foreground": "#212121",
+      "accent": "#3264eb"
+    },
+    {
+      "id": "matte-black",
+      "mode": "dark",
+      "background": "#121212",
+      "foreground": "#bebebe",
+      "accent": "#e68e0d"
+    },
+    {
+      "id": "miasma",
+      "mode": "dark",
+      "background": "#222222",
+      "foreground": "#c2c2b0",
+      "accent": "#78824b"
+    },
+    {
+      "id": "nord",
+      "mode": "dark",
+      "background": "#2e3440",
+      "foreground": "#d8dee9",
+      "accent": "#81a1c1"
+    },
+    {
+      "id": "osaka-jade",
+      "mode": "dark",
+      "background": "#111c18",
+      "foreground": "#C1C497",
+      "accent": "#509475"
+    },
+    {
+      "id": "retro-82",
+      "mode": "dark",
+      "background": "#05182e",
+      "foreground": "#f6dcac",
+      "accent": "#faa968"
+    },
+    {
+      "id": "ristretto",
+      "mode": "dark",
+      "background": "#2c2525",
+      "foreground": "#e6d9db",
+      "accent": "#f38d70"
+    },
+    {
+      "id": "rose-pine",
+      "mode": "light",
+      "background": "#faf4ed",
+      "foreground": "#575279",
+      "accent": "#56949f"
+    },
+    {
+      "id": "solitude",
+      "mode": "dark",
+      "background": "#101315",
+      "foreground": "#cacccc",
+      "accent": "#798186"
+    },
+    {
+      "id": "tokyo-night",
+      "mode": "dark",
+      "background": "#1a1b26",
+      "foreground": "#a9b1d6",
+      "accent": "#7aa2f7"
+    },
+    {
+      "id": "vantablack",
+      "mode": "dark",
+      "background": "#000000",
+      "foreground": "#ffffff",
+      "accent": "#8d8d8d"
+    },
+    {
+      "id": "white",
+      "mode": "light",
+      "background": "#ffffff",
+      "foreground": "#000000",
+      "accent": "#6e6e6e"
+    }
+  ]
+}

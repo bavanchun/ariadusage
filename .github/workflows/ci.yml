@@ -98,9 +98,37 @@ jobs:
       - name: Run portable checks
         run: just portable
 
+  brand:
+    name: Brand
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@ea17c68d1b111262d08de30be62818a7c29e7019 # v6.1.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@82076278dd52fca25dcf237b60761e89f81d11ff # v7.0.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install command-line tools
+        uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
+        with:
+          tool: just@1.58.0
+          fallback: none
+
+      - name: Run brand asset checks
+        run: just brand-ci
+
   ci-result:
     name: CI result
-    needs: [linux, secrets, portable]
+    needs: [linux, secrets, portable, brand]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -110,6 +138,7 @@ jobs:
           LINUX: ${{ needs.linux.result }}
           SECRETS: ${{ needs.secrets.result }}
           PORTABLE: ${{ needs.portable.result }}
+          BRAND: ${{ needs.brand.result }}
         run: |
-          printf 'linux=%s secrets=%s portable=%s\n' "$LINUX" "$SECRETS" "$PORTABLE"
-          [ "$LINUX" = "success" ] && [ "$SECRETS" = "success" ] && [ "$PORTABLE" = "success" ] || exit 1
+          printf 'linux=%s secrets=%s portable=%s brand=%s\n' "$LINUX" "$SECRETS" "$PORTABLE" "$BRAND"
+          [ "$LINUX" = "success" ] && [ "$SECRETS" = "success" ] && [ "$PORTABLE" = "success" ] && [ "$BRAND" = "success" ] || exit 1
