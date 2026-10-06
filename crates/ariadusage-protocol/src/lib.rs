@@ -3,6 +3,7 @@
 pub mod ids;
 pub mod metric;
 pub mod secret;
+pub mod settings;
 pub mod snapshot;
 pub mod time;
 pub mod usage;
@@ -12,6 +13,11 @@ pub use metric::{
     Confidence, Metric, MetricError, MetricInvariantError, MetricSource, MetricState, SourceKind,
 };
 pub use secret::SecretString;
+pub use settings::{
+    ActionConfirmation, ActionItem, ActionStyle, ChoiceOption, DescriptorKind, MultiChoiceEntry,
+    NumberConfig, SettingCondition, SettingDescriptor, SettingsPage, SettingsScope,
+    SettingsSection, TextConfig, TokenAccountRow, TokenAccountsConfig,
+};
 pub use snapshot::{AccountSnapshot, EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows};
 pub use usage::{
     Chart, ChartKind, ChartPoint, Cost, Credits, DetailRow, DetailSection,
