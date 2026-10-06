@@ -174,6 +174,43 @@ async fn test_set_setting_triggers_settings_changed() {
     let change_msg: ServerMessage = serde_json::from_str(&change_line).unwrap();
     assert!(matches!(change_msg, ServerMessage::SettingsChanged { .. }));
 
+    // Send getSettings to verify round-trip
+    writer
+        .write_all(b"{\"type\":\"getSettings\",\"scope\":\"app\",\"id\":\"req-get-set\"}\n")
+        .await
+        .unwrap();
+    let get_line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("timeout on getSettings")
+        .unwrap()
+        .unwrap();
+    let get_msg: ServerMessage = serde_json::from_str(&get_line).unwrap();
+    match get_msg {
+        ServerMessage::Response {
+            id,
+            ok: Some(true),
+            payload: Some(payload),
+            ..
+        } => {
+            assert_eq!(id.as_deref(), Some("req-get-set"));
+            let page: ariadusage_protocol::settings::SettingsPage =
+                serde_json::from_value(payload).expect("valid SettingsPage");
+            let mode_desc = page
+                .sections
+                .iter()
+                .flat_map(|s| &s.descriptors)
+                .find(|d| d.id.as_str() == "sourceMode")
+                .expect("sourceMode descriptor");
+            match &mode_desc.kind {
+                ariadusage_protocol::settings::DescriptorKind::Choice { selected, .. } => {
+                    assert_eq!(selected, "web");
+                }
+                other => panic!("expected Choice kind, got {other:?}"),
+            }
+        }
+        other => panic!("expected ok response with payload, got {other:?}"),
+    }
+
     server.stop().await;
 }
 
