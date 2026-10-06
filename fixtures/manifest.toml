@@ -8,6 +8,18 @@ commit = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
 license = "MIT"
 changes = "Copied byte-for-byte from the baseline."
 
+[[fixture]]
+path = "ariadusage/config/full.json"
+origin = "ariadusage"
+license = "MIT"
+changes = "AriadUsage full configuration fixture with typed and opaque entries."
+
+[[fixture]]
+path = "ariadusage/config/sparse.json"
+origin = "ariadusage"
+license = "MIT"
+changes = "AriadUsage sparse configuration fixture with minimal entries."
+
 [[ported]]
 path = "crates/ariadusage-protocol/src/usage.rs"
 sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
@@ -116,3 +128,65 @@ sources = [
     "Tests/CodexBarTests/UsagePaceTests.swift",
     "Tests/CodexBarTests/ProviderPaceCapabilityTests.swift",
 ]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/types.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/Config/ProviderConfigCoding.swift",
+    "Sources/CodexBarCore/TokenAccounts.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/quota.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/codec.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/Config/OpaqueConfigJSON.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/normalize.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/validate.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigValidation.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/redact.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/TokenAccounts.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/transform.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_unknown_providers.rs"
+sources = ["Tests/CodexBarTests/CodexBarConfigUnknownProviderTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_byte_stability.rs"
+sources = ["Tests/CodexBarTests/ProviderConfigByteStabilityTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_validation.rs"
+sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_active_source.rs"
+sources = ["Tests/CodexBarTests/CodexActiveSourceConfigTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_identity.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIdentityCharacterizationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_plugin_preservation.rs"
+sources = ["TestsLinux/PluginConfigPreservationLinuxTests.swift"]
