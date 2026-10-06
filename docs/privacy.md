@@ -51,6 +51,11 @@ secrets are created with mode 0600 before any bytes are written.
   (`ariadusage secret set`). The Omarchy panel can open that terminal for you,
   but the value never passes through the panel. Secrets never appear on a
   command line, in logs, in notifications or in data sent to the panel.
+- Secrets found in the configuration file (`apiKey`, `cookieHeader`, `secretKey`,
+  `pluginSecrets` values, or token-account `token`) are never used by providers
+  or the engine. They are flagged with a `secret_in_config` validation warning,
+  and are always redacted to `"[REDACTED]"` in configuration dumps and Rust
+  `Debug` representations.
 
 ## Token refresh
 

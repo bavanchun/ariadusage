@@ -84,9 +84,16 @@ it changes the architecture, also add a Decision Log row.
 | Snapshot and IPC | CodexBar's own JSON and placeholder flags | AriadUsage Snapshot v1 with an explicit metric state envelope | Honest data in every client; the contract is semantic, not byte-compatible |
 | Configuration | CodexBar's `config.json` | AriadUsage's own XDG config, with no import and no shared file | No two codebases writing one file |
 | Secret storage on Linux | Secrets in the config file | Secret Service keyring; a 0600 file only with consent | Keep secrets out of plain config |
-| Error text on wire | Free-form provider exception and diagnostic strings | Fixed static safe description of the error category (`ProviderErrorCategory`) | Owner decision 12: free-form provider detail or raw tokens must never reach clients or UI over IPC |
+| Error text on wire | Free-form provider exception and diagnostic strings | Fixed static safe description of the error category (`ProviderErrorCategory`) | Free-form provider detail or raw tokens must never reach clients or UI over IPC |
 | Rate window duration on wire | Unbounded signed integers or negative durations | Clamped: non-positive (`<= 0`) or overflowing (`> u32::MAX`) durations project to `None` | Wire protocol `RateWindow.windowMinutes` is unsigned `Option<u32>` and represents meaningful positive durations |
 | Extreme numeric boundary tests | `TestsLinux/ProviderNumericBoundaryTests.swift:79` constructs resets at `8e23` seconds | Re-expressed as monthly boundary calculation at `jiff::Timestamp::MAX` (year 9999) without overflow | `jiff::Timestamp` cannot represent years beyond 9999; verified safe at the maximum representable boundary |
+| Secrets in configuration | API keys, cookie headers, secret keys, plugin secrets, and account tokens stored in plain `config.json` | Kept out of plain config; if present in config, flagged with `secret_in_config`, never used, and redacted in dump and `Debug` | Security boundary: plain config files must never retain credentials |
+| Secret presence for validation | Provider validators inspect plaintext secret values directly in config | Validators receive abstract `SecretPresence` flags without reading secret values | Least privilege; validation and config inspection do not require plaintext secrets |
+| Supported provider set | Hardcoded enum covering first-party and community providers | Typed first-party providers (`codex`, `claude`, `antigravity`); all others preserved as byte-exact opaque entries | Extensibility: unknown providers survive round-trips without schema lock-in |
+| Config file format and serialization | Swift JSONSerialization with custom option formatting | `serde_json` pretty format with sorted keys; trailing newline added by store | Clean diffs, deterministic encoding, and byte stability |
+| Application settings section | App-level settings mixed with provider configuration or defaults | Dedicated top-level `settings` object preserved byte-for-byte as raw JSON | Isolates global application settings from provider records without data loss |
+| Unknown top-level configuration keys | Silently discarded or unsupported | Preserved byte-for-byte in `extra_top` map on decode and re-encode | Forward compatibility for future schema extensions |
+| Hooks configuration section | Shell command hooks parsed and validated by config model | Preserved byte-for-byte as raw JSON until Milestone 7 | Lifecycle hooks execution engine and validation deferred to M7 |
 
 ## Upstream drift
 
