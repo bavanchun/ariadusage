@@ -1,4 +1,5 @@
 export CARGO_BUILD_WARNINGS := "deny"
+export INSTA_UPDATE := "no"
 export PATH := env_var_or_default("CARGO_HOME", env_var_or_default("HOME", "") + "/.cargo") + "/bin:" + env_var("PATH")
 
 LINUX_ONLY_CRATES := ""

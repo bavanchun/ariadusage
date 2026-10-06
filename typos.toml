@@ -1,3 +1,6 @@
+[files]
+extend-exclude = ["fixtures/**"]
+
 [default]
 locale = "en"
 

@@ -83,7 +83,8 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Process and port discovery | procfs | Antigravity language-server discovery, agent sessions and the probe reaper |
 | Paths | etcetera | XDG on Linux and macOS, as CodexBar does; ignores relative `XDG_*` values |
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
-| Tests | insta, httpmock (HTTPS), assert_cmd, tempfile, proptest | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties |
+| Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
+| Tests | insta, httpmock (HTTPS), assert_cmd, tempfile, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
 
@@ -371,6 +372,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Plans | Private, outside the repository | Committing plans | The repository is public |
 | CI breadth | Full gate on Linux; clippy of portable crates on macOS and Windows | Full gate on three OSes; Linux only | Catches portability regressions without spending on code that cannot run off Linux |
 | Plugin lint gate | `qmllint -W 0` with Omarchy's qmldir imports | Plain `qmllint -I` | The plain form exits 0 on broken imports and unknown properties |
+| Detail string length | Grapheme cluster count (`unicode-segmentation`) | Unicode scalar count / char count | Swift `String.count` counts extended grapheme clusters; scalar/char counting rejects valid multi-byte emoji within the 120-limit |
 
 ---
 
