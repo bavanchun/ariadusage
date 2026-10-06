@@ -218,3 +218,51 @@ sources = [
 path = "crates/ariadusage-engine/tests/config_store.rs"
 sources = ["TestsLinux/CodexBarConfigStoreEmptyTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/context.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/strategy.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/error.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/retry.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/candidate.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderCandidateRetryRunner.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/outcome.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/diagnostics.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderDiagnosticExport.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/env.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderEnvironmentResolver.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_fetch_error.rs"
+sources = ["Tests/CodexBarTests/ProviderFetchErrorTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_candidate_retry.rs"
+sources = ["Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_diagnostics.rs"
+sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_env_resolver.rs"
+sources = ["Tests/CodexBarTests/ProviderEnvironmentResolverTests.swift"]
+
