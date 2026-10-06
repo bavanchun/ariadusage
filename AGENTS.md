@@ -4,7 +4,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Current state
 
-- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
+- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the pure domain crate `ariadusage-core` (`crates/ariadusage-core`), the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
 - Build, test, lint, schema, brand and plugin recipes are defined in [justfile](justfile). Toolchain and runtime versions are pinned in [rust-toolchain.toml](rust-toolchain.toml) and [.node-version](.node-version).
 - Commands:
   - `just ci`: runs the full local quality gate (`ci-linux`, `brand-ci`, `omarchy-check`, and `secrets`).
@@ -72,10 +72,16 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 - Design rules, color tokens and rationale live in [docs/brand/design-direction.md](docs/brand/design-direction.md). Update that document whenever brand design decisions evolve.
 - Never use an image-generation model for brand assets; all marks and icons are produced deterministically through design-as-code scripts.
 
+## Fixtures (`fixtures/`)
+
+- `fixtures/` holds test and parity data files exempt from the Markdown location rule. Fixture file names and raw bytes stay as copied from upstream.
+- Every fixture and ported source file is recorded in `fixtures/manifest.toml`.
+- If a copied fixture trips gitleaks, rewrite the offending token or secret in the fixture and record the edit in `fixtures/manifest.toml` under `changes` (never add an allowlist entry or `.gitleaksignore`).
+
 ## Docs and language
 
 - Write every repository file in English. Reply to the owner in Vietnamese.
-- Root Markdown is limited to `README.md`, `ARCHITECTURE.md`, `AGENTS.md` and `CLAUDE.md` (which only imports this file). Other Markdown goes under `docs/`.
+- Root Markdown is limited to `README.md`, `ARCHITECTURE.md`, `AGENTS.md` and `CLAUDE.md` (which only imports this file). Other Markdown goes under `docs/` (`fixtures/` data files are exempt).
 - Never create or commit a `plans/` directory or plan content in this repository. Plans and reports are private and live outside it.
 - Never link to a path outside the repository or to a home-directory path.
 
