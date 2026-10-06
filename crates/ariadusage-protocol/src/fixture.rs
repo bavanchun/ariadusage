@@ -26,7 +26,8 @@ use crate::settings::{
 };
 use crate::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows};
 use crate::usage::{
-    DetailRow, DetailSection, ProviderError, ProviderErrorCategory, ProviderErrorKind, RateWindow,
+    DetailRow, DetailSection, NamedWindow, ProviderError, ProviderErrorCategory, ProviderErrorKind,
+    RateWindow,
 };
 
 /// Misbehavior modes for protocol conformance and stress testing.
@@ -43,6 +44,7 @@ pub struct FixtureConfig {
     pub step_seconds: u64,
     pub misbehave: Option<MisbehaveMode>,
     pub log_sink: Option<Arc<Mutex<Vec<String>>>>,
+    pub extra_windows: bool,
 }
 
 impl Default for FixtureConfig {
@@ -55,6 +57,7 @@ impl Default for FixtureConfig {
             step_seconds: 5,
             misbehave: None,
             log_sink: None,
+            extra_windows: false,
         }
     }
 }
@@ -100,6 +103,7 @@ struct ServerShared {
     settings: Mutex<HashMap<SettingId, serde_json::Value>>,
     secrets: Mutex<HashSet<SettingId>>,
     log_sink: Arc<Mutex<Vec<String>>>,
+    extra_windows: bool,
 }
 
 impl ServerShared {
@@ -131,6 +135,7 @@ pub async fn start_fixture_server(
         settings: Mutex::new(HashMap::new()),
         secrets: Mutex::new(HashSet::new()),
         log_sink: Arc::clone(&log_sink),
+        extra_windows: config.extra_windows,
     });
 
     let is_running = Arc::new(AtomicBool::new(true));
@@ -146,7 +151,7 @@ pub async fn start_fixture_server(
                 break;
             }
             let step = ticker_shared.step_counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let snapshot = generate_scenario_snapshot(step);
+            let snapshot = generate_scenario_snapshot_with_extra(step, ticker_shared.extra_windows);
             let _ = ticker_shared.broadcast_tx.send(ServerMessage::Snapshot {
                 snapshot: Box::new(snapshot),
             });
@@ -259,7 +264,7 @@ async fn handle_client(
                                                     // Immediate snapshot push upon subscribe
                                                     if subscribed_topics.contains(&Topic::Snapshot) {
                                                         let current_step = shared.step_counter.load(Ordering::Relaxed);
-                                                        let snapshot = generate_scenario_snapshot(current_step);
+                                                        let snapshot = generate_scenario_snapshot_with_extra(current_step, shared.extra_windows);
                                                         let push = ServerMessage::Snapshot {
                                                             snapshot: Box::new(snapshot),
                                                         };
@@ -268,7 +273,7 @@ async fn handle_client(
                                                 }
                                                 ClientMessage::GetSnapshot { id: _ } => {
                                                     let current_step = shared.step_counter.load(Ordering::Relaxed);
-                                                    let snapshot = generate_scenario_snapshot(current_step);
+                                                    let snapshot = generate_scenario_snapshot_with_extra(current_step, shared.extra_windows);
                                                     let push = ServerMessage::Snapshot {
                                                         snapshot: Box::new(snapshot),
                                                     };
@@ -278,7 +283,7 @@ async fn handle_client(
                                                     let resp = ServerMessage::ok(id);
                                                     send_server_message(&mut writer, &mut write_codec, &mut write_buf, &resp, &shared).await;
                                                     let current_step = shared.step_counter.load(Ordering::Relaxed);
-                                                    let snapshot = generate_scenario_snapshot(current_step);
+                                                    let snapshot = generate_scenario_snapshot_with_extra(current_step, shared.extra_windows);
                                                     let push = ServerMessage::Snapshot {
                                                         snapshot: Box::new(snapshot),
                                                     };
@@ -386,6 +391,11 @@ pub fn ensure_socket_directory(socket_path: &Path) -> std::io::Result<()> {
 
 /// Generate a scripted snapshot for the 5-state scenario across 3 providers.
 pub fn generate_scenario_snapshot(step: usize) -> EngineSnapshot {
+    generate_scenario_snapshot_with_extra(step, false)
+}
+
+/// Generate a scripted snapshot for the 5-state scenario with optional extra rate windows.
+pub fn generate_scenario_snapshot_with_extra(step: usize, extra_windows: bool) -> EngineSnapshot {
     let now = jiff::Timestamp::now();
     let state_idx = step % 5;
 
@@ -399,9 +409,15 @@ pub fn generate_scenario_snapshot(step: usize) -> EngineSnapshot {
     };
 
     let providers = vec![
-        make_provider_snapshot("claude", "Claude", "cli", claude_state),
-        make_provider_snapshot("codex", "Codex", "web", codex_state),
-        make_provider_snapshot("antigravity", "Antigravity", "api", agy_state),
+        make_provider_snapshot("claude", "Claude", "cli", claude_state, extra_windows),
+        make_provider_snapshot("codex", "Codex", "web", codex_state, extra_windows),
+        make_provider_snapshot(
+            "antigravity",
+            "Antigravity",
+            "api",
+            agy_state,
+            extra_windows,
+        ),
     ];
 
     EngineSnapshot::new(
@@ -420,6 +436,7 @@ fn make_provider_snapshot(
     name: &str,
     mode: &str,
     state: MetricState,
+    extra_windows: bool,
 ) -> ProviderSnapshot {
     let pid = ProviderId::new(id_str).unwrap();
     let mut snap = ProviderSnapshot::new(pid, name, true, mode);
@@ -448,11 +465,43 @@ fn make_provider_snapshot(
     )
     .unwrap();
 
+    let extra = if extra_windows {
+        let extra_rate = match state {
+            MetricState::Value | MetricState::Stale => Some(RateWindow {
+                used_percent: 15.0,
+                window_minutes: Some(60),
+                resets_at: "2026-10-06T14:00:00Z".parse::<jiff::Timestamp>().ok(),
+                reset_description: Some("Resets in 1 hour".to_string()),
+                next_regen_percent: None,
+            }),
+            _ => None,
+        };
+        let extra_metric = Metric::new(
+            state,
+            extra_rate,
+            None,
+            Some(MetricSource::new(
+                SourceKind::Cli,
+                format!("{id_str}-extra"),
+            )),
+            Confidence::Exact,
+            None,
+        )
+        .unwrap();
+        vec![NamedWindow {
+            id: "burst".to_string(),
+            title: "1-Hour Burst".to_string(),
+            window: extra_metric,
+        }]
+    } else {
+        Vec::new()
+    };
+
     snap.windows = ProviderWindows {
         primary: Some(metric),
         secondary: None,
         tertiary: None,
-        extra: Vec::new(),
+        extra,
     };
 
     if state == MetricState::Error {

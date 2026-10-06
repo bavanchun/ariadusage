@@ -24,6 +24,7 @@ async fn test_secret_set_via_stdin_pipe() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .expect("failed to start fixture server");

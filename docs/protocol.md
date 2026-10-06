@@ -221,6 +221,17 @@ Pushed upon subscription, on refresh ticks, or following provider state changes.
 }
 ```
 
+#### 6.2.1 Extra Named Rate Windows (`NamedWindow`)
+In addition to the standard positional rate windows (`primary`, `secondary`, `tertiary`), both provider and account window collections carry an optional `extra` list of named windows (`NamedWindow`). Each entry contains:
+- `id`: Unique identifier for the extra window (e.g. `"burst"`, `"daily-limit"`).
+- `title`: Human-readable title for UI presentation (e.g. `"1-Hour Burst"`).
+- `window`: A `Metric<RateWindow>` envelope representing the rate window's current state and quota.
+
+Because the window is carried inside a `Metric<RateWindow>` envelope, extra windows enforce the exact same honesty and freshness invariants as positional windows:
+- **Fresh or Stale Values (`value` / `stale`)**: The `value` object contains `usedPercent`, optional `windowMinutes`, `resetsAt`, and `resetDescription`.
+- **Non-Value States (`loading` / `error` / `unknown`)**: The `value` field is strictly omitted. Non-value states must never emit synthetic, placeholder, or default numeric values (such as `0` or `100`).
+- JSON schemas enforce this metric invariant at both provider and account hierarchy levels.
+
 ### 6.3 `settingsChanged`
 Pushed when configuration or secrets change, prompting clients to re-query `getSettings`.
 ```json

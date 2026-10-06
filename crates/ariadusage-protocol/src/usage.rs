@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ids::ProviderId;
+use crate::metric::Metric;
 
 /// A rate window indicating quota consumption and reset timing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -52,7 +53,7 @@ impl RateWindow {
 pub struct NamedWindow {
     pub id: String,
     pub title: String,
-    pub window: RateWindow,
+    pub window: Metric<RateWindow>,
 }
 
 /// Token or service credits snapshot.
@@ -179,6 +180,20 @@ pub enum ProviderErrorCategory {
     Configuration,
     #[serde(other)]
     Unknown,
+}
+
+impl ProviderErrorCategory {
+    /// Safe static description of this category for transmission over IPC.
+    pub const fn safe_description(&self) -> &'static str {
+        match self {
+            Self::Auth => "Authentication or credential failure",
+            Self::Api => "Provider API failure",
+            Self::Parse => "Provider response parse failure",
+            Self::Network => "Network transport failure",
+            Self::Configuration => "Provider configuration invalid",
+            Self::Unknown => "Unknown provider error",
+        }
+    }
 }
 
 /// A classified provider error with a safe message.

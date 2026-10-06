@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};
 use ariadusage_protocol::ipc::{ErrorCode, ServerMessage};
+use ariadusage_protocol::metric::MetricState;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -24,6 +25,7 @@ async fn test_socket_permissions_and_handshake() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .expect("failed to start fixture server");
@@ -84,6 +86,7 @@ async fn test_subscribe_immediate_push() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .unwrap();
@@ -137,6 +140,7 @@ async fn test_set_setting_triggers_settings_changed() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .unwrap();
@@ -222,6 +226,7 @@ async fn test_protocol_rejection_unsupported_message() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .unwrap();
@@ -264,6 +269,7 @@ async fn test_framing_oversize_payload_too_large_and_recovery() {
         step_seconds: 10,
         misbehave: None,
         log_sink: None,
+        extra_windows: false,
     })
     .await
     .unwrap();
@@ -308,6 +314,58 @@ async fn test_framing_oversize_payload_too_large_and_recovery() {
             assert_eq!(id.as_deref(), Some("req-recov"));
         }
         other => panic!("expected welcome response after recovery, got {other:?}"),
+    }
+
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_fixture_server_emits_extra_windows() {
+    let socket_path = unique_temp_socket_path("extra_windows");
+    let mut server = start_fixture_server(FixtureConfig {
+        socket_path: socket_path.clone(),
+        step_seconds: 10,
+        misbehave: None,
+        log_sink: None,
+        extra_windows: true,
+    })
+    .await
+    .unwrap();
+
+    let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (reader, mut writer) = stream.split();
+    let mut lines = BufReader::new(reader).lines();
+
+    // Subscribe to snapshot
+    writer
+        .write_all(b"{\"type\":\"subscribe\",\"topics\":[\"snapshot\"],\"id\":\"req-sub\"}\n")
+        .await
+        .unwrap();
+
+    // Consume response (ack)
+    let _ack_line = lines.next_line().await.unwrap().unwrap();
+
+    // Next is immediate snapshot push
+    let snap_line = lines.next_line().await.unwrap().unwrap();
+    let snap_msg: ServerMessage = serde_json::from_str(&snap_line).unwrap();
+
+    match snap_msg {
+        ServerMessage::Snapshot { snapshot } => {
+            let claude = snapshot
+                .providers
+                .iter()
+                .find(|p| p.id.as_str() == "claude")
+                .expect("claude provider");
+            assert!(
+                !claude.windows.extra.is_empty(),
+                "extra windows must be non-empty"
+            );
+            let extra_win = &claude.windows.extra[0];
+            assert_eq!(extra_win.id, "burst");
+            assert_eq!(extra_win.window.state, MetricState::Value);
+            assert!(extra_win.window.value.is_some());
+        }
+        other => panic!("expected snapshot push, got {other:?}"),
     }
 
     server.stop().await;

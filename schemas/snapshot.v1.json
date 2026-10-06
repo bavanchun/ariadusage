@@ -889,7 +889,7 @@
           "type": "string"
         },
         "window": {
-          "$ref": "#/$defs/RateWindow"
+          "$ref": "#/$defs/Metric"
         }
       },
       "required": [

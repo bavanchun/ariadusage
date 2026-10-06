@@ -54,6 +54,7 @@ async fn test_secret_not_in_logs_or_error_responses() {
         step_seconds: 10,
         misbehave: None,
         log_sink: Some(Arc::clone(&log_sink)),
+        extra_windows: false,
     })
     .await
     .unwrap();
