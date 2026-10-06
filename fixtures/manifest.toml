@@ -190,3 +190,31 @@ sources = ["Tests/CodexBarTests/ProviderInstanceIdentityCharacterizationTests.sw
 [[ported]]
 path = "crates/ariadusage-core/tests/config_plugin_preservation.rs"
 sources = ["TestsLinux/PluginConfigPreservationLinuxTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/paths.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/private_file.rs"
+sources = ["Sources/CodexBarCore/CredentialFileWriter.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/config_store.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/paths.rs"
+sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/private_file.rs"
+sources = [
+    "Tests/CodexBarTests/CredentialFileWriterTests.swift",
+    "TestsLinux/CredentialFileWriterTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/config_store.rs"
+sources = ["TestsLinux/CodexBarConfigStoreEmptyTests.swift"]
+
