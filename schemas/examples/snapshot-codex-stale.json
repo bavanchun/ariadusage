@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-06T12:00:00Z",
+  "staleAfterSeconds": 15,
+  "engine": {
+    "version": "0.1.0",
+    "refreshing": false
+  },
+  "providers": [
+    {
+      "id": "codex",
+      "displayName": "Codex",
+      "enabled": true,
+      "sourceMode": "web",
+      "windows": {
+        "primary": {
+          "state": "stale",
+          "confidence": "exact",
+          "source": {
+            "kind": "web",
+            "label": "codex-web"
+          },
+          "value": {
+            "usedPercent": 25.0,
+            "windowMinutes": 300,
+            "resetsAt": "2026-10-06T18:00:00Z",
+            "resetDescription": "Resets in 6 hours"
+          }
+        }
+      },
+      "details": [],
+      "accounts": []
+    }
+  ]
+}

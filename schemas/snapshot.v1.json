@@ -1,0 +1,1293 @@
+{
+  "$defs": {
+    "AccountSnapshot": {
+      "description": "Snapshot of an individual account within a multi-account provider.",
+      "properties": {
+        "active": {
+          "type": "boolean"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "lastError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric6"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric5"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windows": {
+          "$ref": "#/$defs/ProviderWindows",
+          "default": {}
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "active"
+      ],
+      "type": "object"
+    },
+    "Chart": {
+      "description": "A chart embedded in a detail section.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ChartKind"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/ChartPoint"
+          },
+          "maxItems": 120,
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "ChartKind": {
+      "description": "Kind of chart to render.",
+      "enum": [
+        "bars",
+        "line"
+      ],
+      "type": "string"
+    },
+    "ChartPoint": {
+      "description": "A data point in a chart.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "Confidence": {
+      "description": "Confidence level in a metric value.",
+      "enum": [
+        "exact",
+        "estimated",
+        "percentOnly",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "Cost": {
+      "description": "Cost and spend tracking snapshot.",
+      "properties": {
+        "balance": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "currencyCode": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "period": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "used",
+        "currencyCode"
+      ],
+      "type": "object"
+    },
+    "Credits": {
+      "description": "Token or service credits snapshot.",
+      "properties": {
+        "balanceIsWorkspace": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "remaining": {
+          "format": "double",
+          "type": "number"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "remaining"
+      ],
+      "type": "object"
+    },
+    "DetailRow": {
+      "description": "A row within a detail section.",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondaryValue": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usageValue": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "DetailSection": {
+      "description": "A section of detailed rows and optional chart.",
+      "properties": {
+        "chart": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/DetailRow"
+          },
+          "maxItems": 24,
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rows"
+      ],
+      "type": "object"
+    },
+    "EngineInfo": {
+      "description": "Information about the running engine daemon.",
+      "properties": {
+        "refreshing": {
+          "type": "boolean"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "refreshing"
+      ],
+      "type": "object"
+    },
+    "Identity": {
+      "description": "Identity and account provenance for a provider.",
+      "properties": {
+        "accountEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountOrganization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loginMethod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providerId": {
+          "$ref": "#/$defs/ProviderId"
+        }
+      },
+      "required": [
+        "providerId"
+      ],
+      "type": "object"
+    },
+    "Metric": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric2": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Credits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric3": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Cost"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric4": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Identity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric5": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusIndicator"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric6": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pace"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "MetricError": {
+      "description": "Diagnostic error attached to a metric.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryAfterSeconds": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "MetricSource": {
+      "description": "Provenance information for a metric.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/SourceKind"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "label"
+      ],
+      "type": "object"
+    },
+    "MetricState": {
+      "description": "State of a metric value.",
+      "enum": [
+        "value",
+        "loading",
+        "stale",
+        "error",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "NamedWindow": {
+      "description": "A named rate window for secondary/tertiary/custom provider allowances.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "window": {
+          "$ref": "#/$defs/RateWindow"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "window"
+      ],
+      "type": "object"
+    },
+    "Pace": {
+      "description": "Pace metrics comparing consumption to linear time progression.",
+      "properties": {
+        "deltaPercent": {
+          "format": "double",
+          "type": "number"
+        },
+        "etaSeconds": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "expectedUsedPercent": {
+          "format": "double",
+          "type": "number"
+        },
+        "stage": {
+          "$ref": "#/$defs/PaceStage"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "willLastToReset": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stage",
+        "deltaPercent",
+        "expectedUsedPercent",
+        "willLastToReset",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "PaceStage": {
+      "description": "Progression stage for usage pace.",
+      "enum": [
+        "onTrack",
+        "slightlyAhead",
+        "ahead",
+        "farAhead",
+        "slightlyBehind",
+        "behind",
+        "farBehind",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProviderError": {
+      "description": "A classified provider error with a safe message.",
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/ProviderErrorCategory"
+        },
+        "kind": {
+          "$ref": "#/$defs/ProviderErrorKind"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryAfterSeconds": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "category",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ProviderErrorCategory": {
+      "description": "High-level diagnostic categories.",
+      "enum": [
+        "auth",
+        "api",
+        "parse",
+        "network",
+        "configuration",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProviderErrorKind": {
+      "description": "Classified error kinds matching CodexBar's error model.",
+      "enum": [
+        "authentication-expired",
+        "missing-credential",
+        "permission-denied",
+        "rate-limited",
+        "provider-unavailable",
+        "parse-failure",
+        "network-failure",
+        "api-failure",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProviderId": {
+      "description": "A unique identifier for a provider instance (1–64 characters, `[a-z0-9-]`).\n\nFollows the same grammar and length restrictions as CodexBar's `ProviderInstanceID`.",
+      "pattern": "^[a-z0-9-]{1,64}$",
+      "type": "string"
+    },
+    "ProviderSnapshot": {
+      "description": "Snapshot of a single AI provider's usage and state.",
+      "properties": {
+        "accounts": {
+          "items": {
+            "$ref": "#/$defs/AccountSnapshot"
+          },
+          "type": "array"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric3"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric2"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "details": {
+          "items": {
+            "$ref": "#/$defs/DetailSection"
+          },
+          "maxItems": 8,
+          "type": "array"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "id": {
+          "$ref": "#/$defs/ProviderId"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastError": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric6"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceMode": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric5"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windows": {
+          "$ref": "#/$defs/ProviderWindows",
+          "default": {}
+        }
+      },
+      "required": [
+        "id",
+        "displayName",
+        "enabled",
+        "sourceMode"
+      ],
+      "type": "object"
+    },
+    "ProviderWindows": {
+      "description": "Positional and named rate windows for a provider or account.",
+      "properties": {
+        "extra": {
+          "items": {
+            "$ref": "#/$defs/NamedWindow"
+          },
+          "type": "array"
+        },
+        "primary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tertiary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RateWindow": {
+      "description": "A rate window indicating quota consumption and reset timing.",
+      "properties": {
+        "nextRegenPercent": {
+          "description": "Percentage restored on next regeneration increment, if applicable.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resetDescription": {
+          "description": "Human-readable description of reset timing (e.g. \"Resets tomorrow at 9 AM\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetsAt": {
+          "description": "Timestamp when this window resets.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usedPercent": {
+          "description": "Percentage of quota consumed (raw, may exceed 100%).",
+          "format": "double",
+          "type": "number"
+        },
+        "windowMinutes": {
+          "description": "Duration of the window in minutes (e.g. 300 for 5 hours, 10080 for weekly).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "usedPercent"
+      ],
+      "type": "object"
+    },
+    "RowProgress": {
+      "description": "Numeric ratio progress for a detail row.",
+      "properties": {
+        "total": {
+          "format": "double",
+          "type": "number"
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "used",
+        "total"
+      ],
+      "type": "object"
+    },
+    "SourceKind": {
+      "description": "Strategy kind that acquired the metric.",
+      "enum": [
+        "cli",
+        "web",
+        "oauth",
+        "api",
+        "localProbe",
+        "dashboard",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "StatusIndicator": {
+      "description": "High-level service status indicator.",
+      "enum": [
+        "none",
+        "minor",
+        "major",
+        "critical",
+        "maintenance",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/bavanchun/ariadusage/schemas/snapshot.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Complete Snapshot v1 emitted by the AriadUsage engine.",
+  "properties": {
+    "engine": {
+      "$ref": "#/$defs/EngineInfo",
+      "description": "Engine daemon metadata."
+    },
+    "generatedAt": {
+      "description": "Timestamp when this snapshot was assembled.",
+      "type": "string"
+    },
+    "providers": {
+      "description": "Snapshots for each configured provider.",
+      "items": {
+        "$ref": "#/$defs/ProviderSnapshot"
+      },
+      "type": "array"
+    },
+    "schemaVersion": {
+      "description": "Schema version, fixed to 1 for Snapshot v1.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "staleAfterSeconds": {
+      "description": "Seconds after which clients should consider this snapshot stale.",
+      "format": "uint32",
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "generatedAt",
+    "staleAfterSeconds",
+    "engine",
+    "providers"
+  ],
+  "title": "EngineSnapshot",
+  "type": "object"
+}

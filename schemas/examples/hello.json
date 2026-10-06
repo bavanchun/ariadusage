@@ -1,0 +1,11 @@
+{
+  "type": "hello",
+  "protocols": [
+    "ariadusage-ipc/1"
+  ],
+  "client": {
+    "name": "quickshell",
+    "version": "0.3.1"
+  },
+  "id": "req-hello-01"
+}

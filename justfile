@@ -21,6 +21,10 @@ typos:
 
 test:
     cargo nextest run --workspace --all-features --locked
+    cargo test --doc --workspace --all-features --locked
+
+schemas:
+    ARIADUSAGE_BLESS_SCHEMAS=1 cargo test -p ariadusage-protocol --test schema_drift --locked
 
 deny:
     cargo deny check

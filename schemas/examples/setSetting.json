@@ -1,0 +1,5 @@
+{
+  "type": "setSetting",
+  "id": "sourceMode",
+  "value": "cli"
+}
