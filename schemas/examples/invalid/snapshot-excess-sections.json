@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-06T12:00:00Z",
+  "staleAfterSeconds": 15,
+  "engine": {
+    "version": "0.1.0",
+    "refreshing": false
+  },
+  "providers": [
+    {
+      "id": "claude",
+      "displayName": "Claude",
+      "enabled": true,
+      "sourceMode": "cli",
+      "windows": {
+        "primary": {
+          "state": "value",
+          "value": {
+            "usedPercent": 50.0
+          },
+          "confidence": "exact"
+        }
+      },
+      "details": [
+        {
+          "id": "sec-0",
+          "title": "Section 0",
+          "rows": []
+        },
+        {
+          "id": "sec-1",
+          "title": "Section 1",
+          "rows": []
+        },
+        {
+          "id": "sec-2",
+          "title": "Section 2",
+          "rows": []
+        },
+        {
+          "id": "sec-3",
+          "title": "Section 3",
+          "rows": []
+        },
+        {
+          "id": "sec-4",
+          "title": "Section 4",
+          "rows": []
+        },
+        {
+          "id": "sec-5",
+          "title": "Section 5",
+          "rows": []
+        },
+        {
+          "id": "sec-6",
+          "title": "Section 6",
+          "rows": []
+        },
+        {
+          "id": "sec-7",
+          "title": "Section 7",
+          "rows": []
+        },
+        {
+          "id": "sec-8",
+          "title": "Section 8",
+          "rows": []
+        }
+      ],
+      "accounts": []
+    }
+  ]
+}

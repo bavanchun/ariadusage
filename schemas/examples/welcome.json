@@ -1,0 +1,11 @@
+{
+  "type": "welcome",
+  "protocol": "ariadusage-ipc/1",
+  "engineVersion": "0.1.0",
+  "capabilities": [
+    "snapshot",
+    "settings",
+    "notices"
+  ],
+  "id": "req-hello-01"
+}

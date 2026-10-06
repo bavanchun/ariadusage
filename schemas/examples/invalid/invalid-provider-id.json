@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-06T12:00:00Z",
+  "staleAfterSeconds": 15,
+  "engine": {
+    "version": "0.1.0",
+    "refreshing": false
+  },
+  "providers": [
+    {
+      "id": "Claude_Invalid_Id!",
+      "displayName": "Claude",
+      "enabled": true,
+      "sourceMode": "cli",
+      "windows": {
+        "primary": {
+          "state": "value",
+          "value": {
+            "usedPercent": 50.0
+          },
+          "confidence": "exact"
+        }
+      },
+      "details": [],
+      "accounts": []
+    }
+  ]
+}

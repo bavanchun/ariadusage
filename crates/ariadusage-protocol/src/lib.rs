@@ -15,7 +15,7 @@ pub mod codec;
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{
     negotiate_protocol, parse_client_message, parse_server_message, ClientInfo, ClientMessage,
-    ErrorCode, IpcError, NoticeLevel, RawEnvelope, ServerMessage, Topic, PROTOCOL_V1,
+    ErrorCode, IpcError, IpcMessage, NoticeLevel, RawEnvelope, ServerMessage, Topic, PROTOCOL_V1,
     SUPPORTED_PROTOCOLS,
 };
 pub use metric::{

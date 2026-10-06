@@ -1,0 +1,6 @@
+{
+  "type": "settingsChanged",
+  "scope": {
+    "provider": "claude"
+  }
+}
