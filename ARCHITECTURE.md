@@ -373,7 +373,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | CI breadth | Full gate on Linux; clippy of portable crates on macOS and Windows | Full gate on three OSes; Linux only | Catches portability regressions without spending on code that cannot run off Linux |
 | Plugin lint gate | `qmllint -W 0` with Omarchy's qmldir imports | Plain `qmllint -I` | The plain form exits 0 on broken imports and unknown properties |
 | Detail string length | Grapheme cluster count (`unicode-segmentation`) | Unicode scalar count / char count | Swift `String.count` counts extended grapheme clusters; scalar/char counting rejects valid multi-byte emoji within the 120-limit |
-| Extra windows on the wire | `NamedWindow.window` becomes `Metric<RateWindow>` at provider and account level; schemas re-blessed | Keeping `window: RateWindow` without metric freshness/honesty envelopes on extra windows | Owner decision 3 (M1 finding R18): extra windows must enforce the exact same honesty and freshness invariants as positional windows, ensuring no synthetic or unknown quota state renders as a real value |
+| Extra windows on the wire | `NamedWindow.window` becomes `Metric<RateWindow>` at provider and account level; schemas re-blessed | Keeping `window: RateWindow` without metric freshness/honesty envelopes on extra windows | Extra windows must enforce the exact same honesty and freshness invariants as positional windows, ensuring no synthetic or unknown quota state renders as a real value |
 
 ---
 
