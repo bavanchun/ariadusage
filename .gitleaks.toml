@@ -1,0 +1,30 @@
+[extend]
+useDefault = true
+
+# Claude OAuth access, refresh and session tokens
+[[rules]]
+id = "claude-oauth-token"
+description = "Claude OAuth access, refresh and session tokens"
+regex = '''\bsk-ant-(?:oat|ort|sid)\d*-[a-zA-Z0-9_\-]{20,}'''
+keywords = ["sk-ant-"]
+
+# JWT-shaped values under refresh_token, id_token or access_token keys in JSON
+[[rules]]
+id = "jwt-token-in-json"
+description = "JWT-shaped values under refresh_token, id_token or access_token keys in JSON"
+regex = '''"(?:refresh_token|id_token|access_token)"\s*:\s*"eyJ[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}"'''
+keywords = ["refresh_token", "id_token", "access_token"]
+
+# Google ya29. access tokens and 1//0 refresh tokens
+[[rules]]
+id = "google-oauth-token"
+description = "Google ya29. access tokens and 1//0 refresh tokens"
+regex = '''\b(?:ya29\.[a-zA-Z0-9_\-]{20,}|1\/\/0[a-zA-Z0-9_\-]{20,})\b'''
+keywords = ["ya29.", "1//0"]
+
+# Cookie request headers with a value, and sessionKey= values
+[[rules]]
+id = "cookie-session-token"
+description = "Cookie request headers with a value, and sessionKey= values"
+regex = '''(?i)(?:Cookie:\s*[^\r\n]{15,}|sessionKey\s*=\s*[a-zA-Z0-9_\-]{15,})'''
+keywords = ["cookie:", "sessionkey="]

@@ -1,0 +1,6 @@
+[default]
+locale = "en"
+
+[default.extend-words]
+# Correct names and acronyms in the public repository files.
+Ba = "Ba"
