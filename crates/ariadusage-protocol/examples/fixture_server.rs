@@ -1,9 +1,12 @@
 //! Command-line example running the in-process fixture server for UI and integration testing.
 
+#[cfg(unix)]
 use std::path::PathBuf;
 
+#[cfg(unix)]
 use ariadusage_protocol::fixture::{FixtureConfig, MisbehaveMode, start_fixture_server};
 
+#[cfg(unix)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -46,4 +49,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Shutting down fixture server...");
     server.stop().await;
     Ok(())
+}
+
+#[cfg(not(unix))]
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    eprintln!("fixture_server is unsupported on this platform");
+    std::process::exit(1);
 }
