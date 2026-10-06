@@ -102,3 +102,17 @@ sources = ["TestsLinux/UsageSnapshotAccountLabelTests.swift"]
 [[ported]]
 path = "crates/ariadusage-core/tests/snapshot_fixture.rs"
 sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pace.rs"
+sources = [
+    "Sources/CodexBarCore/UsagePace.swift",
+    "Sources/CodexBarCore/Providers/ProviderDescriptor.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pace.rs"
+sources = [
+    "Tests/CodexBarTests/UsagePaceTests.swift",
+    "Tests/CodexBarTests/ProviderPaceCapabilityTests.swift",
+]
