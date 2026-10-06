@@ -16,7 +16,7 @@
         "kind": "liveSystem"
       },
       "codexProfileHomePaths": [
-        "/home/user/.codex"
+        "/srv/example/.codex"
       ],
       "cookieHeader": "REPLACE_ME",
       "cookieSource": "manual",
@@ -79,7 +79,7 @@
     },
     {
       "antigravityAdditionalProfileHomes": [
-        "/home/user/.antigravity"
+        "/srv/example/.antigravity"
       ],
       "antigravityPrioritizeExhaustedQuotas": true,
       "enabled": false,
