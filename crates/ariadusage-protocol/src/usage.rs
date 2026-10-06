@@ -1,3 +1,5 @@
+// Ported from CodexBar Sources/CodexBarCore/ProviderDetailSection.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+
 //! Usage data models including rate windows, credits, cost, identity, pace, status, and detail sections.
 
 use std::fmt;
@@ -191,7 +193,7 @@ pub struct ProviderError {
 }
 
 // ============================================================================
-// Bounded Detail Sections (Ported from CodexBar ProviderDetailSection)
+// Bounded Detail Sections
 // ============================================================================
 
 /// Maximum number of detail sections allowed in a snapshot.
@@ -219,13 +221,15 @@ fn required_string(
     raw: impl AsRef<str>,
     path: &str,
 ) -> Result<String, DetailSectionValidationError> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let s = raw.as_ref().trim();
     if s.is_empty() {
         return Err(DetailSectionValidationError(format!(
             "{path} must not be empty"
         )));
     }
-    if s.chars().count() > MAXIMUM_STRING_LENGTH {
+    if s.graphemes(true).count() > MAXIMUM_STRING_LENGTH {
         return Err(DetailSectionValidationError(format!(
             "{path} exceeds {MAXIMUM_STRING_LENGTH} characters"
         )));
@@ -237,12 +241,14 @@ fn optional_string(
     raw: Option<impl AsRef<str>>,
     path: &str,
 ) -> Result<Option<String>, DetailSectionValidationError> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let Some(raw) = raw else { return Ok(None) };
     let s = raw.as_ref().trim();
     if s.is_empty() {
         return Ok(None);
     }
-    if s.chars().count() > MAXIMUM_STRING_LENGTH {
+    if s.graphemes(true).count() > MAXIMUM_STRING_LENGTH {
         return Err(DetailSectionValidationError(format!(
             "{path} exceeds {MAXIMUM_STRING_LENGTH} characters"
         )));
@@ -456,7 +462,6 @@ struct ChartRaw {
     title: Option<String>,
     #[serde(default)]
     unit: Option<String>,
-    #[serde(default)]
     points: Vec<ChartPoint>,
 }
 
@@ -510,7 +515,6 @@ impl DetailSection {
 struct DetailSectionRaw {
     #[serde(default)]
     title: Option<String>,
-    #[serde(default)]
     rows: Vec<DetailRow>,
     #[serde(default)]
     chart: Option<Chart>,
