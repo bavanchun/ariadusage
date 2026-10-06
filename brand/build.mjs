@@ -13,6 +13,7 @@ import {
   notchPath, svgDoc,
 } from './src/geometry.mjs';
 import { glassIcon } from './src/glass-icon.mjs';
+import { generateMonogram, normalizeProviderLogos } from './scripts/normalize-provider-logos.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const OUT = {
@@ -125,6 +126,14 @@ const assets = {
 for (const [name, svg] of Object.entries(assets)) {
   fs.writeFileSync(path.join(OUT.svg, name), clean(svg, name));
 }
+
+// Normalize provider logos and write fallbacks
+normalizeProviderLogos();
+const fallbackMono = generateMonogram('Generic AI', { mono: true });
+const fallbackColor = generateMonogram('Generic AI', { mono: false });
+fs.writeFileSync(path.join(OUT.svg, 'providers/fallback-mono.svg'), clean(fallbackMono, 'provider-fallback-mono'));
+fs.writeFileSync(path.join(OUT.svg, 'providers/fallback-color.svg'), clean(fallbackColor, 'provider-fallback-color'));
+
 for (const [name, svg] of Object.entries(iconComposerLayers())) {
   fs.writeFileSync(path.join(OUT.layers, name), clean(svg, name));
 }
