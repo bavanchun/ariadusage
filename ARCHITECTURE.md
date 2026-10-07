@@ -79,7 +79,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Subprocesses | process-wrap with nix | Process groups and sessions, signal-mask reset and Tokio child control; Windows Job Objects later |
 | JSON-RPC over stdio | hand-rolled on tokio-util's line codec | `codex app-server` omits the `jsonrpc` field, so standard JSON-RPC crates do not fit; it reuses the IPC framing |
 | Base64 decoding | base64 | Padding-indifferent unverified JWT expiration reader in core |
-| Secret store (Linux) | secret-service | Lock-aware search that never prompts |
+| Secret store (Linux) | secret-service (Tokio with DH encryption) | Default login collection, lock-aware reads, and writes restricted to user-initiated calls |
 | Browser cookie crypto and digests | aes, cbc, pbkdf2, sha1, sha2 | Domain-separated digests and profile keys in core; Chromium's Linux cookie encryption in engine, implemented in-house |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
 | Process and port discovery | procfs | Same-user process identity, descriptor scans, Antigravity language-server discovery, agent sessions and the probe reaper |
@@ -185,7 +185,7 @@ Providers never touch the system directly. Brokers do, and every broker call say
 | OAuth | Per-provider token state machines and the ownership rules in §9 |
 | Browser | Opt-in cookie import from Chromium-family and Firefox profiles, limited to each provider's declared cookie domains; manual cookie headers |
 | LocalProbe | Same-user process and listening-port discovery for local language servers |
-| SecretStore | AriadUsage's own secrets in the Secret Service keyring; a 0600 file only with the user's consent when no keyring exists. Background work never unlocks the keyring |
+| SecretStore | AriadUsage's own secrets in the default login collection through Secret Service; stable attributes contain no account names or email. A trust-checked 0600 file is offered only after consent and only when the service is unavailable. Background work never unlocks or writes secrets |
 | ExecutableResolver | Finds `claude`, `codex` and `agy` (including mise, asdf and `~/.local/bin` installs) and returns absolute paths; an explicit override is authoritative |
 
 ### 6.4 Refresh invariants
@@ -362,6 +362,9 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Workspace shape | Four crates, providers as modules | One crate per provider | Crates only at real boundaries |
 | Storage | rusqlite, single writer | sqlx | A local single-writer store needs no async pool |
 | Secret store | secret-service | keyring / keyring-core, oo7 | The keyring store unlocks, and so prompts, on every access; oo7 brings a second crypto stack and its API is in flux |
+| Keyring collection | Secret Service's default login collection; a missing `default` alias means no keyring, and the in-memory `session` collection is never used | A dedicated collection or `session` fallback | Matches the user's login keyring and keeps unavailable-keyring behavior explicit |
+| `secret set` write path | The CLI hardens itself and writes through SecretStore in-process; no socket or daemon relay carries the secret | Sending a secret through IPC or a local socket | Keeps the secret inside the no-echo CLI process and the storage broker |
+| Secret-process hardening | Linux CLI and engine disable dumpability and set the core limit to zero; other platforms are a no-op | Core dumps containing secret material | Limits post-crash disclosure without adding unsafe code; platform support is explicitly scoped |
 | PTY | pty-process | portable-pty; hand-rolled rustix PTY | pty-process supplies session leadership and a controlling terminal without adding `unsafe` to this workspace |
 | Claude TUI rendering | M2 returns generic PTY bytes and ANSI-stripped text; M3 ports CodexBar's `ClaudeCLIScreen` replayer | A provider-specific terminal renderer in M2 | Keep M2 process sessions generic and port Claude screen behavior with its M3 consumer |
 | Codex RPC | Hand-rolled newline JSON-RPC client | jsonrpsee, jsonrpc-core, a third-party protocol crate | The app server omits the `jsonrpc` field; three methods do not justify a framework |
@@ -403,7 +406,7 @@ Logos and icons are generated as code under `brand/`, following the same process
 
 1. **Antigravity transport on Linux.** Does the current language server still answer CodexBar's plain-HTTP fallback endpoints, or is HTTPS with a self-signed certificate needed? This decides whether the loopback HTTPS client ships in v1.
 2. **KDE Wallet.** Is Chromium's KWallet key visible through Plasma 6's Secret Service API, or is a dedicated KWallet client needed?
-3. **Keyring collection.** Should AriadUsage's own secrets live in the default login collection or a dedicated collection with its own unlock prompt?
+3. **Keyring collection — resolved in M2.** Use the default login collection only. A missing `default` alias means no keyring; never use the in-memory `session` collection.
 4. **Chromium-family keyring names.** The Secret Service entries for Brave, Edge, Vivaldi and Opera on Linux are unverified and need real fixtures.
 5. **Cookie cache on Linux.** Keep it in memory, as CodexBar does, or persist it?
 6. **Codex dashboard extras.** Can CodexBar's WebView-only Codex data be fetched over HTTP with a session cookie, or does it wait for the macOS phase?

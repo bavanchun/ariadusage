@@ -43,6 +43,7 @@ process-wrap = { workspace = true }
 procfs = { workspace = true }
 nix = { workspace = true, optional = true }
 pty-process = { workspace = true, features = ["async"] }
+secret-service = { workspace = true }
 
 [dev-dependencies]
 ariadusage-engine = { path = ".", features = ["test-hooks"] }

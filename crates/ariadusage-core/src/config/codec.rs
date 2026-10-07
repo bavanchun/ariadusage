@@ -39,6 +39,7 @@ struct RawRoot {
     providers: Option<Vec<Box<RawValue>>>,
     hooks: Option<Box<RawValue>>,
     settings: Option<Box<RawValue>>,
+    secret_file_fallback: Option<bool>,
     extra_top: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -60,6 +61,7 @@ impl<'de> Visitor<'de> for RawRootVisitor {
         let mut providers = None;
         let mut hooks = None;
         let mut settings = None;
+        let mut secret_file_fallback = None;
         let mut extra_top = BTreeMap::new();
 
         while let Some(key) = access.next_key::<String>()? {
@@ -80,6 +82,9 @@ impl<'de> Visitor<'de> for RawRootVisitor {
                 }
                 "settings" => {
                     settings = Some(access.next_value::<Box<RawValue>>()?);
+                }
+                "secretFileFallback" => {
+                    secret_file_fallback = access.next_value::<Option<bool>>()?;
                 }
                 _ => {
                     let val = access.next_value::<Box<RawValue>>()?;
@@ -104,6 +109,7 @@ impl<'de> Visitor<'de> for RawRootVisitor {
             providers: Some(providers),
             hooks,
             settings,
+            secret_file_fallback,
             extra_top,
         })
     }
@@ -373,6 +379,7 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Config>, ConfigError> {
         providers,
         hooks: raw_root.hooks,
         settings: raw_root.settings,
+        secret_file_fallback: raw_root.secret_file_fallback,
         extra_top: raw_root.extra_top,
     }))
 }
@@ -579,9 +586,14 @@ pub fn encode(config: &Config) -> Vec<u8> {
     if let Some(settings) = &config.settings {
         top_map.insert("settings", Node::Raw(settings));
     }
+    if let Some(consented) = config.secret_file_fallback {
+        top_map.insert("secretFileFallback", Node::Value(consented.into()));
+    }
 
     for (k, v) in &config.extra_top {
-        top_map.insert(k.as_str(), Node::Raw(v));
+        if k != "secretFileFallback" {
+            top_map.insert(k.as_str(), Node::Raw(v));
+        }
     }
 
     serde_json::to_vec_pretty(&Node::Map(top_map)).unwrap_or_default()

@@ -32,6 +32,7 @@ rustls-platform-verifier = "0.7.1"
 schemars = "1.2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["raw_value"] }
+secret-service = { version = "5.2.0", default-features = false, features = ["rt-tokio-crypto-rust"] }
 sha2 = "0.11.0"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
