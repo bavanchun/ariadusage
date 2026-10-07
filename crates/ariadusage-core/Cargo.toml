@@ -9,9 +9,11 @@ publish.workspace = true
 
 [dependencies]
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
+base64 = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio-util = { workspace = true }
 
