@@ -428,3 +428,48 @@ sources = [
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_signal.rs"
 sources = ["Tests/CodexBarTests/TTYCommandRunnerTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/rpc.rs"
+sources = [
+    "Sources/CodexBarCore/UsageFetcher.swift",
+    "Sources/CodexBarCore/Host/Process/RPCRequestTimeout.swift",
+    "Sources/CodexBarCore/Host/Process/RPCChildProcessTeardown.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/pty.rs"
+sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/scan.rs"
+sources = ["Sources/CodexBarCore/Host/PTY/StreamScanBuffer.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/drain.rs"
+sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/rpc_session.rs"
+sources = [
+    "Tests/CodexBarTests/RPCRequestTimeoutTests.swift",
+    "Tests/CodexBarTests/RPCChildProcessTeardownTests.swift",
+    "Tests/CodexBarTests/BoundedChildProcessProofTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/pty_session.rs"
+sources = [
+    "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
+    "Tests/CodexBarTests/BoundedChildProcessProofTests.swift",
+    "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/pty_drain.rs"
+sources = [
+    "Sources/CodexBarCore/Host/PTY/StreamScanBuffer.swift",
+    "Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift",
+    "Tests/CodexBarTests/StreamScanBufferTests.swift",
+    "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
+]

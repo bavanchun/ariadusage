@@ -146,6 +146,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             pthread_sigmask(SigmaskHow::SIG_SETMASK, None, Some(&mut current))?;
             println!("{}", current.contains(Signal::SIGTERM));
         }
+        "rpc-echo" => run_rpc_echo(remaining.first().and_then(|value| value.to_str()))?,
+        "rpc-ignore-term" => {
+            let mut terminate = signal(SignalKind::terminate())?;
+            loop {
+                let _ = terminate.recv().await;
+            }
+        }
+        "pty-prompt" => run_pty_prompt(remaining.first().and_then(|value| value.to_str()))?,
+        "pty-flood" => {
+            write_pattern("stdout", 2 * 1024 * 1024)?;
+            time::sleep(Duration::from_secs(30)).await;
+        }
         "setsid" | "grandchild" => {
             let sid = rustix::process::setsid()?;
             println!("{}", sid.as_raw_pid());
@@ -343,6 +355,174 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             stdout.flush()?;
         }
         _ => return Err(Box::new(std::io::Error::other("unknown helper mode"))),
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_rpc_echo(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead, Write};
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    let mut reversed = Vec::new();
+    let mut sent_noise = false;
+    for line in stdin.lock().lines() {
+        let line = line?;
+        let Ok(request) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(id) = request.get("id").and_then(serde_json::Value::as_u64) else {
+            continue;
+        };
+        if !sent_noise {
+            stdout.write_all(b"not-json\n{\"method\":\"notice\",\"params\":{}}\n")?;
+            sent_noise = true;
+        }
+        if mode == Some("error") {
+            let message = ["synthetic", "rpc", "private", "value"].join("-");
+            writeln!(
+                stdout,
+                "{{\"id\":{id},\"error\":{{\"message\":{}}}}}",
+                serde_json::to_string(&message)?
+            )?;
+            stdout.flush()?;
+            continue;
+        }
+        if mode == Some("oversize") {
+            stdout.write_all(&vec![b'x'; 1024 * 1024 + 1])?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            continue;
+        }
+        if mode == Some("missing-result") {
+            writeln!(stdout, "{{\"id\":{id}}}")?;
+            stdout.flush()?;
+            continue;
+        }
+        let params = request
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let response = serde_json::json!({"id": id, "result": params});
+        if mode == Some("reverse") {
+            reversed.push(response);
+            if reversed.len() == 2 {
+                for response in reversed.drain(..).rev() {
+                    serde_json::to_writer(&mut stdout, &response)?;
+                    stdout.write_all(b"\n")?;
+                }
+                stdout.flush()?;
+            }
+        } else {
+            serde_json::to_writer(&mut stdout, &response)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            if mode == Some("exit") {
+                return Ok(());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_pty_prompt(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead, Write};
+    use std::time::Duration;
+
+    let mut stdout = std::io::stdout();
+    match mode.unwrap_or("prompt") {
+        "prompt" => {
+            stdout.write_all(b"\x1b[31mready>\x1b[0m")?;
+            stdout.flush()?;
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            writeln!(stdout, "ack:{line}")?;
+        }
+        "wait-exit" => {
+            stdout.write_all(b"waiting-exit")?;
+            stdout.flush()?;
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            if line.trim() == "/exit" {
+                stdout.write_all(b"exit-received")?;
+            }
+        }
+        "idle" => {
+            stdout.write_all(b"ready")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        "split-stop" => {
+            stdout.write_all(b"NEE")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_millis(150));
+            stdout.write_all(b"DLE")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        "split-url" => {
+            stdout.write_all(b"https://")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_millis(150));
+            stdout.write_all(b"example.invalid")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        "text-window" => {
+            stdout.write_all(&vec![b'x'; 9_000])?;
+            stdout.write_all(b"Question\r? ")?;
+            stdout.flush()?;
+            let mut line = String::new();
+            std::io::stdin().lock().read_line(&mut line)?;
+            stdout.write_all(b"accepted")?;
+            stdout.flush()?;
+        }
+        "enter-url" => {
+            stdout.write_all(b"waiting")?;
+            stdout.flush()?;
+            let mut line = String::new();
+            let stdin = std::io::stdin();
+            let mut input = stdin.lock();
+            for _ in 0..2 {
+                line.clear();
+                input.read_line(&mut line)?;
+            }
+            stdout.write_all(b" http://example.invalid")?;
+            stdout.flush()?;
+            std::thread::sleep(Duration::from_secs(3));
+        }
+        "clean-exit" => {
+            stdout.write_all(b"buffered-before-exit")?;
+            stdout.flush()?;
+        }
+        "env" => {
+            let current_dir = std::env::current_dir()?;
+            for name in [
+                "TERM",
+                "COLORTERM",
+                "LANG",
+                "CI",
+                "HOME",
+                "PWD",
+                "UNLISTED_PROCESS_TEST",
+            ] {
+                let value = std::env::var(name).unwrap_or_else(|_| "<missing>".to_owned());
+                writeln!(stdout, "{name}={value}")?;
+            }
+            writeln!(stdout, "CWD={}", current_dir.display())?;
+            stdout.flush()?;
+        }
+        "signal-mask" => {
+            use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
+
+            let mut current = SigSet::empty();
+            pthread_sigmask(SigmaskHow::SIG_SETMASK, None, Some(&mut current))?;
+            writeln!(stdout, "{}", current.contains(Signal::SIGTERM))?;
+            stdout.flush()?;
+        }
+        _ => return Err(Box::new(std::io::Error::other("unknown PTY helper mode"))),
     }
     Ok(())
 }

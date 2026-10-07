@@ -16,7 +16,7 @@ impl std::fmt::Display for OutputStream {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ProcessError {
     #[error("process call was cancelled")]
     Cancelled,
