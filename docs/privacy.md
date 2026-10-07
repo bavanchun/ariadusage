@@ -105,9 +105,12 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 
 - Off by default: an unset `cookieSource` resolves to a manual header only. You must explicitly opt in per provider by setting `cookieSource: auto`.
 - Manual cookie headers are stored securely in the keyring (default login collection) via SecretStore, never in plain configuration.
-- Only the cookie domains a provider declares (for example claude.ai for Claude
-  and chatgpt.com for Codex) are read, from Chromium-family and Firefox
-  profiles.
+- Only the cookie domains a provider declares (for example claude.ai for Claude and chatgpt.com for Codex) are read.
+- Supported profile roots include Chrome (`~/.config/google-chrome`), Edge (`~/.config/microsoft-edge`), Brave (`~/.config/BraveSoftware/Brave-Browser`), Chromium (`~/.config/chromium`), Vivaldi (`~/.config/vivaldi`), Opera (`~/.config/opera`), and Firefox (`$XDG_CONFIG_HOME/mozilla/firefox` or `~/.mozilla/firefox`). Flatpak roots under `~/.var/app/<app-id>/config/` and the Chromium and Firefox Snap roots are included but remain unverified. The Edge, Vivaldi and Opera roots and safe-storage application names also remain unverified.
+- Profile labels use only a profile's `name` field. Account names and email fields are ignored.
+- SQLite is read from a temporary copy under a trusted, owner-only tmpfs `$XDG_RUNTIME_DIR`; only the database and its `-wal` file are copied, never `-journal`. Copies are limited to 64 MiB total and removed after each read.
+- Chromium safe-storage lookup uses the browser's Secret Service `application` attribute. Background reads never unlock the keyring. A dismissal suppresses the Chromium family for six hours; a user-initiated call may make one explicit retry.
+- Chromium v12 and unknown encrypted-value tags are counted as unsupported. Firefox containers and partitioned-cookie handling follow the browser-import policy documented in the architecture and porting notes.
 - Imported cookies are stored in an in-memory cache, used only for that provider's requests, and are never
   sent to another host, including on redirects.
 - Pasting a cookie header by hand remains available instead of import.

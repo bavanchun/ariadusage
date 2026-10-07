@@ -220,6 +220,7 @@ sources = [
     "TestsLinux/CredentialFileWriterTests.swift",
 ]
 
+
 [[ported]]
 path = "crates/ariadusage-engine/tests/config_store.rs"
 sources = ["TestsLinux/CodexBarConfigStoreEmptyTests.swift"]
@@ -624,8 +625,21 @@ sources = [
     "Tests/CodexBarTests/CookieHeaderCacheConditionalMutationTests.swift",
 ]
 
+[[ported]]
+path = "crates/ariadusage-engine/tests/browser_chromium.rs"
+sources = ["Tests/CodexBarTests/BrowserCookieImportSupportTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-engine/tests/browser_firefox.rs"
+sources = ["Tests/CodexBarTests/BrowserDetectionTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-engine/tests/browser_discover.rs"
+sources = ["Tests/CodexBarTests/BrowserDetectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/browser_gate.rs"
+sources = ["Tests/CodexBarTests/BrowserCookieAccessGateTests.swift"]
 
 
 

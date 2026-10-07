@@ -16,7 +16,7 @@ pub struct WriteHooks {
 }
 
 /// Atomically writes `bytes` to `path` with private permissions (0600) via a staging directory (0700).
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn write_private(path: &Path, bytes: &[u8], hooks: &WriteHooks) -> Result<(), StoreError> {
     use std::fs::OpenOptions;
     use std::io::Write;
@@ -87,17 +87,17 @@ pub fn write_private(path: &Path, bytes: &[u8], hooks: &WriteHooks) -> Result<()
     Ok(())
 }
 
-/// Atomically writes `bytes` to `path`. Unsupported on Windows.
-#[cfg(not(unix))]
+/// Atomically writes `bytes` to `path`. Unsupported outside Linux.
+#[cfg(not(target_os = "linux"))]
 pub fn write_private(_path: &Path, _bytes: &[u8], _hooks: &WriteHooks) -> Result<(), StoreError> {
     Err(StoreError::Unsupported(
-        "private file writing is unsupported on Windows",
+        "private file writing is unsupported on this platform",
     ))
 }
 
 /// If `path` exists, is a regular file owned by the current user, and has group/other permissions,
 /// tightens permissions to `0600`. Safely skips symlinks via `O_NOFOLLOW`.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn repair_permissions(path: &Path) {
     let Ok(fd) = rustix::fs::open(
         path,
@@ -124,6 +124,6 @@ pub fn repair_permissions(path: &Path) {
     }
 }
 
-/// Permissions repair is a no-op on non-Unix platforms.
-#[cfg(not(unix))]
+/// Permissions repair is a no-op outside Linux.
+#[cfg(not(target_os = "linux"))]
 pub fn repair_permissions(_path: &Path) {}

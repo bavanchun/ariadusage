@@ -38,6 +38,8 @@ pub struct BrokerState {
     pub quarantine: BTreeMap<String, StatFingerprint>,
     #[serde(default)]
     pub delegated_cooldowns: BTreeMap<String, CooldownState>,
+    #[serde(default)]
+    pub browser_cooldowns: BTreeMap<String, i64>,
 }
 
 impl BrokerState {
@@ -51,6 +53,7 @@ impl BrokerState {
             last_seen: BTreeMap::new(),
             quarantine: BTreeMap::new(),
             delegated_cooldowns: BTreeMap::new(),
+            browser_cooldowns: BTreeMap::new(),
         }
     }
 }
