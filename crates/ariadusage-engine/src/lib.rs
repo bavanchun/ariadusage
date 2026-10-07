@@ -1,3 +1,4 @@
+pub mod brokers;
 pub mod config_store;
 pub mod error;
 pub mod paths;

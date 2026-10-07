@@ -14,15 +14,23 @@ test-hooks = []
 [dependencies]
 ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
+bytes = { workspace = true }
 etcetera = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
+rustls-platform-verifier = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
 ariadusage-engine = { path = ".", features = ["test-hooks"] }
+httpmock = { workspace = true }
 
 [lints]
 workspace = true

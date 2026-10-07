@@ -20,6 +20,12 @@ origin = "ariadusage"
 license = "MIT"
 changes = "AriadUsage sparse configuration fixture with minimal entries."
 
+[[fixture]]
+path = "ariadusage/httpmock-test-ca.pem.fixture"
+origin = "ariadusage"
+license = "MIT"
+changes = "Public test CA certificate from httpmock 0.8.3; contains no private key."
+
 [[ported]]
 path = "crates/ariadusage-protocol/src/usage.rs"
 sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
@@ -296,3 +302,41 @@ sources = ["Tests/CodexBarTests/ClaudeResilienceTests.swift"]
 path = "crates/ariadusage-core/tests/refresh_transport.rs"
 sources = ["Tests/CodexBarTests/UsageStoreCoverageTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/net/client.rs"
+sources = ["Sources/CodexBarCore/ProviderHTTPClient.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/net/redirect.rs"
+sources = ["Sources/CodexBarCore/ProviderHTTPClient.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/net/override_validator.rs"
+sources = ["Sources/CodexBarCore/ProviderEndpointOverrideValidator.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/net/classify.rs"
+sources = ["Sources/CodexBarCore/ProviderTransportError.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/net_client.rs"
+sources = ["Tests/CodexBarTests/ProviderHTTPClientTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/net_redirect.rs"
+sources = ["Tests/CodexBarTests/ProviderHTTPClientTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/net_override.rs"
+sources = [
+    "Tests/CodexBarTests/ProviderEndpointOverrideSecurityTests.swift",
+    "TestsLinux/ProviderEndpointOverrideSecurityLinuxTests.swift",
+    "TestsLinux/AzureEndpointOverrideSecurityTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/net_classify.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeOAuthTransportIdentityTests.swift",
+    "Tests/CodexBarTests/CodexTransportIdentityTests.swift",
+]

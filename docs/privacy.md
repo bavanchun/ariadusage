@@ -100,9 +100,12 @@ AriadUsage connects to:
 - a public model-pricing source, when cost tracking is on;
 - the local Antigravity language server on loopback.
 
-Requests that carry credentials use HTTPS and follow redirects only to the
-same host and port. The `serve` dashboard is off by default and binds to
-loopback when enabled.
+Requests that carry credentials use HTTPS, and the broker attaches them only
+to a provider's declared origins. Redirects stay on the original HTTPS host and
+port. Responses are capped at 5 MiB by default, and AriadUsage does not use a
+shared cookie jar. The main client honors environment proxy settings; the
+literal-loopback client ignores proxies and follows no redirects. The `serve`
+dashboard is off by default and binds to loopback when enabled.
 
 ## Removing all data
 

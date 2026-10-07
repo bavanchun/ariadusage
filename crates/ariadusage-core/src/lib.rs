@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod hosts;
 pub mod model;
 pub mod pace;
 pub mod pipeline;
@@ -12,6 +13,7 @@ pub mod settings_value;
 
 pub use config::*;
 pub use error::ModelError;
+pub use hosts::{HostName, HostsError, ProviderHosts};
 pub use model::*;
 pub use pace::*;
 pub use pipeline::*;
