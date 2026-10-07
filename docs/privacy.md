@@ -23,6 +23,10 @@ need. Other tools' credential files are read-only unless a rule in
 | Codex | Codex's OAuth credentials (`auth.json` under `$CODEX_HOME`, default `~/.codex`, or the keyring through `codex app-server`); account and rate-limit data from `codex app-server`; the chatgpt.com usage dashboard with a session cookie, pasted by you or imported on opt-in; Codex session logs and its local SQLite log to compute cost |
 | Antigravity | The process list, command-line flags and listening ports of the local Antigravity language server, and its local RPC answers; the output of the `agy` CLI; Google OAuth credentials as a fallback |
 
+On Linux, the Process broker reads same-user `/proc` process identity, owner,
+environment-marker and descriptor metadata for process ownership and cleanup.
+Environment reads are capped at 1 MiB and retain only the exact marker entry.
+
 AriadUsage also resolves the absolute paths of `claude`, `codex` and `agy`,
 including installs managed by mise or asdf.
 

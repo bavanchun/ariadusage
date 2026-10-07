@@ -19,6 +19,9 @@ httpmock = { version = "0.8.3", default-features = false, features = ["https"] }
 insta = { version = "1.49.0", features = ["json", "glob"] }
 jiff = { version = "0.2.37", features = ["serde"] }
 jsonschema = { version = "0.58.5", default-features = false }
+nix = { version = "0.31.3", features = ["signal"] }
+process-wrap = { version = "10.0.1", default-features = false, features = ["tokio1", "process-group", "process-session", "reset-sigmask"] }
+procfs = { version = "0.18.0", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "charset"] }
 rpassword = "7.5.4"
 rustix = "1.1.5"

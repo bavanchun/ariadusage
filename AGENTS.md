@@ -9,6 +9,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 - Build, test, lint, schema, brand and plugin recipes are defined in [justfile](justfile). Toolchain and runtime versions are pinned in [rust-toolchain.toml](rust-toolchain.toml) and [.node-version](.node-version).
 - Commands:
   - `just ci`: runs the full local quality gate (`ci-linux`, `brand-ci`, `omarchy-check`, and `secrets`).
+  - `just release-check`: builds the release CLI and verifies test hooks and the helper binary are absent.
   - `just push`: runs `secrets` then pushes the current branch.
   - `just schemas`: regenerates and blesses JSON schemas for Snapshot v1 and IPC v1.
   - `pnpm --dir brand build`: builds brand SVG and PNG assets.

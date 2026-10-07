@@ -23,6 +23,12 @@ typos:
 test:
     cargo nextest run --workspace --all-features --locked
     cargo test --doc --workspace --all-features --locked
+    ! pgrep -u "$(id -u)" -f '[a]riadusage-test-child'
+
+release-check:
+    cargo build -p ariadusage-cli --release --locked
+    ! test -e target/release/ariadusage-test-child
+    ! cargo tree -p ariadusage-cli -e features --locked | grep -q 'test-hooks'
 
 schemas:
     ARIADUSAGE_BLESS_SCHEMAS=1 cargo test -p ariadusage-protocol --test schema_drift --locked
@@ -39,7 +45,7 @@ secrets: secrets-selftest
 portable:
     cargo clippy --workspace --all-targets --all-features --locked {{ if LINUX_ONLY_CRATES != "" { "--exclude " + LINUX_ONLY_CRATES } else { "" } }}
 
-ci-linux: lint test deny
+ci-linux: lint test deny release-check
 
 ci: ci-linux brand-ci omarchy-check secrets
 
@@ -73,5 +79,4 @@ omarchy-dev-enable:
 
 omarchy-dev-remove:
     bash scripts/omarchy-plugin.sh dev-remove
-
 
