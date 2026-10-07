@@ -68,7 +68,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | HTTP client | reqwest with rustls and an explicitly selected aws-lc-rs provider | The main HTTPS client follows only same-origin redirects from the original URL; a separate literal-loopback client has no proxy or redirects; no cookie store; the test-only httpmock HTTPS server adds `ring` |
 | Secret HTTP body ownership | bytes (`Bytes::from_owner`) | Transfers a `Zeroizing<Vec<u8>>` into reqwest so the secret buffer is wiped when the final body reference drops |
 | Serialization | serde, serde_json (`raw_value`) | `RawValue` keeps opaque config entries byte-stable across saves |
-| SQLite | rusqlite (`bundled`) | Cost store plus read-only foreign databases, independent of the distro's SQLite |
+| SQLite | rusqlite (`bundled`) | Cost store plus read-only browser databases, independent of the distro's SQLite; browser copies use SQLite's no-follow, trusted-schema and defensive settings |
 | Time | jiff | IANA zones and DST-correct day keys. It stays internal: the wire carries RFC 3339 strings, so a jiff 1.0 bump never touches the contract |
 | Log scanning | memchr with std buffered reads | Resumable reads from a stored offset; never mmap a log that another process is writing |
 | CLI | clap (derive) | Standard; matches AriadShift |
@@ -80,16 +80,16 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | JSON-RPC over stdio | hand-rolled on tokio-util's line codec | `codex app-server` omits the `jsonrpc` field, so standard JSON-RPC crates do not fit; it reuses the IPC framing |
 | Base64 decoding | base64 | Padding-indifferent unverified JWT expiration reader in core |
 | Secret store (Linux) | secret-service (Tokio with DH encryption) | Default login collection, lock-aware reads, and writes restricted to user-initiated calls |
-| Browser cookie crypto and digests | aes, cbc, pbkdf2, sha1, sha2 | Domain-separated digests and profile keys in core; Chromium's Linux cookie encryption in engine, implemented in-house |
+| Browser cookie crypto and digests | aes, cbc, pbkdf2, sha1, sha2 | Domain-separated digests in core; Chromium's Linux cookie encryption, v24 host hashes and zeroized plaintext in engine, implemented in-house with the RustCrypto traits already used by secret-service |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
 | Process and port discovery | procfs | Same-user process identity, descriptor scans, Antigravity language-server discovery, agent sessions and the probe reaper |
 | Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
-| File descriptor safety (Unix) | rustix (`fs`, `process`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod` in the engine without unsafe code under `unsafe_code = "deny"` |
+| File descriptor safety (Linux) | rustix (`fs`, `process`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod` in Linux-only engine code without unsafe code under `unsafe_code = "deny"`; other targets use typed unsupported paths |
 | Staging directories | tempfile | Task-owned private staging directories (0700) for atomic private writes; also tests |
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
 | Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
 | Cookie header normalization | regex | Nine case-insensitive patterns to extract and normalize cookie strings from curl commands or raw headers; 64 KiB input cap |
-| Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
+| Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split and browser crypto round-trip properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
 
@@ -395,6 +395,8 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Owner check on foreign credential reads | Require `st_uid == euid` for foreign credential files | Permit any readable file (CodexBar baseline) | Divergence from CodexBar: on multi-user Linux systems, reading another user's credential file even if group/world readable creates unauthorized cross-user token leaks |
 | Persisted broker state | `$XDG_STATE_HOME/ariadusage/broker-state.json` (mode 0600, digests and timestamps only, sibling lock file) | In-memory-only state, unencrypted plain text tokens, or storing state in config | Preserves delegated-refresh cooldowns and last-seen fingerprints across engine restarts without persisting secret tokens, credential text, or foreign path strings; automatically repairs 0644 mode and resets corrupt/unknown versions with counted warnings |
 | Cookie source opt-in on Linux | Unset resolves to manual header if present, else None; explicit `CookieSource::Auto` required to authorize browser cookie import | Implicit auto-import when unset or ambient browser profile discovery without explicit opt-in | Owner decision 3: browser cookie import on Linux must be strictly opt-in per provider; `ImportAuthorized` capability token enforces that only the resolver can authorize browser reads |
+| Firefox containers as candidates | Container cookies are not a separate provider candidate | Each Firefox `userContextId` is returned as its own candidate, with a safe profile/container label | Keep container cookie scopes isolated instead of merging them |
+| Cookie database copies | SQLite reads a live foreign database and its journal sidecars | Copy only the database and `-wal` into a private tmpfs directory; never copy `-journal`; open with no-follow, trusted-schema off and defensive mode | A crafted rollback journal can name a super-journal that SQLite may delete during recovery |
 | Cookie cache in memory | In-memory `CookieCache` with `Mutex<HashMap>`, conditional mutation coordinator, generation tracking, and SHA-256 header fingerprints | Persisting cookie cache to disk (e.g. SQLite or state file) | CodexBar parity (Q5 resolved); session cookies stay in memory and are discarded on engine shutdown without leaving plaintext credentials on disk |
 | regex for the cookie normalizer | regex crate in ariadusage-core with `LazyLock` static compilation for the 9 normalizer patterns | Manual string parsing or hand-rolled pattern matching | CodexBar parity for 9 curl/header patterns with case-insensitivity; input length capped at 64 KiB to prevent ReDoS; deny-checked and audited |
 
@@ -411,7 +413,7 @@ Logos and icons are generated as code under `brand/`, following the same process
 1. **Antigravity transport on Linux.** Does the current language server still answer CodexBar's plain-HTTP fallback endpoints, or is HTTPS with a self-signed certificate needed? This decides whether the loopback HTTPS client ships in v1.
 2. **KDE Wallet.** Is Chromium's KWallet key visible through Plasma 6's Secret Service API, or is a dedicated KWallet client needed?
 3. **Keyring collection — resolved in M2.** Use the default login collection only. A missing `default` alias means no keyring; never use the in-memory `session` collection.
-4. **Chromium-family keyring names.** The Secret Service entries for Brave, Edge, Vivaldi and Opera on Linux are unverified and need real fixtures.
+4. **Chromium-family keyring names.** The Secret Service entries for Brave, Edge, Vivaldi and Opera on Linux are unverified and need real fixtures. The Edge, Vivaldi and Opera profile roots and all Flatpak/Snap roots are also unverified.
 5. **Cookie cache on Linux — resolved in M2.** Keep it in memory, as CodexBar does; in-memory cache with conditional mutation coordinator, scope isolation, and SHA-256 normalized fingerprints.
 6. **Codex dashboard extras.** Can CodexBar's WebView-only Codex data be fetched over HTTP with a session cookie, or does it wait for the macOS phase?
 7. **Adaptive refresh inputs.** Which Linux signals feed CodexBar's adaptive cadence (panel open, power profile)?
