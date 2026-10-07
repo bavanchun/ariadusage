@@ -311,7 +311,7 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 |---|---|---|---|
 | **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | Done |
 | **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Done |
-| **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Planned |
+| **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Done |
 | **M3 · Claude** | Every Claude source mode | Claude golden tests and a local live smoke test pass | Planned |
 | **M4 · Codex** | Every Codex source mode, app-server RPC, managed accounts | Codex golden tests and a local live smoke test pass | Planned |
 | **M5 · Antigravity** | Every Antigravity source mode | Antigravity golden tests and a local live smoke test pass | Planned |
@@ -425,3 +425,7 @@ Logos and icons are generated as code under `brand/`, following the same process
 13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
 14. **`cookieSource: auto` on Linux — resolved in M2.** Unset = manual header only, explicit `auto` = import in the provider's browser order (phase 10), none found = `NoBrowserSession`.
 15. **Rename of `CODEXBAR_CLAUDE_OAUTH_TOKEN`.** Should `CODEXBAR_CLAUDE_OAUTH_TOKEN` environment variable support be renamed to `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` with a fallback during migration? (M3).
+16. **Child process environment allowlist completeness.** Does the exact-name allowlist cover every variable needed by `claude`, `codex` and `agy` in user environments? Validated through M3–M5 owner-run live smoke tests; adding variables is a one-line change with a test.
+17. **Codex account promotion foreign write.** §6.3 specifies read-only access for CredentialFile; M4 requires adding a user-initiated foreign-write API to support Codex account promotion (`auth.json` update). Amend §6.3 in M4.
+18. **Refresh-failure gate decision.** Antigravity self-owned token refresh has no failure gate in CodexBar. Decided in M5 whether to introduce a gate or follow CodexBar.
+
