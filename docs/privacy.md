@@ -75,12 +75,11 @@ secrets are created with mode 0600 before any bytes are written.
 
 ## Token refresh
 
-- Codex and gcloud refresh tokens are never redeemed by AriadUsage; their own
-  CLIs refresh them.
-- When the Claude CLI owns your Claude login, AriadUsage asks the CLI to refresh
-  it by opening `claude` `/status` in a pseudo-terminal, at most once every five
-  minutes.
-- Only tokens AriadUsage itself owns are refreshed by AriadUsage.
+- Codex refresh tokens are never redeemed; their CLI refreshes them. gcloud has no v1 consumer.
+- When the Claude CLI owns the Claude OAuth token, AriadUsage asks the CLI to refresh
+  it only for user-initiated refreshes unless the user enables background refresh,
+  with CodexBar's cooldowns: 5 min after an observed success, 20 s after a failed attempt.
+- Only tokens AriadUsage itself owns are refreshed by AriadUsage and stored through the SecretStore.
 
 ## Browser cookie import
 

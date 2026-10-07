@@ -506,3 +506,26 @@ sources = [
     "Tests/CodexBarTests/ShellCommandForegroundTests.swift",
 ]
 
+[[ported]]
+path = "crates/ariadusage-core/tests/jwt_exp.rs"
+sources = ["TestsLinux/CodexNativeJWTExpiryTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/oauth_policy_expired.rs"
+sources = [
+    "Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
+    "TestsLinux/ClaudeOAuthDelegatedRefreshLinuxTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/oauth_policy_evidence.rs"
+sources = ["Tests/CodexBarTests/ClaudeOAuthRefreshChainOwnershipTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/oauth_policy_disposition.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeOAuthRefreshDispositionTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
+]
+

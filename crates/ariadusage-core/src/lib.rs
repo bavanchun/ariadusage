@@ -1,10 +1,13 @@
 //! Core domain model, provider descriptors, and pure business logic for AriadUsage.
 
 pub mod config;
+pub mod digest;
 pub mod error;
 pub mod gates;
 pub mod hosts;
+pub mod jwt;
 pub mod model;
+pub mod oauth;
 pub mod pace;
 pub mod pipeline;
 pub mod projection;
@@ -16,6 +19,7 @@ pub use config::*;
 pub use error::ModelError;
 pub use hosts::{HostName, HostsError, ProviderHosts};
 pub use model::*;
+pub use oauth::*;
 pub use pace::*;
 pub use pipeline::*;
 pub use projection::*;

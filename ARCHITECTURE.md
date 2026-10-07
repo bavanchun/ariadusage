@@ -78,8 +78,9 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | PTY | pty-process | Keeps the `unsafe` session setup inside the crate, which the workspace's `unsafe_code = "deny"` requires, and supplies a controlling terminal |
 | Subprocesses | process-wrap with nix | Process groups and sessions, signal-mask reset and Tokio child control; Windows Job Objects later |
 | JSON-RPC over stdio | hand-rolled on tokio-util's line codec | `codex app-server` omits the `jsonrpc` field, so standard JSON-RPC crates do not fit; it reuses the IPC framing |
+| Base64 decoding | base64 | Padding-indifferent unverified JWT expiration reader in core |
 | Secret store (Linux) | secret-service | Lock-aware search that never prompts |
-| Browser cookie crypto | aes, cbc, pbkdf2, sha1, sha2 | Chromium's Linux cookie encryption, implemented in-house |
+| Browser cookie crypto and digests | aes, cbc, pbkdf2, sha1, sha2 | Domain-separated digests and profile keys in core; Chromium's Linux cookie encryption in engine, implemented in-house |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
 | Process and port discovery | procfs | Same-user process identity, descriptor scans, Antigravity language-server discovery, agent sessions and the probe reaper |
 | Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
@@ -248,8 +249,7 @@ What AriadUsage reads, writes and sends is documented for users in [docs/privacy
 
 ### 9.2 Token ownership
 
-- Codex and gcloud refresh tokens are never redeemed. Their owning CLI refreshes them.
-- When the Claude CLI owns the Claude OAuth token, AriadUsage asks the CLI to refresh it by running `claude` `/status` in a PTY, with a five-minute cooldown, as CodexBar does.
+- Codex refresh tokens are never redeemed; their CLI refreshes them. gcloud has no v1 consumer. When the Claude CLI owns the Claude OAuth token, AriadUsage asks the CLI to refresh it only for user-initiated refreshes unless the user enables background refresh, with CodexBar's cooldowns: 5 min after an observed success, 20 s after a failed attempt.
 - Tokens that AriadUsage itself owns are refreshed by AriadUsage and stored through the SecretStore.
 
 ### 9.3 Platforms
@@ -386,6 +386,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Config path resolution | Pure path resolver over injected environment and home; etcetera and `std::env` only in production wrapper | Calling etcetera or `std::env` directly in resolver | etcetera reads process env directly and cannot be injected; edition 2024 makes `set_var` unsafe under `unsafe_code = "deny"` |
 | Provider fetch pipeline strategy dispatch | Boxed futures (`Pin<Box<dyn Future<Output = T> + Send + 'a>>`) | `async-trait` proc-macro crate; native `async fn` in traits with static dispatch enum | Heterogeneous strategy lists require dyn-compatible dispatch; boxed future is zero-dependency std Rust, avoiding extra proc-macro dependencies while keeping strategy lists dynamic and open to future plugin expansion |
 | Last-good and failure policy | §6.4 corrected to CodexBar's code: gate hides first failure with prior data; non-preservable error drops snapshot; account changes drop snapshot and reset gate | Strict "auth drops immediately" wording in early draft §6.4 | Follows CodexBar's code and tests verbatim; transient first-failure auth flakes are hidden by the gate if prior data exists, while second-consecutive failure or account changes drop data |
+| Background delegated refresh off by default | User-initiated only by default; a provider setting can opt into background touches; cooldowns 5 min after success/unreadable, 20 s after failure | Always running background delegated refresh or prompting outside user control | Protects against unexpected keychain unlock prompts or CLI background noise without explicit user intent (owner decision 2) |
 
 ---
 
