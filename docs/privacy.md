@@ -103,11 +103,12 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 
 ## Browser cookie import
 
-- Off by default. You opt in per provider.
+- Off by default: an unset `cookieSource` resolves to a manual header only. You must explicitly opt in per provider by setting `cookieSource: auto`.
+- Manual cookie headers are stored securely in the keyring (default login collection) via SecretStore, never in plain configuration.
 - Only the cookie domains a provider declares (for example claude.ai for Claude
   and chatgpt.com for Codex) are read, from Chromium-family and Firefox
   profiles.
-- Imported cookies are used only for that provider's requests and are never
+- Imported cookies are stored in an in-memory cache, used only for that provider's requests, and are never
   sent to another host, including on redirects.
 - Pasting a cookie header by hand remains available instead of import.
 - On Windows (a later phase), AriadUsage never bypasses Chrome's App-Bound

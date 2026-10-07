@@ -1,6 +1,7 @@
 //! Core domain model, provider descriptors, and pure business logic for AriadUsage.
 
 pub mod config;
+pub mod cookie;
 pub mod digest;
 pub mod error;
 pub mod gates;

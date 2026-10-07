@@ -583,6 +583,47 @@ sources = [
 path = "crates/ariadusage-engine/src/state_store.rs"
 sources = ["Sources/CodexBarCore/ProviderSessionStoreFile.swift"]
 
+[[ported]]
+path = "crates/ariadusage-core/src/cookie/normalize.rs"
+sources = ["Sources/CodexBarCore/CookieHeaderNormalizer.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/cookie/resolve.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/ProviderCookieSettingsResolver.swift",
+    "Sources/CodexBarCore/TokenAccountSupport.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/cookie/merge.rs"
+sources = ["Sources/CodexBarCore/BrowserCookieProfiles.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/cookie_normalize.rs"
+sources = ["Tests/CodexBarTests/CookieHeaderNormalizerTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/cookie_resolve.rs"
+sources = ["Tests/CodexBarTests/ProviderCookieSettingsResolverTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/cookie_merge.rs"
+sources = ["Tests/CodexBarTests/BrowserCookieProfilesTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/cookie_cache.rs"
+sources = [
+    "Sources/CodexBarCore/CookieHeaderCache.swift",
+    "Sources/CodexBarCore/CookieHeaderCache+Fingerprint.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cookie_cache.rs"
+sources = [
+    "Tests/CodexBarTests/CookieHeaderCacheTests.swift",
+    "Tests/CodexBarTests/CookieHeaderCacheConditionalMutationTests.swift",
+]
+
 
 
 

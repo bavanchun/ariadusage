@@ -126,6 +126,9 @@ it changes the architecture, also add a Decision Log row.
 | Foreign credential file reads | Reads any readable file at the path | Requires `st_uid == euid` on opened file descriptor; wrong owner returns `Untrusted` | Prevents unauthorized cross-user credential reads on multi-user Linux systems |
 | Delegated refresh success observation | Observes macOS keychain item modification and token changes | Observes the target credential file's `StatFingerprint` within 2 seconds at 0.2, 0.5, and 0.8 seconds | Linux has no keychain item modification observer; credential files reflect token writes from external CLI / OAuth touches |
 | Broker state persistence | Transient memory or ad-hoc defaults; macOS keychain for tokens | `$XDG_STATE_HOME/ariadusage/broker-state.json` (0600 mode, digests and timestamps only, lock file, auto-repair 0644, reset on corrupt) | Preserves delegated-refresh cooldowns and quarantine state across engine restarts without persisting secret tokens, credential text, or foreign path strings |
+| Cookie domain matching | SweetCookieKit / CodexBar uses string substring / contains check (`host.contains(domain)`) | `domain_matches` requires exact host match or dot-suffix (`.domain`); leading dots stripped | Security divergence: `notclaude.ai` must never match `claude.ai` |
+| Cookie cache storage | In-memory `CookieHeaderCache` with conditional mutation and fingerprinting | In-memory `CookieCache` with `ConditionalMutationCoordinator` and SHA-256 fingerprinting | Parity with CodexBar baseline (Q5 resolved) |
+| Managed-account cookie scopes and refresh-read suppression | Managed-account cache scopes and UI refresh-read suppression in `CookieHeaderCache` | Deferred: managed-account scopes deferred to M4; refresh-read suppression deferred to M8 with its UI caller | Keeps M2 scope focused on core cookie cache and header delivery |
 
 
 ## Upstream drift
