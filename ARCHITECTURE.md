@@ -88,6 +88,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Staging directories | tempfile | Task-owned private staging directories (0700) for atomic private writes; also tests |
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
 | Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
+| Cookie header normalization | regex | Nine case-insensitive patterns to extract and normalize cookie strings from curl commands or raw headers; 64 KiB input cap |
 | Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
@@ -393,6 +394,9 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Credential stat fingerprint superset | `StatFingerprint (path, dev, ino, mtime_ns, size)` | CodexBar's `(mtime, size)` or path-only | Divergence from CodexBar: protects against same-size atomic replacements within the same millisecond/second timestamp resolution or inode re-use across distinct files while avoiding content hashes on unchanged files |
 | Owner check on foreign credential reads | Require `st_uid == euid` for foreign credential files | Permit any readable file (CodexBar baseline) | Divergence from CodexBar: on multi-user Linux systems, reading another user's credential file even if group/world readable creates unauthorized cross-user token leaks |
 | Persisted broker state | `$XDG_STATE_HOME/ariadusage/broker-state.json` (mode 0600, digests and timestamps only, sibling lock file) | In-memory-only state, unencrypted plain text tokens, or storing state in config | Preserves delegated-refresh cooldowns and last-seen fingerprints across engine restarts without persisting secret tokens, credential text, or foreign path strings; automatically repairs 0644 mode and resets corrupt/unknown versions with counted warnings |
+| Cookie source opt-in on Linux | Unset resolves to manual header if present, else None; explicit `CookieSource::Auto` required to authorize browser cookie import | Implicit auto-import when unset or ambient browser profile discovery without explicit opt-in | Owner decision 3: browser cookie import on Linux must be strictly opt-in per provider; `ImportAuthorized` capability token enforces that only the resolver can authorize browser reads |
+| Cookie cache in memory | In-memory `CookieCache` with `Mutex<HashMap>`, conditional mutation coordinator, generation tracking, and SHA-256 header fingerprints | Persisting cookie cache to disk (e.g. SQLite or state file) | CodexBar parity (Q5 resolved); session cookies stay in memory and are discarded on engine shutdown without leaving plaintext credentials on disk |
+| regex for the cookie normalizer | regex crate in ariadusage-core with `LazyLock` static compilation for the 9 normalizer patterns | Manual string parsing or hand-rolled pattern matching | CodexBar parity for 9 curl/header patterns with case-insensitivity; input length capped at 64 KiB to prevent ReDoS; deny-checked and audited |
 
 ---
 
@@ -408,7 +412,7 @@ Logos and icons are generated as code under `brand/`, following the same process
 2. **KDE Wallet.** Is Chromium's KWallet key visible through Plasma 6's Secret Service API, or is a dedicated KWallet client needed?
 3. **Keyring collection — resolved in M2.** Use the default login collection only. A missing `default` alias means no keyring; never use the in-memory `session` collection.
 4. **Chromium-family keyring names.** The Secret Service entries for Brave, Edge, Vivaldi and Opera on Linux are unverified and need real fixtures.
-5. **Cookie cache on Linux.** Keep it in memory, as CodexBar does, or persist it?
+5. **Cookie cache on Linux — resolved in M2.** Keep it in memory, as CodexBar does; in-memory cache with conditional mutation coordinator, scope isolation, and SHA-256 normalized fingerprints.
 6. **Codex dashboard extras.** Can CodexBar's WebView-only Codex data be fetched over HTTP with a session cookie, or does it wait for the macOS phase?
 7. **Adaptive refresh inputs.** Which Linux signals feed CodexBar's adaptive cadence (panel open, power profile)?
 8. **CLI JSON compatibility.** Should `ariadusage usage --json` match CodexBar's output byte for byte, or only semantically?
@@ -417,5 +421,5 @@ Logos and icons are generated as code under `brand/`, following the same process
 11. **Systemd user socket activation.** Should production installations use systemd socket activation (`ariadusage.socket` / `ariadusage.service`) so the daemon starts on-demand when frontends connect? (Spike recommendation for M8/M9).
 12. **Multi-monitor bar height adaptation.** The bar widget currently uses fixed `implicitHeight: 16` designed for Omarchy's standard 32 px bar. How should it scale dynamically if users configure non-standard bar heights? (Spike recommendation for M9).
 13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
-14. **`cookieSource: auto` on Linux.** What strategy does `cookieSource: auto` follow on Linux when both Chromium and Firefox profiles exist, or when none is found? (M2/M3).
+14. **`cookieSource: auto` on Linux — resolved in M2.** Unset = manual header only, explicit `auto` = import in the provider's browser order (phase 10), none found = `NoBrowserSession`.
 15. **Rename of `CODEXBAR_CLAUDE_OAUTH_TOKEN`.** Should `CODEXBAR_CLAUDE_OAUTH_TOKEN` environment variable support be renamed to `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` with a fallback during migration? (M3).
