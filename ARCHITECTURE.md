@@ -65,7 +65,8 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Capability | Crate | Why |
 |---|---|---|
 | Async runtime | tokio | LTS line; same choice as AriadShift |
-| HTTP client | reqwest with rustls | One custom redirect policy covers every request; acceptance of a self-signed certificate is confined to a separate loopback-only client |
+| HTTP client | reqwest with rustls and an explicitly selected aws-lc-rs provider | The main HTTPS client follows only same-origin redirects from the original URL; a separate literal-loopback client has no proxy or redirects; no cookie store; the test-only httpmock HTTPS server adds `ring` |
+| Secret HTTP body ownership | bytes (`Bytes::from_owner`) | Transfers a `Zeroizing<Vec<u8>>` into reqwest so the secret buffer is wiped when the final body reference drops |
 | Serialization | serde, serde_json (`raw_value`) | `RawValue` keeps opaque config entries byte-stable across saves |
 | SQLite | rusqlite (`bundled`) | Cost store plus read-only foreign databases, independent of the distro's SQLite |
 | Time | jiff | IANA zones and DST-correct day keys. It stays internal: the wire carries RFC 3339 strings, so a jiff 1.0 bump never touches the contract |
@@ -364,6 +365,8 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | PTY | pty-process with vt100 | portable-pty; hand-rolled rustix PTY | portable-pty's fixes are unreleased; a hand-rolled PTY needs `unsafe` in a deny-unsafe workspace |
 | Codex RPC | Hand-rolled newline JSON-RPC client | jsonrpsee, jsonrpc-core, a third-party protocol crate | The app server omits the `jsonrpc` field; three methods do not justify a framework |
 | File watching | None; poll fingerprints on refresh ticks | `notify` | Its license is outside the allow-list, and polling keeps idle CPU flat |
+| Net broker client shape | Reuse one main HTTPS client with an original-URL same-origin redirect guard and one separate literal-loopback client with no proxy or redirects; cap responses at 5 MiB | Per-request clients, reqwest's default redirects, or a retry policy without a v1 consumer | Reused clients keep connection pooling without cookie state; declared origins and bounded bodies keep credential delivery and memory use reviewable |
+| Net secret request bodies | Move `Zeroizing<Vec<u8>>` into `bytes::Bytes::from_owner` for the reqwest body | Copy secret bytes into an ordinary `Vec<u8>` body | The HTTP body retains the zeroizing owner across body clones and wipes it after the final reference is dropped |
 | Browser cookie reader | In-house | rookie, decrypt-cookies, cookie-scoop | Archived with an ABE bypass; LGPL; shells out to CLIs |
 | Errors | thiserror only | anyhow | Typed errors drive exit codes and fallback |
 | Notifications and DND | Plain notifications; Omarchy's shell enforces DND | Detecting DND in the engine | Omarchy's shell is the notification server; there is no mako to query |

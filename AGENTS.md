@@ -4,7 +4,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Current state
 
-- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the pure domain crate `ariadusage-core` (`crates/ariadusage-core`), the engine runtime crate `ariadusage-engine` (`crates/ariadusage-engine`) with config store and atomic private writer, the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
+- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the pure domain crate `ariadusage-core` (`crates/ariadusage-core`), the engine runtime crate `ariadusage-engine` (`crates/ariadusage-engine`) with config store, atomic private writer and broker foundation including Net, the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
 - The `fixtures/` directory holds test and parity data files recorded in `fixtures/manifest.toml`, exempt from the Markdown location rule.
 - Build, test, lint, schema, brand and plugin recipes are defined in [justfile](justfile). Toolchain and runtime versions are pinned in [rust-toolchain.toml](rust-toolchain.toml) and [.node-version](.node-version).
 - Commands:
