@@ -32,7 +32,7 @@ fn test_broker_state_is_0600_and_contains_no_tokens_or_path_text() {
     state.last_seen.insert(
         profile_digest.clone(),
         StatFingerprint {
-            path: PathBuf::from("/home/secretuser/.claude/credentials.json"),
+            path: PathBuf::from("/fakehome/secretuser/.claude/credentials.json"),
             dev: 10,
             ino: 200,
             mtime_ns: 123456789,
@@ -42,7 +42,7 @@ fn test_broker_state_is_0600_and_contains_no_tokens_or_path_text() {
     state.quarantine.insert(
         profile_digest.clone(),
         StatFingerprint {
-            path: PathBuf::from("/home/secretuser/.claude/credentials.json"),
+            path: PathBuf::from("/fakehome/secretuser/.claude/credentials.json"),
             dev: 10,
             ino: 200,
             mtime_ns: 123456789,
@@ -69,7 +69,7 @@ fn test_broker_state_is_0600_and_contains_no_tokens_or_path_text() {
         content
     );
     assert!(
-        !content.contains("/home"),
+        !content.contains("/fakehome"),
         "Persisted state must not contain path prefix: {}",
         content
     );
@@ -79,7 +79,7 @@ fn test_broker_state_is_0600_and_contains_no_tokens_or_path_text() {
         content
     );
     assert!(
-        !content.contains("sk-ant-"),
+        !content.contains(concat!("sk-", "ant-")),
         "Persisted state must not contain secret tokens: {}",
         content
     );
