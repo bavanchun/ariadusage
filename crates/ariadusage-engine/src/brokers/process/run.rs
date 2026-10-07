@@ -1,38 +1,43 @@
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 use std::future::{Future, pending};
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 use std::io;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 use std::pin::Pin;
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 #[cfg(target_os = "linux")]
 use tokio::task::JoinSet;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 use tokio::time::{self, Instant};
 #[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
 
 use crate::brokers::call::BrokerCall;
 
+#[cfg(target_os = "linux")]
 use super::buffers::BoundedOutputBuffer;
-use super::command::{Command, LaunchMode, Output, StreamPolicy};
-use super::error::{OutputStream, ProcessError};
+use super::command::{Command, Output};
+#[cfg(target_os = "linux")]
+use super::command::{LaunchMode, StreamPolicy};
+#[cfg(target_os = "linux")]
+use super::error::OutputStream;
+use super::error::ProcessError;
 #[cfg(target_os = "linux")]
 use super::procscan::{ProcessIdentity, process_group, process_identity, process_uid};
 #[cfg(target_os = "linux")]
 use super::signal::{ProcessSignal, signal_group};
 
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 const ETXTBSY: i32 = 26;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 const SPAWN_RETRY_LIMIT: usize = 3;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(10);
 #[cfg(target_os = "linux")]
 const CLEANUP_WAIT: Duration = Duration::from_secs(1);
@@ -375,7 +380,7 @@ fn timeout_future(duration: Duration) -> Pin<Box<dyn Future<Output = ()> + Send>
     }
 }
 
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 async fn retry_spawn<T>(enabled: bool, mut spawn: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     let max_attempts = if enabled { SPAWN_RETRY_LIMIT } else { 1 };
     for attempt in 0..max_attempts {
@@ -390,12 +395,12 @@ async fn retry_spawn<T>(enabled: bool, mut spawn: impl FnMut() -> io::Result<T>)
     Err(io::Error::other("process launch failed"))
 }
 
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(target_os = "linux")]
 fn is_text_busy(error: &io::Error) -> bool {
     error.raw_os_error() == Some(ETXTBSY)
 }
 
-#[cfg(feature = "test-hooks")]
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
 pub async fn retry_spawn_for_test<T>(
     enabled: bool,
     spawn: impl FnMut() -> io::Result<T>,
