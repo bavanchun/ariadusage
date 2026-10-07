@@ -21,10 +21,12 @@ ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
 bytes = { workspace = true }
 etcetera = { workspace = true }
+jiff = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
 serde = { workspace = true }
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }

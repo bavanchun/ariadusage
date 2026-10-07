@@ -50,10 +50,12 @@ impl ConfigStore {
             if let Some(parent) = self.path.parent()
                 && parent.exists()
             {
-                check_parent_trust(parent)?;
+                crate::trust::check_parent_trust(parent, crate::trust::TrustPolicy::CONFIG)?;
             }
 
-            let Some(fd) = check_file_trust(&self.path)? else {
+            let Some(fd) =
+                crate::trust::check_file_trust(&self.path, crate::trust::TrustPolicy::CONFIG)?
+            else {
                 return Ok(None);
             };
 
@@ -202,7 +204,10 @@ impl ConfigStore {
         {
             self.with_write_lock(true, || {
                 if self.path.exists() {
-                    let _ = check_file_trust(&self.path)?;
+                    let _ = crate::trust::check_file_trust(
+                        &self.path,
+                        crate::trust::TrustPolicy::CONFIG,
+                    )?;
                     std::fs::remove_file(&self.path)?;
                 }
                 Ok(())
@@ -213,7 +218,7 @@ impl ConfigStore {
     #[cfg(unix)]
     fn save_under_lock(&self, config: &Config) -> Result<(), StoreError> {
         if self.path.exists() {
-            let _ = check_file_trust(&self.path)?;
+            let _ = crate::trust::check_file_trust(&self.path, crate::trust::TrustPolicy::CONFIG)?;
         }
         let normalized = ariadusage_core::config::normalize(config.clone());
         let mut bytes = ariadusage_core::config::encode(&normalized);
@@ -241,7 +246,7 @@ impl ConfigStore {
         builder.mode(0o700);
         builder.create(parent)?;
 
-        check_parent_trust(parent)?;
+        crate::trust::check_parent_trust(parent, crate::trust::TrustPolicy::CONFIG)?;
 
         let lock_name = format!(
             "{}.lock",
@@ -301,67 +306,4 @@ impl ConfigStore {
 
 fn default_config() -> Config {
     ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
-}
-
-#[cfg(unix)]
-fn check_parent_trust(parent: &Path) -> Result<(), StoreError> {
-    let stat = rustix::fs::stat(parent).map_err(std::io::Error::from)?;
-    let euid = rustix::process::geteuid().as_raw();
-    if stat.st_uid != euid {
-        return Err(StoreError::UntrustedDirectory(format!(
-            "parent directory {:?} is owned by UID {}, expected {}",
-            parent, stat.st_uid, euid
-        )));
-    }
-    if (stat.st_mode & 0o022) != 0 {
-        return Err(StoreError::UntrustedDirectory(format!(
-            "parent directory {:?} has mode {:04o}, must not be group- or world-writable (required mode 0700 or at most 0755)",
-            parent,
-            stat.st_mode & 0o777
-        )));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn check_file_trust(path: &Path) -> Result<Option<rustix::fd::OwnedFd>, StoreError> {
-    let fd = match rustix::fs::open(
-        path,
-        rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
-        rustix::fs::Mode::empty(),
-    ) {
-        Ok(fd) => fd,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(rustix::io::Errno::LOOP) => {
-            return Err(StoreError::UntrustedFile(format!(
-                "config file {:?} is a symlink",
-                path
-            )));
-        }
-        Err(e) => return Err(StoreError::Io(e.into())),
-    };
-
-    let stat = rustix::fs::fstat(&fd).map_err(std::io::Error::from)?;
-    if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
-        return Err(StoreError::UntrustedFile(format!(
-            "config file {:?} is not a regular file",
-            path
-        )));
-    }
-    let euid = rustix::process::geteuid().as_raw();
-    if stat.st_uid != euid {
-        return Err(StoreError::UntrustedFile(format!(
-            "config file {:?} is owned by UID {}, expected {}",
-            path, stat.st_uid, euid
-        )));
-    }
-    if (stat.st_mode & 0o022) != 0 {
-        return Err(StoreError::UntrustedFile(format!(
-            "config file {:?} is group- or world-writable (mode {:04o})",
-            path,
-            stat.st_mode & 0o777
-        )));
-    }
-
-    Ok(Some(fd))
 }
