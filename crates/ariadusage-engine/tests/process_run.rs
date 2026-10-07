@@ -8,10 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::process::{
-    AbsolutePath, Command, LaunchMode, ProcessEnv, ProcessError, StdinSpec, StreamPolicy, run,
+    AbsolutePath, Command, LaunchMode, ProcessEnv, ProcessError, ProcessRegistry, StdinSpec,
+    StreamPolicy, run as run_registered,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +32,19 @@ fn command(args: &[&str]) -> Command {
     )
     .env(ProcessEnv::empty())
     .timeout(Duration::from_secs(5))
+}
+
+async fn run(
+    call: BrokerCall,
+    command: Command,
+) -> Result<ariadusage_engine::brokers::process::Output, ProcessError> {
+    run_registered(
+        call,
+        command,
+        &ProcessRegistry::new(),
+        &LaunchGate::default(),
+    )
+    .await
 }
 
 fn require_nextest() {

@@ -1,7 +1,9 @@
+// Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 use ariadusage_engine::brokers::process::{ProcessIdentity, ProcessSignal, signal, signal_group};
 
 #[test]
+// CodexBar: TTYCommandRunnerTests.swift:89
 fn signaling_refuses_pid_one_engine_pid_and_protected_groups() {
     assert!(
         !signal(

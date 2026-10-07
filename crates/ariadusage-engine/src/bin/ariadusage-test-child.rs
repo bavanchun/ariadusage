@@ -57,7 +57,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let remaining = args.collect::<Vec<_>>();
     let inherited = matches!(
         mode.as_str(),
-        "grandchild" | "grandchild-no-session" | "hold-pipe"
+        "grandchild"
+            | "grandchild-no-session"
+            | "hold-pipe"
+            | "hold-detached-pipe"
+            | "term-spawn-grandchild"
     );
     if !inherited {
         let _ =
@@ -65,6 +69,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match mode.as_str() {
+        "marker-present" => {
+            println!(
+                "{}",
+                std::env::var_os("ARIADUSAGE_PROCESS_MARKER").is_some()
+            );
+        }
         "sleep" => {
             let millis = bounded_millis(remaining.first());
             time::sleep(Duration::from_millis(millis)).await;
@@ -115,7 +125,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("READY");
             time::sleep(Duration::from_secs(60)).await;
         }
-        "ignore-term" => {
+        "ignore-term" | "ignore-term-ready" => {
+            if mode == "ignore-term-ready"
+                && let Some(path) = remaining.get(1)
+            {
+                std::fs::write(path, std::process::id().to_string())?;
+            }
             let mut terminate = signal(SignalKind::terminate())?;
             let deadline = time::sleep(Duration::from_millis(bounded_millis(remaining.first())));
             tokio::pin!(deadline);
@@ -148,6 +163,84 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .spawn()?;
             println!("{}", child.id());
         }
+        "spawn-group-no-pipe" => {
+            let millis = bounded_millis(remaining.first());
+            let child = Command::new(std::env::current_exe()?)
+                .arg("grandchild-no-session")
+                .arg(millis.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            println!("{}", child.id());
+        }
+        "spawn-detached-wait" | "spawn-detached-failure" => {
+            let millis = bounded_millis(remaining.first());
+            let child = Command::new(std::env::current_exe()?)
+                .arg("grandchild")
+                .arg(millis.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            if let Some(path) = remaining.get(1) {
+                std::fs::write(path, child.id().to_string())?;
+            }
+            println!("{}", child.id());
+            if mode == "spawn-detached-failure" {
+                return Err(Box::new(std::io::Error::other("synthetic child failure")));
+            }
+            time::sleep(Duration::from_secs(30)).await;
+        }
+        "spawn-detached" | "spawn-detached-unmarked" => {
+            let millis = bounded_millis(remaining.first());
+            let mut child = Command::new(std::env::current_exe()?);
+            child
+                .arg("grandchild")
+                .arg(millis.to_string())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if mode == "spawn-detached-unmarked" {
+                child.env_remove("ARIADUSAGE_PROCESS_MARKER");
+            }
+            let child = child.spawn()?;
+            println!("{}", child.id());
+        }
+        "spawn-detached-pair" => {
+            let millis = bounded_millis(remaining.first());
+            let child = Command::new(std::env::current_exe()?)
+                .args(["grandchild", &millis.to_string()])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            let marked_pid = child.id();
+            let child = Command::new(std::env::current_exe()?)
+                .arg("grandchild")
+                .arg(millis.to_string())
+                .env_remove("ARIADUSAGE_PROCESS_MARKER")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            println!("{} {}", marked_pid, child.id());
+        }
+        "spawn-detached-on-term" => {
+            let path = remaining
+                .first()
+                .ok_or_else(|| std::io::Error::other("missing helper pid path"))?;
+            let mut terminate = signal(SignalKind::terminate())?;
+            println!("READY");
+            terminate.recv().await;
+            let child = Command::new(std::env::current_exe()?)
+                .args(["grandchild", "50000"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()?;
+            std::fs::write(path, child.id().to_string())?;
+        }
         "hold-pipe" => {
             let millis = bounded_millis(remaining.first());
             let child = Command::new(std::env::current_exe()?)
@@ -155,6 +248,47 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .arg(millis.to_string())
                 .spawn()?;
             println!("{}", child.id());
+        }
+        "hold-detached-pipe" => {
+            let millis = bounded_millis(remaining.first());
+            let child = Command::new(std::env::current_exe()?)
+                .arg("grandchild")
+                .arg(millis.to_string())
+                .spawn()?;
+            println!("{}", child.id());
+        }
+        "hold-detached-term-spawn" => {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.arg("term-spawn-grandchild");
+            if let Some(path) = remaining.first() {
+                command.arg(path);
+            }
+            let child = command.spawn()?;
+            time::sleep(Duration::from_millis(100)).await;
+            println!("{}", child.id());
+        }
+        "term-spawn-grandchild" => {
+            let _ = rustix::process::setsid()?;
+            let mut terminate = signal(SignalKind::terminate())?;
+            println!("READY");
+            terminate.recv().await;
+            let child = Command::new(std::env::current_exe()?)
+                .args(["grandchild-no-session", "50000"])
+                .spawn()?;
+            if let Some(path) = remaining.first() {
+                std::fs::write(path, child.id().to_string())?;
+            }
+            time::sleep(Duration::from_secs(30)).await;
+        }
+        "spawn-clear-env-wait" => {
+            if let Some(path) = remaining.first() {
+                let _child = Command::new(std::env::current_exe()?)
+                    .arg("ready-wait")
+                    .arg(path)
+                    .env_clear()
+                    .spawn()?;
+                time::sleep(Duration::from_secs(30)).await;
+            }
         }
         "clear-env" => {
             let status = Command::new(std::env::current_exe()?)

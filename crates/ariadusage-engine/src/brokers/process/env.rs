@@ -96,6 +96,18 @@ impl ProcessEnv {
         self
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn with_internal<K, V>(mut self, name: K, value: V) -> Self
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        let name = name.into();
+        self.denied.remove(&name);
+        self.values.insert(name, value.into());
+        self
+    }
+
     pub fn without<K>(mut self, names: impl IntoIterator<Item = K>) -> Self
     where
         K: Into<OsString>,

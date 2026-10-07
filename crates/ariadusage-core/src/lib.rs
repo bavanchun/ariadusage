@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod error;
+pub mod gates;
 pub mod hosts;
 pub mod model;
 pub mod pace;
