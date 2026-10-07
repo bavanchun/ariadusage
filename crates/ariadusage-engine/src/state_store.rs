@@ -131,12 +131,11 @@ impl BrokerStateStore {
                 }
             }
 
-            let Some(fd) = check_file_trust(&self.path, TrustPolicy::PRIVATE)? else {
+            let Some(mut file) = check_file_trust(&self.path, TrustPolicy::PRIVATE)? else {
                 return Ok(BrokerState::empty());
             };
 
             use std::io::Read;
-            let mut file = std::fs::File::from(fd);
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
 

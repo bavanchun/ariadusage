@@ -3,20 +3,9 @@
 
 use std::path::PathBuf;
 
-use ariadusage_core::pipeline::FetchInteraction;
-use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::credential_file::{
-    CredentialDecl, LastSeen, Quarantine, StatFingerprint, content_fingerprint, read,
+    LastSeen, Quarantine, StatFingerprint, content_fingerprint,
 };
-use tokio_util::sync::CancellationToken;
-
-fn make_call() -> BrokerCall {
-    BrokerCall {
-        interaction: FetchInteraction::UserInitiated,
-        cancel: CancellationToken::new(),
-        request_id: "test-req".to_string(),
-    }
-}
 
 #[test]
 fn test_content_fingerprint_sha256_hex() {
@@ -30,9 +19,19 @@ fn test_content_fingerprint_sha256_hex() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_stat_fingerprint_changes_on_atomic_same_size_replacement() {
-    let call = make_call();
+    use ariadusage_core::pipeline::FetchInteraction;
+    use ariadusage_engine::brokers::call::BrokerCall;
+    use ariadusage_engine::brokers::credential_file::{CredentialDecl, read};
+    use tokio_util::sync::CancellationToken;
+
+    let call = BrokerCall {
+        interaction: FetchInteraction::UserInitiated,
+        cancel: CancellationToken::new(),
+        request_id: "test-req".to_string(),
+    };
     let temp = tempfile::tempdir().expect("tempdir");
     let target_path = temp.path().join("credentials.json");
 

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use ariadusage_engine::paths::{
     PathError, resolve_data_dir, resolve_runtime_dir, resolve_state_dir,
-    resolve_trusted_runtime_dir_with,
 };
 
 fn make_env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
@@ -124,8 +123,10 @@ fn test_resolve_fails_when_home_is_missing_or_relative() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_trusted_runtime_dir_rejections() {
+    use ariadusage_engine::paths::resolve_trusted_runtime_dir_with;
     use std::os::unix::fs::PermissionsExt;
 
     // 1. Unset value -> None

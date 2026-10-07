@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use std::os::unix::fs::PermissionsExt;
 
 use ariadusage_core::pipeline::FetchInteraction;
