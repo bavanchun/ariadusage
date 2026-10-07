@@ -5,3 +5,4 @@ pub mod login_shell;
 pub mod net;
 pub mod oauth;
 pub mod process;
+pub mod secret_store;

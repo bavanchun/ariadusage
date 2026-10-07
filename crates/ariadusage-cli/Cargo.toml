@@ -12,15 +12,19 @@ name = "ariadusage"
 path = "src/main.rs"
 
 [dependencies]
+ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
+ariadusage-engine = { version = "0.0.0", path = "../ariadusage-engine" }
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
 clap = { workspace = true }
 rpassword = { workspace = true }
-serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
-ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol", features = ["fixture"] }
 assert_cmd = { workspace = true }
 tokio = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

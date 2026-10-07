@@ -63,14 +63,30 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 ## Secrets
 
 - Secrets you give AriadUsage (API keys, pasted cookies, account tokens) are
-  stored in your Secret Service keyring. Only when no keyring is available, and
-  only after you agree, they go to a 0600 file instead.
+  stored in the default login collection through Secret Service. AriadUsage
+  never uses the in-memory `session` collection; if there is no `default`
+  collection alias, the keyring is unavailable.
+- Secret Service items use a fixed attribute schema for application, provider,
+  secret kind and opaque account ID. Labels contain only the provider and kind;
+  they never contain an account name, email or secret value.
+- If Secret Service is unavailable, `secret set` asks before writing
+  `$XDG_DATA_HOME/ariadusage/secrets.json`. The file is mode 0600 in a
+  trust-checked mode-0700 directory. Consent is persisted as the typed
+  `secretFileFallback` config field after the user allows the fallback.
+  The first non-interactive fallback use needs `--allow-file-fallback`; later
+  uses honor the saved consent.
+- File fallback and its consent persistence are Linux-only. On macOS and
+  Windows, Secret Service reports unavailable and file fallback is unsupported.
+- `ARIADUSAGE_DISABLE_KEYRING=1` disables keyring access and avoids D-Bus
+  connections; tests use it with temporary homes and XDG directories.
 - Background refreshes never unlock the keyring and never show a prompt. A
   locked keyring is reported as locked.
-- Secrets are typed into AriadUsage's own prompt in a terminal
-  (`ariadusage secret set`). The Omarchy panel can open that terminal for you,
-  but the value never passes through the panel. Secrets never appear on a
-  command line, in logs, in notifications or in data sent to the panel.
+- Secrets are entered with `ariadusage secret set`, through a no-echo terminal
+  prompt or stdin. The Omarchy panel can open that terminal for you, but the
+  value never passes through the panel. Secrets never appear on a command line,
+  in logs, in notifications or in data sent to the panel.
+- The CLI disables dumpability and core dumps on Linux before parsing commands
+  or reading secret input. Other platforms compile with no-op hardening.
 - Secrets found in the configuration file (`apiKey`, `cookieHeader`, `secretKey`,
   `pluginSecrets` values, or token-account `token`) are never used by providers
   or the engine. They are flagged with a `secret_in_config` validation warning,

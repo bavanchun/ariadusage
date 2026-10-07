@@ -1,6 +1,7 @@
 pub mod brokers;
 pub mod config_store;
 pub mod error;
+pub mod hardening;
 pub mod paths;
 pub mod private_file;
 pub mod private_tempdir;

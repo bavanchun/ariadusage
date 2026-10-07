@@ -67,6 +67,26 @@ fn test_blank_input_returns_none() {
 }
 
 #[test]
+fn secret_file_fallback_is_a_typed_top_level_field() {
+    for (value, expected) in [("true", Some(true)), ("false", Some(false)), ("null", None)] {
+        let input = format!(r#"{{"version":1,"providers":[],"secretFileFallback":{value}}}"#);
+        let config = decode(input.as_bytes()).unwrap().unwrap();
+        assert_eq!(config.secret_file_fallback, expected);
+        assert!(!config.extra_top.contains_key("secretFileFallback"));
+
+        let round_trip = decode(&encode(&config)).unwrap().unwrap();
+        assert_eq!(round_trip.secret_file_fallback, expected);
+        if expected.is_none() {
+            assert!(
+                !String::from_utf8(encode(&config))
+                    .unwrap()
+                    .contains("secretFileFallback")
+            );
+        }
+    }
+}
+
+#[test]
 fn test_sorted_key_guard() {
     let mut config = Config::new(1, vec![]);
     config.extra_top.insert(

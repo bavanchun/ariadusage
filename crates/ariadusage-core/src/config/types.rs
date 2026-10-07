@@ -308,6 +308,7 @@ pub struct Config {
     pub providers: Vec<ProviderEntry>,
     pub hooks: Option<Box<RawValue>>,
     pub settings: Option<Box<RawValue>>,
+    pub secret_file_fallback: Option<bool>,
     pub extra_top: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -318,6 +319,7 @@ impl PartialEq for Config {
             && self.hooks.as_deref().map(RawValue::get) == other.hooks.as_deref().map(RawValue::get)
             && self.settings.as_deref().map(RawValue::get)
                 == other.settings.as_deref().map(RawValue::get)
+            && self.secret_file_fallback == other.secret_file_fallback
             && raw_maps_equal(&self.extra_top, &other.extra_top)
     }
 }
@@ -333,6 +335,7 @@ impl Config {
             providers,
             hooks: None,
             settings: None,
+            secret_file_fallback: None,
             extra_top: BTreeMap::new(),
         }
     }
@@ -395,6 +398,7 @@ impl fmt::Debug for Config {
             .field("providers", &self.providers)
             .field("has_hooks", &self.hooks.is_some())
             .field("has_settings", &self.settings.is_some())
+            .field("secret_file_fallback", &self.secret_file_fallback)
             .field("extra_top_keys", &self.extra_top.keys().collect::<Vec<_>>())
             .finish()
     }

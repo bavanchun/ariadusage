@@ -1,129 +1,189 @@
-//! Integration test for `ariadusage secret set` with non-interactive stdin pipe.
+#![cfg(target_os = "linux")]
 
-#![cfg(unix)]
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::net::UnixListener;
 
-use std::path::PathBuf;
-
-use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};
-use ariadusage_protocol::ipc::ServerMessage;
-use ariadusage_protocol::settings::{DescriptorKind, SettingsPage};
 use assert_cmd::Command;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
+use tempfile::TempDir;
 
-fn unique_temp_socket_path(test_name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("ariadusage-cli-test-{}", std::process::id()));
-    dir.join(format!("{test_name}.sock"))
+fn isolated_command(home: &TempDir) -> Command {
+    let config_home = home.path().join("config");
+    let data_home = home.path().join("data");
+    let state_home = home.path().join("state");
+    let runtime_home = home.path().join("runtime");
+
+    let mut command = Command::cargo_bin("ariadusage").expect("ariadusage binary found");
+    command
+        .env_clear()
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .env("ARIADUSAGE_DISABLE_KEYRING", "1")
+        .env_remove("DBUS_SESSION_BUS_ADDRESS");
+    command
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn test_secret_set_via_stdin_pipe() {
-    let socket_path = unique_temp_socket_path("secret_set");
-    let mut server = start_fixture_server(FixtureConfig {
-        socket_path: socket_path.clone(),
-        step_seconds: 10,
-        misbehave: None,
-        log_sink: None,
-        extra_windows: false,
-    })
-    .await
-    .expect("failed to start fixture server");
+#[test]
+fn non_tty_fails_closed_without_file_fallback_consent() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let mut command = isolated_command(&home);
+    let config_home = home.path().join("config");
+    let data_home = home.path().join("data");
+    let output = command
+        .args(["secret", "set", "--id", "providers.claude.apiKey"])
+        .write_stdin("invented-value\n")
+        .assert()
+        .code(15)
+        .get_output()
+        .clone();
 
-    let secret_val = format!("{}-{}-{}-{}", "mock", "planted", "secret", "554433");
-    let setting_id = "providers.claude.apiKey";
+    assert_eq!(output.stdout, b"");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("invented-value"));
+    assert!(!config_home.join("ariadusage/config.json").exists());
+    assert!(!data_home.join("ariadusage/secrets.json").exists());
+}
 
-    // Run `ariadusage secret set --id <setting-id> --socket <socket-path>` with stdin piped.
-    // The secret is never passed on argv (which protects /proc/PID/cmdline against observation).
-    // Run in spawn_blocking to keep the current-thread runtime polling the fixture server.
-    let socket_path_clone = socket_path.clone();
-    let secret_val_owned = secret_val.clone();
-    let output = tokio::task::spawn_blocking(move || {
-        let mut cmd = Command::cargo_bin("ariadusage").expect("ariadusage binary found");
-        let assert = cmd
-            .arg("secret")
-            .arg("set")
-            .arg("--id")
-            .arg(setting_id)
-            .arg("--socket")
-            .arg(&socket_path_clone)
-            .write_stdin(format!("{secret_val_owned}\n"))
-            .assert();
-        assert.success().get_output().clone()
-    })
-    .await
-    .expect("command execution task");
+#[test]
+fn explicit_fallback_consent_writes_private_file_and_records_config() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let mut command = isolated_command(&home);
+    let config_home = home.path().join("config");
+    let data_home = home.path().join("data");
+    let output = command
+        .args([
+            "secret",
+            "set",
+            "--id",
+            "providers.claude.apiKey",
+            "--allow-file-fallback",
+        ])
+        .write_stdin("invented-value\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
 
-    // 1. Asserts exit 0 and stdout contains "saved"
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.stdout, b"saved\n");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("invented-value"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("invented-value"));
+
+    let config = fs::read_to_string(config_home.join("ariadusage/config.json"))
+        .expect("consent config written");
+    assert!(config.contains("\"secretFileFallback\": true"));
+
+    let secret_path = data_home.join("ariadusage/secrets.json");
+    let secret_file = fs::read_to_string(&secret_path).expect("secret file written");
+    assert!(
+        secret_file.contains("invented-value"),
+        "secret was not persisted"
+    );
+    let mode = fs::metadata(&secret_path)
+        .expect("secret file metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600);
+    let parent_mode = fs::metadata(data_home.join("ariadusage"))
+        .expect("secret directory metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(parent_mode, 0o700);
+
+    let mut command = isolated_command(&home);
+    let output = command
+        .args(["secret", "set", "--id", "providers.claude.apiKey"])
+        .write_stdin("second-invented-value\n")
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    assert_eq!(output.stdout, b"saved\n");
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("second-invented-value"));
+    assert!(
+        fs::read_to_string(secret_path)
+            .expect("secret file remains readable")
+            .contains("second-invented-value")
+    );
+}
+
+#[test]
+fn stdin_over_64_kib_is_rejected_before_writing() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let mut command = isolated_command(&home);
+    let config_home = home.path().join("config");
+    let data_home = home.path().join("data");
+    let input = vec![b'x'; 64 * 1024 + 1];
+    let output = command
+        .args(["secret", "set", "--id", "providers.claude.apiKey"])
+        .write_stdin(input)
+        .assert()
+        .code(4)
+        .get_output()
+        .clone();
+
+    assert_eq!(output.stdout, b"");
+    assert!(!config_home.join("ariadusage/config.json").exists());
+    assert!(!data_home.join("ariadusage/secrets.json").exists());
+}
+
+#[test]
+fn invalid_setting_id_is_rejected_without_printing_it() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let mut command = isolated_command(&home);
+    let config_home = home.path().join("config");
+    let data_home = home.path().join("data");
+    let output = command
+        .args(["secret", "set", "--id", "providers.unknown.apiKey"])
+        .write_stdin("invented-value\n")
+        .assert()
+        .code(2)
+        .get_output()
+        .clone();
+
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("invalid setting id"));
+    assert!(!stderr.contains("providers.unknown.apiKey"));
+    assert!(!stderr.contains("invented-value"));
+    assert!(!config_home.join("ariadusage/config.json").exists());
+    assert!(!data_home.join("ariadusage/secrets.json").exists());
+}
+
+#[test]
+fn socket_option_is_rejected_and_engine_socket_is_never_contacted() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let mut command = isolated_command(&home);
+    let socket_dir = home.path().join("runtime/ariadusage");
+    fs::create_dir_all(&socket_dir).expect("socket directory");
+    let socket_path = socket_dir.join("engine.sock");
+    let listener = UnixListener::bind(socket_path).expect("test listener");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+
+    command
+        .args([
+            "secret",
+            "set",
+            "--id",
+            "providers.claude.apiKey",
+            "--socket",
+            "/tmp/unused.sock",
+        ])
+        .write_stdin("invented-value\n")
+        .assert()
+        .code(2);
+
+    let mut command = isolated_command(&home);
+    command
+        .args(["secret", "set", "--id", "providers.claude.apiKey"])
+        .write_stdin("invented-value\n")
+        .assert()
+        .code(15);
     assert!(
-        stdout.contains("saved"),
-        "stdout must contain 'saved', got: {stdout}"
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
     );
-
-    // 2. Asserts secret value does not appear in stdout or stderr
-    assert!(
-        !stdout.contains(&secret_val),
-        "stdout leaked secret: {stdout}"
-    );
-    assert!(
-        !stderr.contains(&secret_val),
-        "stderr leaked secret: {stderr}"
-    );
-
-    // 3. Connect to fixture server to verify getSettings reflects isSet: true
-    let mut stream = UnixStream::connect(&socket_path)
-        .await
-        .expect("connect to fixture server");
-    let (reader, mut writer) = stream.split();
-    let mut lines = BufReader::new(reader).lines();
-
-    // Handshake
-    writer
-        .write_all(
-            b"{\"type\":\"hello\",\"client\":{\"name\":\"test-verify\",\"version\":\"1.0\"},\"protocols\":[\"ariadusage-ipc/1\"],\"id\":\"req-v1\"}\n",
-        )
-        .await
-        .unwrap();
-    let _welcome = lines.next_line().await.unwrap().unwrap();
-
-    // Query settings
-    writer
-        .write_all(b"{\"type\":\"getSettings\",\"scope\":\"app\",\"id\":\"req-check\"}\n")
-        .await
-        .unwrap();
-    let resp_line = lines.next_line().await.unwrap().unwrap();
-    let resp: ServerMessage = serde_json::from_str(&resp_line).unwrap();
-
-    match resp {
-        ServerMessage::Response {
-            id,
-            ok,
-            payload: Some(payload),
-            ..
-        } => {
-            assert_eq!(id.as_deref(), Some("req-check"));
-            assert_eq!(ok, Some(true));
-            let page: SettingsPage = serde_json::from_value(payload).expect("valid SettingsPage");
-            let mut found_secret = false;
-            for section in page.sections {
-                for descriptor in section.descriptors {
-                    if descriptor.id.as_str() != setting_id {
-                        continue;
-                    }
-                    if let DescriptorKind::Secret { is_set, .. } = descriptor.kind {
-                        assert!(is_set, "isSet must be true after setSecret");
-                        found_secret = true;
-                    }
-                }
-            }
-            assert!(
-                found_secret,
-                "setting descriptor for {setting_id} must exist"
-            );
-        }
-        other => panic!("expected getSettings response, got {other:?}"),
-    }
-
-    server.stop().await;
 }

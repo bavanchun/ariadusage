@@ -17,6 +17,7 @@ AriadUsage is in development; there is nothing to install yet. Milestone M1 (Cor
 - [Contributor rules](AGENTS.md): agent instructions, security rules, brand assets and command reference
 - [IPC v1 protocol](docs/protocol.md): draft wire specification, framing, limits and message definitions
 - [Privacy](docs/privacy.md): what AriadUsage reads, writes and sends
+- [CLI exit codes](docs/cli-exit-codes.md): stable `ariadusage secret set` exit status meanings
 - [Porting rules](docs/porting.md): how CodexBar behavior is carried over and deliberate divergences
 - [Git workflow](docs/git-workflow.md): branch model, commit conventions and release procedures
 - [Brand direction](docs/brand/design-direction.md): design-as-code principles, color tokens and geometry
@@ -59,4 +60,3 @@ For individual checks (formatting, clippy, tests, schemas, brand, plugin validat
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
