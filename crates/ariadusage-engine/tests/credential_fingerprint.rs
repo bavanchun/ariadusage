@@ -133,7 +133,7 @@ fn test_quarantine_holds_until_fingerprint_changes() {
 
 #[test]
 fn test_stat_fingerprint_debug_redaction() {
-    let path = PathBuf::from("/home/secretuser/.claude/credentials.json");
+    let path = PathBuf::from("/fakehome/secretuser/.claude/credentials.json");
     let fp = StatFingerprint {
         path,
         dev: 42,
