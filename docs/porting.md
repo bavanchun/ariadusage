@@ -118,6 +118,10 @@ it changes the architecture, also add a Decision Log row.
 | PTY signal mask | CodexBar's spawned-process-group tests cover signal-mask reset | `pty-process` does not reset the inherited signal mask; the PTY child inherits a blocked signal mask when the parent enters spawn with one, and a test asserts the observed behavior | The PTY crate does not expose a safe signal-mask reset hook; record the gap rather than add `unsafe` |
 | Process test children | CodexBar process tests use platform helpers and scripts | AriadUsage uses a Rust helper binary gated by `test-hooks`, with a release check that excludes it from shipped builds | Tests exercise real child behavior without interpreter scripts or production hooks |
 | Unported diagnostic export tests | `ProviderDiagnosticExportTests.swift:396-424` (substring classifier) and `:472-488` (legacy attempt reader without strategy ID) | Not ported in M1; replaced by typed `DiagnosticError` and `DiagnosticFetchAttempt` tests | AriadUsage does not use substring error classification or legacy un-attributed attempt records |
+| Mise and asdf shim paths | Well-known directories followed immediately by PATH and login shell search | `~/.local/share/mise/shims` and `~/.asdf/shims` appended after well-known locations and before `command -v` | Probes common Linux version-manager shims when shells do not export them to non-interactive PATH |
+| Executable trust verification | Checks basic file executable bits only | Candidates in group- or world-writable directories without sticky bit (`0o1000`) or owned by foreign UIDs are rejected as `Untrusted` | Prevents privilege escalation or binary substitution from attacker-writable or foreign-owned directories |
+| Login shell marker string | Uses `__CODEXBAR_PATH__` sentinel marker in captured shell output | Uses `__ARIADUSAGE_PATH__` sentinel marker | AriadUsage namespace isolation; avoids collision or coupling to CodexBar environment markers |
+
 
 ## Upstream drift
 

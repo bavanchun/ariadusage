@@ -473,3 +473,36 @@ sources = [
     "Tests/CodexBarTests/StreamScanBufferTests.swift",
     "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
 ]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/exec_resolver.rs"
+sources = [
+    "Sources/CodexBarCore/PathEnvironment.swift",
+    "Sources/CodexBarCore/CodexExecutableResolver.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/login_shell.rs"
+sources = ["Sources/CodexBarCore/PathEnvironment.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/resolver_order.rs"
+sources = [
+    "Tests/CodexBarTests/PathBuilderTests.swift",
+    "Tests/CodexBarTests/AntigravityBinaryLocatorTests.swift",
+    "Tests/CodexBarTests/CodexExecutableResolverTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/resolver_security.rs"
+sources = ["Tests/CodexBarTests/ExecutableSearchSecurityTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/resolver_shell.rs"
+sources = [
+    "Tests/CodexBarTests/PathBuilderTests.swift",
+    "Tests/CodexBarTests/ShellCommandLocatorProcessTests.swift",
+    "TestsLinux/ShellCommandOutputLimitTests.swift",
+    "Tests/CodexBarTests/ShellCommandForegroundTests.swift",
+]
+

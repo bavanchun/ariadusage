@@ -8,8 +8,8 @@ use zeroize::Zeroizing;
 
 use super::{DEFAULT_OUTPUT_CAP, ProcessEnv, ProcessError};
 
-#[derive(Clone)]
-pub struct AbsolutePath(#[cfg(target_os = "linux")] PathBuf);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AbsolutePath(PathBuf);
 
 impl AbsolutePath {
     pub fn new(path: impl AsRef<Path>) -> Result<Self, ProcessError> {
@@ -23,18 +23,27 @@ impl AbsolutePath {
         if !metadata.is_file() || !is_executable(&metadata) {
             return Err(ProcessError::LaunchFailed);
         }
-        #[cfg(target_os = "linux")]
-        {
-            Ok(Self(path.to_path_buf()))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Ok(Self())
-        }
+        Ok(Self(path.to_path_buf()))
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn as_path(&self) -> &Path {
+    pub fn from_absolute_path(path: PathBuf) -> Result<Self, ProcessError> {
+        if !path.is_absolute() {
+            return Err(ProcessError::LaunchFailed);
+        }
+        Ok(Self(path))
+    }
+
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+impl AsRef<Path> for AbsolutePath {
+    fn as_ref(&self) -> &Path {
         &self.0
     }
 }

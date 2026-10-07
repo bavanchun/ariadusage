@@ -33,7 +33,8 @@ zeroize = { workspace = true }
 serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "process", "pipe"] }
+
 
 [target.'cfg(target_os = "linux")'.dependencies]
 process-wrap = { workspace = true }
