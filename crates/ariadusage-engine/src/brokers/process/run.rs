@@ -3,9 +3,13 @@ use std::future::{Future, pending};
 #[cfg(target_os = "linux")]
 use std::io;
 #[cfg(target_os = "linux")]
+use std::os::fd::{AsRawFd, RawFd};
+#[cfg(target_os = "linux")]
 use std::pin::Pin;
 #[cfg(target_os = "linux")]
 use std::process::Stdio;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
 
@@ -18,6 +22,8 @@ use tokio::time::{self, Instant};
 #[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
 
+use ariadusage_core::gates::launch::{LaunchFailureKind, LaunchGate};
+
 use crate::brokers::call::BrokerCall;
 
 #[cfg(target_os = "linux")]
@@ -29,9 +35,17 @@ use super::command::{LaunchMode, StreamPolicy};
 use super::error::OutputStream;
 use super::error::ProcessError;
 #[cfg(target_os = "linux")]
-use super::procscan::{ProcessIdentity, process_group, process_identity, process_uid};
+use super::holders::{reap_output_holders, reap_output_holders_sync};
 #[cfg(target_os = "linux")]
-use super::signal::{ProcessSignal, signal_group};
+use super::procscan::{PROCESS_MARKER_ENV, process_group, process_identity, process_uid};
+#[cfg(target_os = "linux")]
+use super::reaper::ReapGuard;
+#[cfg(target_os = "linux")]
+use super::registry::{LaunchPermit, ProcessRegistry};
+#[cfg(target_os = "linux")]
+use super::signal::{ProcessSignal, signal};
+#[cfg(target_os = "linux")]
+use super::teardown::{ProcessTarget, terminate, terminate_sync};
 
 #[cfg(target_os = "linux")]
 const ETXTBSY: i32 = 26;
@@ -41,21 +55,64 @@ const SPAWN_RETRY_LIMIT: usize = 3;
 const SPAWN_RETRY_DELAY: Duration = Duration::from_millis(10);
 #[cfg(target_os = "linux")]
 const CLEANUP_WAIT: Duration = Duration::from_secs(1);
+#[cfg(target_os = "linux")]
+static NEXT_PROCESS_MARKER: AtomicU64 = AtomicU64::new(1);
 
-pub async fn run(call: BrokerCall, command: Command) -> Result<Output, ProcessError> {
+pub async fn run(
+    call: BrokerCall,
+    command: Command,
+    registry: &ProcessRegistry,
+    gate: &LaunchGate,
+) -> Result<Output, ProcessError> {
     #[cfg(target_os = "linux")]
     {
-        run_linux(call, command).await
+        let binary = command.program.as_path().to_string_lossy().into_owned();
+        if let Err(until) = gate.check(&binary, call.interaction) {
+            return Err(ProcessError::LaunchSuppressed { until });
+        }
+        let permit = registry.register()?;
+        run_linux(call, command, permit, gate, &binary).await
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (call, command);
+        let _ = (call, command, registry, gate);
         Err(ProcessError::Unsupported)
     }
 }
 
 #[cfg(target_os = "linux")]
-async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, ProcessError> {
+async fn run_linux(
+    call: BrokerCall,
+    command: Command,
+    mut permit: LaunchPermit,
+    gate: &LaunchGate,
+    binary: &str,
+) -> Result<Output, ProcessError> {
+    let marker = command.reap_marker.then(next_process_marker);
+    let mut reaper = ReapGuard::new(marker.clone(), 0);
+    let result = run_linux_inner(call, command, marker, &mut permit, &mut reaper).await;
+    reaper.finish().await;
+    if matches!(result, Err(ProcessError::LaunchFailed)) {
+        let _ = gate.record_failure(binary, LaunchFailureKind::Process);
+    }
+    permit.finish();
+    result
+}
+
+#[cfg(target_os = "linux")]
+fn next_process_marker() -> String {
+    let sequence = NEXT_PROCESS_MARKER.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{sequence:016x}", std::process::id())
+}
+
+#[cfg(target_os = "linux")]
+async fn run_linux_inner(
+    call: BrokerCall,
+    command: Command,
+    marker: Option<String>,
+    permit: &mut LaunchPermit,
+    reaper: &mut ReapGuard,
+) -> Result<Output, ProcessError> {
     use process_wrap::tokio::{
         ChildWrapper, CommandWrap, ProcessGroup, ProcessSession, ResetSigmask,
     };
@@ -64,12 +121,22 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
         return Err(ProcessError::Cancelled);
     }
 
+    let child_env = marker.as_ref().map_or_else(
+        || command.env.clone(),
+        |marker| {
+            command
+                .env
+                .clone()
+                .with_internal(PROCESS_MARKER_ENV, marker.clone())
+        },
+    );
+
     let spawn = || {
         let mut wrapped = CommandWrap::with_new(command.program.as_path(), |child| {
             child
                 .args(&command.args)
                 .env_clear()
-                .envs(command.env.iter())
+                .envs(child_env.iter())
                 .stdin(if command.stdin.is_null() {
                     Stdio::null()
                 } else {
@@ -98,29 +165,32 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
         .map_err(|_| ProcessError::LaunchFailed)?;
     let Some(pid) = child.inner().id().map(|pid| pid as i32) else {
         let _ = child.inner_mut().start_kill();
+        let _ = child.inner_mut().wait().await;
         return Err(ProcessError::LaunchFailed);
     };
+    reaper.set_pgid(pid);
     let proc_root = std::path::Path::new("/proc");
-    let (Some(identity), Some(pgid), Some(uid)) = (
-        process_identity(proc_root, pid),
-        process_group(proc_root, pid),
-        process_uid(proc_root, pid),
-    ) else {
+    let Some(identity) = process_identity(proc_root, pid) else {
         let _ = child.inner_mut().start_kill();
         let _ = child.inner_mut().wait().await;
         return Err(ProcessError::LaunchFailed);
     };
-    if pgid <= 1 || pgid != pid || uid != rustix::process::getuid().as_raw() {
-        let _ = child.inner_mut().start_kill();
+    let (Some(pgid), Some(uid)) = (process_group(proc_root, pid), process_uid(proc_root, pid))
+    else {
+        let _ = signal(identity, ProcessSignal::Kill);
+        let _ = child.inner_mut().wait().await;
+        return Err(ProcessError::LaunchFailed);
+    };
+    if pgid <= 1
+        || pgid != pid
+        || pgid == rustix::process::getpid().as_raw_pid()
+        || pgid == rustix::process::getpgrp().as_raw_pid()
+        || uid != rustix::process::getuid().as_raw()
+    {
+        let _ = signal(identity, ProcessSignal::Kill);
         let _ = child.inner_mut().wait().await;
         return Err(ProcessError::LaunchFailed);
     }
-    let mut guard = ProcessGroupGuard {
-        identity,
-        pgid,
-        active: true,
-    };
-
     let (stdout, stderr, stdin) = {
         let child = child.inner_mut();
         (
@@ -130,8 +200,27 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
         )
     };
     let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
-        guard.kill();
+        let target = ProcessTarget::new(identity, pgid, uid, Vec::new());
+        let mut guard = ProcessGroupGuard {
+            target,
+            active: true,
+        };
+        guard.terminate().await;
+        let _ = child.inner_mut().wait().await;
         return Err(ProcessError::LaunchFailed);
+    };
+    let mut pipes = Vec::new();
+    for fd in [stdout.as_raw_fd(), stderr.as_raw_fd()] {
+        if let Some(target) = output_pipe_target(fd) {
+            pipes.push(target);
+        }
+    }
+    let target = ProcessTarget::new(identity, pgid, uid, pipes);
+    target.refresh_descendants();
+    permit.attach(target.clone());
+    let mut guard = ProcessGroupGuard {
+        target,
+        active: true,
     };
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
     let mut tasks = JoinSet::new();
@@ -157,34 +246,75 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
     drop(event_tx);
 
     let mut timeout = timeout_future(command.timeout);
-    let status = tokio::select! {
-        result = child.inner_mut().wait() => match result {
-            Ok(status) => status,
-            Err(_) => {
-                guard.kill();
-                tasks.abort_all();
-                return Err(ProcessError::Io);
+    let mut tracker = time::interval(Duration::from_millis(20));
+    tracker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+    let status = loop {
+        tokio::select! {
+            biased;
+            Some(event) = event_rx.recv() => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
+            },
+            _ = call.cancel.cancelled() => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::Cancelled).await;
+            },
+            _ = &mut timeout => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::TimedOut).await;
+            },
+            _ = tracker.tick() => guard.target.refresh_descendants(),
+            result = child.inner_mut().wait() => match result {
+                Ok(status) => break status,
+                Err(_) => {
+                    guard.terminate().await;
+                    tasks.abort_all();
+                    return Err(ProcessError::Io);
+                }
             }
-        },
-        _ = call.cancel.cancelled() => {
-            return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::Cancelled).await;
-        },
-        _ = &mut timeout => {
-            return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::TimedOut).await;
-        },
-        Some(event) = event_rx.recv() => {
-            return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
         }
     };
+
+    if let Ok(event) = event_rx.try_recv() {
+        return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
+    }
+    {
+        let holder_target = guard.target.clone();
+        let mut holder_cleanup = Box::pin(reap_output_holders(&holder_target));
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = event_rx.recv() => {
+                    return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
+                },
+                _ = call.cancel.cancelled() => {
+                    return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::Cancelled).await;
+                },
+                _ = &mut timeout => {
+                    return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::TimedOut).await;
+                },
+                _ = tracker.tick() => guard.target.refresh_descendants(),
+                _ = &mut holder_cleanup => break,
+            }
+        }
+    }
 
     let mut stdout_result = None;
     let mut stderr_result = None;
     let mut pending_tasks = 2 + usize::from(stdin_pending);
     while pending_tasks > 0 {
         tokio::select! {
+            biased;
+            Some(event) = event_rx.recv() => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
+            },
+            _ = call.cancel.cancelled() => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::Cancelled).await;
+            },
+            _ = &mut timeout => {
+                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::TimedOut).await;
+            },
+            _ = tracker.tick() => guard.target.refresh_descendants(),
             joined = tasks.join_next() => {
                 let Some(joined) = joined else {
-                    guard.kill();
+                    guard.terminate().await;
                     return Err(ProcessError::Io);
                 };
                 pending_tasks -= 1;
@@ -193,26 +323,17 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
                     Ok(TaskOutput::Stream(OutputStream::Stderr, result)) => stderr_result = Some(result),
                     Ok(TaskOutput::Stdin(result)) => {
                         if result.is_err() {
-                            guard.kill();
+                            guard.terminate().await;
                             tasks.abort_all();
                             return Err(ProcessError::Io);
                         }
                     }
                     Err(_) => {
-                        guard.kill();
+                        guard.terminate().await;
                         tasks.abort_all();
                         return Err(ProcessError::Io);
                     }
                 }
-            },
-            _ = call.cancel.cancelled() => {
-                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::Cancelled).await;
-            },
-            _ = &mut timeout => {
-                return interrupt_run(&mut child, &mut guard, &mut tasks, ProcessError::TimedOut).await;
-            },
-            Some(event) = event_rx.recv() => {
-                return interrupt_run(&mut child, &mut guard, &mut tasks, event.into_error()).await;
             }
         }
     }
@@ -224,20 +345,20 @@ async fn run_linux(call: BrokerCall, command: Command) -> Result<Output, Process
         .ok_or(ProcessError::Io)?
         .map_err(|_| ProcessError::Io)?;
     if stdout.exceeded {
-        guard.kill();
+        guard.terminate().await;
         return Err(ProcessError::OutputTooLarge {
             stream: OutputStream::Stdout,
             cap: stdout.cap,
         });
     }
     if stderr.exceeded {
-        guard.kill();
+        guard.terminate().await;
         return Err(ProcessError::OutputTooLarge {
             stream: OutputStream::Stderr,
             cap: stderr.cap,
         });
     }
-    guard.active = false;
+    guard.terminate().await;
     Ok(Output {
         status,
         stdout: stdout.bytes,
@@ -252,7 +373,7 @@ async fn interrupt_run(
     tasks: &mut JoinSet<TaskOutput>,
     error: ProcessError,
 ) -> Result<Output, ProcessError> {
-    guard.kill();
+    guard.terminate().await;
     let _ = time::timeout(CLEANUP_WAIT, child.inner_mut().wait()).await;
     tasks.abort_all();
     Err(error)
@@ -351,15 +472,17 @@ async fn write_stdin(
 
 #[cfg(target_os = "linux")]
 struct ProcessGroupGuard {
-    identity: ProcessIdentity,
-    pgid: i32,
+    target: ProcessTarget,
     active: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl ProcessGroupGuard {
-    fn kill(&self) {
-        let _ = signal_group(self.identity, self.pgid, ProcessSignal::Kill);
+    async fn terminate(&mut self) {
+        if self.active {
+            terminate(&self.target).await;
+            self.active = false;
+        }
     }
 }
 
@@ -367,9 +490,18 @@ impl ProcessGroupGuard {
 impl Drop for ProcessGroupGuard {
     fn drop(&mut self) {
         if self.active {
-            self.kill();
+            terminate_sync(&self.target);
+            reap_output_holders_sync(&self.target);
+            self.active = false;
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn output_pipe_target(fd: RawFd) -> Option<std::path::PathBuf> {
+    let target = std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()?;
+    let text = target.to_string_lossy();
+    (text.starts_with("pipe:[") && text.ends_with(']')).then_some(target)
 }
 
 #[cfg(target_os = "linux")]

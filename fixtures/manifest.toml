@@ -365,3 +365,66 @@ sources = [
     "TestsLinux/ShellCommandSessionLinuxTests.swift",
     "TestsLinux/ShellCommandOutputLimitTests.swift",
 ]
+
+[[ported]]
+path = "crates/ariadusage-core/src/gates/launch.rs"
+sources = ["Sources/CodexBarCore/Providers/Codex/CodexCLILaunchGate.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/gates_launch.rs"
+sources = ["Tests/CodexBarTests/CodexCLILaunchGateTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/teardown.rs"
+sources = [
+    "Sources/CodexBarCore/Host/Process/SpawnedProcessGroup.swift",
+    "Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/holders.rs"
+sources = ["Sources/CodexBarCore/Host/Process/SpawnedProcessGroup.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/reaper.rs"
+sources = [
+    "Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift",
+    "TestsLinux/ProcessOwnershipReaperTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/registry.rs"
+sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_teardown.rs"
+sources = [
+    "TestsLinux/ProcessOwnershipReaperTests.swift",
+    "Tests/CodexBarTests/SubprocessRunnerTests.swift",
+    "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_holders.rs"
+sources = [
+    "Tests/CodexBarTests/SubprocessRunnerTests.swift",
+    "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_reaper.rs"
+sources = [
+    "TestsLinux/ProcessOwnershipReaperTests.swift",
+    "Tests/CodexBarTests/SubprocessRunnerTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_registry.rs"
+sources = [
+    "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
+    "Tests/CodexBarTests/CodexCLILaunchGateTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_signal.rs"
+sources = ["Tests/CodexBarTests/TTYCommandRunnerTests.swift"]

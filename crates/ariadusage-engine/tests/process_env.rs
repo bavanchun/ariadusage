@@ -1,6 +1,7 @@
 // Ported from CodexBar Tests/CodexBarTests/ProcessEnvironmentTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
 use std::ffi::OsString;
 
+use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_engine::brokers::process::ProcessEnv;
 
 const SENTINEL: &str = "synthetic-environment-secret-value";
@@ -130,6 +131,23 @@ fn child_command(args: &[&str], env: ProcessEnv) -> ariadusage_engine::brokers::
 }
 
 #[cfg(target_os = "linux")]
+async fn run_process(
+    call: ariadusage_engine::brokers::call::BrokerCall,
+    command: ariadusage_engine::brokers::process::Command,
+) -> Result<
+    ariadusage_engine::brokers::process::Output,
+    ariadusage_engine::brokers::process::ProcessError,
+> {
+    ariadusage_engine::brokers::process::run(
+        call,
+        command,
+        &ariadusage_engine::brokers::process::ProcessRegistry::new(),
+        &LaunchGate::default(),
+    )
+    .await
+}
+
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn allowlist_denylist_and_home_override_are_enforced_at_spawn() {
     require_nextest();
@@ -146,7 +164,7 @@ async fn allowlist_denylist_and_home_override_are_enforced_at_spawn() {
     .with("CLAUDE_CONFIG_DIR", "/synthetic/claude-config")
     .without(["CLAUDE_CONFIG_DIR"]);
 
-    let names = ariadusage_engine::brokers::process::run(
+    let names = run_process(
         child_call(),
         child_command(&["list-env-names"], env.clone()),
     )
@@ -155,12 +173,9 @@ async fn allowlist_denylist_and_home_override_are_enforced_at_spawn() {
     let names = String::from_utf8(names.stdout.to_vec()).unwrap();
     assert_eq!(names.lines().collect::<Vec<_>>(), ["HOME", "PATH"]);
 
-    let home = ariadusage_engine::brokers::process::run(
-        child_call(),
-        child_command(&["env-value", "HOME"], env),
-    )
-    .await
-    .unwrap();
+    let home = run_process(child_call(), child_command(&["env-value", "HOME"], env))
+        .await
+        .unwrap();
     assert_eq!(home.stdout.as_slice(), b"/synthetic/staging-home");
 }
 
@@ -178,12 +193,9 @@ async fn explicit_environment_passes_only_its_requested_names_at_spawn() {
             ("XDG_DATA_HOME", "/synthetic/data"),
         ],
     );
-    let output = ariadusage_engine::brokers::process::run(
-        child_call(),
-        child_command(&["list-env-names"], env),
-    )
-    .await
-    .unwrap();
+    let output = run_process(child_call(), child_command(&["list-env-names"], env))
+        .await
+        .unwrap();
     let names = String::from_utf8(output.stdout.to_vec()).unwrap();
     assert_eq!(
         names.lines().collect::<Vec<_>>(),

@@ -7,6 +7,14 @@ pub enum ProcessSignal {
 }
 
 pub fn signal(identity: ProcessIdentity, signal: ProcessSignal) -> Result<bool, ProcessError> {
+    signal_if(identity, signal, || true)
+}
+
+pub(super) fn signal_if(
+    identity: ProcessIdentity,
+    signal: ProcessSignal,
+    still_owned: impl FnOnce() -> bool,
+) -> Result<bool, ProcessError> {
     #[cfg(target_os = "linux")]
     {
         use rustix::process::{Pid, PidfdFlags, getpid, getuid, pidfd_open, pidfd_send_signal};
@@ -27,12 +35,15 @@ pub fn signal(identity: ProcessIdentity, signal: ProcessSignal) -> Result<bool, 
         {
             return Ok(false);
         }
+        if !still_owned() {
+            return Ok(false);
+        }
         pidfd_send_signal(&pidfd, rustix_signal(signal)).map_err(map_pidfd_error)?;
         Ok(true)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (identity, signal);
+        let _ = (identity, signal, still_owned);
         Err(ProcessError::Unsupported)
     }
 }
@@ -41,6 +52,15 @@ pub fn signal_group(
     identity: ProcessIdentity,
     pgid: i32,
     signal: ProcessSignal,
+) -> Result<bool, ProcessError> {
+    signal_group_if(identity, pgid, signal, || true)
+}
+
+pub(super) fn signal_group_if(
+    identity: ProcessIdentity,
+    pgid: i32,
+    signal: ProcessSignal,
+    still_owned: impl FnOnce() -> bool,
 ) -> Result<bool, ProcessError> {
     #[cfg(target_os = "linux")]
     {
@@ -69,13 +89,16 @@ pub fn signal_group(
         {
             return Ok(false);
         }
+        if !still_owned() {
+            return Ok(false);
+        }
         let _keep_pidfd_open_until_signal_is_sent = pidfd;
         kill_process_group(group, rustix_signal(signal)).map_err(map_pidfd_error)?;
         Ok(true)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (identity, pgid, signal);
+        let _ = (identity, pgid, signal, still_owned);
         Err(ProcessError::Unsupported)
     }
 }

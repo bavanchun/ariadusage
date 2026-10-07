@@ -1,3 +1,4 @@
+use std::time::Instant;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +26,10 @@ pub enum ProcessError {
     OutputTooLarge { stream: OutputStream, cap: usize },
     #[error("process could not be launched")]
     LaunchFailed,
+    #[error("background process launch is suppressed until {until:?}")]
+    LaunchSuppressed { until: Instant },
+    #[error("process broker is shutting down")]
+    ShuttingDown,
     #[error("process operation is unsupported on this platform")]
     Unsupported,
     #[error("process I/O failed")]
