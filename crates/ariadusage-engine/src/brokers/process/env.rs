@@ -120,6 +120,7 @@ impl ProcessEnv {
         self.values.is_empty()
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&OsString, &OsString)> {
         self.values.iter()
     }

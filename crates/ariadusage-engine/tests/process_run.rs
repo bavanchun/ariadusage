@@ -150,9 +150,45 @@ async fn cancellation_is_prompt_and_session_launch_creates_a_session_leader() {
     let _ = fs::remove_file(marker);
 }
 
+fn inherited_non_cloexec_descriptors() -> std::collections::BTreeMap<i32, String> {
+    let mut baseline = std::collections::BTreeMap::new();
+    let entries = match fs::read_dir("/proc/self/fd") {
+        Ok(read_dir) => read_dir.filter_map(Result::ok).collect::<Vec<_>>(),
+        Err(_) => return baseline,
+    };
+    for entry in entries {
+        let Ok(fd) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        if fd <= 2 {
+            continue;
+        }
+        let Ok(fdinfo) = fs::read_to_string(format!("/proc/self/fdinfo/{fd}")) else {
+            continue;
+        };
+        let Some(flags_line) = fdinfo.lines().find(|line| line.starts_with("flags:")) else {
+            continue;
+        };
+        let Some(octal_str) = flags_line.strip_prefix("flags:").map(str::trim) else {
+            continue;
+        };
+        let Ok(flags) = u32::from_str_radix(octal_str, 8) else {
+            continue;
+        };
+        const O_CLOEXEC: u32 = 0o02000000;
+        if (flags & O_CLOEXEC) == 0
+            && let Ok(target) = fs::read_link(format!("/proc/self/fd/{fd}"))
+        {
+            baseline.insert(fd, target.to_string_lossy().to_string());
+        }
+    }
+    baseline
+}
+
 #[tokio::test]
 async fn helper_descriptor_listing_does_not_include_an_engine_file() {
     require_nextest();
+    let baseline = inherited_non_cloexec_descriptors();
     let file = tempfile::NamedTempFile::new().unwrap();
     let path = file.path().to_string_lossy().to_string();
     let output = run(call(), command(&["list-fds", &path])).await.unwrap();
@@ -176,11 +212,22 @@ async fn helper_descriptor_listing_does_not_include_an_engine_file() {
         );
     }
     let proc_fd_target = format!("/proc/{pid}/fd");
+    let mut helper_listing_fd_count = 0;
     for (fd, target) in descriptors.iter().filter(|(fd, _)| *fd > 2) {
-        assert_eq!(*fd, 3, "unexpected inherited descriptor {fd}: {target}");
-        assert_eq!(*target, proc_fd_target);
+        if *target == proc_fd_target {
+            helper_listing_fd_count += 1;
+        } else {
+            assert_eq!(
+                baseline.get(fd).map(String::as_str),
+                Some(*target),
+                "unexpected descriptor {fd}: {target} not in baseline {baseline:?}"
+            );
+        }
     }
-    assert_eq!(descriptors.iter().filter(|(fd, _)| *fd > 2).count(), 1);
+    assert_eq!(
+        helper_listing_fd_count, 1,
+        "helper should have exactly one descriptor open to its own /proc/<pid>/fd listing"
+    );
     assert!(!text.contains(&path));
 }
 
