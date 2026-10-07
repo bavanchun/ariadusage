@@ -10,6 +10,7 @@ mod reaper;
 mod registry;
 mod run;
 mod signal;
+#[cfg(target_os = "linux")]
 mod teardown;
 
 pub use buffers::{BoundedLineBuffer, BoundedOutputBuffer, LineDrain};
