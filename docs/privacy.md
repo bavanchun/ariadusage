@@ -29,6 +29,11 @@ On Linux, the Process broker reads same-user `/proc` process identity, owner,
 environment-marker and descriptor metadata for process ownership and cleanup.
 Environment reads are capped at 1 MiB and retain only the exact marker entry.
 
+On Linux, the LocalProbe broker inspects same-user process command lines in the
+engine's network namespace via `/proc`; command lines are scanned and discarded
+immediately unless they match a provider's language server, and matching argv
+is wrapped with redacted `Debug` representations.
+
 AriadUsage also resolves the absolute paths of `claude`, `codex` and `agy`,
 including installs managed by mise or asdf.
 

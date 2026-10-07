@@ -100,6 +100,23 @@ pub fn process_group(root: &Path, pid: i32) -> Option<i32> {
         .ok()
 }
 
+pub fn process_net_ns(root: &Path, pid: i32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        if pid <= 0 {
+            return None;
+        }
+        std::fs::read_link(root.join(pid.to_string()).join("ns").join("net"))
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (root, pid);
+        None
+    }
+}
+
 pub fn process_children(root: &Path, pid: i32) -> Vec<i32> {
     if pid <= 0 {
         return Vec::new();

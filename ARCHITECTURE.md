@@ -185,7 +185,7 @@ Providers never touch the system directly. Brokers do, and every broker call say
 | Process | Fixed argv, environment allowlist, timeout and output cap; stdio JSON-RPC sessions; PTY sessions; a reaper that kills only processes carrying AriadUsage's marker |
 | OAuth | Per-provider token state machines and the ownership rules in §9 |
 | Browser | Opt-in cookie import from Chromium-family and Firefox profiles, limited to each provider's declared cookie domains; manual cookie headers |
-| LocalProbe | Same-user process and listening-port discovery for local language servers |
+| LocalProbe | Same-user process and listening-port discovery for local language servers via procfs; same network namespace only; argv filtered inside broker; listener ownership recheck |
 | SecretStore | AriadUsage's own secrets in the default login collection through Secret Service; stable attributes contain no account names or email. A trust-checked 0600 file is offered only after consent and only when the service is unavailable. Background work never unlocks or writes secrets |
 | ExecutableResolver | Finds `claude`, `codex` and `agy` (including mise, asdf and `~/.local/bin` installs) and returns absolute paths; an explicit override is authoritative |
 

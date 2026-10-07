@@ -4,6 +4,7 @@ pub mod cookie_cache;
 pub mod cookie_delivery;
 pub mod credential_file;
 pub mod exec_resolver;
+pub mod local_probe;
 pub mod login_shell;
 pub mod net;
 pub mod oauth;
