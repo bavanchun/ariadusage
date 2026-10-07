@@ -77,8 +77,8 @@ fn valid_examples_validate_and_round_trip() {
     }
 
     assert!(
-        count >= 28,
-        "expected at least 28 valid examples, found {count}"
+        count >= 29,
+        "expected at least 29 valid examples, found {count}"
     );
 }
 
@@ -138,7 +138,7 @@ fn invalid_examples_fail_schema_and_decoding() {
     }
 
     assert!(
-        count >= 5,
-        "expected at least 5 invalid examples, found {count}"
+        count >= 8,
+        "expected at least 8 invalid examples, found {count}"
     );
 }

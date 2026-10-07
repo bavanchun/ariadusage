@@ -1,3 +1,5 @@
+// Ported from CodexBar Sources/CodexBarCore/ProviderDetailSection.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+
 //! Usage data models including rate windows, credits, cost, identity, pace, status, and detail sections.
 
 use std::fmt;
@@ -6,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::ids::ProviderId;
+use crate::metric::Metric;
 
 /// A rate window indicating quota consumption and reset timing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -50,7 +53,7 @@ impl RateWindow {
 pub struct NamedWindow {
     pub id: String,
     pub title: String,
-    pub window: RateWindow,
+    pub window: Metric<RateWindow>,
 }
 
 /// Token or service credits snapshot.
@@ -179,6 +182,20 @@ pub enum ProviderErrorCategory {
     Unknown,
 }
 
+impl ProviderErrorCategory {
+    /// Safe static description of this category for transmission over IPC.
+    pub const fn safe_description(&self) -> &'static str {
+        match self {
+            Self::Auth => "Authentication or credential failure",
+            Self::Api => "Provider API failure",
+            Self::Parse => "Provider response parse failure",
+            Self::Network => "Network transport failure",
+            Self::Configuration => "Provider configuration invalid",
+            Self::Unknown => "Unknown provider error",
+        }
+    }
+}
+
 /// A classified provider error with a safe message.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -191,7 +208,7 @@ pub struct ProviderError {
 }
 
 // ============================================================================
-// Bounded Detail Sections (Ported from CodexBar ProviderDetailSection)
+// Bounded Detail Sections
 // ============================================================================
 
 /// Maximum number of detail sections allowed in a snapshot.
@@ -219,13 +236,15 @@ fn required_string(
     raw: impl AsRef<str>,
     path: &str,
 ) -> Result<String, DetailSectionValidationError> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let s = raw.as_ref().trim();
     if s.is_empty() {
         return Err(DetailSectionValidationError(format!(
             "{path} must not be empty"
         )));
     }
-    if s.chars().count() > MAXIMUM_STRING_LENGTH {
+    if s.graphemes(true).count() > MAXIMUM_STRING_LENGTH {
         return Err(DetailSectionValidationError(format!(
             "{path} exceeds {MAXIMUM_STRING_LENGTH} characters"
         )));
@@ -237,12 +256,14 @@ fn optional_string(
     raw: Option<impl AsRef<str>>,
     path: &str,
 ) -> Result<Option<String>, DetailSectionValidationError> {
+    use unicode_segmentation::UnicodeSegmentation;
+
     let Some(raw) = raw else { return Ok(None) };
     let s = raw.as_ref().trim();
     if s.is_empty() {
         return Ok(None);
     }
-    if s.chars().count() > MAXIMUM_STRING_LENGTH {
+    if s.graphemes(true).count() > MAXIMUM_STRING_LENGTH {
         return Err(DetailSectionValidationError(format!(
             "{path} exceeds {MAXIMUM_STRING_LENGTH} characters"
         )));
@@ -456,7 +477,6 @@ struct ChartRaw {
     title: Option<String>,
     #[serde(default)]
     unit: Option<String>,
-    #[serde(default)]
     points: Vec<ChartPoint>,
 }
 
@@ -510,7 +530,6 @@ impl DetailSection {
 struct DetailSectionRaw {
     #[serde(default)]
     title: Option<String>,
-    #[serde(default)]
     rows: Vec<DetailRow>,
     #[serde(default)]
     chart: Option<Chart>,

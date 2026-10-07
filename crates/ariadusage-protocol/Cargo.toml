@@ -22,6 +22,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 zeroize = { workspace = true }
 jiff = { workspace = true }
+unicode-segmentation = { workspace = true }
 
 tokio-util = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

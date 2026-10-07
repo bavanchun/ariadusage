@@ -81,9 +81,12 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Browser cookie crypto | aes, cbc, pbkdf2, sha1, sha2 | Chromium's Linux cookie encryption, implemented in-house |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
 | Process and port discovery | procfs | Antigravity language-server discovery, agent sessions and the probe reaper |
-| Paths | etcetera | XDG on Linux and macOS, as CodexBar does; ignores relative `XDG_*` values |
+| Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
+| File descriptor safety (Unix) | rustix (`fs`, `process`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod` in the engine without unsafe code under `unsafe_code = "deny"` |
+| Staging directories | tempfile | Task-owned private staging directories (0700) for atomic private writes; also tests |
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
-| Tests | insta, httpmock (HTTPS), assert_cmd, tempfile, proptest | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties |
+| Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
+| Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
 
@@ -140,7 +143,7 @@ The plugin is a client: it never fetches, never holds a secret and never owns da
 | `schemas/` | JSON Schemas generated from `ariadusage-protocol`, with example messages | M0 |
 | `integrations/omarchy/` | Source of the Omarchy plugin, published to its own repository | Contract spike in M0; full UI in M9 |
 | `brand/` | Design-as-code logo pipeline and vendored provider logos | M0 |
-| `fixtures/` | Fixtures ported from CodexBar and AriadUsage's own, with provenance in `fixtures/manifest.toml` | M1 |
+| `fixtures/` | Fixtures ported from CodexBar and AriadUsage's own, with provenance in `fixtures/manifest.toml` | Now; M1 |
 
 The plugin's publishing workflow and the engine's release workflow live in `.github/workflows/`.
 
@@ -189,7 +192,7 @@ These come from CodexBar and are pinned by ported tests:
 
 - One refresh batch at a time; per-provider requests coalesce, and a stale generation never publishes.
 - Cancellation is not a failure and never triggers the next strategy.
-- Keep last-good data through transient failures, with its original timestamp. Authentication failures and account changes invalidate it.
+- Keep last-good data through transient failures, with its original timestamp. The first consecutive failure is hidden when prior data exists; a surfaced non-preservable error, such as an authentication failure, drops it; account changes drop it and reset the gate.
 - Identity is siloed: one provider's account or plan never appears under another.
 - Hooks and notifications are edge-triggered; the first sample only sets a baseline.
 
@@ -305,7 +308,7 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 | Milestone | Scope | Acceptance | Status |
 |---|---|---|---|
 | **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | Done |
-| **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Planned |
+| **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Done |
 | **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Planned |
 | **M3 · Claude** | Every Claude source mode | Claude golden tests and a local live smoke test pass | Planned |
 | **M4 · Codex** | Every Codex source mode, app-server RPC, managed accounts | Codex golden tests and a local live smoke test pass | Planned |
@@ -371,6 +374,12 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Plans | Private, outside the repository | Committing plans | The repository is public |
 | CI breadth | Full gate on Linux; clippy of portable crates on macOS and Windows | Full gate on three OSes; Linux only | Catches portability regressions without spending on code that cannot run off Linux |
 | Plugin lint gate | `qmllint -W 0` with Omarchy's qmldir imports | Plain `qmllint -I` | The plain form exits 0 on broken imports and unknown properties |
+| Detail string length | Grapheme cluster count (`unicode-segmentation`) | Unicode scalar count / char count | Swift `String.count` counts extended grapheme clusters; scalar/char counting rejects valid multi-byte emoji within the 120-limit |
+| Extra windows on the wire | `NamedWindow.window` becomes `Metric<RateWindow>` at provider and account level; schemas re-blessed | Keeping `window: RateWindow` without metric freshness/honesty envelopes on extra windows | Extra windows must enforce the exact same honesty and freshness invariants as positional windows, ensuring no synthetic or unknown quota state renders as a real value |
+| File locking and atomic writes | `std::fs::File::lock`/`try_lock` with rustix (`fstat`, `geteuid`, `O_NOFOLLOW`) and tempfile (0700 staging directory) | `fs4`, `libc` with unsafe | std covers file locking since 1.89; rustix provides safe syscall bindings for file descriptor validation without unsafe code in a deny-unsafe workspace; tempfile isolates staging directories |
+| Config path resolution | Pure path resolver over injected environment and home; etcetera and `std::env` only in production wrapper | Calling etcetera or `std::env` directly in resolver | etcetera reads process env directly and cannot be injected; edition 2024 makes `set_var` unsafe under `unsafe_code = "deny"` |
+| Provider fetch pipeline strategy dispatch | Boxed futures (`Pin<Box<dyn Future<Output = T> + Send + 'a>>`) | `async-trait` proc-macro crate; native `async fn` in traits with static dispatch enum | Heterogeneous strategy lists require dyn-compatible dispatch; boxed future is zero-dependency std Rust, avoiding extra proc-macro dependencies while keeping strategy lists dynamic and open to future plugin expansion |
+| Last-good and failure policy | §6.4 corrected to CodexBar's code: gate hides first failure with prior data; non-preservable error drops snapshot; account changes drop snapshot and reset gate | Strict "auth drops immediately" wording in early draft §6.4 | Follows CodexBar's code and tests verbatim; transient first-failure auth flakes are hidden by the gate if prior data exists, while second-consecutive failure or account changes drop data |
 
 ---
 
@@ -395,3 +404,5 @@ Logos and icons are generated as code under `brand/`, following the same process
 11. **Systemd user socket activation.** Should production installations use systemd socket activation (`ariadusage.socket` / `ariadusage.service`) so the daemon starts on-demand when frontends connect? (Spike recommendation for M8/M9).
 12. **Multi-monitor bar height adaptation.** The bar widget currently uses fixed `implicitHeight: 16` designed for Omarchy's standard 32 px bar. How should it scale dynamically if users configure non-standard bar heights? (Spike recommendation for M9).
 13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
+14. **`cookieSource: auto` on Linux.** What strategy does `cookieSource: auto` follow on Linux when both Chromium and Firefox profiles exist, or when none is found? (M2/M3).
+15. **Rename of `CODEXBAR_CLAUDE_OAUTH_TOKEN`.** Should `CODEXBAR_CLAUDE_OAUTH_TOKEN` environment variable support be renamed to `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` with a fallback during migration? (M3).

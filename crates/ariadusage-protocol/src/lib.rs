@@ -47,5 +47,5 @@ pub use codec::{IpcCodec, IpcCodecError, MAX_FRAME_BYTES};
 #[cfg(all(feature = "fixture", unix))]
 pub use fixture::{
     FixtureConfig, FixtureServerHandle, MisbehaveMode, ensure_socket_directory,
-    generate_scenario_snapshot, start_fixture_server,
+    generate_scenario_snapshot, generate_scenario_snapshot_with_extra, start_fixture_server,
 };

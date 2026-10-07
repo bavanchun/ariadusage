@@ -1,0 +1,24 @@
+[package]
+name = "ariadusage-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
+jiff = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+toml = { workspace = true }
+
+[lints]
+workspace = true

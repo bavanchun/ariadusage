@@ -1,0 +1,111 @@
+{
+  "anotherTop": 42,
+  "hooks": {
+    "enabled": true,
+    "events": [
+      {
+        "event": "quota_low"
+      }
+    ]
+  },
+  "providers": [
+    {
+      "accentColor": "#10A37F",
+      "apiKey": "REPLACE_ME",
+      "codexActiveSource": {
+        "kind": "liveSystem"
+      },
+      "codexProfileHomePaths": [
+        "/srv/example/.codex"
+      ],
+      "cookieHeader": "REPLACE_ME",
+      "cookieSource": "manual",
+      "enabled": true,
+      "enterpriseHost": "https://codex.example.com",
+      "extrasEnabled": true,
+      "hiddenUsageItemIDs": [
+        "item1",
+        "item2"
+      ],
+      "id": "codex",
+      "pluginSecrets": {
+        "token": "REPLACE_ME"
+      },
+      "quotaWarnings": {
+        "session": {
+          "enabled": true,
+          "thresholds": [
+            50,
+            20
+          ]
+        },
+        "weekly": {
+          "enabled": false,
+          "thresholds": [
+            80
+          ]
+        }
+      },
+      "region": "us-east-1",
+      "secretKey": "REPLACE_ME",
+      "source": "oauth",
+      "workspaceID": "ws-123"
+    },
+    {
+      "claudeSwapEnabled": true,
+      "claudeWorkspaceSpendEnabled": true,
+      "enabled": false,
+      "id": "claude",
+      "source": "api",
+      "tokenAccounts": {
+        "accounts": [
+          {
+            "addedAt": 1700000000.0,
+            "customExtra": "val",
+            "externalIdentifier": "ext-claude-1",
+            "id": "A1B2C3D4-E5F6-7A8B-9C0D-1E2F3A4B5C6D",
+            "label": "My Claude Account",
+            "lastUsed": 1700000500.0,
+            "organizationId": "org-anthropic-1",
+            "seatCreditEntitlement": "entitled",
+            "token": "REPLACE_ME",
+            "usageScope": "personal",
+            "workspaceID": "ws-claude-1"
+          }
+        ],
+        "activeIndex": 0,
+        "version": 1
+      }
+    },
+    {
+      "antigravityAdditionalProfileHomes": [
+        "/srv/example/.antigravity"
+      ],
+      "antigravityPrioritizeExhaustedQuotas": true,
+      "enabled": false,
+      "id": "antigravity",
+      "source": "cli"
+    },
+    {
+      "enabled": true,
+      "future": [
+        1e400,
+        1e-400,
+        -0,
+        0.123456789012345678901234567890123456789
+      ],
+      "id": "opaque-large-numbers",
+      "pluginSecrets": {
+        "TOKEN": "REPLACE_ME"
+      },
+      "text": "braces } ] and escaped \" quote \\ slash"
+    }
+  ],
+  "settings": {
+    "refresh": {
+      "interval": 300
+    }
+  },
+  "unknownTopLevel": "value",
+  "version": 1
+}

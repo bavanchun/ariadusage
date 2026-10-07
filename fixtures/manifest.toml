@@ -1,0 +1,298 @@
+baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+
+[[fixture]]
+path = "codexbar/usage-snapshot-current.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/usage-snapshot-current.json"
+commit = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "ariadusage/config/full.json"
+origin = "ariadusage"
+license = "MIT"
+changes = "AriadUsage full configuration fixture with typed and opaque entries."
+
+[[fixture]]
+path = "ariadusage/config/sparse.json"
+origin = "ariadusage"
+license = "MIT"
+changes = "AriadUsage sparse configuration fixture with minimal entries."
+
+[[ported]]
+path = "crates/ariadusage-protocol/src/usage.rs"
+sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
+
+[[ported]]
+path = "crates/ariadusage-protocol/tests/detail_sections.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-protocol/tests/ids.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/settings_value.rs"
+sources = ["Sources/CodexBarCore/Config/SettingsValue.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/providers.rs"
+sources = ["Sources/CodexBarCore/Providers/Providers.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/percent.rs"
+sources = ["Sources/CodexBarCore/UsagePercent.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/window.rs"
+sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/identity.rs"
+sources = ["Sources/CodexBarCore/ProviderIdentitySnapshot.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/cost.rs"
+sources = ["Sources/CodexBarCore/ProviderCostSnapshot.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/snapshot.rs"
+sources = [
+    "Sources/CodexBarCore/UsageFetcher.swift",
+    "Sources/CodexBarCore/UsageSnapshot+AccountLabel.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/model/backfill.rs"
+sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/settings_value.rs"
+sources = ["TestsLinux/SettingsValueTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/rate_window_synthetic.rs"
+sources = ["Tests/CodexBarTests/RateWindowSyntheticPlaceholderTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/detail_sections_snapshot.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/provider_id.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/reset_backfill.rs"
+sources = ["Tests/CodexBarTests/ResetTimeBackfillTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/confidence.rs"
+sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/antigravity_named_windows.rs"
+sources = ["Tests/CodexBarTests/AntigravityStatusProbeTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/snapshot_copy.rs"
+sources = ["Tests/CodexBarTests/CodexbarTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/usage_percent.rs"
+sources = ["Tests/CodexBarTests/UsagePercentTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/cost_window.rs"
+sources = ["Tests/CodexBarTests/ProviderCostWindowTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/identity_silo.rs"
+sources = ["TestsLinux/UsageSnapshotAccountLabelTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/snapshot_fixture.rs"
+sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pace.rs"
+sources = [
+    "Sources/CodexBarCore/UsagePace.swift",
+    "Sources/CodexBarCore/Providers/ProviderDescriptor.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pace.rs"
+sources = [
+    "Tests/CodexBarTests/UsagePaceTests.swift",
+    "Tests/CodexBarTests/ProviderPaceCapabilityTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/types.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/Config/ProviderConfigCoding.swift",
+    "Sources/CodexBarCore/TokenAccounts.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/quota.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/codec.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/Config/OpaqueConfigJSON.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/normalize.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/validate.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigValidation.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/redact.rs"
+sources = [
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/TokenAccounts.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/config/transform.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_unknown_providers.rs"
+sources = ["Tests/CodexBarTests/CodexBarConfigUnknownProviderTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_byte_stability.rs"
+sources = ["Tests/CodexBarTests/ProviderConfigByteStabilityTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_validation.rs"
+sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_active_source.rs"
+sources = ["Tests/CodexBarTests/CodexActiveSourceConfigTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_identity.rs"
+sources = ["Tests/CodexBarTests/ProviderInstanceIdentityCharacterizationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_plugin_preservation.rs"
+sources = ["TestsLinux/PluginConfigPreservationLinuxTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/paths.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/private_file.rs"
+sources = ["Sources/CodexBarCore/CredentialFileWriter.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/config_store.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/paths.rs"
+sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/private_file.rs"
+sources = [
+    "Tests/CodexBarTests/CredentialFileWriterTests.swift",
+    "TestsLinux/CredentialFileWriterTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/config_store.rs"
+sources = ["TestsLinux/CodexBarConfigStoreEmptyTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/context.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/strategy.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/error.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/retry.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/candidate.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderCandidateRetryRunner.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/outcome.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/diagnostics.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderDiagnosticExport.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/pipeline/env.rs"
+sources = ["Sources/CodexBarCore/Providers/ProviderEnvironmentResolver.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_fetch_error.rs"
+sources = ["Tests/CodexBarTests/ProviderFetchErrorTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_candidate_retry.rs"
+sources = ["Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_diagnostics.rs"
+sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/pipeline_env_resolver.rs"
+sources = ["Tests/CodexBarTests/ProviderEnvironmentResolverTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/refresh/failure_gate.rs"
+sources = ["Sources/CodexBar/UsageStoreSupport.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/src/refresh/decision.rs"
+sources = [
+    "Sources/CodexBar/UsageStore+Refresh.swift",
+    "Sources/CodexBar/Providers/Shared/UsageStore+BrowserSession.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/src/refresh/transport.rs"
+sources = ["Sources/CodexBar/UsageStore+ClaudeHistoryFallback.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/refresh_gate.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeResilienceTests.swift",
+    "Tests/CodexBarTests/UsageStoreCoverageTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/refresh_decision.rs"
+sources = ["Tests/CodexBarTests/ClaudeResilienceTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-core/tests/refresh_transport.rs"
+sources = ["Tests/CodexBarTests/UsageStoreCoverageTests.swift"]
+
