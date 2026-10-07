@@ -28,7 +28,7 @@ impl TrustPolicy {
 }
 
 /// Checks that `parent` directory is owned by the current EUID and adheres to `policy`.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn check_parent_trust(parent: &Path, policy: TrustPolicy) -> Result<(), StoreError> {
     let stat = rustix::fs::stat(parent).map_err(std::io::Error::from)?;
     let euid = rustix::process::geteuid().as_raw();
@@ -56,7 +56,7 @@ pub fn check_parent_trust(parent: &Path, policy: TrustPolicy) -> Result<(), Stor
 
 /// Checks that `path` is a regular file owned by the current EUID, is not a symlink, and adheres to `policy`.
 /// Returns `Ok(Some(fd))` if the file exists and is trusted, or `Ok(None)` if it does not exist.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 pub fn check_file_trust(
     path: &Path,
     policy: TrustPolicy,
@@ -108,8 +108,21 @@ pub fn check_file_trust(
     Ok(Some(fd))
 }
 
-/// On non-Unix platforms, parent directory trust is a no-op.
-#[cfg(not(unix))]
+/// Trust checks are unsupported outside Linux.
+#[cfg(not(target_os = "linux"))]
 pub fn check_parent_trust(_parent: &Path, _policy: TrustPolicy) -> Result<(), StoreError> {
-    Ok(())
+    Err(StoreError::Unsupported(
+        "file trust checks are unsupported on this platform",
+    ))
+}
+
+/// File trust checks are unsupported outside Linux.
+#[cfg(not(target_os = "linux"))]
+pub fn check_file_trust(
+    _path: &Path,
+    _policy: TrustPolicy,
+) -> Result<Option<rustix::fd::OwnedFd>, StoreError> {
+    Err(StoreError::Unsupported(
+        "file trust checks are unsupported on this platform",
+    ))
 }

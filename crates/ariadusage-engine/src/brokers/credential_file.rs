@@ -171,7 +171,7 @@ pub fn read_with_expected_uid(
         return Err(CredentialFileError::Cancelled);
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     {
         use std::io::Read;
         let fd = match rustix::fs::open(
@@ -236,7 +236,7 @@ pub fn read_with_expected_uid(
         })
     }
 
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
         let _ = (decl, expected_uid);
         Err(CredentialFileError::Unreadable)
