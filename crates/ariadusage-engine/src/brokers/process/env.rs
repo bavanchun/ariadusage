@@ -147,6 +147,16 @@ impl fmt::Debug for ProcessEnv {
     }
 }
 
+impl<K: Into<OsString>, V: Into<OsString>> FromIterator<(K, V)> for ProcessEnv {
+    fn from_iter<T: IntoIterator<Item = (K, V)>>(iter: T) -> Self {
+        let mut env = Self::empty();
+        for (k, v) in iter {
+            env = env.with(k, v);
+        }
+        env
+    }
+}
+
 fn is_allowlisted(name: &OsStr) -> bool {
     let Some(name) = name.to_str() else {
         return false;
