@@ -10,8 +10,8 @@
 
 ### 1.1 Local Unix Domain Socket
 AriadUsage IPC v1 uses newline-delimited UTF-8 JSON streaming over a local Unix domain socket.
-- **Default Socket Path**: `$XDG_RUNTIME_DIR/ariadusage/engine.sock` (fallback `/tmp/ariadusage/engine.sock`).
-- **Development/Fixture Socket Path**: `$XDG_RUNTIME_DIR/ariadusage-dev/engine.sock` (fallback `/tmp/ariadusage-dev/engine.sock`).
+- **Default Socket Path**: `$XDG_RUNTIME_DIR/ariadusage/engine.sock` (the engine socket lives only in the runtime directory; no fallback).
+- **Development/Fixture Socket Path**: `$XDG_RUNTIME_DIR/ariadusage-dev/engine.sock` (the fixture server falls back to a directory under the system temporary directory when `$XDG_RUNTIME_DIR` is unset; development only, never used by the engine).
 
 ### 1.2 File System Permissions and Security
 The socket exists strictly within user-private space:
@@ -272,7 +272,7 @@ An in-process Unix domain socket fixture server is provided for UI prototyping a
 
 ### 8.1 Running the Fixture Server Example
 ```bash
-cargo run -p ariadusage-protocol --example fixture_server -- --socket /tmp/ariadusage-dev/engine.sock --step-seconds 5
+cargo run -p ariadusage-protocol --example fixture_server -- --socket "$XDG_RUNTIME_DIR/ariadusage-dev/engine.sock" --step-seconds 5
 ```
 
 ### 8.2 Command-Line Options

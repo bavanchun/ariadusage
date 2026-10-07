@@ -6,7 +6,7 @@ AriadUsage tracks the usage, quotas and cost of AI coding assistants on Linux. I
 
 ## Status
 
-AriadUsage is in development; there is nothing to install yet. Milestone M1 (Core domain model, config store, provider pipeline, and fixture harness) is complete. The planned install route has two parts:
+AriadUsage is in development; there is nothing to install yet. Milestones M1 (Core domain model, config store, provider pipeline, and fixture harness) and M2 (Brokers: Net, Process runs, teardown and sessions, ExecutableResolver, CredentialFile and delegated refresh, SecretStore, Browser cookie import, and LocalProbe) are complete. The planned install route has two parts:
 
 - the `ariadusage` engine (one binary with a CLI and a background daemon), packaged on the AUR;
 - a thin Omarchy bar-widget plugin, `io.github.bavanchun.ariadusage`, listed on the Omarchy plugin marketplace.
