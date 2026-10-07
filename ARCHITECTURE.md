@@ -76,12 +76,12 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Errors | thiserror only | Exit codes and fallback decisions need typed errors; `anyhow` would erase them |
 | JSON Schema | schemars | Generates the checked-in schemas from the protocol types |
 | PTY | pty-process, vt100 | pty-process keeps the `unsafe` session setup inside the crate, which the workspace's `unsafe_code = "deny"` requires; vt100 turns cursor-addressed TUI frames into plain screen text |
-| Subprocesses | process-wrap | Process sessions, kill-on-drop, and Windows Job Objects later |
+| Subprocesses | process-wrap with nix | Process groups and sessions, signal-mask reset and Tokio child control; Windows Job Objects later |
 | JSON-RPC over stdio | hand-rolled on tokio-util's line codec | `codex app-server` omits the `jsonrpc` field, so standard JSON-RPC crates do not fit; it reuses the IPC framing |
 | Secret store (Linux) | secret-service | Lock-aware search that never prompts |
 | Browser cookie crypto | aes, cbc, pbkdf2, sha1, sha2 | Chromium's Linux cookie encryption, implemented in-house |
 | Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
-| Process and port discovery | procfs | Antigravity language-server discovery, agent sessions and the probe reaper |
+| Process and port discovery | procfs | Same-user process identity, descriptor scans, Antigravity language-server discovery, agent sessions and the probe reaper |
 | Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
 | File descriptor safety (Unix) | rustix (`fs`, `process`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod` in the engine without unsafe code under `unsafe_code = "deny"` |
 | Staging directories | tempfile | Task-owned private staging directories (0700) for atomic private writes; also tests |
@@ -366,6 +366,8 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Codex RPC | Hand-rolled newline JSON-RPC client | jsonrpsee, jsonrpc-core, a third-party protocol crate | The app server omits the `jsonrpc` field; three methods do not justify a framework |
 | File watching | None; poll fingerprints on refresh ticks | `notify` | Its license is outside the allow-list, and polling keeps idle CPU flat |
 | Net broker client shape | Reuse one main HTTPS client with an original-URL same-origin redirect guard and one separate literal-loopback client with no proxy or redirects; cap responses at 5 MiB | Per-request clients, reqwest's default redirects, or a retry policy without a v1 consumer | Reused clients keep connection pooling without cookie state; declared origins and bounded bodies keep credential delivery and memory use reviewable |
+| Child process environment | Exact-name allowlist plus provider denylist; only `LC_*` and `XDG_*` use families | Inherit the full ambient environment or use broad wildcard prefixes | Keeps loader and inspector variables out while allowing locale and XDG settings |
+| Child descriptor inheritance | No descriptor-closing exception; rely on close-on-exec opens and the systemd unit's stdio-only pass-through | `unsafe` close-range plumbing in the engine | The runtime owns descriptors it opens; an integration test verifies an engine file is not inherited |
 | Net secret request bodies | Move `Zeroizing<Vec<u8>>` into `bytes::Bytes::from_owner` for the reqwest body | Copy secret bytes into an ordinary `Vec<u8>` body | The HTTP body retains the zeroizing owner across body clones and wipes it after the final reference is dropped |
 | Browser cookie reader | In-house | rookie, decrypt-cookies, cookie-scoop | Archived with an ABE bypass; LGPL; shells out to CLIs |
 | Errors | thiserror only | anyhow | Typed errors drive exit codes and fallback |

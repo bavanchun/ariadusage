@@ -340,3 +340,28 @@ sources = [
     "Tests/CodexBarTests/ClaudeOAuthTransportIdentityTests.swift",
     "Tests/CodexBarTests/CodexTransportIdentityTests.swift",
 ]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_env.rs"
+sources = ["Tests/CodexBarTests/ProcessEnvironmentTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_buffers.rs"
+sources = ["Tests/CodexBarTests/BoundedOutputBufferTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_procscan.rs"
+sources = [
+    "Tests/CodexBarTests/PiProcessEnvironmentTests.swift",
+    "TestsLinux/ProcessOwnershipReaperTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/process_run.rs"
+sources = [
+    "Tests/CodexBarTests/SubprocessRunnerTests.swift",
+    "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
+    "TestsLinux/ProcessPipeCaptureLinuxTests.swift",
+    "TestsLinux/ShellCommandSessionLinuxTests.swift",
+    "TestsLinux/ShellCommandOutputLimitTests.swift",
+]

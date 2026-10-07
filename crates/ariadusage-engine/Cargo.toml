@@ -7,9 +7,14 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "ariadusage-test-child"
+path = "src/bin/ariadusage-test-child.rs"
+required-features = ["test-hooks"]
+
 [features]
 default = []
-test-hooks = []
+test-hooks = ["dep:nix"]
 
 [dependencies]
 ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
@@ -27,6 +32,11 @@ zeroize = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+process-wrap = { workspace = true }
+procfs = { workspace = true }
+nix = { workspace = true, optional = true }
 
 [dev-dependencies]
 ariadusage-engine = { path = ".", features = ["test-hooks"] }

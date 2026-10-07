@@ -1,0 +1,9 @@
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+
+[test-groups.process_brokers]
+max-threads = 2
+
+[[profile.default.overrides]]
+filter = 'binary(/^(process_|rpc_|pty_|resolver_shell)/)'
+test-group = 'process_brokers'
