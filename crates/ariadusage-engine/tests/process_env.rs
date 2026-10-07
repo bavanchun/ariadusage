@@ -1,6 +1,7 @@
 // Ported from CodexBar Tests/CodexBarTests/ProcessEnvironmentTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
 use std::ffi::OsString;
 
+#[cfg(target_os = "linux")]
 use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_engine::brokers::process::ProcessEnv;
 

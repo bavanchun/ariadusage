@@ -5,6 +5,7 @@ use std::{collections::BTreeMap, collections::BTreeSet, fs};
 use zeroize::Zeroizing;
 
 pub const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
 pub const PROCESS_MARKER_ENV: &str = "ARIADUSAGE_PROCESS_MARKER";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -237,7 +238,7 @@ pub fn parse_marker_environment(bytes: &[u8], key: &str) -> Option<Zeroizing<Vec
     marker
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{ProcessIdentity, process_descendants_with_hook};
 

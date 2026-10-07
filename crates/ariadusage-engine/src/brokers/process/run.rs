@@ -22,7 +22,9 @@ use tokio::time::{self, Instant};
 #[cfg(target_os = "linux")]
 use zeroize::Zeroizing;
 
-use ariadusage_core::gates::launch::{LaunchFailureKind, LaunchGate};
+#[cfg(target_os = "linux")]
+use ariadusage_core::gates::launch::LaunchFailureKind;
+use ariadusage_core::gates::launch::LaunchGate;
 
 use crate::brokers::call::BrokerCall;
 
@@ -41,7 +43,8 @@ use super::procscan::{PROCESS_MARKER_ENV, process_group, process_identity, proce
 #[cfg(target_os = "linux")]
 use super::reaper::ReapGuard;
 #[cfg(target_os = "linux")]
-use super::registry::{LaunchPermit, ProcessRegistry};
+use super::registry::LaunchPermit;
+use super::registry::ProcessRegistry;
 #[cfg(target_os = "linux")]
 use super::signal::{ProcessSignal, signal};
 #[cfg(target_os = "linux")]
