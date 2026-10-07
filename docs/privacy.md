@@ -14,8 +14,10 @@ services a feature you enabled needs (see [Network](#network)).
 ## What is read
 
 AriadUsage reads only what an enabled provider and its selected source mode
-need. Other tools' credential files are read-only unless a rule in
-[Token refresh](#token-refresh) says otherwise.
+need. Foreign credential files are read-only, accessed only at declared paths,
+and only if owned by your effective user (`st_uid == euid`). Undeclared paths
+or foreign files owned by another user are never touched. Other tools' credential
+files are never modified unless a rule in [Token refresh](#token-refresh) says otherwise.
 
 | Provider | May read |
 |---|---|
@@ -39,8 +41,10 @@ It never reads CodexBar's configuration, cache or state.
 | `$XDG_CONFIG_HOME/ariadusage/config.json` (default `~/.config/ariadusage/`) | The single settings file; overridden by `ARIADUSAGE_CONFIG` |
 | `$XDG_CONFIG_HOME/ariadusage/config.json.lock` | Mode 0600 lock file, owner-only, never unlinked, used for write serialization |
 | `$XDG_CONFIG_HOME/ariadusage/.ariadusage-staged-*` | Mode 0700 temporary staging directories beside target, cleaned up immediately after atomic rename |
+| `$XDG_STATE_HOME/ariadusage/broker-state.json` | Mode 0600 broker state file containing credential file fingerprints and delegated-refresh cooldowns (digests and timestamps only, no secret tokens or file paths); locked via sibling `.lock` |
 | `$XDG_STATE_HOME/ariadusage/` (default `~/.local/state/ariadusage/`) | State such as usage history and notification episodes |
 | `$XDG_CACHE_HOME/ariadusage/` (default `~/.cache/ariadusage/`) | Rebuildable caches such as cost scan results and pricing data |
+| `$XDG_RUNTIME_DIR/ariadusage-tmp-*` | Mode 0700 private temporary directories created under trusted tmpfs runtime directory, removed on drop or sweep at start |
 | `$XDG_RUNTIME_DIR/ariadusage/engine.sock` | The engine's owner-only socket, removed at logout |
 
 The configuration path can be customized via the `ARIADUSAGE_CONFIG` environment variable
@@ -54,7 +58,7 @@ to a `0600` file with `fchmod` before the first byte, synced to disk, atomically
 and followed by an `fsync` of the parent directory.
 
 Nothing is ever written inside the Omarchy plugin directory. Files that hold
-secrets are created with mode 0600 before any bytes are written.
+secrets or private broker state are created with mode 0600 before any bytes are written.
 
 ## Secrets
 

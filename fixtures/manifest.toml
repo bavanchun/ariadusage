@@ -529,3 +529,63 @@ sources = [
     "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
 ]
 
+[[ported]]
+path = "crates/ariadusage-engine/src/trust.rs"
+sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/paths_xdg.rs"
+sources = ["Tests/CodexBarTests/ProviderSessionStoreFileTests.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/credential_read.rs"
+sources = [
+    "Tests/CodexBarTests/CodexCredentialFileAccessTests.swift",
+    "Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/credential_fingerprint.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
+    "Sources/CodexBarCore/CodexManagedAccounts.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/state_store.rs"
+sources = ["Sources/CodexBarCore/ProviderSessionStoreFile.swift"]
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/oauth_coordinator.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshCoordinatorTests.swift",
+    "Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshUnreadableResultTests.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/credential_file.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/oauth.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthDelegatedRefreshCoordinator.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentialModels.swift",
+]
+
+[[ported]]
+path = "crates/ariadusage-engine/src/state_store.rs"
+sources = ["Sources/CodexBarCore/ProviderSessionStoreFile.swift"]
+
+
+
+
+
+
+
