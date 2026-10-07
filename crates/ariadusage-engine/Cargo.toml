@@ -24,11 +24,13 @@ etcetera = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 rustls-platform-verifier = { workspace = true }
+serde = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true }
+tokio-util = { workspace = true, features = ["codec"] }
 zeroize = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process"] }
@@ -37,6 +39,7 @@ rustix = { workspace = true, features = ["fs", "process"] }
 process-wrap = { workspace = true }
 procfs = { workspace = true }
 nix = { workspace = true, optional = true }
+pty-process = { workspace = true, features = ["async"] }
 
 [dev-dependencies]
 ariadusage-engine = { path = ".", features = ["test-hooks"] }

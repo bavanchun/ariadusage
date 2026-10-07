@@ -75,7 +75,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Logging | tracing, tracing-subscriber | Human output for the CLI, JSON for the daemon under journald |
 | Errors | thiserror only | Exit codes and fallback decisions need typed errors; `anyhow` would erase them |
 | JSON Schema | schemars | Generates the checked-in schemas from the protocol types |
-| PTY | pty-process, vt100 | pty-process keeps the `unsafe` session setup inside the crate, which the workspace's `unsafe_code = "deny"` requires; vt100 turns cursor-addressed TUI frames into plain screen text |
+| PTY | pty-process | Keeps the `unsafe` session setup inside the crate, which the workspace's `unsafe_code = "deny"` requires, and supplies a controlling terminal |
 | Subprocesses | process-wrap with nix | Process groups and sessions, signal-mask reset and Tokio child control; Windows Job Objects later |
 | JSON-RPC over stdio | hand-rolled on tokio-util's line codec | `codex app-server` omits the `jsonrpc` field, so standard JSON-RPC crates do not fit; it reuses the IPC framing |
 | Secret store (Linux) | secret-service | Lock-aware search that never prompts |
@@ -362,7 +362,8 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Workspace shape | Four crates, providers as modules | One crate per provider | Crates only at real boundaries |
 | Storage | rusqlite, single writer | sqlx | A local single-writer store needs no async pool |
 | Secret store | secret-service | keyring / keyring-core, oo7 | The keyring store unlocks, and so prompts, on every access; oo7 brings a second crypto stack and its API is in flux |
-| PTY | pty-process with vt100 | portable-pty; hand-rolled rustix PTY | portable-pty's fixes are unreleased; a hand-rolled PTY needs `unsafe` in a deny-unsafe workspace |
+| PTY | pty-process | portable-pty; hand-rolled rustix PTY | pty-process supplies session leadership and a controlling terminal without adding `unsafe` to this workspace |
+| Claude TUI rendering | M2 returns generic PTY bytes and ANSI-stripped text; M3 ports CodexBar's `ClaudeCLIScreen` replayer | A provider-specific terminal renderer in M2 | Keep M2 process sessions generic and port Claude screen behavior with its M3 consumer |
 | Codex RPC | Hand-rolled newline JSON-RPC client | jsonrpsee, jsonrpc-core, a third-party protocol crate | The app server omits the `jsonrpc` field; three methods do not justify a framework |
 | File watching | None; poll fingerprints on refresh ticks | `notify` | Its license is outside the allow-list, and polling keeps idle CPU flat |
 | Net broker client shape | Reuse one main HTTPS client with an original-URL same-origin redirect guard and one separate literal-loopback client with no proxy or redirects; cap responses at 5 MiB | Per-request clients, reqwest's default redirects, or a retry policy without a v1 consumer | Reused clients keep connection pooling without cookie state; declared origins and bounded bodies keep credential delivery and memory use reviewable |
