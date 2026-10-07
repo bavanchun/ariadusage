@@ -136,6 +136,9 @@ it changes the architecture, also add a Decision Log row.
 | Cookie domain matching | SweetCookieKit / CodexBar uses string substring / contains check (`host.contains(domain)`) | `domain_matches` requires exact host match or dot-suffix (`.domain`); leading dots stripped | Security divergence: `notclaude.ai` must never match `claude.ai` |
 | Cookie cache storage | In-memory `CookieHeaderCache` with conditional mutation and fingerprinting | In-memory `CookieCache` with `ConditionalMutationCoordinator` and SHA-256 fingerprinting | Parity with CodexBar baseline (Q5 resolved) |
 | Managed-account cookie scopes and refresh-read suppression | Managed-account cache scopes and UI refresh-read suppression in `CookieHeaderCache` | Deferred: managed-account scopes deferred to M4; refresh-read suppression deferred to M8 with its UI caller | Keeps M2 scope focused on core cookie cache and header delivery |
+| LocalProbe procfs-only discovery | Uses `ps -ax` and `lsof` subprocesses with procfs fallback | Direct procfs inspection (`/proc/<pid>/cmdline`, `fd/`, `net/tcp{,6}`); no `ps` or `lsof` subprocesses | Avoids subprocess execution overhead and external tool dependencies on Linux |
+| LocalProbe user and namespace scoping | `ps -ax` lists processes across all users; does not check network namespace | Same-UID and same-network-namespace only (`readlink /proc/<pid>/ns/net == /proc/self/ns/net`); non-matching argv dropped immediately; kept argv redacted in `Debug` | Prevents inspecting other users' processes or connecting to listeners in foreign network namespaces |
+| LocalProbe listener ownership recheck | No recheck before loopback request | `listener_still_owned` verifies process identity, UID, namespace, and socket inode ownership in TCP table | Defends against port rebinding attacks prior to token transfer |
 
 
 ## Upstream drift

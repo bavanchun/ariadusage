@@ -5,7 +5,7 @@ mod env;
 mod error;
 #[cfg(target_os = "linux")]
 mod holders;
-mod procscan;
+pub mod procscan;
 pub mod pty;
 #[cfg(target_os = "linux")]
 mod reaper;
@@ -24,8 +24,8 @@ pub use env::ProcessEnv;
 pub use error::{OutputStream, ProcessError};
 pub use procscan::{
     ProcessIdentity, fd_targets, parse_marker_environment, process_children, process_descendants,
-    process_group, process_identity, process_state, process_uid, read_marker_environment,
-    same_uid_processes,
+    process_group, process_identity, process_net_ns, process_state, process_uid,
+    read_marker_environment, same_uid_processes,
 };
 pub use pty::{
     PtyCompletionReason, PtyError, PtyScript, PtySession, PtySize, PtyTranscript, SendOnSubstring,

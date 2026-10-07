@@ -641,6 +641,14 @@ sources = ["Tests/CodexBarTests/BrowserDetectionTests.swift"]
 path = "crates/ariadusage-engine/tests/browser_gate.rs"
 sources = ["Tests/CodexBarTests/BrowserCookieAccessGateTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/local_probe/proc_net.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift"]
 
+[[ported]]
+path = "crates/ariadusage-engine/tests/probe_proc_net.rs"
+sources = ["TestsLinux/ProcNetTCPListeningPortParserLinuxTests.swift"]
 
-
+[[ported]]
+path = "crates/ariadusage-engine/tests/probe_processes.rs"
+sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift"]
