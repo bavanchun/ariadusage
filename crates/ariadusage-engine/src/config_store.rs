@@ -53,14 +53,13 @@ impl ConfigStore {
                 crate::trust::check_parent_trust(parent, crate::trust::TrustPolicy::CONFIG)?;
             }
 
-            let Some(fd) =
+            let Some(mut file) =
                 crate::trust::check_file_trust(&self.path, crate::trust::TrustPolicy::CONFIG)?
             else {
                 return Ok(None);
             };
 
             use std::io::Read;
-            let mut file = std::fs::File::from(fd);
             let mut bytes = Vec::new();
             file.read_to_end(&mut bytes)?;
 

@@ -1,5 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/ProviderSessionStoreFile.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
 
+#![cfg(target_os = "linux")]
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 

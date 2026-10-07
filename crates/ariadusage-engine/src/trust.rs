@@ -60,7 +60,7 @@ pub fn check_parent_trust(parent: &Path, policy: TrustPolicy) -> Result<(), Stor
 pub fn check_file_trust(
     path: &Path,
     policy: TrustPolicy,
-) -> Result<Option<rustix::fd::OwnedFd>, StoreError> {
+) -> Result<Option<std::fs::File>, StoreError> {
     let fd = match rustix::fs::open(
         path,
         rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC,
@@ -105,7 +105,7 @@ pub fn check_file_trust(
         )));
     }
 
-    Ok(Some(fd))
+    Ok(Some(std::fs::File::from(fd)))
 }
 
 /// Trust checks are unsupported outside Linux.
@@ -121,7 +121,7 @@ pub fn check_parent_trust(_parent: &Path, _policy: TrustPolicy) -> Result<(), St
 pub fn check_file_trust(
     _path: &Path,
     _policy: TrustPolicy,
-) -> Result<Option<rustix::fd::OwnedFd>, StoreError> {
+) -> Result<Option<std::fs::File>, StoreError> {
     Err(StoreError::Unsupported(
         "file trust checks are unsupported on this platform",
     ))
