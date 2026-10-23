@@ -5,8 +5,7 @@ use std::fmt;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder, LinesCodec, LinesCodecError};
 
-/// Maximum allowed length of a single frame in bytes (1 MiB).
-pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
+pub use crate::ipc::MAX_FRAME_BYTES;
 
 /// Errors produced during frame encoding or decoding.
 #[derive(Debug)]

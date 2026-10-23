@@ -17,8 +17,8 @@ pub mod fixture;
 
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{
-    ClientInfo, ClientMessage, ErrorCode, IpcError, IpcMessage, NoticeLevel, PROTOCOL_V1,
-    RawEnvelope, SUPPORTED_PROTOCOLS, ServerMessage, Topic, negotiate_protocol,
+    ClientInfo, ClientMessage, ErrorCode, IpcError, IpcMessage, MAX_FRAME_BYTES, NoticeLevel,
+    PROTOCOL_V1, RawEnvelope, SUPPORTED_PROTOCOLS, ServerMessage, Topic, negotiate_protocol,
     parse_client_message, parse_server_message,
 };
 pub use metric::{
@@ -42,7 +42,7 @@ pub use usage::{
 };
 
 #[cfg(feature = "codec")]
-pub use codec::{IpcCodec, IpcCodecError, MAX_FRAME_BYTES};
+pub use codec::{IpcCodec, IpcCodecError};
 
 #[cfg(all(feature = "fixture", unix))]
 pub use fixture::{
