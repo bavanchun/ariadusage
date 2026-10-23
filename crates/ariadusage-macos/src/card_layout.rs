@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBar/UsageMenuCardLayout.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuCardMetricRow.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageMenuCardHeaderAndUsageSectionView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+MenuTypes.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Manual layout of the usage card, the AppKit version of CodexBar's
 //! SwiftUI stacks in `MenuCardView.swift`.
@@ -459,6 +460,47 @@ pub fn layout(model: &CardModel, width: f64, measure: &dyn TextMeasure) -> CardL
     } else {
         HEADER_ONLY_VERTICAL_PADDING
     };
+    CardLayout {
+        size: Size::new(width, b.y.ceil()),
+        items: b.items,
+    }
+}
+
+/// Lays out `model` as a compact overview card row (`OverviewMenuCardRowView`):
+/// header and usage metrics without section dividers or credits.
+pub fn overview_layout(model: &CardModel, width: f64, measure: &dyn TextMeasure) -> CardLayout {
+    let mut b = Builder {
+        measure,
+        x: HORIZONTAL_PADDING,
+        width: (width - 2.0 * HORIZONTAL_PADDING).max(0.0),
+        y: HEADER_ONLY_VERTICAL_PADDING,
+        items: Vec::new(),
+    };
+
+    b.header(model);
+    b.y += HEADER_ONLY_VERTICAL_PADDING;
+
+    if model.has_usage_content() {
+        b.y += USAGE_SECTION_TOP_PADDING;
+        for (index, row) in model.metrics.iter().enumerate() {
+            if index > 0 {
+                b.y += SECTION_SPACING;
+            }
+            b.metric_row(row);
+        }
+        if model.metrics.is_empty()
+            && let Some(placeholder) = &model.placeholder
+        {
+            b.text_line(label(
+                placeholder,
+                PLACEHOLDER_FONT,
+                TextColor::Secondary,
+                0,
+            ));
+        }
+        b.y += SECTION_BOTTOM_PADDING;
+    }
+
     CardLayout {
         size: Size::new(width, b.y.ceil()),
         items: b.items,

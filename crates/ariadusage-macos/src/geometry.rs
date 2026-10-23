@@ -38,6 +38,29 @@ impl Rect {
     pub fn outset_y(&self, dy: f64) -> Rect {
         Rect::new(self.x, self.y - dy, self.w, self.h + 2.0 * dy)
     }
+
+    /// Whether `point` lies inside or on the boundary of this rectangle.
+    pub fn contains(&self, point: Point) -> bool {
+        self.w > 0.0
+            && self.h > 0.0
+            && point.x >= self.x
+            && point.x <= self.max_x()
+            && point.y >= self.y
+            && point.y <= self.max_y()
+    }
+}
+
+/// A 2D point in points; `y` grows downwards.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Point {
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
 }
 
 /// A width and height in points.

@@ -4,7 +4,8 @@ use ariadusage_macos::card::{
     Accent, CardModel, CreditsSection, MetricRow, PercentStyle, Subtitle, SubtitleStyle,
 };
 use ariadusage_macos::card_layout::{
-    Align, CardLayout, Item, MIN_CARD_WIDTH, TextColor, Truncation, layout, rendered_width,
+    Align, CardLayout, Item, MIN_CARD_WIDTH, TextColor, Truncation, layout, overview_layout,
+    rendered_width,
 };
 use ariadusage_macos::geometry::Rect;
 use ariadusage_macos::progress_bar::WorkdayTickAppearance;
@@ -265,4 +266,27 @@ fn placeholder_shows_below_the_divider() {
     let placeholder = frame_of(&l, "No usage yet");
     assert_eq!(placeholder.y, divider.max_y() + 6.0);
     assert_eq!(l.size.h, placeholder.max_y() + 6.0);
+}
+
+#[test]
+fn overview_layout_omits_dividers_and_credits() {
+    let mut m = model("Updated 5 min ago", SubtitleStyle::Info);
+    m.metrics = vec![row("Session", 58.0, Some("Resets in 2h 13m"))];
+    m.credits = Some(CreditsSection {
+        text: "42.5 left".to_string(),
+        show_progress: true,
+        progress_percent: Some(42.5),
+        scale_text: Some("100 tokens".to_string()),
+    });
+    let l = overview_layout(&m, 310.0, &FixedMeasure);
+    assert!(
+        frames_of_kind(&l, true).is_empty(),
+        "overview card has no internal dividers"
+    );
+    assert_eq!(
+        frames_of_kind(&l, false).len(),
+        1,
+        "overview card omits credits bar"
+    );
+    assert_eq!(frame_of(&l, "Session 58% left").y, 39.0 + 6.0 + 10.0);
 }
