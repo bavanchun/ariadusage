@@ -228,6 +228,10 @@ pub struct CookieQuery<'a> {
     pub domains: &'a cookie_core::DeclaredDomains,
     pub names: Option<&'a [&'a str]>,
     pub browsers: &'a [Browser],
+    /// Set only after the user acknowledged a keyring prompt for this call. A user-initiated
+    /// call with this flag may make one keyring read through a saved denial cooldown; without
+    /// it, every call respects the cooldown.
+    pub acknowledged_retry: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

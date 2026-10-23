@@ -53,6 +53,7 @@ fn read_in_order(
         domains: &domains,
         names: None,
         browsers,
+        acknowledged_retry: false,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

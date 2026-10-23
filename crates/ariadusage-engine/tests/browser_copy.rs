@@ -34,6 +34,7 @@ fn run_with_paths(
         domains: &domains,
         names: None,
         browsers: &browsers,
+        acknowledged_retry: false,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -292,6 +293,7 @@ fn private_copy_directory_is_removed_when_key_source_panics() {
                 domains: &domains,
                 names: None,
                 browsers: &browsers,
+                acknowledged_retry: false,
             };
             broker
                 .candidates(

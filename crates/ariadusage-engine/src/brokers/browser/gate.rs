@@ -1,3 +1,5 @@
+// Ported from CodexBar Sources/CodexBarCore/BrowserCookieAccessGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use ariadusage_core::digest::sha256_hex;
@@ -11,16 +13,24 @@ use super::error::BrowserError;
 
 const COOLDOWN_SECONDS: i64 = 6 * 60 * 60;
 
-/// Allows one explicit retry within one browser-import call during a saved cooldown.
-#[derive(Default)]
+/// Retry state shared by every read of one browser-import call.
+///
+/// A saved denial cooldown blocks every read, user-initiated ones included. Only an
+/// acknowledged, user-initiated retry may make one keyring read through the cooldown.
 pub struct RetryScope {
+    bypasses_cooldown: bool,
     chromium_retry_used: bool,
     chromium_dismissed_in_scope: bool,
 }
 
 impl RetryScope {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(call: &BrokerCall, acknowledged_retry: bool) -> Self {
+        Self {
+            bypasses_cooldown: acknowledged_retry
+                && call.interaction == FetchInteraction::UserInitiated,
+            chromium_retry_used: false,
+            chromium_dismissed_in_scope: false,
+        }
     }
 }
 
@@ -37,7 +47,6 @@ impl BrowserGate {
     pub fn should_attempt_key(
         &self,
         browser: Browser,
-        call: &BrokerCall,
         retry_scope: &mut RetryScope,
         now_seconds: i64,
     ) -> Result<bool, BrowserError> {
@@ -61,7 +70,7 @@ impl BrowserGate {
         if browser_until <= now_seconds && family_until <= now_seconds {
             return Ok(true);
         }
-        if call.interaction == FetchInteraction::UserInitiated && !retry_scope.chromium_retry_used {
+        if retry_scope.bypasses_cooldown && !retry_scope.chromium_retry_used {
             retry_scope.chromium_retry_used = true;
             return Ok(true);
         }
@@ -84,16 +93,41 @@ impl BrowserGate {
             .map_err(|_| BrowserError::Io)
     }
 
-    pub fn record_success(&self, browser: Browser) -> Result<(), BrowserError> {
+    /// Clears a browser's cooldown after a successful key read, but only inside an
+    /// acknowledged retry. The family cooldown then falls back to the latest remaining
+    /// browser cooldown, so another browser's denial keeps suppressing the family.
+    pub fn record_success(
+        &self,
+        browser: Browser,
+        retry_scope: &RetryScope,
+    ) -> Result<(), BrowserError> {
+        if !browser.is_chromium() || !retry_scope.bypasses_cooldown {
+            return Ok(());
+        }
         self.state
             .update(|state| {
-                state.browser_cooldowns.remove(&browser_key(browser));
-                if browser.is_chromium() {
-                    state.browser_cooldowns.remove(&family_key());
+                let cooldowns = &mut state.browser_cooldowns;
+                let browser = browser_key(browser);
+                let family = family_key();
+                if !cooldowns.contains_key(&browser) || !cooldowns.contains_key(&family) {
+                    return;
                 }
+                cooldowns.remove(&browser);
+                match latest_browser_cooldown(cooldowns, &family) {
+                    Some(until) => cooldowns.insert(family, until),
+                    None => cooldowns.remove(&family),
+                };
             })
             .map_err(|_| BrowserError::Io)
     }
+}
+
+fn latest_browser_cooldown(cooldowns: &BTreeMap<String, i64>, family: &str) -> Option<i64> {
+    cooldowns
+        .iter()
+        .filter(|(key, _)| key.as_str() != family)
+        .map(|(_, until)| *until)
+        .max()
 }
 
 fn browser_key(browser: Browser) -> String {

@@ -25,6 +25,7 @@ fn read_firefox(
         domains: &domains,
         names: None,
         browsers: &browsers,
+        acknowledged_retry: false,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -185,6 +186,7 @@ fn firefox_reader_does_not_request_chromium_keys() {
         domains: &domains,
         names: None,
         browsers: &browsers,
+        acknowledged_retry: false,
     };
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

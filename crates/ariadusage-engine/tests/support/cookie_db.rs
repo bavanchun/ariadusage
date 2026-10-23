@@ -215,6 +215,7 @@ pub fn query<'a>(
         domains,
         names: None,
         browsers,
+        acknowledged_retry: false,
     }
 }
 
