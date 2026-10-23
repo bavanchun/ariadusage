@@ -5,23 +5,25 @@
 //! The binary has no libtest harness, so it answers the harness's `--list`
 //! queries itself for cargo test and nextest.
 
+#[cfg(target_os = "macos")]
 const TEST_NAME: &str = "renders_the_card";
 
+#[cfg(target_os = "macos")]
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
     if has("--list") {
-        if cfg!(target_os = "macos") && !has("--ignored") {
+        if !has("--ignored") {
             println!("{TEST_NAME}: test");
         }
         return;
     }
-    #[cfg(target_os = "macos")]
-    {
-        macos::run();
-        println!("test {TEST_NAME} ... ok");
-    }
+    macos::run();
+    println!("test {TEST_NAME} ... ok");
 }
+
+#[cfg(not(target_os = "macos"))]
+fn main() {}
 
 #[cfg(target_os = "macos")]
 mod macos {
