@@ -1,4 +1,4 @@
-// Ported from CodexBar TestsLinux/PluginConfigPreservationLinuxTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/PluginConfigPreservationLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::config::{decode, encode, set_provider_enabled};
 

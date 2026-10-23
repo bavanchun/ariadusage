@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthRefreshDispositionTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthRefreshDispositionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::oauth::{
     CredentialReadOutcome, RefreshDisposition, extract_oauth_error_code, may_fall_through,

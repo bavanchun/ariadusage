@@ -1,7 +1,7 @@
-// Ported from CodexBar Sources/CodexBarCore/Host/PTY/StreamScanBuffer.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/StreamScanBufferTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Host/PTY/StreamScanBuffer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StreamScanBufferTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 use std::io::{self, Read};
@@ -30,19 +30,19 @@ fn scan_buffer_retains_only_max_needle_overlap() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:460
+// CodexBar: TTYCommandRunnerTests.swift:552
 fn drain_classifies_read_data() {
     assert_eq!(drain::classify(Ok(17)), DrainClassification::Data(17));
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:488
+// CodexBar: TTYCommandRunnerTests.swift:580
 fn drain_classifies_zero_as_closed() {
     assert_eq!(drain::classify(Ok(0)), DrainClassification::Closed);
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:517
+// CodexBar: TTYCommandRunnerTests.swift:609
 fn drain_classifies_would_block_as_retryable() {
     assert_eq!(
         drain::classify(Err(io::Error::from(io::ErrorKind::WouldBlock))),
@@ -51,7 +51,7 @@ fn drain_classifies_would_block_as_retryable() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:533
+// CodexBar: TTYCommandRunnerTests.swift:625
 fn drain_classifies_eagain_as_retryable() {
     assert_eq!(
         drain::classify(Err(io::Error::from_raw_os_error(11))),
@@ -60,7 +60,7 @@ fn drain_classifies_eagain_as_retryable() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:561
+// CodexBar: TTYCommandRunnerTests.swift:653
 fn drain_classifies_interrupted_as_retryable() {
     assert_eq!(
         drain::classify(Err(io::Error::from(io::ErrorKind::Interrupted))),
@@ -69,7 +69,7 @@ fn drain_classifies_interrupted_as_retryable() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:588
+// CodexBar: TTYCommandRunnerTests.swift:680
 fn drain_classifies_eio_as_closed() {
     assert_eq!(
         drain::classify(Err(io::Error::from_raw_os_error(5))),
@@ -78,7 +78,7 @@ fn drain_classifies_eio_as_closed() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:598
+// CodexBar: TTYCommandRunnerTests.swift:690
 fn drain_classifies_other_errors_as_closed() {
     assert_eq!(
         drain::classify(Err(io::Error::other("synthetic reader failure"))),
@@ -87,7 +87,7 @@ fn drain_classifies_other_errors_as_closed() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:653
+// CodexBar: TTYCommandRunnerTests.swift:745
 fn lowercase_only_changes_ascii_letters() {
     let lowered = StreamScanBuffer::lowercased_ascii(&[b'A', b'Z', 0xc3, 0x89]);
     assert_eq!(lowered.as_slice(), &[b'a', b'z', 0xc3, 0x89]);

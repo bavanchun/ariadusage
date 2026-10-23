@@ -1,5 +1,5 @@
-// Ported from CodexBar Sources/CodexBar/UsageStore+Refresh.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/Providers/Shared/UsageStore+BrowserSession.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+Refresh.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/Providers/Shared/UsageStore+BrowserSession.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use crate::projection::RefreshState;
 use crate::refresh::failure_gate::FailureGate;

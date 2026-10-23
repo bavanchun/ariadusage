@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/UsageFetcher.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/UsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use crate::model::identity::ProviderIdentitySnapshot;
 use crate::model::snapshot::UsageSnapshot;

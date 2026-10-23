@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/process.rs"]
@@ -9,7 +9,7 @@ use ariadusage_core::pipeline::FetchInteraction;
 use tempfile::tempdir;
 
 #[tokio::test]
-// CodexBar: SubprocessRunnerTests.swift:133, SpawnedProcessGroupTests.swift:561
+// CodexBar: SubprocessRunnerTests.swift:133, SpawnedProcessGroupTests.swift:568
 async fn session_escaped_output_holders_are_reaped_after_parent_exit() {
     support::require_nextest();
     let command = support::command(&["hold-detached-pipe", "50000"]);
@@ -25,7 +25,7 @@ async fn session_escaped_output_holders_are_reaped_after_parent_exit() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:615
+// CodexBar: SpawnedProcessGroupTests.swift:622
 async fn holder_scan_rechecks_for_helpers_spawned_during_term() {
     support::require_nextest();
     let temp = tempdir().unwrap();
@@ -45,7 +45,7 @@ async fn holder_scan_rechecks_for_helpers_spawned_during_term() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:696
+// CodexBar: SpawnedProcessGroupTests.swift:706
 async fn same_group_helper_holding_output_pipes_is_cleaned_up() {
     support::require_nextest();
     let command = support::command(&["hold-pipe", "50000"]);

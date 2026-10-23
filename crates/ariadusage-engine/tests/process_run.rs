@@ -1,8 +1,8 @@
-// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/ProcessPipeCaptureLinuxTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/ShellCommandSessionLinuxTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/ShellCommandOutputLimitTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/ProcessPipeCaptureLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/ShellCommandSessionLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/ShellCommandOutputLimitTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -79,7 +79,7 @@ async fn large_finite_timeout_retains_successful_output() {
 }
 
 #[tokio::test]
-// CodexBar: SubprocessRunnerTests.swift:24, :37, :50, :89, SpawnedProcessGroupTests.swift:148
+// CodexBar: SubprocessRunnerTests.swift:24, :37, :50, :89, SpawnedProcessGroupTests.swift:151
 async fn concurrent_streams_are_drained_and_output_over_a_cap_fails_closed() {
     require_nextest();
     let mut cmd = command(&["print", "both", "131072"]);
@@ -307,7 +307,7 @@ async fn child_pipe_readers_are_released_after_completed_runs() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:178
+// CodexBar: SpawnedProcessGroupTests.swift:181
 async fn launch_resets_the_parent_signal_mask() {
     use nix::sys::signal::{SigSet, SigmaskHow, Signal, pthread_sigmask};
 

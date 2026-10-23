@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/cookie_db.rs"]
@@ -114,7 +114,7 @@ fn firefox_container_rows_are_separate_candidates_and_partitioned_rows_are_dropp
 }
 
 #[test]
-// CodexBar: BrowserDetectionTests.swift:752
+// CodexBar: BrowserDetectionTests.swift:796
 fn firefox_profile_without_its_default_database_has_no_session() {
     let home = TestHome::new();
     let root = home.config.join("mozilla/firefox");

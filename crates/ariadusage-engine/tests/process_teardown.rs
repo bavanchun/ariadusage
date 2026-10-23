@@ -1,6 +1,6 @@
-// Ported from CodexBar TestsLinux/ProcessOwnershipReaperTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/ProcessOwnershipReaperTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/process.rs"]
@@ -32,7 +32,7 @@ async fn timeout_reaps_a_detached_descendant_from_the_launch_tree() {
 }
 
 #[tokio::test]
-// CodexBar: ProcessOwnershipReaperTests.swift:110
+// CodexBar: ProcessOwnershipReaperTests.swift:111
 async fn timeout_kills_a_same_group_child_that_cleared_its_environment() {
     support::require_nextest();
     let temp = tempdir().unwrap();
@@ -51,7 +51,7 @@ async fn timeout_kills_a_same_group_child_that_cleared_its_environment() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:285, :396
+// CodexBar: SpawnedProcessGroupTests.swift:288, :399
 async fn teardown_allows_the_term_grace_before_kill_escalation() {
     support::require_nextest();
     let mut command = support::command(&["ignore-term", "50000"]);
@@ -66,7 +66,7 @@ async fn teardown_allows_the_term_grace_before_kill_escalation() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:474
+// CodexBar: SpawnedProcessGroupTests.swift:477
 async fn reaper_catches_a_session_escaped_helper_spawned_during_term() {
     support::require_nextest();
     let temp = tempdir().unwrap();
@@ -131,7 +131,7 @@ async fn repeated_cancel_timeout_races_leave_no_running_helper() {
 }
 
 #[tokio::test]
-// CodexBar: SpawnedProcessGroupTests.swift:341
+// CodexBar: SpawnedProcessGroupTests.swift:344
 async fn normal_root_exit_reaps_reparented_same_group_members() {
     support::require_nextest();
     let output = support::run_fresh(

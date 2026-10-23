@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/CredentialFileWriter.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/CredentialFileWriter.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::path::Path;
 use std::sync::Arc;

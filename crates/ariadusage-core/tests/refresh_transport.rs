@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/UsageStoreCoverageTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/UsageStoreCoverageTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::pipeline::{ClassifiedError, FetchError, TransportClass};
 use ariadusage_core::refresh::{is_cancellation, is_preservable_error, is_preservable_transport};

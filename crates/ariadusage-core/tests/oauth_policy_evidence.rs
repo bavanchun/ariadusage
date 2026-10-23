@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthRefreshChainOwnershipTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthRefreshChainOwnershipTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::oauth::{
     OwnershipEvidence, TokenOwner, can_release_to_self_owned, resolve_chain_owner,

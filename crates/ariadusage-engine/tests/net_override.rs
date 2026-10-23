@@ -1,6 +1,6 @@
-// Ported from CodexBar Tests/CodexBarTests/ProviderEndpointOverrideSecurityTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/ProviderEndpointOverrideSecurityLinuxTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/AzureEndpointOverrideSecurityTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ProviderEndpointOverrideSecurityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/ProviderEndpointOverrideSecurityLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/AzureEndpointOverrideSecurityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #[path = "support/https.rs"]
 mod https;

@@ -1,5 +1,5 @@
-// Ported from CodexBar Sources/CodexBarCore/CookieHeaderCache.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/CookieHeaderCache+Fingerprint.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/CookieHeaderCache.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/CookieHeaderCache+Fingerprint.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::cookie as cookie_core;
 use ariadusage_core::digest::sha256_hex;
