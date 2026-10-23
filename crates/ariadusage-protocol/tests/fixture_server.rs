@@ -6,7 +6,9 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ariadusage_protocol::fixture::{FixtureConfig, start_fixture_server};
+use ariadusage_protocol::fixture::{
+    FixtureConfig, generate_scenario_snapshot, start_fixture_server,
+};
 use ariadusage_protocol::ipc::{ErrorCode, ServerMessage};
 use ariadusage_protocol::metric::MetricState;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -369,4 +371,38 @@ async fn test_fixture_server_emits_extra_windows() {
     }
 
     server.stop().await;
+}
+
+#[test]
+fn fixture_providers_carry_presentation_and_claude_tertiary_window() {
+    for step in 0..5 {
+        let snapshot = generate_scenario_snapshot(step);
+        for provider in &snapshot.providers {
+            let presentation = provider
+                .presentation
+                .as_ref()
+                .unwrap_or_else(|| panic!("{} presentation at step {step}", provider.id));
+            assert!(presentation.accent_color.is_some());
+            assert_eq!(
+                presentation.tertiary_label.as_deref(),
+                (provider.id.as_str() == "claude").then_some("Sonnet")
+            );
+        }
+
+        let claude = snapshot
+            .providers
+            .iter()
+            .find(|p| p.id.as_str() == "claude")
+            .expect("claude provider");
+        let primary_state = claude.windows.primary.as_ref().expect("primary").state;
+        let has_data = matches!(primary_state, MetricState::Value | MetricState::Stale);
+        match &claude.windows.tertiary {
+            Some(tertiary) => {
+                assert!(has_data, "tertiary only when Claude has data (step {step})");
+                assert_eq!(tertiary.state, primary_state);
+                assert!(tertiary.value.is_some());
+            }
+            None => assert!(!has_data, "tertiary missing at step {step}"),
+        }
+    }
 }

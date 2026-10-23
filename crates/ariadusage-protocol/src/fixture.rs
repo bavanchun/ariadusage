@@ -25,7 +25,9 @@ use crate::settings::{
     NumberConfig, SettingDescriptor, SettingsPage, SettingsScope, SettingsSection, TextConfig,
     TokenAccountRow, TokenAccountsConfig,
 };
-use crate::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows};
+use crate::snapshot::{
+    EngineInfo, EngineSnapshot, ProviderPresentation, ProviderSnapshot, ProviderWindows,
+};
 use crate::usage::{
     DetailRow, DetailSection, NamedWindow, ProviderError, ProviderErrorCategory, ProviderErrorKind,
     RateWindow,
@@ -454,6 +456,7 @@ fn make_provider_snapshot(
 ) -> ProviderSnapshot {
     let pid = ProviderId::new(id_str).unwrap();
     let mut snap = ProviderSnapshot::new(pid, name, true, mode);
+    snap.presentation = fixture_presentation(id_str);
 
     let rate_value = match state {
         MetricState::Value | MetricState::Stale => Some(RateWindow {
@@ -511,10 +514,36 @@ fn make_provider_snapshot(
         Vec::new()
     };
 
+    // Claude carries a tertiary window whenever it has data, so frontends can
+    // render the row titled by `presentation.tertiaryLabel`.
+    let tertiary = match state {
+        MetricState::Value | MetricState::Stale if id_str == "claude" => Some(
+            Metric::new(
+                state,
+                Some(RateWindow {
+                    used_percent: 18.0,
+                    window_minutes: Some(10080),
+                    resets_at: "2026-10-10T09:00:00Z".parse::<jiff::Timestamp>().ok(),
+                    reset_description: Some("Resets in 4 days".to_string()),
+                    next_regen_percent: None,
+                }),
+                None,
+                Some(MetricSource::new(
+                    SourceKind::Cli,
+                    format!("{id_str}-strategy"),
+                )),
+                Confidence::Exact,
+                None,
+            )
+            .unwrap(),
+        ),
+        _ => None,
+    };
+
     snap.windows = ProviderWindows {
         primary: Some(metric),
         secondary: None,
-        tertiary: None,
+        tertiary,
         extra,
     };
 
@@ -547,6 +576,28 @@ fn make_provider_snapshot(
     ];
 
     snap
+}
+
+/// Presentation blocks for the fixture providers. The protocol crate cannot
+/// depend on the engine's provider descriptors, so these literals duplicate
+/// them; a core test keeps the two in step.
+fn fixture_presentation(id_str: &str) -> Option<ProviderPresentation> {
+    let (short_name, session, weekly, tertiary, accent) = match id_str {
+        "claude" => ("Claude", "Session", "Weekly", Some("Sonnet"), "#CC7C5E"),
+        "codex" => ("Codex", "Session", "Weekly", None, "#49A3B0"),
+        "antigravity" => ("Anti", "Gemini Models", "Claude and GPT", None, "#60BA7E"),
+        _ => return None,
+    };
+    Some(
+        ProviderPresentation::new(
+            short_name,
+            session,
+            weekly,
+            tertiary.map(String::from),
+            Some(accent.to_string()),
+        )
+        .unwrap(),
+    )
 }
 
 async fn generate_settings_page(scope: &SettingsScope, shared: &ServerShared) -> SettingsPage {

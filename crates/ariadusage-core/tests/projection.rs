@@ -712,3 +712,63 @@ fn test_monthly_boundary_at_timestamp_max() {
     let p = pace.unwrap();
     assert!(p.expected_used_percent > 0.0);
 }
+
+#[test]
+fn test_known_providers_carry_descriptor_presentation() {
+    let snap = sample_usage_snapshot();
+    let cases = [
+        (
+            "claude",
+            "Claude",
+            "Session",
+            "Weekly",
+            Some("Sonnet"),
+            "#CC7C5E",
+        ),
+        ("codex", "Codex", "Session", "Weekly", None, "#49A3B0"),
+        (
+            "antigravity",
+            "Anti",
+            "Gemini Models",
+            "Claude and GPT",
+            None,
+            "#60BA7E",
+        ),
+    ];
+
+    for (id, short_name, session, weekly, tertiary, accent) in cases {
+        let input = sample_projection_input(id, RefreshState::Fresh);
+        let presentation = provider_snapshot(&snap, &input)
+            .presentation
+            .unwrap_or_else(|| panic!("{id} presentation"));
+        assert_eq!(presentation.short_display_name, short_name);
+        assert_eq!(presentation.session_label, session);
+        assert_eq!(presentation.weekly_label, weekly);
+        assert_eq!(presentation.tertiary_label.as_deref(), tertiary);
+        assert_eq!(presentation.accent_color.as_deref(), Some(accent));
+    }
+}
+
+#[test]
+fn test_presentation_does_not_depend_on_refresh_state() {
+    let snap = sample_usage_snapshot();
+    let fresh = provider_snapshot(
+        &snap,
+        &sample_projection_input("claude", RefreshState::Fresh),
+    );
+    for refresh in [
+        RefreshState::Loading,
+        RefreshState::Stale,
+        RefreshState::Error,
+    ] {
+        let projected = provider_snapshot(&snap, &sample_projection_input("claude", refresh));
+        assert_eq!(projected.presentation, fresh.presentation);
+    }
+}
+
+#[test]
+fn test_unknown_provider_has_no_presentation() {
+    let snap = sample_usage_snapshot();
+    let input = sample_projection_input("example-provider", RefreshState::Fresh);
+    assert!(provider_snapshot(&snap, &input).presentation.is_none());
+}

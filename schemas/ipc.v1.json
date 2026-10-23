@@ -1325,6 +1325,44 @@
       "pattern": "^[a-z0-9-]{1,64}$",
       "type": "string"
     },
+    "ProviderPresentation": {
+      "description": "Engine-owned labels and accent color that frontends use to title a\nprovider's usage windows and tint its progress bars.",
+      "properties": {
+        "accentColor": {
+          "description": "Provider accent color as uppercase `#RRGGBB` hex.",
+          "pattern": "^#[0-9A-F]{6}$",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionLabel": {
+          "description": "Title of the primary window (e.g. \"Session\").",
+          "type": "string"
+        },
+        "shortDisplayName": {
+          "description": "Compact provider name for tight layouts (e.g. \"Anti\").",
+          "type": "string"
+        },
+        "tertiaryLabel": {
+          "description": "Title of the tertiary window, when the provider has one (e.g. \"Sonnet\").",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weeklyLabel": {
+          "description": "Title of the secondary window (e.g. \"Weekly\").",
+          "type": "string"
+        }
+      },
+      "required": [
+        "shortDisplayName",
+        "sessionLabel",
+        "weeklyLabel"
+      ],
+      "type": "object"
+    },
     "ProviderSnapshot": {
       "description": "Snapshot of a single AI provider's usage and state.",
       "properties": {
@@ -1399,6 +1437,17 @@
               "type": "null"
             }
           ]
+        },
+        "presentation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderPresentation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Window titles and accent color for known providers; absent for\nproviders the engine has no descriptor for."
         },
         "sourceMode": {
           "type": "string"

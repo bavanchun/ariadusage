@@ -31,7 +31,8 @@ pub use settings::{
     SettingsSection, TextConfig, TokenAccountRow, TokenAccountsConfig,
 };
 pub use snapshot::{
-    AccountSnapshot, EngineInfo, EngineSnapshot, ProviderSnapshot, ProviderWindows,
+    AccountSnapshot, EngineInfo, EngineSnapshot, ProviderPresentation, ProviderPresentationError,
+    ProviderSnapshot, ProviderWindows,
 };
 pub use usage::{
     Chart, ChartKind, ChartPoint, Cost, Credits, DetailRow, DetailSection,

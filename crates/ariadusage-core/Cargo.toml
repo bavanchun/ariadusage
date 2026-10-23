@@ -23,5 +23,9 @@ insta = { workspace = true }
 tokio = { workspace = true, features = ["rt", "macros"] }
 toml = { workspace = true }
 
+# Test-only: compares the protocol fixture server's literals with the descriptors.
+[target.'cfg(unix)'.dev-dependencies]
+ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol", features = ["fixture"] }
+
 [lints]
 workspace = true
