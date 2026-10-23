@@ -1,4 +1,5 @@
-baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+baseline = "b49d42eb53bbf79785b344492d594760dd163eac"
+previous_baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
 
 [[fixture]]
 path = "codexbar/usage-snapshot-current.json"
@@ -652,3 +653,4 @@ sources = ["TestsLinux/ProcNetTCPListeningPortParserLinuxTests.swift"]
 [[ported]]
 path = "crates/ariadusage-engine/tests/probe_processes.rs"
 sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift"]
+
