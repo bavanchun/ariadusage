@@ -67,6 +67,22 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 license = "MIT"
 changes = "Copied byte-for-byte from the baseline."
 
+[[fixture]]
+path = "codexbar/codex-config-amazon-bedrock.toml"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/codex-config-amazon-bedrock.toml"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/codex-config-openai.toml"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/codex-config-openai.toml"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
 [[ported]]
 path = "crates/ariadusage-protocol/src/usage.rs"
 sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
@@ -1345,4 +1361,125 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-macos/tests/settings_render.rs"
 sources = ["Tests/CodexBarTests/SettingsWindowBehaviorTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/mod.rs"
+sources = ["Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/credentials.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexTokenRefresher.swift",
+    "Sources/CodexBarCore/CodexHomeScope.swift",
+    "Sources/CodexBarCore/CodexCredentialFileAccess.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/credits.rs"
+sources = [
+    "Sources/CodexBarCore/CreditsModels.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexExtraUsageCost.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/plan.rs"
+sources = ["Sources/CodexBarCore/Providers/Codex/CodexPlanFormatting.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/identity.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexIdentity.swift",
+    "Sources/CodexBarCore/UsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/normalizer.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexRateWindowNormalizer.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexAdditionalRateLimitMapper.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/usage_fetcher.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexSpendControlLimitMapping.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexSpendControlNumber.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexSpendControlsMonthlyUsage.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/reconciled.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexReconciledState.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/cli_backend_config.rs"
+sources = ["Sources/CodexBarCore/Providers/Codex/CodexCLIBackendConfiguration.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/cli_launch_gate.rs"
+sources = ["Sources/CodexBarCore/Providers/Codex/CodexCLILaunchGate.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/cli_rpc.rs"
+sources = [
+    "Sources/CodexBarCore/UsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexStatusProbe.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/strategy.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_oauth.rs"
+sources = [
+    "Tests/CodexBarTests/CodexOAuthTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCreditLimitTests.swift",
+    "Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift",
+    "Tests/CodexBarTests/CodexOAuthRequestTests.swift",
+    "Tests/CodexBarTests/CodexOAuthResetCreditFetchTests.swift",
+    "Tests/CodexBarTests/CodexOAuthCredentialsStorePermissionsTests.swift",
+    "Tests/CodexBarTests/CodexAdditionalRateLimitsTests.swift",
+    "Tests/CodexBarTests/CodexExtraUsageCostTests.swift",
+    "Tests/CodexBarTests/CodexIdentityResolverTests.swift",
+    "Tests/CodexBarTests/CodexPlanFormattingTests.swift",
+    "Tests/CodexBarTests/CodexRateLimitResetCreditsTests.swift",
+    "Tests/CodexBarTests/CodexSpendControlNumberTests.swift",
+    "Tests/CodexBarTests/CodexSpendControlsMonthlyUsageTests.swift",
+    "Tests/CodexBarTests/CodexUnlimitedCreditsTests.swift",
+    "Tests/CodexBarTests/CodexWorkspaceBalanceTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_cli.rs"
+sources = [
+    "Tests/CodexBarTests/CodexCLIWindowNormalizationTests.swift",
+    "Tests/CodexBarTests/CodexCLIBackendConfigurationTests.swift",
+    "Tests/CodexBarTests/CodexCLILaunchGateTests.swift",
+    "Tests/CodexBarTests/CodexUsageFetcherFallbackTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

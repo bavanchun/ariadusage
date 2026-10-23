@@ -74,6 +74,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     match mode.as_str() {
+        "codex-app-server" | "app-server" => run_codex_app_server(&mode, &remaining)?,
+        _ if remaining.iter().any(|arg| arg == "app-server") => {
+            run_codex_app_server(&mode, &remaining)?
+        }
         "fake-shell" => run_fake_shell(&mode, remaining).await?,
         _ if mode.starts_with('-') => run_fake_shell(&mode, remaining).await?,
         "print-sid" => {
@@ -897,5 +901,206 @@ async fn run_fake_shell(
         return Ok(());
     }
 
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_codex_app_server(
+    mode: &str,
+    remaining: &[std::ffi::OsString],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs::OpenOptions;
+    use std::io::{BufRead, Write};
+    use std::path::PathBuf;
+
+    if mode != "codex-app-server" && mode != "app-server" {
+        let mut all = vec![mode.to_owned()];
+        all.extend(
+            remaining
+                .iter()
+                .map(|arg| arg.to_string_lossy().into_owned()),
+        );
+        if all != ["-s", "read-only", "-a", "never", "app-server"] {
+            eprintln!("unexpected Codex arguments");
+            std::process::exit(64);
+        }
+    }
+
+    if std::env::var_os("ARIADUSAGE_PROCESS_MARKER").is_none_or(|v| v.is_empty()) {
+        eprintln!("missing ARIADUSAGE_PROCESS_MARKER");
+        std::process::exit(66);
+    }
+
+    let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+    let fixture: serde_json::Value = std::env::var("TEST_CODEX_RPC_SCENARIO")
+        .ok()
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .or_else(|| {
+            codex_home
+                .as_ref()
+                .map(|dir| dir.join("test-app-server.json"))
+                .and_then(|path| std::fs::read_to_string(path).ok())
+                .and_then(|raw| serde_json::from_str(&raw).ok())
+        })
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    if fixture
+        .get("exit_immediately")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        std::process::exit(1);
+    }
+
+    let hang_on_rate_limits = fixture
+        .get("hang_on_rate_limits")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let hang_method = fixture
+        .get("hang_on_method")
+        .or_else(|| fixture.get("hang_method"))
+        .and_then(serde_json::Value::as_str);
+    let request_log_path = fixture
+        .get("request_log_path")
+        .and_then(serde_json::Value::as_str)
+        .map(PathBuf::from)
+        .or_else(|| codex_home.as_ref().map(|dir| dir.join("test-rpc.requests")));
+
+    let stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+    for line in stdin.lock().lines() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed: serde_json::Value =
+            serde_json::from_str(&line).unwrap_or(serde_json::Value::Null);
+        let id = parsed.get("id").and_then(serde_json::Value::as_u64);
+        let method = parsed
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let is_rate_limits = method == "account/rateLimits/read"
+            || line.contains(r#""account/rateLimits/read""#)
+            || line.contains(r#""account\/rateLimits\/read""#);
+
+        if hang_method == Some(method) || (is_rate_limits && hang_on_rate_limits) {
+            if let Some(log_path) = &request_log_path
+                && let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path)
+            {
+                let _ = writeln!(file, "{method}");
+                let _ = file.flush();
+            }
+            for ignored in stdin.lock().lines() {
+                if ignored.is_err() {
+                    break;
+                }
+            }
+            return Ok(());
+        }
+
+        if let Some(notify) = fixture.get("pre_response_notification") {
+            let _ = writeln!(stdout, "{notify}");
+            let _ = stdout.flush();
+        }
+
+        if method == "initialized" || line.contains(r#""initialized""#) {
+            continue;
+        }
+        if method == "initialize" || line.contains(r#""initialize""#) {
+            let response_id = id.unwrap_or(1);
+            if let Some(err) = fixture.get("initialize_error") {
+                let err_obj = if let Some(s) = err.as_str() {
+                    serde_json::json!({"code": -32000, "message": s})
+                } else {
+                    err.clone()
+                };
+                let reply = serde_json::json!({"id": response_id, "error": err_obj});
+                serde_json::to_writer(&mut stdout, &reply)?;
+                stdout.write_all(b"\n")?;
+            } else {
+                writeln!(stdout, r#"{{"id":{response_id},"result":{{}}}}"#)?;
+            }
+            stdout.flush()?;
+            continue;
+        }
+        if is_rate_limits {
+            let response_id = id.unwrap_or(2);
+            let reply = if let Some(err) = fixture.get("rate_limits_error") {
+                let err_obj = if let Some(s) = err.as_str() {
+                    serde_json::json!({"code": -32000, "message": s})
+                } else {
+                    err.clone()
+                };
+                serde_json::json!({"id": response_id, "error": err_obj})
+            } else if let Some(res) = fixture.get("rate_limits_result") {
+                serde_json::json!({"id": response_id, "result": res})
+            } else if let Some(mut resp) = fixture.get("rate_limits_response").cloned() {
+                if resp.get("result").is_some() || resp.get("error").is_some() {
+                    if let Some(obj) = resp.as_object_mut() {
+                        obj.insert("id".to_owned(), serde_json::json!(response_id));
+                    }
+                    resp
+                } else {
+                    serde_json::json!({"id": response_id, "result": resp})
+                }
+            } else {
+                serde_json::json!({
+                    "id": response_id,
+                    "result": {
+                        "rateLimits": {
+                            "primary": {"usedPercent": 24.0, "windowDurationMins": 300, "resetsAt": 1770003600},
+                            "secondary": {"usedPercent": 42.0, "windowDurationMins": 10080, "resetsAt": 1770600000},
+                            "credits": {"hasCredits": true, "unlimited": false, "balance": "18.5"},
+                            "planType": "plus"
+                        }
+                    }
+                })
+            };
+            serde_json::to_writer(&mut stdout, &reply)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            continue;
+        }
+        if method == "account/read"
+            || line.contains(r#""account/read""#)
+            || line.contains(r#""account\/read""#)
+        {
+            let response_id = id.unwrap_or(3);
+            let reply = if let Some(err) = fixture.get("account_error") {
+                let err_obj = if let Some(s) = err.as_str() {
+                    serde_json::json!({"code": -32000, "message": s})
+                } else {
+                    err.clone()
+                };
+                serde_json::json!({"id": response_id, "error": err_obj})
+            } else if let Some(res) = fixture.get("account_result") {
+                serde_json::json!({"id": response_id, "result": res})
+            } else if let Some(mut resp) = fixture.get("account_response").cloned() {
+                if resp.get("result").is_some() || resp.get("error").is_some() {
+                    if let Some(obj) = resp.as_object_mut() {
+                        obj.insert("id".to_owned(), serde_json::json!(response_id));
+                    }
+                    resp
+                } else {
+                    serde_json::json!({"id": response_id, "result": resp})
+                }
+            } else {
+                serde_json::json!({
+                    "id": response_id,
+                    "result": {
+                        "account": {"type": "chatgpt", "email": "stub@example.com", "planType": "pro"},
+                        "requiresOpenaiAuth": false
+                    }
+                })
+            };
+            serde_json::to_writer(&mut stdout, &reply)?;
+            stdout.write_all(b"\n")?;
+            stdout.flush()?;
+            continue;
+        }
+        eprintln!("unexpected RPC method");
+        std::process::exit(65);
+    }
     Ok(())
 }
