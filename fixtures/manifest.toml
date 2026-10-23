@@ -30,6 +30,7 @@ changes = "Public test CA certificate from httpmock 0.8.3; contains no private k
 [[ported]]
 path = "crates/ariadusage-protocol/src/usage.rs"
 sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-protocol/tests/detail_sections.rs"

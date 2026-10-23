@@ -242,6 +242,9 @@ Each provider snapshot may carry an optional `presentation` object with the wind
 
 The engine sets `presentation` only for providers it has a descriptor for and omits it otherwise. The field is additive: payloads without it remain valid.
 
+#### 6.2.3 Detail Row Severity
+Each row in a provider's `details` sections may carry an optional `severity`: `normal`, `warning` or `critical`. Frontends use it to emphasize the row (for example, tinting its value or progress bar); a row without it renders as before. The field is omitted when the provider sets none, and payloads without it remain valid. Following §4.3, an unrecognized value decodes as `unknown`, which clients render like a row without severity.
+
 ### 6.3 `settingsChanged`
 Pushed when configuration or secrets change, prompting clients to re-query `getSettings`.
 ```json

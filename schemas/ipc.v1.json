@@ -495,6 +495,16 @@
             "null"
           ]
         },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "usageValue": {
           "format": "double",
           "type": [
@@ -1590,6 +1600,16 @@
         "total"
       ],
       "type": "object"
+    },
+    "RowSeverity": {
+      "description": "Display emphasis a provider assigns to a detail row.",
+      "enum": [
+        "normal",
+        "warning",
+        "critical",
+        "unknown"
+      ],
+      "type": "string"
     },
     "SecretString": {
       "description": "A secret string that redacts itself in [`fmt::Debug`], does not implement [`fmt::Display`],\nand zeroizes its memory buffer when dropped.\n\nSerialized and deserialized as a standard string for wire transport (e.g. `setSecret` frame).",

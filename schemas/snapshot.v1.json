@@ -259,6 +259,16 @@
             "null"
           ]
         },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "usageValue": {
           "format": "double",
           "type": [
@@ -1271,6 +1281,16 @@
         "total"
       ],
       "type": "object"
+    },
+    "RowSeverity": {
+      "description": "Display emphasis a provider assigns to a detail row.",
+      "enum": [
+        "normal",
+        "warning",
+        "critical",
+        "unknown"
+      ],
+      "type": "string"
     },
     "SourceKind": {
       "description": "Strategy kind that acquired the metric.",
