@@ -99,6 +99,27 @@ impl SecretId {
         &self.setting_id
     }
 
+    /// Service name (`kSecAttrService`) for AriadUsage's own secrets in the macOS login Keychain.
+    pub const KEYCHAIN_SERVICE: &'static str = "io.github.bavanchun.ariadusage";
+
+    /// Service attribute (`kSecAttrService`) used when storing this secret in the macOS login Keychain.
+    pub const fn keychain_service(&self) -> &'static str {
+        Self::KEYCHAIN_SERVICE
+    }
+
+    /// Stable, non-PII account key (`kSecAttrAccount`) used when storing this secret in the
+    /// macOS login Keychain. Never contains human account names, email addresses, or secret values.
+    pub fn keychain_account(&self) -> String {
+        match &self.account_id {
+            Some(account_id) => format!(
+                "{}:{}:{account_id}",
+                self.provider.as_str(),
+                self.kind.attribute_value()
+            ),
+            None => format!("{}:{}", self.provider.as_str(), self.kind.attribute_value()),
+        }
+    }
+
     /// Stable, non-PII attributes used to find this item in Secret Service.
     pub fn attributes(&self) -> BTreeMap<&'static str, String> {
         BTreeMap::from([
