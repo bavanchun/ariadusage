@@ -540,9 +540,34 @@ fn make_provider_snapshot(
         _ => None,
     };
 
+    // Claude also carries its weekly window whenever it has data.
+    let secondary = match state {
+        MetricState::Value | MetricState::Stale if id_str == "claude" => Some(
+            Metric::new(
+                state,
+                Some(RateWindow {
+                    used_percent: 35.0,
+                    window_minutes: Some(10080),
+                    resets_at: "2026-10-09T09:00:00Z".parse::<jiff::Timestamp>().ok(),
+                    reset_description: Some("Resets in 3 days".to_string()),
+                    next_regen_percent: None,
+                }),
+                None,
+                Some(MetricSource::new(
+                    SourceKind::Cli,
+                    format!("{id_str}-strategy"),
+                )),
+                Confidence::Exact,
+                None,
+            )
+            .unwrap(),
+        ),
+        _ => None,
+    };
+
     snap.windows = ProviderWindows {
         primary: Some(metric),
-        secondary: None,
+        secondary,
         tertiary,
         extra,
     };
