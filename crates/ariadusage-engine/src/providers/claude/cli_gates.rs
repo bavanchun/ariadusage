@@ -8,6 +8,7 @@
 //! session artifact cleanup for the Claude `cli` strategy.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -36,7 +37,7 @@ pub enum ClaudeKeychainPromptMode {
 }
 
 /// Key for [`ClaudeCLIUsageSpawnThrottle`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ClaudeCLIUsageSpawnThrottleKey {
     pub binary: String,
     pub account_scope: String,
@@ -44,10 +45,29 @@ pub struct ClaudeCLIUsageSpawnThrottleKey {
     pub include_prepaid_balance: bool,
 }
 
-#[derive(Debug, Clone)]
+impl fmt::Debug for ClaudeCLIUsageSpawnThrottleKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaudeCLIUsageSpawnThrottleKey")
+            .field("binary", &self.binary)
+            .field("account_scope", &"[redacted]")
+            .field("use_web_extras", &self.use_web_extras)
+            .field("include_prepaid_balance", &self.include_prepaid_balance)
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 struct ThrottleEntry {
     result: FetchResult,
     recorded_at: Timestamp,
+}
+
+impl fmt::Debug for ThrottleEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ThrottleEntry")
+            .field("recorded_at", &self.recorded_at)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Background CLI usage spawn throttle (15-minute minimum interval per account scope).
@@ -344,10 +364,19 @@ impl ClaudeCLIAuthStatusProbe {
 }
 
 /// Marker identifying a binary + account scope whose CLI availability was established by user action.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ClaudeCLIBackgroundMarker {
     pub binary: String,
     pub account_scope: String,
+}
+
+impl fmt::Debug for ClaudeCLIBackgroundMarker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaudeCLIBackgroundMarker")
+            .field("binary", &self.binary)
+            .field("account_scope", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -553,11 +582,18 @@ impl ClaudeProbeSessionArtifactCleaner {
 
         let mut removed = Vec::new();
         for entry in read_dir.flatten() {
-            let path = entry.path();
-            let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-            if is_dir {
+            if entry
+                .file_name()
+                .to_str()
+                .is_none_or(|name| name.starts_with('.'))
+            {
                 continue;
             }
+            let is_file = entry.file_type().map(|ft| ft.is_file()).unwrap_or(false);
+            if !is_file {
+                continue;
+            }
+            let path = entry.path();
             let is_jsonl = path
                 .extension()
                 .and_then(|ext| ext.to_str())

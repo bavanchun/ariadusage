@@ -142,6 +142,7 @@ pub struct ClaudeOAuthStrategyConfig {
     pub cli_spawn_throttle: Arc<ClaudeCLIUsageSpawnThrottle>,
     pub cli_background_availability: Arc<ClaudeCLIBackgroundAvailabilityStore>,
     pub cli_status_probe_override: Option<ClaudeStatusProbeFetchOverride>,
+    pub cli_direct_status_probe_override: Option<ClaudeStatusProbeFetchOverride>,
     pub cli_auth_status_override: Option<ClaudeCLIAuthStatusOverride>,
     pub clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     pub deadline_now: Arc<dyn Fn() -> Instant + Send + Sync>,
@@ -160,11 +161,14 @@ impl ClaudeOAuthStrategyConfig {
         let process_registry = Arc::new(ProcessRegistry::new());
         let launch_gate = Arc::new(LaunchGate::new(Instant::now));
         let dedicated_probe_dir = default_dedicated_probe_working_directory(&home_directory);
-        let cli_session = Arc::new(ClaudeCLISession::new(
-            dedicated_probe_dir,
-            Arc::clone(&process_registry),
-            Arc::clone(&launch_gate),
-        ));
+        let cli_session = Arc::new(
+            ClaudeCLISession::new(
+                dedicated_probe_dir,
+                Arc::clone(&process_registry),
+                Arc::clone(&launch_gate),
+            )
+            .with_home_directory(home_directory.clone()),
+        );
         Self {
             net,
             endpoint: ClaudeOAuthEndpointConfig::default(),
@@ -202,6 +206,7 @@ impl ClaudeOAuthStrategyConfig {
             cli_spawn_throttle: Arc::new(ClaudeCLIUsageSpawnThrottle::new()),
             cli_background_availability: Arc::new(ClaudeCLIBackgroundAvailabilityStore::new()),
             cli_status_probe_override: None,
+            cli_direct_status_probe_override: None,
             cli_auth_status_override: None,
             clock: Arc::new(Timestamp::now),
             deadline_now: Arc::new(Instant::now),
@@ -391,6 +396,14 @@ impl ClaudeOAuthStrategyConfig {
         self
     }
 
+    pub fn with_cli_direct_status_probe_override(
+        mut self,
+        probe_override: ClaudeStatusProbeFetchOverride,
+    ) -> Self {
+        self.cli_direct_status_probe_override = Some(probe_override);
+        self
+    }
+
     pub fn with_cli_auth_status_override<F>(mut self, auth_override: F) -> Self
     where
         F: Fn(&Path, &FetchContext) -> BoxFuture<'static, ClaudeCLIAuthenticationStatus>
@@ -403,6 +416,12 @@ impl ClaudeOAuthStrategyConfig {
     }
 
     pub fn resolve_cli_binary(&self, cx: &FetchContext) -> Option<PathBuf> {
+        if self.has_cli
+            && (self.cli_status_probe_override.is_some()
+                || self.cli_direct_status_probe_override.is_some())
+        {
+            return Some(PathBuf::from(&self.cli_binary));
+        }
         if self.cli_binary.contains('/') {
             let path = PathBuf::from(&self.cli_binary);
             return RealResolverFs.is_executable(&path).then_some(path);
@@ -414,9 +433,6 @@ impl ClaudeOAuthStrategyConfig {
                 &self.home_directory,
             ) {
                 return Some(resolved);
-            }
-            if self.has_cli && self.cli_status_probe_override.is_some() {
-                return Some(PathBuf::from(&self.cli_binary));
             }
             return None;
         }
@@ -1516,6 +1532,9 @@ impl FetchStrategy for ClaudeCLIFetchStrategy {
             if let Some(ref ov) = self.config.cli_status_probe_override {
                 probe = probe.with_fetch_override(Arc::clone(ov));
             }
+            if let Some(ref ov) = self.config.cli_direct_status_probe_override {
+                probe = probe.with_direct_fetch_override(Arc::clone(ov));
+            }
 
             let loader = ClaudeCLIUsageLoader {
                 probe,
@@ -1530,7 +1549,10 @@ impl FetchStrategy for ClaudeCLIFetchStrategy {
             {
                 Ok(snap) => snap,
                 Err(err) => {
-                    if cx.cancel.is_cancelled() || call.cancel.is_cancelled() {
+                    if matches!(err, super::cli_parser::ClaudeStatusProbeError::Cancelled)
+                        || cx.cancel.is_cancelled()
+                        || call.cancel.is_cancelled()
+                    {
                         return Err(FetchError::Cancelled);
                     }
                     if err.is_retryable()

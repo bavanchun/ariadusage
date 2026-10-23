@@ -1427,7 +1427,7 @@ impl ClaudeWebAPIFetcher {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 struct ClaudeWebOrganizationResponse {
     uuid: String,
     name: Option<String>,
@@ -1467,7 +1467,7 @@ impl ClaudeWebOrganizationResponse {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OverageSpendLimitResponse {
     #[serde(rename = "monthly_credit_limit")]
     monthly_credit_limit: Option<f64>,
@@ -1478,27 +1478,27 @@ struct OverageSpendLimitResponse {
     is_enabled: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct PrepaidCreditsResponse {
     amount: f64,
     currency: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AccountResponse {
     #[serde(rename = "email_address")]
     email_address: Option<String>,
     memberships: Option<Vec<AccountMembership>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AccountMembership {
     organization: AccountOrganization,
     #[serde(rename = "seat_tier")]
     seat_tier: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct AccountOrganization {
     uuid: Option<String>,
     #[serde(rename = "rate_limit_tier")]

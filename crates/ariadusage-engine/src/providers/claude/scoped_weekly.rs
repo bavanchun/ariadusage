@@ -171,11 +171,17 @@ impl ClaudeScopedWeeklyLimitMapper {
             false,
         )
         .ok()?;
-        Some(NamedRateWindow::new(
-            id,
-            format!("{clean_name} only"),
-            window,
-        ))
+        let normalized_model: String = clean_name
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        let title = if normalized_model.ends_with("only") {
+            clean_name.to_owned()
+        } else {
+            format!("{clean_name} only")
+        };
+        Some(NamedRateWindow::new(id, title, window))
     }
 
     fn non_empty(raw: Option<&str>) -> Option<&str> {
