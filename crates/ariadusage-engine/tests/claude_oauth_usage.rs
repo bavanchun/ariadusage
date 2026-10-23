@@ -7,17 +7,21 @@ mod https;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
 use ariadusage_core::gates::delegated_cooldown::DelegatedRefreshCooldown;
 use ariadusage_core::pipeline::{
-    FetchContext, FetchError, FetchInteraction, FetchPhase, FetchRuntime, ProviderPlan, Sleeper,
-    fetch_outcome,
+    FetchContext, FetchError, FetchInteraction, FetchPhase, FetchRuntime, ProviderPlan,
 };
+#[cfg(target_os = "linux")]
+use ariadusage_core::pipeline::{Sleeper, fetch_outcome};
 use ariadusage_core::providers::SourceMode;
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::net::NetConfig;
+#[cfg(target_os = "linux")]
 use ariadusage_engine::brokers::oauth::{
     BoxFuture, DelegatedRefreshCoordinator, DelegatedRefreshError, DelegatedRefresher,
 };
@@ -1095,19 +1099,23 @@ fn decodes_oauth_profile_computes_verified_owner_id_and_redacts_debug() {
     assert!(!debug_str.contains(&owner_id));
 }
 
+#[cfg(target_os = "linux")]
 struct NoopSleeper;
 
+#[cfg(target_os = "linux")]
 impl Sleeper for NoopSleeper {
     fn sleep<'a>(&'a self, _duration: Duration) -> BoxFuture<'a, ()> {
         Box::pin(async {})
     }
 }
 
+#[cfg(target_os = "linux")]
 struct RewritingRefresher {
     cred_path: std::path::PathBuf,
     touches: AtomicUsize,
 }
 
+#[cfg(target_os = "linux")]
 impl DelegatedRefresher for RewritingRefresher {
     fn is_available(&self) -> bool {
         true

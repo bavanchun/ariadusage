@@ -3,16 +3,12 @@
 use std::collections::BTreeMap;
 
 use ariadusage_core::oauth::TokenOwner;
-use ariadusage_core::pipeline::FetchInteraction;
-use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::providers::claude::{
     CLAUDE_OAUTH_SCOPES_ENV_KEY, CLAUDE_OAUTH_TOKEN_ENV_KEY, ClaudeOAuthCredentialSource,
-    ClaudeOAuthCredentials, ClaudeOAuthCredentialsError, credentials_profile_identifier,
-    load_from_credentials_file, load_from_environment,
+    ClaudeOAuthCredentials, ClaudeOAuthCredentialsError, load_from_environment,
 };
 use ariadusage_protocol::secret::SecretString;
 use jiff::Timestamp;
-use tokio_util::sync::CancellationToken;
 
 #[test]
 fn parses_oauth_credentials_and_redacts_debug() {
@@ -186,6 +182,13 @@ fn loads_credentials_from_environment_with_default_and_custom_scopes() {
 #[cfg(target_os = "linux")]
 #[test]
 fn reads_credentials_file_via_broker_and_computes_profile_identifier() {
+    use ariadusage_core::pipeline::FetchInteraction;
+    use ariadusage_engine::brokers::call::BrokerCall;
+    use ariadusage_engine::providers::claude::{
+        credentials_profile_identifier, load_from_credentials_file,
+    };
+    use tokio_util::sync::CancellationToken;
+
     let temp = tempfile::tempdir().expect("tempdir");
     let cred_path = temp.path().join(".credentials.json");
     std::fs::write(
