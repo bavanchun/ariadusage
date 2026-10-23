@@ -6,6 +6,10 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 struct Manifest {
     baseline: String,
+    /// The baseline before the current one; entries ported from it keep its
+    /// hash until they are re-checked against `baseline`.
+    #[serde(default)]
+    previous_baseline: Option<String>,
     #[serde(default)]
     fixture: Vec<FixtureEntry>,
     #[serde(default)]
@@ -26,6 +30,20 @@ struct FixtureEntry {
 struct PortedEntry {
     path: String,
     sources: Vec<String>,
+    /// The CodexBar commit the file was ported from; defaults to the previous
+    /// baseline while one is declared, otherwise to the baseline.
+    #[serde(default)]
+    commit: Option<String>,
+}
+
+const BASELINE: &str = "b49d42eb53bbf79785b344492d594760dd163eac";
+const PREVIOUS_BASELINE: &str = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce";
+const HEADER_HASH_LEN: usize = 9;
+
+impl Manifest {
+    fn is_known_commit(&self, commit: &str) -> bool {
+        commit == self.baseline || self.previous_baseline.as_deref() == Some(commit)
+    }
 }
 
 fn header_needle() -> String {
@@ -47,10 +65,17 @@ fn check_provenance(workspace_root: &Path) -> Result<(), String> {
     let manifest: Manifest =
         toml::from_str(&manifest_text).map_err(|e| format!("Failed to parse manifest: {e}"))?;
 
-    if manifest.baseline != "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce" {
+    if manifest.baseline != BASELINE {
         return Err(format!(
-            "Manifest baseline commit must be 6a26b2e9b1b60471970deb6fe663f9e5f284e2ce, got {}",
+            "Manifest baseline commit must be {BASELINE}, got {}",
             manifest.baseline
+        ));
+    }
+    if let Some(previous) = &manifest.previous_baseline
+        && previous != PREVIOUS_BASELINE
+    {
+        return Err(format!(
+            "Manifest previous_baseline must be {PREVIOUS_BASELINE}, got {previous}"
         ));
     }
 
@@ -108,9 +133,9 @@ fn check_provenance(workspace_root: &Path) -> Result<(), String> {
                     .commit
                     .as_deref()
                     .ok_or_else(|| format!("codexbar fixture {} missing commit", fix.path))?;
-                if commit != manifest.baseline {
+                if !manifest.is_known_commit(commit) {
                     return Err(format!(
-                        "codexbar fixture {} commit does not match baseline",
+                        "codexbar fixture {} commit matches neither baseline",
                         fix.path
                     ));
                 }
@@ -159,8 +184,20 @@ fn check_provenance(workspace_root: &Path) -> Result<(), String> {
 
     let mut ported_map = HashMap::new();
     for p in &manifest.ported {
+        let commit = p
+            .commit
+            .clone()
+            .or_else(|| manifest.previous_baseline.clone())
+            .unwrap_or_else(|| manifest.baseline.clone());
+        if !manifest.is_known_commit(&commit) {
+            return Err(format!(
+                "Ported file {} commit matches neither baseline: {commit}",
+                p.path
+            ));
+        }
+        let short_hash = commit[..HEADER_HASH_LEN].to_string();
         if ported_map
-            .insert(p.path.clone(), p.sources.clone())
+            .insert(p.path.clone(), (p.sources.clone(), short_hash))
             .is_some()
         {
             return Err(format!(
@@ -229,7 +266,7 @@ fn check_provenance(workspace_root: &Path) -> Result<(), String> {
                 ));
             }
         } else {
-            let expected_sources = ported_map.get(&rel_path).unwrap();
+            let (expected_sources, expected_hash) = ported_map.get(&rel_path).unwrap();
             let mut found_sources = Vec::new();
 
             for line in &leading_comments {
@@ -245,7 +282,7 @@ fn check_provenance(workspace_root: &Path) -> Result<(), String> {
                     let without_suffix =
                         without_prefix.strip_suffix(expected_suffix).unwrap().trim();
                     let parts: Vec<&str> = without_suffix.split_whitespace().collect();
-                    if parts.len() != 3 || parts[1] != "at" || parts[2] != "6a26b2e9b" {
+                    if parts.len() != 3 || parts[1] != "at" || parts[2] != expected_hash {
                         return Err(format!(
                             "Header line in {} malformed format: {}",
                             rel_path, trimmed
@@ -338,7 +375,8 @@ fn test_provenance_negative_planted_midfile_and_missing_header() {
     let fixtures_dir = temp_dir.join("fixtures");
     fs::create_dir_all(&fixtures_dir).unwrap();
     let manifest_content = r#"
-baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+baseline = "b49d42eb53bbf79785b344492d594760dd163eac"
+previous_baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
 
 [[ported]]
 path = "crates/test/src/lib.rs"
