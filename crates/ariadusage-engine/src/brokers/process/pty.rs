@@ -247,11 +247,11 @@ impl PtySession {
         buffer: &mut [u8],
         timeout: Duration,
     ) -> Result<super::DrainClassification, PtyError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.inner.read_once(buffer, timeout).await
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (buffer, timeout);
             Err(PtyError::Unsupported)
@@ -259,18 +259,18 @@ impl PtySession {
     }
 
     pub(crate) fn has_exited(&self) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.inner.has_exited()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             true
         }
     }
 
     /// Waits up to `timeout` for the session's exit watcher to observe that the child exited.
-    #[cfg(all(target_os = "linux", feature = "test-hooks"))]
+    #[cfg(all(unix, feature = "test-hooks"))]
     pub async fn wait_for_exit_for_test(&mut self, timeout: Duration) -> bool {
         self.inner.wait_for_exit(timeout).await
     }
@@ -290,7 +290,9 @@ mod unix {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
-    use pty_process::{Command as PtyCommand, Size, open};
+    #[cfg(not(target_os = "macos"))]
+    use pty_process::Command as PtyCommand;
+    use pty_process::{Size, open};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::watch;
     use tokio::time::{self, Instant};
@@ -345,8 +347,6 @@ mod unix {
 
     pub(super) struct PtyInner {
         master: Option<pty_process::Pty>,
-        #[cfg(target_os = "macos")]
-        slave_hold: Option<std::os::fd::OwnedFd>,
         call: BrokerCall,
         guard: Option<PtyGuard>,
         exit_rx: watch::Receiver<bool>,
@@ -404,10 +404,8 @@ mod unix {
         #[cfg(target_os = "macos")]
         let slave_hold = {
             use std::os::fd::AsFd;
-            Some(
-                rustix::io::fcntl_dupfd_cloexec(slave.as_fd(), 3)
-                    .map_err(|_| PtyError::Infrastructure)?,
-            )
+            rustix::io::fcntl_dupfd_cloexec(slave.as_fd(), 3)
+                .map_err(|_| PtyError::Infrastructure)?
         };
         let marker = command.reap_marker.then(|| {
             let sequence = NEXT_MARKER.fetch_add(1, Ordering::Relaxed);
@@ -435,14 +433,49 @@ mod unix {
         if let Some(marker) = &marker {
             env = env.with_internal(PROCESS_MARKER_ENV, marker.clone());
         }
-        let mut pty_command = PtyCommand::new(command.program.as_path()).kill_on_drop(true);
-        pty_command = pty_command.args(&command.args).env_clear().envs(env.iter());
-        if let Some(cwd) = &command.cwd {
-            pty_command = pty_command.current_dir(cwd);
-        }
-        let mut child = pty_command
-            .spawn(slave)
-            .map_err(|_| PtyError::Infrastructure)?;
+        #[cfg(not(target_os = "macos"))]
+        let mut child = {
+            let mut pty_command = PtyCommand::new(command.program.as_path()).kill_on_drop(true);
+            pty_command = pty_command.args(&command.args).env_clear().envs(env.iter());
+            if let Some(cwd) = &command.cwd {
+                pty_command = pty_command.current_dir(cwd);
+            }
+            pty_command
+                .spawn(slave)
+                .map_err(|_| PtyError::Infrastructure)?
+        };
+        #[cfg(target_os = "macos")]
+        let mut child = {
+            use std::os::fd::AsFd;
+            use std::process::Stdio;
+            let stdin_fd = slave
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|_| PtyError::Infrastructure)?;
+            let stdout_fd = slave
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|_| PtyError::Infrastructure)?;
+            let stderr_fd = slave
+                .as_fd()
+                .try_clone_to_owned()
+                .map_err(|_| PtyError::Infrastructure)?;
+            drop(slave);
+            let mut pty_command = tokio::process::Command::new(command.program.as_path());
+            pty_command
+                .kill_on_drop(true)
+                .process_group(0)
+                .args(&command.args)
+                .env_clear()
+                .envs(env.iter())
+                .stdin(Stdio::from(stdin_fd))
+                .stdout(Stdio::from(stdout_fd))
+                .stderr(Stdio::from(stderr_fd));
+            if let Some(cwd) = &command.cwd {
+                pty_command.current_dir(cwd);
+            }
+            pty_command.spawn().map_err(|_| PtyError::Infrastructure)?
+        };
         let Some(pid) = child.id() else {
             let _ = child.start_kill();
             let _ = child.wait().await;
@@ -451,11 +484,15 @@ mod unix {
         let target = match session_target(pid, &[]) {
             Ok(target) => target,
             Err(error) => {
+                #[cfg(target_os = "macos")]
+                drop(slave_hold);
                 let _ = child.start_kill();
                 let _ = child.wait().await;
                 return Err(error.into());
             }
         };
+        #[cfg(target_os = "macos")]
+        target.set_tty_hold(slave_hold);
         permit.attach(target.clone());
         let (exit_tx, exit_rx) = watch::channel(false);
         tokio::spawn(async move {
@@ -465,8 +502,6 @@ mod unix {
         });
         Ok(PtyInner {
             master: Some(master),
-            #[cfg(target_os = "macos")]
-            slave_hold,
             call,
             guard: Some(PtyGuard {
                 target,
@@ -561,8 +596,7 @@ mod unix {
                     DrainClassification::Data(count) => {
                         if !output.append(&chunk[..count]) {
                             chunk[..count].zeroize();
-                            #[cfg(target_os = "macos")]
-                            self.slave_hold.take();
+                            self.release_slave_hold();
                             self.master.take();
                             self.shutdown_process().await;
                             return Err(PtyError::OutputTooLarge);
@@ -633,8 +667,7 @@ mod unix {
                         DrainClassification::Data(count) => {
                             if !output.append(&chunk[..count]) {
                                 chunk[..count].zeroize();
-                                #[cfg(target_os = "macos")]
-                                self.slave_hold.take();
+                                self.release_slave_hold();
                                 self.master.take();
                                 self.shutdown_process().await;
                                 return Err(PtyError::OutputTooLarge);
@@ -653,8 +686,7 @@ mod unix {
                     }
                 }
                 let reason = if self.has_exited() {
-                    #[cfg(target_os = "macos")]
-                    self.slave_hold.take();
+                    self.release_slave_hold();
                     PtyCompletionReason::ProcessExited
                 } else {
                     reason
@@ -665,8 +697,7 @@ mod unix {
             let exited = self.has_exited();
             if closed && !exited {
                 if self.wait_for_exit(EXIT_DRAIN).await {
-                    #[cfg(target_os = "macos")]
-                    self.slave_hold.take();
+                    self.release_slave_hold();
                     return Ok(transcript(output, PtyCompletionReason::ProcessExited));
                 }
                 self.close().await;
@@ -674,7 +705,7 @@ mod unix {
             }
             if exited {
                 #[cfg(target_os = "macos")]
-                if self.slave_hold.is_some() {
+                if self.has_slave_hold() {
                     loop {
                         match self
                             .read_once(&mut chunk, Duration::from_millis(10))
@@ -683,7 +714,7 @@ mod unix {
                             DrainClassification::Data(count) => {
                                 if !output.append(&chunk[..count]) {
                                     chunk[..count].zeroize();
-                                    self.slave_hold.take();
+                                    self.release_slave_hold();
                                     self.master.take();
                                     self.shutdown_process().await;
                                     return Err(PtyError::OutputTooLarge);
@@ -697,7 +728,7 @@ mod unix {
                             }
                         }
                     }
-                    self.slave_hold.take();
+                    self.release_slave_hold();
                 }
                 let drain_deadline = Instant::now() + EXIT_DRAIN;
                 while !closed && Instant::now() < drain_deadline {
@@ -737,8 +768,7 @@ mod unix {
                     DrainClassification::Data(count) => {
                         if !output.append(&chunk[..count]) {
                             chunk[..count].zeroize();
-                            #[cfg(target_os = "macos")]
-                            self.slave_hold.take();
+                            self.release_slave_hold();
                             self.master.take();
                             self.shutdown_process().await;
                             return Err(PtyError::OutputTooLarge);
@@ -750,13 +780,25 @@ mod unix {
                 }
             }
             let reason = if self.has_exited() {
-                #[cfg(target_os = "macos")]
-                self.slave_hold.take();
+                self.release_slave_hold();
                 PtyCompletionReason::ProcessExited
             } else {
                 PtyCompletionReason::DeadlineExceeded
             };
             Ok(transcript(output, reason))
+        }
+
+        #[cfg(target_os = "macos")]
+        fn has_slave_hold(&self) -> bool {
+            self.guard
+                .as_ref()
+                .is_some_and(|guard| guard.target.has_tty_hold())
+        }
+
+        fn release_slave_hold(&self) {
+            if let Some(guard) = self.guard.as_ref() {
+                guard.target.release_tty_hold();
+            }
         }
 
         pub(super) async fn read_once(
@@ -791,15 +833,13 @@ mod unix {
                 let _ = master.write_all(b"/exit\n").await;
                 let _ = master.flush().await;
             }
-            #[cfg(target_os = "macos")]
-            self.slave_hold.take();
+            self.release_slave_hold();
             self.master.take();
             self.shutdown_process().await;
         }
 
         async fn shutdown_process(&mut self) {
-            #[cfg(target_os = "macos")]
-            self.slave_hold.take();
+            self.release_slave_hold();
             if let Some(mut guard) = self.guard.take() {
                 guard.terminate().await;
             }
@@ -809,8 +849,7 @@ mod unix {
 
     impl Drop for PtyInner {
         fn drop(&mut self) {
-            #[cfg(target_os = "macos")]
-            self.slave_hold.take();
+            self.release_slave_hold();
             self.master.take();
             self.guard.take();
             // The guard performs bounded cleanup; the exit monitor reaps the child and releases
