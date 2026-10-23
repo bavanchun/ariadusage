@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/ProviderDetailSection.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/ProviderDetailSection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Usage data models including rate windows, credits, cost, identity, pace, status, and detail sections.
 
@@ -316,6 +316,17 @@ impl<'de> Deserialize<'de> for RowProgress {
     }
 }
 
+/// Display emphasis a provider assigns to a detail row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RowSeverity {
+    Normal,
+    Warning,
+    Critical,
+    #[serde(other)]
+    Unknown,
+}
+
 /// A row within a detail section.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -328,6 +339,8 @@ pub struct DetailRow {
     pub secondary_value: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<RowProgress>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<RowSeverity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_value: Option<f64>,
 }
@@ -356,8 +369,16 @@ impl DetailRow {
             value,
             secondary_value,
             progress,
+            severity: None,
             usage_value,
         })
+    }
+
+    /// Returns the row with the given display severity.
+    #[must_use]
+    pub fn with_severity(mut self, severity: Option<RowSeverity>) -> Self {
+        self.severity = severity;
+        self
     }
 }
 
@@ -373,6 +394,8 @@ struct DetailRowRaw {
     #[serde(default)]
     progress: Option<RowProgress>,
     #[serde(default)]
+    severity: Option<RowSeverity>,
+    #[serde(default)]
     usage_value: Option<f64>,
 }
 
@@ -387,6 +410,7 @@ impl<'de> Deserialize<'de> for DetailRow {
             raw.progress,
             raw.usage_value,
         )
+        .map(|row| row.with_severity(raw.severity))
         .map_err(serde::de::Error::custom)
     }
 }

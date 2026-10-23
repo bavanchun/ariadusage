@@ -2,6 +2,7 @@
 
 use ariadusage_protocol::{
     Chart, ChartKind, ChartPoint, DetailRow, DetailSection, ProviderSnapshot, RowProgress,
+    RowSeverity,
 };
 
 #[test]
@@ -164,6 +165,7 @@ fn row_without_id_and_progress_decodes_from_legacy_payloads() {
     assert_eq!(row.id, None);
     assert_eq!(row.progress, None);
     assert_eq!(row.usage_value, None);
+    assert_eq!(row.severity, None);
     assert_eq!(row.label, "Credits used");
     assert_eq!(row.value, "31");
     assert_eq!(row.secondary_value.as_deref(), Some("Resets Sep 1"));
@@ -186,4 +188,36 @@ fn current_snapshot_fixture_decodes_with_empty_details() {
     let encoded = serde_json::to_string(&snapshot).expect("serializes snapshot");
     // Empty details should be omitted from JSON
     assert!(!encoded.contains("\"details\""));
+}
+
+#[test]
+fn row_severity_round_trips_and_is_omitted_when_absent() {
+    let plain = DetailRow::new(None::<&str>, "Pool", "10%", None::<&str>, None, None).unwrap();
+    let plain_json = serde_json::to_string(&plain).expect("serializes");
+    assert!(!plain_json.contains("severity"));
+
+    for (severity, raw) in [
+        (RowSeverity::Normal, "normal"),
+        (RowSeverity::Warning, "warning"),
+        (RowSeverity::Critical, "critical"),
+    ] {
+        let row = plain.clone().with_severity(Some(severity));
+        let json = serde_json::to_string(&row).expect("serializes");
+        assert!(json.contains(&format!(r#""severity":"{raw}""#)));
+        let decoded: DetailRow = serde_json::from_str(&json).expect("deserializes");
+        assert_eq!(decoded, row);
+    }
+}
+
+#[test]
+fn row_severity_decodes_unknown_values_as_unknown() {
+    let json = r#"{"label":"Pool","value":"10%","severity":"catastrophic"}"#;
+    let row: DetailRow = serde_json::from_str(json).expect("tolerates unknown severity");
+    assert_eq!(row.severity, Some(RowSeverity::Unknown));
+}
+
+#[test]
+fn row_severity_does_not_bypass_row_validation() {
+    let json = r#"{"label":" ","value":"10%","severity":"critical"}"#;
+    assert!(serde_json::from_str::<DetailRow>(json).is_err());
 }

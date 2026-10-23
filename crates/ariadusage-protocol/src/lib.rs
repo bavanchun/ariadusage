@@ -38,7 +38,7 @@ pub use usage::{
     Chart, ChartKind, ChartPoint, Cost, Credits, DetailRow, DetailSection,
     DetailSectionValidationError, Identity, MAXIMUM_POINTS_PER_CHART, MAXIMUM_ROWS_PER_SECTION,
     MAXIMUM_SECTIONS_PER_SNAPSHOT, MAXIMUM_STRING_LENGTH, NamedWindow, Pace, PaceStage,
-    ProviderError, ProviderErrorCategory, ProviderErrorKind, RateWindow, RowProgress,
+    ProviderError, ProviderErrorCategory, ProviderErrorKind, RateWindow, RowProgress, RowSeverity,
     StatusIndicator,
 };
 
