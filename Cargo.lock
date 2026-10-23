@@ -169,9 +169,11 @@ version = "0.0.0"
 dependencies = [
  "ariadusage-protocol",
  "dispatch2",
+ "jiff",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
+ "regex",
  "serde_json",
  "tempfile",
  "tokio",
