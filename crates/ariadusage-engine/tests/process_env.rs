@@ -1,7 +1,7 @@
 // Ported from CodexBar Tests/CodexBarTests/ProcessEnvironmentTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 use std::ffi::OsString;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_engine::brokers::process::ProcessEnv;
 
@@ -98,14 +98,14 @@ fn environment_debug_stays_redacted_after_provider_overrides() {
     assert!(!rendered.contains("/ambient/home"));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn require_nextest() {
     if std::env::var_os("NEXTEST_RUN_ID").is_none() {
         panic!("destructive process tests require NEXTEST_RUN_ID");
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn child_call() -> ariadusage_engine::brokers::call::BrokerCall {
     use ariadusage_core::pipeline::FetchInteraction;
     use tokio_util::sync::CancellationToken;
@@ -117,7 +117,7 @@ fn child_call() -> ariadusage_engine::brokers::call::BrokerCall {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn child_command(args: &[&str], env: ProcessEnv) -> ariadusage_engine::brokers::process::Command {
     use std::time::Duration;
 
@@ -131,7 +131,7 @@ fn child_command(args: &[&str], env: ProcessEnv) -> ariadusage_engine::brokers::
     .timeout(Duration::from_secs(5))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn run_process(
     call: ariadusage_engine::brokers::call::BrokerCall,
     command: ariadusage_engine::brokers::process::Command,
@@ -148,7 +148,7 @@ async fn run_process(
     .await
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[tokio::test]
 async fn allowlist_denylist_and_home_override_are_enforced_at_spawn() {
     require_nextest();
@@ -180,7 +180,7 @@ async fn allowlist_denylist_and_home_override_are_enforced_at_spawn() {
     assert_eq!(home.stdout.as_slice(), b"/synthetic/staging-home");
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[tokio::test]
 async fn explicit_environment_passes_only_its_requested_names_at_spawn() {
     require_nextest();

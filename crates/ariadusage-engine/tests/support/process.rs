@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 #![allow(dead_code)] // Shared process-test helpers are used by selected phase test binaries.
 
 use std::path::Path;

@@ -3,7 +3,7 @@
 // Ported from CodexBar TestsLinux/ShellCommandOutputLimitTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ShellCommandForegroundTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -165,9 +165,8 @@ async fn shell_runner_terminates_background_children_after_normal_exit() {
 fn shell_probe_pipe_descriptors_close_across_unrelated_execs() {
     // Verify standard descriptors and newly created pipes have close-on-exec set
     use rustix::io::{FdFlags, fcntl_getfd};
-    use rustix::pipe::{PipeFlags, pipe_with};
 
-    let (read_fd, write_fd) = pipe_with(PipeFlags::CLOEXEC).expect("pipe_with CLOEXEC");
+    let (read_fd, write_fd) = std::io::pipe().expect("std::io::pipe CLOEXEC");
     let read_flags = fcntl_getfd(&read_fd).expect("fcntl_getfd");
     let write_flags = fcntl_getfd(&write_fd).expect("fcntl_getfd");
 

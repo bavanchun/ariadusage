@@ -485,8 +485,18 @@ sources = ["Tests/CodexBarTests/BoundedOutputBufferTests.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/procscan.rs"
+sources = [
+    "Sources/CodexBarCore/DarwinProcessEnumerator.swift",
+    "Sources/CodexBarCore/PiProcessEnvironment.swift",
+    "Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
 path = "crates/ariadusage-engine/tests/process_procscan.rs"
 sources = [
+    "Tests/CodexBarTests/DarwinProcessEnumeratorTests.swift",
     "Tests/CodexBarTests/PiProcessEnvironmentTests.swift",
     "TestsLinux/ProcessOwnershipReaperTests.swift",
 ]

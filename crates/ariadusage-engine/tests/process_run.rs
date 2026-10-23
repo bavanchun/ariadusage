@@ -3,9 +3,9 @@
 // Ported from CodexBar TestsLinux/ProcessPipeCaptureLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar TestsLinux/ShellCommandSessionLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar TestsLinux/ShellCommandOutputLimitTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 use ariadusage_core::gates::launch::LaunchGate;
@@ -132,7 +132,12 @@ async fn timeout_kills_the_process_and_drop_guard_kills_an_abandoned_run() {
     let child_pid = wait_for_child_pid(&marker).await;
     task.abort();
     tokio::time::timeout(Duration::from_secs(5), async {
-        while PathBuf::from(format!("/proc/{child_pid}")).exists() {
+        while ariadusage_engine::brokers::process::process_state(
+            Path::new("/proc"),
+            child_pid as i32,
+        )
+        .is_some_and(|state| state != 'Z')
+        {
             tokio::task::yield_now().await;
         }
     })
@@ -165,6 +170,7 @@ async fn cancellation_is_prompt_and_session_launch_creates_a_session_leader() {
     let _ = fs::remove_file(marker);
 }
 
+#[cfg(target_os = "linux")]
 fn inherited_non_cloexec_descriptors() -> std::collections::BTreeMap<i32, String> {
     let mut baseline = std::collections::BTreeMap::new();
     let entries = match fs::read_dir("/proc/self/fd") {
@@ -198,6 +204,81 @@ fn inherited_non_cloexec_descriptors() -> std::collections::BTreeMap<i32, String
         }
     }
     baseline
+}
+
+#[cfg(target_os = "macos")]
+fn inherited_non_cloexec_descriptors() -> std::collections::BTreeMap<i32, String> {
+    use proc_pidinfo::{
+        PipeFdInfo, ProcFDInfo, ProcFDType, VnodeFdInfo, VnodeFdInfoWithPath, proc_pidfdinfo_self,
+        proc_pidinfo_list_self,
+    };
+    const PROC_FP_CLEXEC: u32 = 2;
+
+    let mut baseline = std::collections::BTreeMap::new();
+    let Ok(fds) = proc_pidinfo_list_self::<ProcFDInfo>() else {
+        return baseline;
+    };
+    for fd in fds {
+        if fd.proc_fd.0 <= 2 {
+            continue;
+        }
+        match fd.fd_type() {
+            Ok(ProcFDType::VNODE) => {
+                if let Ok(Some(vnode)) = proc_pidfdinfo_self::<VnodeFdInfoWithPath>(fd.proc_fd)
+                    && (vnode.pfi.fi_status & PROC_FP_CLEXEC) == 0
+                {
+                    let target = if let Ok(path) = vnode.path()
+                        && !path.as_os_str().is_empty()
+                    {
+                        path.display().to_string()
+                    } else {
+                        format!(
+                            "vnode:[{:x}:{:x}]",
+                            vnode.pvip.vip_vi.vi_stat.vst_dev, vnode.pvip.vip_vi.vi_stat.vst_ino
+                        )
+                    };
+                    baseline.insert(fd.proc_fd.0, target);
+                } else if let Ok(Some(vnode)) = proc_pidfdinfo_self::<VnodeFdInfo>(fd.proc_fd)
+                    && (vnode.pfi.fi_status & PROC_FP_CLEXEC) == 0
+                {
+                    baseline.insert(
+                        fd.proc_fd.0,
+                        format!(
+                            "vnode:[{:x}:{:x}]",
+                            vnode.pvi.vi_stat.vst_dev, vnode.pvi.vi_stat.vst_ino
+                        ),
+                    );
+                }
+            }
+            Ok(ProcFDType::PIPE) => {
+                if let Ok(Some(pipe)) = proc_pidfdinfo_self::<PipeFdInfo>(fd.proc_fd)
+                    && (pipe.pfi.fi_status & PROC_FP_CLEXEC) == 0
+                {
+                    baseline.insert(
+                        fd.proc_fd.0,
+                        format!("pipe:[{:x}]", pipe.pipe_info.pipe_handle),
+                    );
+                }
+            }
+            _ => {
+                baseline.insert(fd.proc_fd.0, format!("fdtype:{}", fd.proc_fdtype));
+            }
+        }
+    }
+    baseline
+}
+
+fn open_descriptor_count() -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_dir("/proc/self/fd").unwrap().count()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        proc_pidinfo::proc_pidinfo_list_self::<proc_pidinfo::ProcFDInfo>()
+            .unwrap()
+            .len()
+    }
 }
 
 #[tokio::test]
@@ -239,9 +320,15 @@ async fn helper_descriptor_listing_does_not_include_an_engine_file() {
             );
         }
     }
+    #[cfg(target_os = "linux")]
     assert_eq!(
         helper_listing_fd_count, 1,
         "helper should have exactly one descriptor open to its own /proc/<pid>/fd listing"
+    );
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        helper_listing_fd_count, 0,
+        "helper on macOS uses proc_pidinfo without opening /proc/<pid>/fd"
     );
     assert!(!text.contains(&path));
 }
@@ -295,14 +382,14 @@ async fn child_pipe_readers_are_released_after_completed_runs() {
     let _ = run(call(), command(&["print", "stdout", "8"]))
         .await
         .unwrap();
-    let initial = fs::read_dir("/proc/self/fd").unwrap().count();
+    let initial = open_descriptor_count();
 
     for _ in 0..20 {
         let output = run(call(), command(&["print", "stdout", "8"]))
             .await
             .unwrap();
         assert_eq!(output.stdout.as_slice(), b"xxxxxxxx");
-        assert_eq!(fs::read_dir("/proc/self/fd").unwrap().count(), initial);
+        assert_eq!(open_descriptor_count(), initial);
     }
 }
 
