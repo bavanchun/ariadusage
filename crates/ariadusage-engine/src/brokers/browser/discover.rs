@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+// Ported from CodexBar Sources/CodexBarCore/BrowserCookieImportSupport.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ use crate::brokers::call::BrokerCall;
 use crate::state_store::BrokerStateStore;
 
 use super::catalog::{Browser, ProfileRoot};
+use super::chromium::SafeStorageKeyResult;
 use super::error::BrowserError;
 use super::gate::{BrowserGate, RetryScope};
 use super::{BrowserPaths, CookieCandidate, CookieQuery, SafeStorageKeyProvider};
@@ -54,11 +56,14 @@ impl BrowserBrokerInner {
         }
     }
 
-    pub async fn candidates(
-        &self,
-        call: &BrokerCall,
-        query: CookieQuery<'_>,
-    ) -> Result<Vec<CookieCandidate>, BrowserError> {
+    /// Opens a lazy session cursor. Browsers are read in order, and a later browser is read
+    /// only after the caller has taken every candidate of the earlier ones, so a usable early
+    /// session leaves later browsers, and their keyring prompts, untouched.
+    pub async fn sessions<'a>(
+        &'a self,
+        call: &'a BrokerCall,
+        query: CookieQuery<'a>,
+    ) -> Result<SessionCursor<'a>, BrowserError> {
         if cfg!(feature = "test-hooks") && is_real_home(&self.paths) {
             return Err(BrowserError::Suppressed);
         }
@@ -66,73 +71,26 @@ impl BrowserBrokerInner {
             return Err(BrowserError::NoBrowserSession);
         }
 
-        let order = if query.browsers.is_empty() {
-            &super::DEFAULT_IMPORT_ORDER[..]
+        let order: &'a [Browser] = if query.browsers.is_empty() {
+            &super::DEFAULT_IMPORT_ORDER
         } else {
             query.browsers
         };
-        let mut found = Vec::new();
-        let mut saw_profile = false;
-        let mut last_error = None;
-        let mut retry_scope = RetryScope::new(call, query.acknowledged_retry);
-        let mut safe_storage_keys = HashMap::new();
-        let mut chromium_access = super::chromium::ChromiumAccess::new(
-            &self.gate,
-            &mut retry_scope,
-            &mut safe_storage_keys,
-            self.keys.as_ref(),
-        );
-        for browser in order {
-            let profiles = self.cached_profiles(*browser)?;
-            saw_profile |= !profiles.is_empty();
-            for profile in profiles {
-                if call.cancel.is_cancelled() {
-                    return if found.is_empty() {
-                        Err(BrowserError::NoBrowserSession)
-                    } else {
-                        Ok(found)
-                    };
-                }
-                let result = if profile.browser == Browser::Firefox {
-                    super::firefox::read_profile(&profile, &self.paths, &query, call)
-                        .map(|candidates| (candidates, None))
-                } else {
-                    super::chromium::read_profile(
-                        &profile,
-                        &self.paths,
-                        &query,
-                        call,
-                        &mut chromium_access,
-                    )
-                    .await
-                };
-                match result {
-                    Ok((mut candidates, error)) => {
-                        if !candidates.is_empty() {
-                            found.append(&mut candidates);
-                        }
-                        if let Some(error) = error {
-                            last_error = prefer_error(last_error, error);
-                        }
-                    }
-                    Err(error) => last_error = prefer_error(last_error, error),
-                }
-            }
+        let mut cursor = SessionCursor {
+            inner: self,
+            call,
+            retry_scope: RetryScope::new(call, query.acknowledged_retry),
+            query,
+            order: order.iter(),
+            pending: VecDeque::new(),
+            safe_storage_keys: HashMap::new(),
+            last_error: None,
+        };
+        while cursor.pending.is_empty() && cursor.read_next_browser().await {}
+        if cursor.pending.is_empty() {
+            return Err(cursor.last_error.unwrap_or(BrowserError::NoBrowserSession));
         }
-        if !found.is_empty() {
-            return Ok(found);
-        }
-        match last_error {
-            Some(error @ BrowserError::Dismissed) => Err(error),
-            Some(error @ BrowserError::Locked) => Err(error),
-            Some(error @ BrowserError::Unsupported) => Err(error),
-            Some(error @ BrowserError::Io) => Err(error),
-            Some(error @ BrowserError::Malformed) => Err(error),
-            Some(error @ BrowserError::Suppressed) => Err(error),
-            Some(error @ BrowserError::NoBrowserSession) => Err(error),
-            None if saw_profile => Err(BrowserError::NoBrowserSession),
-            None => Err(BrowserError::NoBrowserSession),
-        }
+        Ok(cursor)
     }
 
     fn cached_profiles(&self, browser: Browser) -> Result<Vec<DiscoveredProfile>, BrowserError> {
@@ -158,6 +116,83 @@ impl BrowserBrokerInner {
                 },
             );
         Ok(profiles)
+    }
+}
+
+pub(super) struct SessionCursor<'a> {
+    inner: &'a BrowserBrokerInner,
+    call: &'a BrokerCall,
+    query: CookieQuery<'a>,
+    order: std::slice::Iter<'a, Browser>,
+    pending: VecDeque<CookieCandidate>,
+    retry_scope: RetryScope,
+    safe_storage_keys: HashMap<Browser, SafeStorageKeyResult>,
+    last_error: Option<BrowserError>,
+}
+
+impl SessionCursor<'_> {
+    pub async fn next(&mut self) -> Option<CookieCandidate> {
+        loop {
+            if let Some(candidate) = self.pending.pop_front() {
+                return Some(candidate);
+            }
+            if !self.read_next_browser().await {
+                return None;
+            }
+        }
+    }
+
+    /// Reads every profile of the next browser in order. Returns false once the order is
+    /// exhausted or the call is cancelled. Read failures are kept for the missing-session
+    /// error and never stop later browsers.
+    async fn read_next_browser(&mut self) -> bool {
+        if self.call.cancel.is_cancelled() {
+            return false;
+        }
+        let Some(browser) = self.order.next() else {
+            return false;
+        };
+        let profiles = match self.inner.cached_profiles(*browser) {
+            Ok(profiles) => profiles,
+            Err(error) => {
+                self.last_error = prefer_error(self.last_error, error);
+                return true;
+            }
+        };
+        let mut access = super::chromium::ChromiumAccess::new(
+            &self.inner.gate,
+            &mut self.retry_scope,
+            &mut self.safe_storage_keys,
+            self.inner.keys.as_ref(),
+        );
+        for profile in profiles {
+            if self.call.cancel.is_cancelled() {
+                break;
+            }
+            let result = if profile.browser == Browser::Firefox {
+                super::firefox::read_profile(&profile, &self.inner.paths, &self.query, self.call)
+                    .map(|candidates| (candidates, None))
+            } else {
+                super::chromium::read_profile(
+                    &profile,
+                    &self.inner.paths,
+                    &self.query,
+                    self.call,
+                    &mut access,
+                )
+                .await
+            };
+            match result {
+                Ok((candidates, error)) => {
+                    self.pending.extend(candidates);
+                    if let Some(error) = error {
+                        self.last_error = prefer_error(self.last_error, error);
+                    }
+                }
+                Err(error) => self.last_error = prefer_error(self.last_error, error),
+            }
+        }
+        true
     }
 }
 
