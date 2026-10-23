@@ -28,8 +28,8 @@ Every message frame is a single valid JSON object encoded in UTF-8, terminated b
 
 ### 2.2 1 MiB Framing Boundary
 To protect clients from memory exhaustion and unbounded buffering (crucial for Quickshell / QML frontends):
-- **Producer Framing Cap**: Neither the engine daemon nor client may emit a frame larger than **1,048,576 bytes (1 MiB)**, including the trailing newline. Attempting to encode an oversized outbound frame results in an immediate encoding error and the frame is discarded.
-- **Consumer Decoder Cap**: The decoder rejects any inbound line exceeding 1 MiB with a `payloadTooLarge` static error. The connection remains usable for subsequent valid frames.
+- **Producer Framing Cap**: Neither the engine daemon nor client may emit a frame whose content is larger than **1,048,576 bytes (1 MiB)**, excluding the trailing newline. Attempting to encode an oversized outbound frame results in an immediate encoding error and the frame is discarded.
+- **Consumer Decoder Cap**: The decoder rejects any inbound line whose content exceeds 1 MiB with a `payloadTooLarge` static error. The connection remains usable for subsequent valid frames.
 
 ---
 

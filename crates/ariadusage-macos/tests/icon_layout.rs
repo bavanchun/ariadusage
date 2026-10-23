@@ -158,9 +158,10 @@ fn stale_data_dims_every_alpha() {
         IconPalette {
             track_fill_alpha: 0.18,
             track_stroke_alpha: 0.28,
-            fill_alpha: 0.55,
+            fill_alpha: 1.0,
         }
     );
+    assert!(out.bars.iter().all(|b| b.alpha == 1.0));
 }
 
 #[test]

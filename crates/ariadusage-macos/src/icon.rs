@@ -151,11 +151,15 @@ pub struct IconPalette {
 
 impl IconPalette {
     pub fn for_stale(stale: bool) -> Self {
+        // Upstream computes `fillColor = baseFill.withAlphaComponent(stale ? 0.55 : 1.0)`
+        // (`IconRenderer.swift:163`), then draws with `fillColor.withAlphaComponent(alpha)`
+        // (`:217`). Because `colorWithAlphaComponent:` replaces alpha rather than
+        // multiplying it, the fill always uses the lane alpha (`1.0 * bar.alpha`).
         if stale {
             Self {
                 track_fill_alpha: 0.18,
                 track_stroke_alpha: 0.28,
-                fill_alpha: 0.55,
+                fill_alpha: 1.0,
             }
         } else {
             Self {

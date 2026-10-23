@@ -32,6 +32,9 @@ pub const RECONNECT_BACKOFF: [Duration; 5] = [
     Duration::from_secs(30),
 ];
 
+/// Timeout for outbound client writes so a stalled engine cannot freeze the UI.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// What the engine connection reports to the app.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
@@ -85,8 +88,11 @@ where
 {
     let mut attempt = 0usize;
     loop {
-        // A session that got as far as a snapshot resets the backoff.
-        if matches!(session(socket_path, writer, on_event), Ok(true)) {
+        let mut got_snapshot = false;
+        let _ = session(socket_path, writer, on_event, &mut got_snapshot);
+        // A session that got as far as a snapshot resets the backoff, even if
+        // it later ended with an I/O error.
+        if got_snapshot {
             attempt = 0;
         }
         *writer.lock().unwrap_or_else(PoisonError::into_inner) = None;
@@ -97,17 +103,20 @@ where
     }
 }
 
-/// Runs one connection until it closes. Returns whether any snapshot arrived.
+/// Runs one connection until it closes. Sets `*got_snapshot` when any
+/// snapshot arrives.
 fn session<F>(
     socket_path: &PathBuf,
     writer: &Mutex<Option<UnixStream>>,
     on_event: &F,
-) -> io::Result<bool>
+    got_snapshot: &mut bool,
+) -> io::Result<()>
 where
     F: Fn(EngineEvent),
 {
     let stream = UnixStream::connect(socket_path)?;
     let mut write_half = stream.try_clone()?;
+    write_half.set_write_timeout(Some(WRITE_TIMEOUT))?;
     write_message(&mut write_half, &hello())?;
     write_message(
         &mut write_half,
@@ -120,7 +129,6 @@ where
     *writer.lock().unwrap_or_else(PoisonError::into_inner) = Some(write_half);
 
     let mut reader = BufReader::new(stream);
-    let mut got_snapshot = false;
     while let Some(frame) = read_frame(&mut reader, MAX_FRAME_BYTES)? {
         let Ok(text) = std::str::from_utf8(&frame) else {
             continue;
@@ -130,14 +138,14 @@ where
                 on_event(EngineEvent::Connected { engine_version });
             }
             Ok(ServerMessage::Snapshot { snapshot }) => {
-                got_snapshot = true;
+                *got_snapshot = true;
                 on_event(EngineEvent::Snapshot(snapshot));
             }
             // Responses, notices and settings pushes are not used yet.
             Ok(_) | Err(_) => {}
         }
     }
-    Ok(got_snapshot)
+    Ok(())
 }
 
 fn hello() -> ClientMessage {
@@ -154,10 +162,11 @@ fn write_message(stream: &mut UnixStream, message: &ClientMessage) -> io::Result
     stream.write_all(&line)
 }
 
-/// Reads one newline-terminated frame without buffering more than `max`
-/// bytes. An oversized frame is skipped up to its newline. Returns `None` at
-/// end of stream.
+/// Reads one newline-terminated frame whose content is at most `max` bytes
+/// (excluding `\r` and `\n`). An oversized frame is skipped up to its newline.
+/// Returns `None` at end of stream.
 pub fn read_frame<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Option<Vec<u8>>> {
+    let raw_cap = max.saturating_add(2);
     loop {
         let mut frame = Vec::new();
         let mut oversized = false;
@@ -170,7 +179,7 @@ pub fn read_frame<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Option<V
             let newline = available.iter().position(|&b| b == b'\n');
             let take = newline.map_or(available.len(), |i| i + 1);
             if !oversized {
-                if frame.len() + take > max {
+                if frame.len() + take > raw_cap {
                     oversized = true;
                     frame = Vec::new();
                 } else {
@@ -188,6 +197,9 @@ pub fn read_frame<R: BufRead>(reader: &mut R, max: usize) -> io::Result<Option<V
         frame.pop();
         if frame.last() == Some(&b'\r') {
             frame.pop();
+        }
+        if frame.len() > max {
+            continue;
         }
         return Ok(Some(frame));
     }
