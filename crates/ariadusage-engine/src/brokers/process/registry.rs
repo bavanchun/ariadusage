@@ -1,16 +1,16 @@
 // Ported from CodexBar Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::Notify;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use super::ProcessError;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use super::teardown::{ProcessTarget, terminate};
 
 #[derive(Clone, Default)]
@@ -22,24 +22,24 @@ pub struct ProcessRegistry {
 struct RegistryInner {
     state: Mutex<RegistryState>,
     changed: Notify,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     next_id: AtomicU64,
 }
 
 #[derive(Default)]
 struct RegistryState {
     fenced: bool,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     launches: HashMap<u64, LaunchEntry>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[derive(Clone)]
 struct LaunchEntry {
     target: Option<ProcessTarget>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(crate) struct LaunchPermit {
     inner: Arc<RegistryInner>,
     id: u64,
@@ -51,7 +51,7 @@ impl ProcessRegistry {
         Self::default()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     /// Registers a launch unless shutdown has already fenced new work.
     pub(crate) fn register(&self) -> Result<LaunchPermit, ProcessError> {
         let mut state = lock(&self.inner.state);
@@ -80,7 +80,7 @@ impl ProcessRegistry {
     /// Terminates registered targets and waits until every launch has completed.
     pub async fn shutdown(&self) {
         self.fence();
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             loop {
                 let notified = self.inner.changed.notified();
@@ -111,7 +111,7 @@ impl ProcessRegistry {
 
     /// Waits until all registered launches finish.
     pub async fn drain(&self) {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             loop {
                 let notified = self.inner.changed.notified();
@@ -126,18 +126,18 @@ impl ProcessRegistry {
     }
 
     pub fn active_launches(&self) -> usize {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             lock(&self.inner.state).launches.len()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             0
         }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl LaunchPermit {
     pub(super) fn attach(&mut self, target: ProcessTarget) {
         if !self.active {
@@ -158,7 +158,7 @@ impl LaunchPermit {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl Drop for LaunchPermit {
     fn drop(&mut self) {
         self.finish();
@@ -168,9 +168,9 @@ impl Drop for LaunchPermit {
 impl std::fmt::Debug for ProcessRegistry {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let state = lock(&self.inner.state);
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         let active = state.launches.len();
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         let active = 0;
         formatter
             .debug_struct("ProcessRegistry")

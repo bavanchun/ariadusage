@@ -1,29 +1,29 @@
 // Ported from CodexBar Sources/CodexBarCore/PathEnvironment.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::ffi::OsString;
 use std::path::PathBuf;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::sync::Arc;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::time::Duration;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use ariadusage_core::gates::launch::LaunchGate;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use tokio::sync::{Mutex, watch};
 
 use super::call::BrokerCall;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use super::exec_resolver::RealResolverFs;
 use super::exec_resolver::ResolverFs;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use super::process::{
     AbsolutePath, Command, LaunchMode, Output, ProcessEnv, ProcessError, ProcessRegistry,
     StreamPolicy,
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 struct CacheState {
     captured: Option<Vec<PathBuf>>,
     in_flight: Option<watch::Receiver<Option<Option<Vec<PathBuf>>>>>,
@@ -31,17 +31,17 @@ struct CacheState {
 
 #[derive(Clone)]
 pub struct LoginShell {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     env: ProcessEnv,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     registry: Arc<ProcessRegistry>,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     gate: Arc<LaunchGate>,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     cache: Arc<Mutex<CacheState>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 impl LoginShell {
     pub fn new(env: ProcessEnv) -> Self {
         Self::with_registry_and_gate(
@@ -282,7 +282,7 @@ impl LoginShell {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 impl LoginShell {
     pub async fn capture_path(&self, _call: &BrokerCall) -> Option<Vec<PathBuf>> {
         None

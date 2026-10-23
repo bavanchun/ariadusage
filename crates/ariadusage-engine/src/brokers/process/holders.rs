@@ -13,36 +13,58 @@ const HOLDER_POLL: Duration = Duration::from_millis(20);
 
 pub(super) async fn reap_output_holders(target: &ProcessTarget) {
     if target.pipes.is_empty() {
+        target.release_pipes();
         return;
     }
     let root = Path::new("/proc");
-    let first = output_holders(target, root);
-    signal_holders(target, &first, ProcessSignal::Term);
+    let mut holders = output_holders(target, root);
+    if holders.is_empty() {
+        target.release_pipes();
+        return;
+    }
+    signal_holders(target, &holders, ProcessSignal::Term);
 
     let deadline = tokio::time::Instant::now() + TEARDOWN_GRACE;
-    while tokio::time::Instant::now() < deadline && !output_holders(target, root).is_empty() {
+    loop {
+        holders = output_holders(target, root);
+        if holders.is_empty() || tokio::time::Instant::now() >= deadline {
+            break;
+        }
         tokio::time::sleep(HOLDER_POLL).await;
     }
 
-    let remaining = output_holders(target, root);
-    signal_holders(target, &remaining, ProcessSignal::Kill);
+    if !holders.is_empty() {
+        signal_holders(target, &holders, ProcessSignal::Kill);
+    }
+    target.release_pipes();
 }
 
 pub(super) fn reap_output_holders_sync(target: &ProcessTarget) {
     if target.pipes.is_empty() {
+        target.release_pipes();
         return;
     }
     let root = Path::new("/proc");
-    let first = output_holders(target, root);
-    signal_holders(target, &first, ProcessSignal::Term);
+    let mut holders = output_holders(target, root);
+    if holders.is_empty() {
+        target.release_pipes();
+        return;
+    }
+    signal_holders(target, &holders, ProcessSignal::Term);
 
     let deadline = std::time::Instant::now() + TEARDOWN_GRACE;
-    while std::time::Instant::now() < deadline && !output_holders(target, root).is_empty() {
+    loop {
+        holders = output_holders(target, root);
+        if holders.is_empty() || std::time::Instant::now() >= deadline {
+            break;
+        }
         std::thread::sleep(HOLDER_POLL);
     }
 
-    let remaining = output_holders(target, root);
-    signal_holders(target, &remaining, ProcessSignal::Kill);
+    if !holders.is_empty() {
+        signal_holders(target, &holders, ProcessSignal::Kill);
+    }
+    target.release_pipes();
 }
 
 fn output_holders(target: &ProcessTarget, root: &Path) -> Vec<ProcessIdentity> {

@@ -10,7 +10,7 @@ use thiserror::Error;
 
 use super::ProcessError;
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 const MAX_RPC_LINE: usize = 1024 * 1024;
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -39,8 +39,8 @@ impl From<ProcessError> for RpcError {
 
 /// A stdio JSON-RPC session with id-based response multiplexing.
 pub struct RpcSession {
-    #[cfg(target_os = "linux")]
-    inner: std::sync::Arc<linux::RpcInner>,
+    #[cfg(unix)]
+    inner: std::sync::Arc<unix::RpcInner>,
 }
 
 impl RpcSession {
@@ -50,13 +50,13 @@ impl RpcSession {
         registry: &super::ProcessRegistry,
         gate: &ariadusage_core::gates::launch::LaunchGate,
     ) -> Result<Self, RpcError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             Ok(Self {
-                inner: linux::spawn(call, command, registry, gate).await?,
+                inner: unix::spawn(call, command, registry, gate).await?,
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (call, command, registry, gate);
             Err(RpcError::Process(ProcessError::Unsupported))
@@ -69,11 +69,11 @@ impl RpcSession {
         params: &RawValue,
         timeout: Duration,
     ) -> Result<Box<RawValue>, RpcError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.inner.request(method, params, timeout).await
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (method, params, timeout);
             Err(RpcError::Process(ProcessError::Unsupported))
@@ -81,7 +81,7 @@ impl RpcSession {
     }
 
     pub async fn shutdown(&self) {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         self.inner.shutdown().await;
     }
 }
@@ -95,12 +95,12 @@ impl fmt::Debug for RpcSession {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod linux {
+#[cfg(unix)]
+mod unix {
     use std::collections::HashMap;
     use std::future::{Future, pending};
     use std::io;
-    use std::os::fd::AsRawFd;
+    use std::os::fd::AsFd;
     use std::pin::Pin;
     use std::process::Stdio;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -295,7 +295,7 @@ mod linux {
             let _ = gate.record_failure(&binary, LaunchFailureKind::Process);
             return Err(ProcessError::LaunchFailed.into());
         };
-        let target = match session_target(pid, &[stdout.as_raw_fd(), stderr.as_raw_fd()]) {
+        let target = match session_target(pid, &[stdout.as_fd(), stderr.as_fd()]) {
             Ok(target) => target,
             Err(error) => {
                 let _ = child.inner_mut().start_kill();

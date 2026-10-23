@@ -41,7 +41,37 @@ pub(super) fn signal_if(
         pidfd_send_signal(&pidfd, rustix_signal(signal)).map_err(map_pidfd_error)?;
         Ok(true)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use rustix::process::{Pid, getpid, getuid, kill_process};
+
+        if identity.pid <= 1 || identity.pid == getpid().as_raw_pid() {
+            return Ok(false);
+        }
+        let Some(pid) = Pid::from_raw(identity.pid) else {
+            return Ok(false);
+        };
+        let proc_root = Path::new("/proc");
+        if super::process_identity(proc_root, identity.pid) != Some(identity)
+            || super::process_uid(proc_root, identity.pid) != Some(getuid().as_raw())
+        {
+            return Ok(false);
+        }
+        if !still_owned() {
+            return Ok(false);
+        }
+        if super::process_identity(proc_root, identity.pid) != Some(identity)
+            || super::process_uid(proc_root, identity.pid) != Some(getuid().as_raw())
+        {
+            return Ok(false);
+        }
+        match kill_process(pid, rustix_signal(signal)) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(map_pidfd_error(error)),
+        }
+    }
+    #[cfg(not(unix))]
     {
         let _ = (identity, signal, still_owned);
         Err(ProcessError::Unsupported)
@@ -96,14 +126,50 @@ pub(super) fn signal_group_if(
         kill_process_group(group, rustix_signal(signal)).map_err(map_pidfd_error)?;
         Ok(true)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        use rustix::process::{Pid, getpgrp, getpid, getuid, kill_process_group};
+
+        if identity.pid <= 1
+            || identity.pid == getpid().as_raw_pid()
+            || pgid <= 1
+            || pgid == getpgrp().as_raw_pid()
+        {
+            return Ok(false);
+        }
+        let (Some(_pid), Some(group)) = (Pid::from_raw(identity.pid), Pid::from_raw(pgid)) else {
+            return Ok(false);
+        };
+        let proc_root = Path::new("/proc");
+        if super::process_identity(proc_root, identity.pid) != Some(identity)
+            || super::process_uid(proc_root, identity.pid) != Some(getuid().as_raw())
+            || super::process_group(proc_root, identity.pid) != Some(pgid)
+        {
+            return Ok(false);
+        }
+        if !still_owned() {
+            return Ok(false);
+        }
+        if super::process_identity(proc_root, identity.pid) != Some(identity)
+            || super::process_uid(proc_root, identity.pid) != Some(getuid().as_raw())
+            || super::process_group(proc_root, identity.pid) != Some(pgid)
+        {
+            return Ok(false);
+        }
+        match kill_process_group(group, rustix_signal(signal)) {
+            Ok(()) => Ok(true),
+            Err(rustix::io::Errno::SRCH) => Ok(false),
+            Err(error) => Err(map_pidfd_error(error)),
+        }
+    }
+    #[cfg(not(unix))]
     {
         let _ = (identity, pgid, signal, still_owned);
         Err(ProcessError::Unsupported)
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn rustix_signal(signal: ProcessSignal) -> rustix::process::Signal {
     match signal {
         ProcessSignal::Term => rustix::process::Signal::TERM,
@@ -111,7 +177,7 @@ fn rustix_signal(signal: ProcessSignal) -> rustix::process::Signal {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn map_pidfd_error(error: rustix::io::Errno) -> ProcessError {
     if error == rustix::io::Errno::NOSYS {
         ProcessError::Unsupported
@@ -120,5 +186,5 @@ fn map_pidfd_error(error: rustix::io::Errno) -> ProcessError {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::path::Path;

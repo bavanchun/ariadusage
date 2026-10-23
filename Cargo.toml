@@ -30,6 +30,7 @@ objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 pbkdf2 = "0.13.0"
 procfs = { version = "0.18.0", default-features = false }
+proc_pidinfo = "0.1.4"
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 pty-process = "0.5.3"
 regex = "1.13.1"
@@ -46,6 +47,7 @@ secret-service = { version = "5.2.0", default-features = false, features = ["rt-
 security-framework = "3.7.0"
 sha1 = { version = "0.11.0", features = ["zeroize"] }
 sha2 = "0.11.0"
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "~1.53", features = ["rt", "macros", "net", "process", "io-util", "time", "sync", "signal", "fs"] }

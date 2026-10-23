@@ -84,11 +84,11 @@ pub trait ResolverFs: Send + Sync {
     fn owner_and_mode(&self, path: &Path) -> Option<FileOwnerAndMode>;
 
     fn current_uid(&self) -> u32 {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             rustix::process::getuid().as_raw()
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             1000
         }
@@ -108,14 +108,14 @@ pub struct RealResolverFs;
 
 impl ResolverFs for RealResolverFs {
     fn is_executable(&self, path: &Path) -> bool {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::metadata(path)
                 .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
                 .unwrap_or(false)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             std::fs::metadata(path)
                 .map(|meta| meta.is_file())
@@ -124,7 +124,7 @@ impl ResolverFs for RealResolverFs {
     }
 
     fn owner_and_mode(&self, path: &Path) -> Option<FileOwnerAndMode> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
             let meta = std::fs::metadata(path).ok()?;
@@ -133,7 +133,7 @@ impl ResolverFs for RealResolverFs {
                 mode: meta.mode(),
             })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = path;
             None

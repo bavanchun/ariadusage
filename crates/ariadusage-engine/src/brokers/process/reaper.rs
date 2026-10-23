@@ -52,40 +52,48 @@ impl Drop for ReapGuard {
 
 pub(super) async fn reap_marker(marker: &[u8], pgid: i32) {
     let root = Path::new("/proc");
-    signal_marked_group(root, marker, pgid, ProcessSignal::Term);
+    let mut owned = marked_processes(root, marker);
+    if owned.is_empty() {
+        return;
+    }
+    signal_marked_group_from(root, &owned, marker, pgid, ProcessSignal::Term);
     let deadline = tokio::time::Instant::now() + REAPER_GRACE;
     loop {
-        let owned = marked_processes(root, marker);
-        if owned.is_empty() {
-            break;
-        }
         signal_identities(root, &owned, marker, ProcessSignal::Term);
         if tokio::time::Instant::now() >= deadline {
             break;
         }
         tokio::time::sleep(REAPER_INTERVAL).await;
+        owned = marked_processes(root, marker);
+        if owned.is_empty() {
+            return;
+        }
     }
-    signal_marked_group(root, marker, pgid, ProcessSignal::Kill);
+    signal_marked_group_from(root, &owned, marker, pgid, ProcessSignal::Kill);
     let owned = marked_processes(root, marker);
     signal_identities(root, &owned, marker, ProcessSignal::Kill);
 }
 
 pub(super) fn reap_marker_sync(marker: &[u8], pgid: i32) {
     let root = Path::new("/proc");
-    signal_marked_group(root, marker, pgid, ProcessSignal::Term);
+    let mut owned = marked_processes(root, marker);
+    if owned.is_empty() {
+        return;
+    }
+    signal_marked_group_from(root, &owned, marker, pgid, ProcessSignal::Term);
     let deadline = std::time::Instant::now() + REAPER_GRACE;
     loop {
-        let owned = marked_processes(root, marker);
-        if owned.is_empty() {
-            break;
-        }
         signal_identities(root, &owned, marker, ProcessSignal::Term);
         if std::time::Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(REAPER_INTERVAL);
+        owned = marked_processes(root, marker);
+        if owned.is_empty() {
+            return;
+        }
     }
-    signal_marked_group(root, marker, pgid, ProcessSignal::Kill);
+    signal_marked_group_from(root, &owned, marker, pgid, ProcessSignal::Kill);
     let owned = marked_processes(root, marker);
     signal_identities(root, &owned, marker, ProcessSignal::Kill);
 }
@@ -98,12 +106,18 @@ fn marked_processes(root: &Path, marker: &[u8]) -> Vec<ProcessIdentity> {
         .collect()
 }
 
-fn signal_marked_group(root: &Path, marker: &[u8], pgid: i32, signal_kind: ProcessSignal) {
+fn signal_marked_group_from(
+    root: &Path,
+    identities: &[ProcessIdentity],
+    marker: &[u8],
+    pgid: i32,
+    signal_kind: ProcessSignal,
+) {
     if pgid <= 1 {
         return;
     }
     let uid = rustix::process::getuid().as_raw();
-    for identity in marked_processes(root, marker) {
+    for &identity in identities {
         if process_group(root, identity.pid) == Some(pgid)
             && signal_group_if(identity, pgid, signal_kind, || {
                 marker_is_current(root, identity, uid, marker)
