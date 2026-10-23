@@ -1,4 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/DarwinProcessEnumerator.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeSet, HashSet};
 use std::path::Path;
@@ -62,10 +63,15 @@ pub fn process_socket_inodes(proc_root: &Path, pid: i32) -> HashSet<u64> {
 }
 
 /// Recovers the listening ports owned by `pid` by matching its open socket
-/// inodes against the TCP tables from the same process/network namespace.
+/// inodes against the TCP tables from the same process/network namespace
+/// (or via `libproc` socket descriptor inspection on live Darwin).
 pub fn proc_listening_ports(proc_root: &Path, pid: i32) -> Vec<u16> {
     if pid <= 0 {
         return Vec::new();
+    }
+    #[cfg(target_os = "macos")]
+    if crate::brokers::process::procscan::is_live_proc_root(proc_root) {
+        return darwin_listening_ports(pid);
     }
     let inodes = process_socket_inodes(proc_root, pid);
     if inodes.is_empty() {
@@ -77,6 +83,35 @@ pub fn proc_listening_ports(proc_root: &Path, pid: i32) -> Vec<u16> {
         let path = process_root.join(table_name);
         if let Ok(content) = std::fs::read_to_string(&path) {
             ports.extend(parse_tcp_table(&content, &inodes));
+        }
+    }
+    ports.into_iter().collect()
+}
+
+/// Discovers listening TCP ports owned by `pid` on Darwin via `libproc` socket descriptor info.
+#[cfg(target_os = "macos")]
+pub fn darwin_listening_ports(pid: i32) -> Vec<u16> {
+    let Ok(pid_u32) = u32::try_from(pid) else {
+        return Vec::new();
+    };
+    if pid_u32 == 0 {
+        return Vec::new();
+    }
+    let uid = rustix::process::getuid().as_raw();
+    if crate::brokers::process::procscan::process_uid(Path::new("/proc"), pid) != Some(uid) {
+        return Vec::new();
+    }
+    let Ok(all_listeners) = listeners::get_all() else {
+        return Vec::new();
+    };
+    let mut ports = BTreeSet::new();
+    for listener in all_listeners {
+        if listener.process.pid == pid_u32
+            && listener.protocol == listeners::Protocol::TCP
+            && listener.state == listeners::SocketState::Listen
+            && listener.socket.port() > 0
+        {
+            ports.insert(listener.socket.port());
         }
     }
     ports.into_iter().collect()

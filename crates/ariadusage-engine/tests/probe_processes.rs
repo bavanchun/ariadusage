@@ -1,10 +1,13 @@
 // Ported from CodexBar TestsLinux/AntigravityPortDiscoveryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+// Ported from CodexBar Tests/CodexBarTests/DarwinProcessEnumeratorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+#![cfg(unix)]
 
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::os::unix::fs::symlink;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use ariadusage_core::pipeline::FetchInteraction;
@@ -395,4 +398,182 @@ async fn scan_deadline_returns_timed_out() {
     let result = probe.listening_tcp_ports(&call, 42, Duration::ZERO).await;
 
     assert_eq!(result, Err(ProbeError::TimedOut));
+}
+
+#[test]
+// CodexBar: Tests/CodexBarTests/DarwinProcessEnumeratorTests.swift:201, 267, 279
+fn darwin_argv_fallback_rules_match_upstream() {
+    // Keeps agent argv when executable path is nil (e.g. deleted binary).
+    assert_eq!(
+        procscan::resolve_darwin_argv(Some(vec!["claude".to_string()]), None),
+        Some(vec!["claude".to_string()])
+    );
+
+    // Falls back to executable path without argv.
+    assert_eq!(
+        procscan::resolve_darwin_argv(None, Some(Path::new("/opt/homebrew/bin/codex"))),
+        Some(vec!["/opt/homebrew/bin/codex".to_string()])
+    );
+    assert_eq!(
+        procscan::resolve_darwin_argv(Some(Vec::new()), Some(Path::new("/opt/homebrew/bin/codex"))),
+        Some(vec!["/opt/homebrew/bin/codex".to_string()])
+    );
+
+    // Skips processes without argv or executable path.
+    assert_eq!(procscan::resolve_darwin_argv(None, None), None);
+    assert_eq!(
+        procscan::resolve_darwin_argv(Some(Vec::new()), Some(Path::new(""))),
+        None
+    );
+}
+
+#[tokio::test]
+// CodexBar: Tests/CodexBarTests/DarwinProcessEnumeratorTests.swift:165, 193
+async fn spawned_test_child_listener_is_discovered_and_ownership_rechecked() {
+    let bin = env!("CARGO_BIN_EXE_ariadusage-test-child");
+    let tag = format!("probe-child-{}", std::process::id());
+    let mut child = Command::new(bin)
+        .args([
+            "listen-tcp",
+            "--app_data_dir",
+            "antigravity",
+            "--workspace",
+            "path with spaces",
+            "--csrf_token=invented-csrf-token",
+            &tag,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let child_pid = child.id() as i32;
+    let stdout = child.stdout.take().unwrap();
+    let mut line = String::new();
+    BufReader::new(stdout).read_line(&mut line).unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+
+    let call = test_broker_call();
+    let probe = LocalProbe::new();
+    let tag_filter = tag.clone();
+    let found = probe
+        .same_user_processes(&call, move |view| view.command_line().contains(&tag_filter))
+        .await
+        .unwrap();
+
+    assert_eq!(found.len(), 1);
+    let matched = &found[0];
+    assert_eq!(matched.identity.pid, child_pid);
+    assert!(
+        matched
+            .argv
+            .argv()
+            .iter()
+            .any(|arg| arg == "path with spaces")
+    );
+    assert!(
+        matched
+            .argv
+            .argv()
+            .iter()
+            .any(|arg| arg == "--csrf_token=invented-csrf-token")
+    );
+    let debug_text = format!("{matched:?}");
+    assert!(!debug_text.contains("invented-csrf-token"));
+
+    let ports = probe
+        .listening_tcp_ports(&call, child_pid, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(ports, vec![port]);
+
+    assert!(
+        probe
+            .listener_still_owned(&call, matched.identity, port)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !probe
+            .listener_still_owned(&call, matched.identity, port.wrapping_add(1))
+            .await
+            .unwrap()
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        !probe
+            .listener_still_owned(&call, matched.identity, port)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        probe
+            .listening_tcp_ports(&call, child_pid, Duration::from_secs(5))
+            .await,
+        Err(ProbeError::NoListeningPorts)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+// CodexBar: Tests/CodexBarTests/DarwinProcessEnumeratorTests.swift:216
+async fn running_child_remains_discoverable_after_executable_is_unlinked() {
+    let dir = tempdir().unwrap();
+    let copied_bin = dir.path().join("language_server_macos_arm");
+    fs::copy(env!("CARGO_BIN_EXE_ariadusage-test-child"), &copied_bin).unwrap();
+
+    let tag = format!("unlinked-child-{}", std::process::id());
+    let mut child = Command::new(&copied_bin)
+        .args([
+            "listen-tcp",
+            "--app_data_dir",
+            "antigravity",
+            "--csrf_token=invented-unlinked-token",
+            &tag,
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let child_pid = child.id() as i32;
+    let stdout = child.stdout.take().unwrap();
+    let mut line = String::new();
+    BufReader::new(stdout).read_line(&mut line).unwrap();
+    let port: u16 = line.trim().parse().unwrap();
+
+    fs::remove_file(&copied_bin).unwrap();
+    assert!(!copied_bin.exists());
+
+    let call = test_broker_call();
+    let probe = LocalProbe::new();
+    let tag_filter = tag.clone();
+    let found = probe
+        .same_user_processes(&call, move |view| view.command_line().contains(&tag_filter))
+        .await
+        .unwrap();
+
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].identity.pid, child_pid);
+
+    let ports = probe
+        .listening_tcp_ports(&call, child_pid, Duration::from_secs(5))
+        .await
+        .unwrap();
+    assert_eq!(ports, vec![port]);
+
+    assert!(
+        probe
+            .listener_still_owned(&call, found[0].identity, port)
+            .await
+            .unwrap()
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
 }

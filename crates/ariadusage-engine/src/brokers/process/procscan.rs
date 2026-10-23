@@ -19,7 +19,7 @@ pub struct ProcessIdentity {
 }
 
 #[cfg(target_os = "macos")]
-fn is_live_proc_root(root: &Path) -> bool {
+pub(crate) fn is_live_proc_root(root: &Path) -> bool {
     root == Path::new("/proc")
 }
 
@@ -187,18 +187,22 @@ pub fn process_group(root: &Path, pid: i32) -> Option<i32> {
 }
 
 pub fn process_net_ns(root: &Path, pid: i32) -> Option<String> {
-    #[cfg(target_os = "linux")]
+    if pid <= 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_bsd_info(pid).map(|_| "darwin-host".to_owned());
+    }
+    #[cfg(unix)]
     {
-        if pid <= 0 {
-            return None;
-        }
         std::fs::read_link(root.join(pid.to_string()).join("ns").join("net"))
             .ok()
             .map(|path| path.to_string_lossy().into_owned())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
-        let _ = (root, pid);
+        let _ = root;
         None
     }
 }
@@ -532,9 +536,67 @@ const DARWIN_NO_MARKER_CACHE_MAX: usize = 1024;
 const DARWIN_NO_MARKER_MIN_AGE_MICROS: u64 = 2_000_000;
 
 #[cfg(target_os = "macos")]
+static DARWIN_ARGV_SYSTEM: std::sync::LazyLock<std::sync::Mutex<sysinfo::System>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(sysinfo::System::new()));
+
+#[cfg(target_os = "macos")]
 static DARWIN_NO_MARKER_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<(ProcessIdentity, String)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Resolves a Darwin process's `argv` from `KERN_PROCARGS2` arguments or falls back to
+/// the executable path (`proc_pidpath`) when `argv` is unavailable.
+pub fn resolve_darwin_argv(cmd: Option<Vec<String>>, exe: Option<&Path>) -> Option<Vec<String>> {
+    if let Some(args) = cmd
+        && !args.is_empty()
+    {
+        return Some(args);
+    }
+    exe.filter(|path| !path.as_os_str().is_empty())
+        .map(|path| vec![path.to_string_lossy().into_owned()])
+}
+
+#[cfg(target_os = "macos")]
+pub fn darwin_process_argv(pid: i32) -> Option<Vec<String>> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+
+    let pid_u32 = u32::try_from(pid).ok()?;
+    if pid_u32 == 0 {
+        return None;
+    }
+    let before_info = darwin_bsd_info(pid)?;
+    let before_identity = darwin_identity_from_bsd(pid, &before_info);
+    let sys_pid = Pid::from_u32(pid_u32);
+    let argv = {
+        let mut system = DARWIN_ARGV_SYSTEM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing()
+                .with_cmd(UpdateKind::Always)
+                .with_exe(UpdateKind::Always),
+        );
+        let resolved = system.process(sys_pid).and_then(|process| {
+            let cmd = (!process.cmd().is_empty()).then(|| {
+                process
+                    .cmd()
+                    .iter()
+                    .map(|arg| arg.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+            });
+            resolve_darwin_argv(cmd, process.exe())
+        });
+        *system = sysinfo::System::new();
+        resolved
+    }?;
+    let after_info = darwin_bsd_info(pid)?;
+    if darwin_identity_from_bsd(pid, &after_info) != before_identity {
+        return None;
+    }
+    Some(argv)
+}
 
 #[cfg(target_os = "macos")]
 fn darwin_same_uid_pids(uid: u32) -> Vec<i32> {

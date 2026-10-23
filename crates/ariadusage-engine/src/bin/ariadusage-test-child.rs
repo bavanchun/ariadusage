@@ -389,6 +389,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             stdout.write_all(&[0xe2, 0x82, 0xac])?;
             stdout.flush()?;
         }
+        "listen-tcp" => {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+            let port = listener.local_addr()?.port();
+            println!("{port}");
+            std::io::stdout().flush()?;
+            let mut terminate = signal(SignalKind::terminate())?;
+            let deadline = time::sleep(Duration::from_secs(30));
+            tokio::pin!(deadline);
+            tokio::select! {
+                _ = &mut deadline => {},
+                _ = terminate.recv() => {},
+            }
+            drop(listener);
+        }
         _ => return Err(Box::new(std::io::Error::other("unknown helper mode"))),
     }
     Ok(())
