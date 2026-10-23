@@ -1,4 +1,7 @@
-// Ported from CodexBar Sources/CodexBarCore/Providers/Providers.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Providers.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::sync::LazyLock;
 
@@ -37,7 +40,7 @@ pub struct ProviderDescriptor {
 
 static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::new(|| {
     [
-        // Codex (CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift:43, 138, 31)
+        // Codex (CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift:31, 43, 86-93, 138)
         ProviderDescriptor {
             id: ProviderId::new("codex").expect("valid id"),
             display_name: "Codex",
@@ -62,7 +65,7 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
                 shows_headroom_hint: true,
             },
         },
-        // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:134, 234)
+        // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:135, 233, 239-245)
         ProviderDescriptor {
             id: ProviderId::new("claude").expect("valid id"),
             display_name: "Claude",
@@ -81,9 +84,9 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_workspace: false,
             supports_enterprise_host: false,
             token_account_support: true,
-            pace_capability: ProviderPaceCapability::unsupported(),
+            pace_capability: ProviderPaceCapability::calendar_month_reset_window(),
         },
-        // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:36, 102)
+        // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:36, 71, 102)
         ProviderDescriptor {
             id: ProviderId::new("antigravity").expect("valid id"),
             display_name: "Antigravity",

@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/UsagePaceTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ProviderPaceCapabilityTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/UsagePaceTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ProviderPaceCapabilityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::RateWindow;
 use ariadusage_core::pace::{
@@ -166,6 +166,33 @@ fn workday_aware_pace_shows_on_track_for_five_day_user_on_friday() {
     assert!(pace7.delta_percent > 15.0);
     assert!((pace5.expected_used_percent - 95.0).abs() < 0.01);
     assert!(pace5.delta_percent.abs() <= 5.0);
+}
+
+#[test]
+fn six_work_days_includes_saturday_and_excludes_sunday() {
+    let calendar = TimeZone::UTC;
+    let reset = utc_date(2026, 6, 15, 0, 0);
+    let window = RateWindow::new(90.0, Some(10080), Some(reset), None, None, false).unwrap();
+
+    let saturday = UsagePace::weekly(
+        &window,
+        sub_seconds(reset, 36 * 3600),
+        None,
+        Some(6),
+        &calendar,
+    )
+    .expect("saturday pace expected");
+    let sunday = UsagePace::weekly(
+        &window,
+        sub_seconds(reset, 12 * 3600),
+        None,
+        Some(6),
+        &calendar,
+    )
+    .expect("sunday pace expected");
+
+    assert!((saturday.expected_used_percent - 100.0 * 5.5 / 6.0).abs() < 0.01);
+    assert_eq!(sunday.expected_used_percent, 100.0);
 }
 
 #[test]
@@ -565,16 +592,20 @@ fn descriptor_pace_capabilities_match_the_supported_provider_mapping() {
     for descriptor in first_party_order() {
         let capability = &descriptor.pace_capability;
         for window in &fixtures {
+            // Claude matches the calendar-month sentinel; Codex and Antigravity declare neither rule.
+            let expected = descriptor.id.as_str() == "claude"
+                && window.window_minutes == Some(MONTHLY_WINDOW_SENTINEL_MINUTES);
+
             let actual_reset_window_pace = capability.supports_reset_window_pace(window, now);
-            assert!(
-                !actual_reset_window_pace,
+            assert_eq!(
+                actual_reset_window_pace, expected,
                 "Reset-window pace changed for {}, window={:?}",
                 descriptor.id, window
             );
 
             let actual_monthly_inference = capability.uses_inferred_monthly_duration(window);
-            assert!(
-                !actual_monthly_inference,
+            assert_eq!(
+                actual_monthly_inference, expected,
                 "Monthly inference changed for {}, window={:?}",
                 descriptor.id, window
             );
