@@ -12,9 +12,11 @@ pub mod format;
 pub mod geometry;
 pub mod highlight_style;
 pub mod icon;
+pub mod menu_descriptor;
 pub mod pace_text;
 pub mod presentation;
 pub mod progress_bar;
+pub mod switcher;
 
 #[cfg(target_os = "macos")]
 pub mod appkit;
