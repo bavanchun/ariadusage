@@ -14,9 +14,11 @@ mod date_texts;
 mod icon_image;
 mod menu;
 mod progress_bar_view;
+mod switcher_view;
 
 pub use card_view::{CardView, png_bytes};
 pub use date_texts::FoundationDateTexts;
+pub use switcher_view::SwitcherView;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -34,6 +36,7 @@ use objc2_foundation::NSString;
 use crate::engine_client::{EngineClient, EngineEvent};
 use crate::icon;
 use crate::presentation::{self, IconPreferences};
+use crate::switcher::SwitcherSelection;
 
 /// Autosave name of the merged status item, so macOS keeps its position.
 const STATUS_ITEM_AUTOSAVE_NAME: &str = "ariadusage-merged";
@@ -45,7 +48,8 @@ struct AppState {
     menu: menu::MenuController,
     snapshot: Option<EngineSnapshot>,
     connected: bool,
-    selected_provider: Option<String>,
+    selected_tab: Option<SwitcherSelection>,
+    last_provider_id: Option<String>,
     prefs: IconPreferences,
 }
 
@@ -66,7 +70,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     .map_err(|err| format!("could not start the engine connection: {err}"))?;
 
     let status_item = make_status_item(mtm);
-    let menu = menu::MenuController::new(mtm, client, refresh_ui);
+    let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab);
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
         *cell.borrow_mut() = Some(AppState {
@@ -74,7 +78,8 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
             menu,
             snapshot: None,
             connected: false,
-            selected_provider: None,
+            selected_tab: None,
+            last_provider_id: None,
             prefs: IconPreferences::default(),
         });
     });
@@ -117,18 +122,39 @@ fn handle_event(event: EngineEvent) {
     refresh_ui();
 }
 
+fn select_tab(selection: SwitcherSelection) {
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        if let SwitcherSelection::Provider(id) = &selection {
+            state.last_provider_id = Some(id.clone());
+        }
+        state.selected_tab = Some(selection);
+    });
+    refresh_ui();
+}
+
 /// Redraws the icon and updates the menu from the current state.
 fn refresh_ui() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
+    let resolved = STATE.with(|cell| {
         let guard = cell.borrow();
-        let Some(state) = guard.as_ref() else { return };
+        let state = guard.as_ref()?;
+        let resolved = state.menu.update(
+            state.snapshot.as_ref(),
+            state.connected,
+            state.selected_tab.as_ref(),
+        );
+        let selected_provider_id = match resolved.as_ref() {
+            Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
+            _ => state.last_provider_id.as_deref(),
+        };
         let provider = state
             .snapshot
             .as_ref()
-            .and_then(|s| presentation::icon_provider(s, state.selected_provider.as_deref()));
+            .and_then(|s| presentation::icon_provider(s, selected_provider_id));
         let input = match provider {
             Some(provider) => presentation::icon_input(provider, state.prefs),
             // No data yet: draw empty, dimmed lanes rather than a fake value.
@@ -142,11 +168,16 @@ fn refresh_ui() {
         {
             button.setImage(Some(&image));
         }
-        // The card shows the icon's provider while the engine is connected.
-        let card_provider = provider.filter(|_| state.connected);
-        let status = presentation::connection_status(state.snapshot.as_ref(), state.connected);
-        state
-            .menu
-            .update(card_provider, status.as_deref(), state.connected);
+        resolved
     });
+    if let Some(selection) = resolved {
+        STATE.with(|cell| {
+            let mut guard = cell.borrow_mut();
+            let Some(state) = guard.as_mut() else { return };
+            if let SwitcherSelection::Provider(id) = &selection {
+                state.last_provider_id = Some(id.clone());
+            }
+            state.selected_tab = Some(selection);
+        });
+    }
 }

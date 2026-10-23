@@ -27,12 +27,17 @@ fn main() {}
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use ariadusage_macos::appkit::{CardView, FoundationDateTexts, png_bytes};
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use ariadusage_macos::appkit::{CardView, FoundationDateTexts, SwitcherView, png_bytes};
     use ariadusage_macos::card::{
         Accent, CardPreferences, CardPresentation, CardTitles, Rgb, card_model,
     };
     use ariadusage_macos::card_layout::Item;
-    use ariadusage_macos::geometry::Rect;
+    use ariadusage_macos::geometry::{Point, Rect};
+    use ariadusage_macos::switcher::{self, SwitcherSelection};
+    use ariadusage_protocol::fixture::generate_scenario_snapshot;
     use ariadusage_protocol::ids::ProviderId;
     use ariadusage_protocol::metric::{Confidence, Metric};
     use ariadusage_protocol::snapshot::ProviderSnapshot;
@@ -122,6 +127,23 @@ mod macos {
         let view = CardView::new(mtm);
         assert!(view.update(&model, 310.0));
         assert!(!view.update(&model, 310.0), "an unchanged model is a no-op");
+        assert!(
+            view.has_compatible_height(&model, 310.0, false),
+            "same-height model is compatible for in-place open-menu update"
+        );
+        let mut shorter_snap = snapshot(now);
+        shorter_snap.credits = None;
+        let shorter_model = card_model(
+            &shorter_snap,
+            &presentation,
+            &CardPreferences::default(),
+            now,
+            &dates,
+        );
+        assert!(
+            !view.has_compatible_height(&shorter_model, 310.0, false),
+            "removing the credits section changes card height and must defer while menu is open"
+        );
         let layout = view.layout().expect("layout");
         let bounds = view.bounds();
         assert_eq!(bounds.size.width, 310.0);
@@ -160,5 +182,45 @@ mod macos {
             let png = png_bytes(&rep).expect("PNG encoding");
             std::fs::write(path, png).expect("write PNG");
         }
+
+        // Verify SwitcherView renders and updates selection on click.
+        let fixture = generate_scenario_snapshot(0);
+        let segs = switcher::segments(&fixture, false);
+        let switcher_view = SwitcherView::new(mtm);
+        let selected_count = Rc::new(Cell::new(0usize));
+        let selected_count_cb = selected_count.clone();
+        switcher_view.set_on_select(move |_| {
+            selected_count_cb.set(selected_count_cb.get() + 1);
+        });
+        assert!(switcher_view.update(&segs, &SwitcherSelection::Overview, 310.0));
+        let sw_layout = switcher_view.layout().expect("switcher layout");
+        let sw_rep = switcher_view.render_bitmap().expect("switcher bitmap");
+        let sw_scale = sw_rep.pixelsWide() as f64 / sw_layout.size.w;
+
+        // Overview button is selected and filled with the accent background.
+        let ov_btn = &sw_layout.segments[0];
+        let ov_alpha = alpha_at(
+            &sw_rep,
+            sw_scale,
+            ov_btn.frame.x + 3.0,
+            ov_btn.frame.y + 3.0,
+        );
+        assert!(
+            ov_alpha > 0.9,
+            "selected button background alpha {ov_alpha}"
+        );
+
+        // Clicking the Codex segment selects it and invokes the callback.
+        let codex_btn = &sw_layout.segments[2];
+        let codex_pt = Point::new(
+            codex_btn.frame.x + codex_btn.frame.w / 2.0,
+            codex_btn.frame.y + codex_btn.frame.h / 2.0,
+        );
+        let clicked = switcher_view.click_at(codex_pt);
+        assert_eq!(
+            clicked,
+            Some(SwitcherSelection::Provider("codex".to_string()))
+        );
+        assert_eq!(selected_count.get(), 1);
     }
 }
