@@ -334,6 +334,42 @@ fn background_refresh_recovers_during_browser_and_family_cooldowns_when_access_b
 }
 
 #[test]
+// CodexBar: BrowserCookieAccessGateTests.swift:138
+fn background_recovery_still_requires_explicitly_allowed_access_during_a_denial_cooldown() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Chrome Work");
+    add_v11_profile(&home, Browser::Brave, "Brave Personal");
+    dismiss(&home, Browser::Chrome);
+    let before = home
+        .state_store()
+        .load()
+        .expect("saved state")
+        .browser_cooldowns;
+    assert_eq!(before.len(), 2);
+
+    let keys = Arc::new(StaticKeys::failing(SafeStorageError::Locked));
+    let browsers = [Browser::Chrome, Browser::Brave];
+    for browser in browsers {
+        let error = read(
+            &home,
+            &[browser],
+            FetchInteraction::Background,
+            keys.clone(),
+        )
+        .expect_err("background recovery still requires unlocked access");
+        assert_eq!(error, BrowserError::Locked);
+    }
+    assert_eq!(keys.calls.load(Ordering::SeqCst), browsers.len());
+    assert_eq!(cooldown_count(&home), 2);
+    let after = home
+        .state_store()
+        .load()
+        .expect("saved state")
+        .browser_cooldowns;
+    assert_eq!(after, before);
+}
+
+#[test]
 // CodexBar: BrowserDetectionTests.swift:397
 fn acknowledged_retry_with_two_profiles_reuses_cached_key_under_remaining_family_cooldown() {
     let home = TestHome::new();
@@ -537,7 +573,6 @@ fn one_retry_scope_does_not_prompt_twice_after_a_retry_dismissal() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:138
 // CodexBar: BrowserDetectionTests.swift:312
 fn a_locked_key_does_not_persist_dismissal_cooldown() {
     let home = TestHome::new();
