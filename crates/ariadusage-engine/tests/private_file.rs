@@ -1,7 +1,7 @@
 // Ported from CodexBar Tests/CodexBarTests/CredentialFileWriterTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar TestsLinux/CredentialFileWriterTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::io::Read;

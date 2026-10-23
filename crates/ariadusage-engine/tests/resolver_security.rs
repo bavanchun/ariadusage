@@ -265,3 +265,37 @@ fn explicit_override_failing_trust_check_is_error_for_agy_and_falls_through_for_
     let resolved_claude = resolve(Tool::Claude, &inputs_claude).unwrap();
     assert_eq!(resolved_claude.as_path(), trusted_ambient_claude);
 }
+
+#[cfg(unix)]
+#[test]
+fn real_resolver_fs_enforces_unix_permissions_and_sticky_bit_on_disk() {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use ariadusage_engine::brokers::exec_resolver::RealResolverFs;
+
+    let temp = tempfile::tempdir().unwrap();
+    let bin_dir = temp.path().join("bin");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::set_permissions(&bin_dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let claude = bin_dir.join("claude");
+    fs::write(&claude, b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+
+    let canonical_bin = fs::canonicalize(&bin_dir).unwrap();
+    let canonical_claude = fs::canonicalize(&claude).unwrap();
+    let env = ProcessEnv::from_iter([("PATH", canonical_bin.to_str().unwrap())]);
+    let inputs = ResolverInputs::new(&env, temp.path(), &RealResolverFs);
+    let resolved = resolve(Tool::Claude, &inputs).expect("trusted executable resolves");
+    assert_eq!(resolved.as_path(), canonical_claude.as_path());
+
+    // World-writable candidate file is rejected.
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o777)).unwrap();
+    assert_eq!(resolve(Tool::Claude, &inputs), Err(ResolveError::Untrusted));
+
+    // Restore file mode, make parent directory group-writable without sticky bit -> rejected.
+    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&bin_dir, fs::Permissions::from_mode(0o775)).unwrap();
+    assert_eq!(resolve(Tool::Claude, &inputs), Err(ResolveError::Untrusted));
+}

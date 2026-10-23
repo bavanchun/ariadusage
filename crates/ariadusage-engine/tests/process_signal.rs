@@ -1,6 +1,8 @@
 // Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
-use ariadusage_engine::brokers::process::{ProcessIdentity, ProcessSignal, signal, signal_group};
+#![cfg(unix)]
+use ariadusage_engine::brokers::process::{
+    ProcessIdentity, ProcessSignal, process_identity, signal, signal_group,
+};
 
 #[test]
 // CodexBar: TTYCommandRunnerTests.swift:89
@@ -66,7 +68,7 @@ fn pid_reuse_identity_mismatch_is_not_signaled() {
     };
 
     assert!(!signal(identity, ProcessSignal::Kill).unwrap());
-    assert!(std::fs::metadata(format!("/proc/{}/stat", child.id())).is_ok());
+    assert!(process_identity(std::path::Path::new("/proc"), child.id() as i32).is_some());
     child.kill().unwrap();
     let _ = child.wait();
 }

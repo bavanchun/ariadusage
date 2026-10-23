@@ -1,11 +1,12 @@
 // Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/BoundedChildProcessProofTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 #[path = "support/process.rs"]
 mod support;
 
+#[cfg(target_os = "linux")]
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -35,11 +36,12 @@ async fn spawn(args: &[&str], env: ProcessEnv) -> PtySession {
 async fn pty_backfills_injected_home_and_adds_default_terminal_environment() {
     support::require_nextest();
     let temp = tempdir().unwrap();
+    let cwd = temp.path().canonicalize().unwrap();
     let mut command = support::command(&["pty-prompt", "env"]).env(ProcessEnv::from_allowlist([
         ("HOME", "/fakehome/pty"),
         ("PATH", "/usr/bin"),
     ]));
-    command.set_cwd(Some(temp.path().to_path_buf()));
+    command.set_cwd(Some(cwd.clone()));
     let mut session = PtySession::spawn(
         support::call(FetchInteraction::UserInitiated),
         command,
@@ -58,16 +60,8 @@ async fn pty_backfills_injected_home_and_adds_default_terminal_environment() {
     assert!(transcript.text.contains("COLORTERM=truecolor"));
     assert!(transcript.text.contains("LANG=en_US.UTF-8"));
     assert!(transcript.text.contains("CI=0"));
-    assert!(
-        transcript
-            .text
-            .contains(&format!("PWD={}", temp.path().display()))
-    );
-    assert!(
-        transcript
-            .text
-            .contains(&format!("CWD={}", temp.path().display()))
-    );
+    assert!(transcript.text.contains(&format!("PWD={}", cwd.display())));
+    assert!(transcript.text.contains(&format!("CWD={}", cwd.display())));
     session.close().await;
 }
 
@@ -110,8 +104,9 @@ async fn environment_allowlist_excludes_unlisted_names() {
 async fn working_directory_is_applied_to_the_child_and_pwd() {
     support::require_nextest();
     let temp = tempdir().unwrap();
+    let cwd = temp.path().canonicalize().unwrap();
     let mut command = support::command(&["pty-prompt", "env"]).env(ProcessEnv::empty());
-    command.set_cwd(Some(temp.path().to_path_buf()));
+    command.set_cwd(Some(cwd.clone()));
     let mut session = PtySession::spawn(
         support::call(FetchInteraction::UserInitiated),
         command,
@@ -125,16 +120,8 @@ async fn working_directory_is_applied_to_the_child_and_pwd() {
         .run_script(PtyScript::new(Vec::new(), Duration::from_secs(2)))
         .await
         .unwrap();
-    assert!(
-        transcript
-            .text
-            .contains(&format!("PWD={}", temp.path().display()))
-    );
-    assert!(
-        transcript
-            .text
-            .contains(&format!("CWD={}", temp.path().display()))
-    );
+    assert!(transcript.text.contains(&format!("PWD={}", cwd.display())));
+    assert!(transcript.text.contains(&format!("CWD={}", cwd.display())));
     session.close().await;
 }
 
@@ -375,12 +362,46 @@ async fn pty_open_failure_includes_the_captured_posix_error() {
 }
 
 fn terminal_descriptor_count() -> usize {
-    std::fs::read_dir("/proc/self/fd")
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter_map(|entry| std::fs::read_link(entry.path()).ok())
-        .filter(|target| target == Path::new("/dev/ptmx") || target.starts_with("/dev/pts/"))
-        .count()
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter_map(|entry| std::fs::read_link(entry.path()).ok())
+            .filter(|target| target == Path::new("/dev/ptmx") || target.starts_with("/dev/pts/"))
+            .count()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use proc_pidinfo::{
+            ProcFDInfo, ProcFDType, VnodeFdInfo, VnodeFdInfoWithPath, proc_pidfdinfo_self,
+            proc_pidinfo_list_self,
+        };
+        const VCHR: i32 = 4;
+
+        proc_pidinfo_list_self::<ProcFDInfo>()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|fd| fd.proc_fd.0 > 2 && fd.fd_type() == Ok(ProcFDType::VNODE))
+            .filter(|fd| {
+                if let Ok(Some(vnode)) = proc_pidfdinfo_self::<VnodeFdInfoWithPath>(fd.proc_fd)
+                    && let Ok(path) = vnode.path()
+                {
+                    let text = path.to_string_lossy();
+                    if text == "/dev/ptmx"
+                        || text.starts_with("/dev/tty")
+                        || text.starts_with("/dev/pty")
+                    {
+                        return true;
+                    }
+                }
+                proc_pidfdinfo_self::<VnodeFdInfo>(fd.proc_fd)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|vnode| vnode.pvi.vi_type == VCHR)
+            })
+            .count()
+    }
 }
 
 #[tokio::test]

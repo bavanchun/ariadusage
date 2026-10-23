@@ -1,6 +1,8 @@
 // Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshCoordinatorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshUnreadableResultTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+#![cfg(target_os = "linux")]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;

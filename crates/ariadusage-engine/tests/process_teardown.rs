@@ -1,7 +1,7 @@
 // Ported from CodexBar TestsLinux/ProcessOwnershipReaperTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/SubprocessRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/SpawnedProcessGroupTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 #[path = "support/process.rs"]
 mod support;
