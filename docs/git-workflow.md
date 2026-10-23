@@ -59,7 +59,7 @@ Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
 | `ci` | GitHub Actions workflows |
 | `chore` | Repository housekeeping that fits nothing else |
 
-Scopes follow the code layout and the v1 providers: `protocol`, `core`, `engine`, `cli`, `claude`, `codex`, `antigravity`, `cost`, `omarchy`, `brand`, `fixtures`, `schemas`, `deps`, `ci`. Leave the scope out when a change spans the whole repository.
+Scopes follow the code layout and the v1 providers: `protocol`, `core`, `engine`, `cli`, `macos`, `claude`, `codex`, `antigravity`, `cost`, `omarchy`, `brand`, `fixtures`, `schemas`, `deps`, `ci`. Leave the scope out when a change spans the whole repository.
 
 Examples:
 
