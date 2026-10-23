@@ -222,5 +222,21 @@ mod macos {
             Some(SwitcherSelection::Provider("codex".to_string()))
         );
         assert_eq!(selected_count.get(), 1);
+
+        // Verify OverviewSpendSummary renders at 310 pt width via CardView::update_spend_summary.
+        let enabled: Vec<_> = fixture.providers.iter().filter(|p| p.enabled).collect();
+        let summary = ariadusage_macos::menu_descriptor::overview_spend_summary(&enabled)
+            .expect("spend summary");
+        let summary_view = CardView::new(mtm);
+        assert!(summary_view.update_spend_summary(&summary, 310.0));
+        assert!(
+            !summary_view.update_spend_summary(&summary, 310.0),
+            "unchanged spend summary is a no-op"
+        );
+        assert!(summary_view.has_compatible_spend_summary_height(&summary, 310.0));
+        assert_eq!(summary_view.bounds().size.width, 310.0);
+        assert!(summary_view.bounds().size.height > 100.0);
+        let summary_rep = summary_view.render_bitmap().expect("spend summary bitmap");
+        assert!(summary_rep.pixelsWide() >= 310);
     }
 }

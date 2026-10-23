@@ -148,6 +148,35 @@ fn four_segments_use_stacked_icons_and_non_uniform_even_widths() {
 }
 
 #[test]
+fn five_segments_fit_inside_310pt_base_menu_width() {
+    let mut snap = generate_scenario_snapshot(0);
+    snap.providers.push(ProviderSnapshot::new(
+        ProviderId::new("cursor").unwrap(),
+        "Cursor",
+        true,
+        "web",
+    ));
+    let segs = switcher::segments(&snap, false);
+    assert_eq!(segs.len(), 5);
+
+    let laid = switcher::layout(
+        &segs,
+        &SwitcherSelection::Overview,
+        None,
+        310.0,
+        &FixedSwitcherMeasure,
+    );
+    assert!(laid.stacked_icons);
+    assert_eq!(laid.size, Size::new(310.0, STACKED_ROW_HEIGHT));
+    assert_eq!(laid.segments.len(), 5);
+    assert!(laid.segments[0].frame.x >= 6.0);
+    assert!(laid.segments[4].frame.max_x() <= 310.0 - 6.0);
+    for seg in &laid.segments {
+        assert_eq!(seg.frame.w as i64 % 2, 0, "button width must be even");
+    }
+}
+
+#[test]
 fn three_segments_use_inline_icons_and_uniform_widths() {
     let mut snap = generate_scenario_snapshot(0);
     snap.providers[2].enabled = false;

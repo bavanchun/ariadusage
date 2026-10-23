@@ -2,6 +2,7 @@
 // Ported from CodexBar Sources/CodexBar/MenuCardMetricRow.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageMenuCardHeaderAndUsageSectionView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuTypes.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Manual layout of the usage card, the AppKit version of CodexBar's
 //! SwiftUI stacks in `MenuCardView.swift`.
@@ -13,6 +14,7 @@
 use crate::card::{CardModel, CreditsSection, MetricRow, SubtitleStyle};
 use crate::geometry::{Rect, Size};
 use crate::highlight_style::{self, Color, ColorRole};
+use crate::menu_descriptor::OverviewSpendSummary;
 use crate::progress_bar::{BAR_HEIGHT, BarSpec};
 
 /// The card is never narrower than the menu's base width
@@ -39,6 +41,14 @@ pub const ERROR_SUBTITLE_BOTTOM_PADDING: f64 = 4.0;
 pub const DIVIDER_THICKNESS: f64 = 1.0;
 /// Default `HStack` spacing between the credits value and its scale.
 pub const CREDITS_ROW_SPACING: f64 = 8.0;
+/// Vertical padding of `OverviewSpendSummaryCardView` (`StatusItemController+OverviewSpend.swift:54`).
+pub const SPEND_SUMMARY_VERTICAL_PADDING: f64 = 10.0;
+/// Vertical spacing of `OverviewSpendSummaryCardView` (`VStack(alignment: .leading, spacing: 7)`).
+pub const SPEND_SUMMARY_ROW_SPACING: f64 = 7.0;
+/// Horizontal spacing of the `Usage & Spend · 30d` header row (`HStack(spacing: 6)`).
+pub const SPEND_SUMMARY_HEADER_SPACING: f64 = 6.0;
+/// Horizontal spacing of the `providerCoverage · tokenText` row (`HStack(spacing: 8)`).
+pub const SPEND_SUMMARY_META_SPACING: f64 = 8.0;
 
 /// The width the card renders at for a menu of `menu_width`.
 pub fn rendered_width(menu_width: f64) -> f64 {
@@ -48,6 +58,7 @@ pub fn rendered_width(menu_width: f64) -> f64 {
 /// macOS text styles used by the card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TextStyle {
+    Title2,
     Headline,
     Subheadline,
     Body,
@@ -60,6 +71,7 @@ pub enum Weight {
     Regular,
     Medium,
     Semibold,
+    Bold,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -500,6 +512,114 @@ pub fn overview_layout(model: &CardModel, width: f64, measure: &dyn TextMeasure)
         }
         b.y += SECTION_BOTTOM_PADDING;
     }
+
+    CardLayout {
+        size: Size::new(width, b.y.ceil()),
+        items: b.items,
+    }
+}
+
+/// Lays out `summary` as the Overview spend summary card (`OverviewSpendSummaryCardView`,
+/// `StatusItemController+OverviewSpend.swift:16-58`).
+pub fn spend_summary_layout(
+    summary: &OverviewSpendSummary,
+    width: f64,
+    measure: &dyn TextMeasure,
+) -> CardLayout {
+    let mut b = Builder {
+        measure,
+        x: HORIZONTAL_PADDING,
+        width: (width - 2.0 * HORIZONTAL_PADDING).max(0.0),
+        y: SPEND_SUMMARY_VERTICAL_PADDING,
+        items: Vec::new(),
+    };
+
+    // Row 1: HStack(alignment: .firstTextBaseline, spacing: 6) { "Usage & Spend", "·", dayRangeText }
+    let title = label("Usage & Spend", NAME_FONT, TextColor::Secondary, 1);
+    let dot = label("·", EMAIL_FONT, TextColor::Secondary, 1);
+    let range = label(&summary.day_range_text, EMAIL_FONT, TextColor::Secondary, 1);
+    let title_sz = b.size(&title, b.width);
+    let dot_sz = b.size(
+        &dot,
+        (b.width - title_sz.w - SPEND_SUMMARY_HEADER_SPACING).max(0.0),
+    );
+    let range_sz = b.size(
+        &range,
+        (b.width - title_sz.w - dot_sz.w - 2.0 * SPEND_SUMMARY_HEADER_SPACING).max(0.0),
+    );
+    let tb = b.measure.first_baseline(title.font);
+    let db = b.measure.first_baseline(dot.font);
+    let rb = b.measure.first_baseline(range.font);
+    let base = tb.max(db).max(rb);
+    let title_y = b.y + base - tb;
+    let dot_y = b.y + base - db;
+    let range_y = b.y + base - rb;
+    let dot_x = b.x + title_sz.w + SPEND_SUMMARY_HEADER_SPACING;
+    let range_x = dot_x + dot_sz.w + SPEND_SUMMARY_HEADER_SPACING;
+    let row1_bottom = (title_y + title_sz.h)
+        .max(dot_y + dot_sz.h)
+        .max(range_y + range_sz.h);
+    b.push_text(title, Rect::new(b.x, title_y, title_sz.w, title_sz.h));
+    b.push_text(dot, Rect::new(dot_x, dot_y, dot_sz.w, dot_sz.h));
+    b.push_text(range, Rect::new(range_x, range_y, range_sz.w, range_sz.h));
+    b.y = row1_bottom + SPEND_SUMMARY_ROW_SPACING;
+
+    // Row 2: primarySpendText (.title2, .bold, .primary, lineLimit: 2)
+    b.text_line(label(
+        &summary.primary_spend_text,
+        Font::new(TextStyle::Title2, Weight::Bold),
+        TextColor::Primary,
+        2,
+    ));
+    b.y += SPEND_SUMMARY_ROW_SPACING;
+
+    // Row 3: HStack(spacing: 8) { providerCoverageText, ["·", tokenText] } (.caption, .secondary, lineLimit: 1)
+    let prov_cov = label(
+        &summary.provider_coverage_text,
+        CAPTION,
+        TextColor::Secondary,
+        1,
+    );
+    if let Some(tokens) = &summary.token_text {
+        let cov_sz = b.size(&prov_cov, b.width);
+        let sep = label("·", CAPTION, TextColor::Secondary, 1);
+        let sep_sz = b.size(
+            &sep,
+            (b.width - cov_sz.w - SPEND_SUMMARY_META_SPACING).max(0.0),
+        );
+        let tok = label(tokens, CAPTION, TextColor::Secondary, 1);
+        let tok_sz = b.size(
+            &tok,
+            (b.width - cov_sz.w - sep_sz.w - 2.0 * SPEND_SUMMARY_META_SPACING).max(0.0),
+        );
+        let sep_x = b.x + cov_sz.w + SPEND_SUMMARY_META_SPACING;
+        let tok_x = sep_x + sep_sz.w + SPEND_SUMMARY_META_SPACING;
+        let row3_h = cov_sz.h.max(sep_sz.h).max(tok_sz.h);
+        b.push_text(prov_cov, Rect::new(b.x, b.y, cov_sz.w, cov_sz.h));
+        b.push_text(sep, Rect::new(sep_x, b.y, sep_sz.w, sep_sz.h));
+        b.push_text(tok, Rect::new(tok_x, b.y, tok_sz.w, tok_sz.h));
+        b.y += row3_h;
+    } else {
+        b.text_line(prov_cov);
+    }
+    b.y += SPEND_SUMMARY_ROW_SPACING;
+
+    // Row 4: "\(historyCoverageText) · \(provenanceText)" (.caption, .secondary, lineLimit: 2)
+    let cov_prov = format!(
+        "{} · {}",
+        summary.history_coverage_text, summary.provenance_text
+    );
+    b.text_line(label(&cov_prov, CAPTION, TextColor::Secondary, 2));
+    b.y += SPEND_SUMMARY_ROW_SPACING;
+
+    // Row 5: pricingCoverageText (.caption, .secondary, lineLimit: 2)
+    b.text_line(label(
+        &summary.pricing_coverage_text,
+        CAPTION,
+        TextColor::Secondary,
+        2,
+    ));
+    b.y += SPEND_SUMMARY_VERTICAL_PADDING;
 
     CardLayout {
         size: Size::new(width, b.y.ceil()),

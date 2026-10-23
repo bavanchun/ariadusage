@@ -830,7 +830,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/format.rs"
-sources = ["Sources/CodexBarCore/UsageFormatter.swift", "Sources/CodexBarCore/Providers/Codex/CodexPlanFormatting.swift", "Sources/CodexBarCore/TextParsing.swift"]
+sources = ["Sources/CodexBarCore/UsageFormatter.swift", "Sources/CodexBarCore/Providers/Codex/CodexPlanFormatting.swift", "Sources/CodexBarCore/TextParsing.swift", "Sources/CodexBar/ShareStatsPayload.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -845,12 +845,12 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/menu.rs"
-sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+MenuTracking.swift"]
+sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+MenuTracking.swift", "Sources/CodexBar/StatusItemController+MenuTextRows.swift", "Sources/CodexBar/StatusItemController+MenuWidthCache.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/card_view.rs"
-sources = ["Sources/CodexBar/StatusItemController+MenuPresentation.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift"]
+sources = ["Sources/CodexBar/StatusItemController+MenuPresentation.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -870,7 +870,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/card_layout.rs"
-sources = ["Sources/CodexBar/UsageMenuCardLayout.swift", "Sources/CodexBar/MenuCardMetricRow.swift", "Sources/CodexBar/UsageMenuCardHeaderAndUsageSectionView.swift", "Sources/CodexBar/StatusItemController+MenuTypes.swift"]
+sources = ["Sources/CodexBar/UsageMenuCardLayout.swift", "Sources/CodexBar/MenuCardMetricRow.swift", "Sources/CodexBar/UsageMenuCardHeaderAndUsageSectionView.swift", "Sources/CodexBar/StatusItemController+MenuTypes.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -880,7 +880,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/menu_descriptor.rs"
-sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
+sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]

@@ -2,6 +2,9 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Menu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuCardItems.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuTracking.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+MenuTextRows.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+MenuWidthCache.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! The status item's dropdown menu.
 //!
@@ -21,8 +24,11 @@ use jiff::Timestamp;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{NSImage, NSMenu, NSMenuDelegate, NSMenuItem, NSWorkspace};
-use objc2_foundation::{NSObject, NSObjectProtocol, NSSize, NSString, NSURL};
+use objc2_app_kit::{
+    NSColor, NSFont, NSImage, NSLineBreakMode, NSMenu, NSMenuDelegate, NSMenuItem, NSTextField,
+    NSView, NSWorkspace,
+};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 
 use super::card_view::CardView;
 use super::date_texts::FoundationDateTexts;
@@ -275,7 +281,7 @@ impl MenuController {
     }
 
     fn apply_structure(&self, structure: MenuStructure) {
-        let width = card_layout::rendered_width(self.menu.size().width);
+        let width = measured_menu_width(self.menu.mtm(), &structure);
         let is_open = self.target.ivars().is_open.get();
         let same_selection = self
             .last_structure
@@ -379,17 +385,21 @@ impl MenuController {
             }
             (
                 PrimaryContent::Overview {
+                    spend_summary: prev_summary,
                     share_action: prev_share,
                     cards: prev_cards,
                 },
                 PrimaryContent::Overview {
+                    spend_summary: next_summary,
                     share_action: next_share,
                     cards: next_cards,
                 },
             ) => {
-                if prev_share != next_share
+                let expected_card_views = next_cards.len() + usize::from(next_summary.is_some());
+                if prev_summary.is_some() != next_summary.is_some()
+                    || prev_share != next_share
                     || prev_cards.len() != next_cards.len()
-                    || cards.len() != next_cards.len()
+                    || cards.len() != expected_card_views
                 {
                     return false;
                 }
@@ -398,14 +408,35 @@ impl MenuController {
                         return false;
                     }
                 }
+                let provider_card_slice = if let Some(summary) = next_summary {
+                    let Some(summary_card) = cards.first() else {
+                        return false;
+                    };
+                    if require_same_height
+                        && !summary_card
+                            .view
+                            .has_compatible_spend_summary_height(summary, width)
+                    {
+                        return false;
+                    }
+                    &cards[1..]
+                } else {
+                    &cards[..]
+                };
                 if require_same_height {
-                    for (hc, ov) in cards.iter().zip(next_cards.iter()) {
+                    for (hc, ov) in provider_card_slice.iter().zip(next_cards.iter()) {
                         if !hc.view.has_compatible_height(&ov.model, width, true) {
                             return false;
                         }
                     }
                 }
-                for (hc, ov) in cards.iter().zip(next_cards.iter()) {
+                if let Some(summary) = next_summary
+                    && let Some(summary_card) = cards.first()
+                    && summary_card.view.update_spend_summary(summary, width)
+                {
+                    self.menu.itemChanged(&summary_card.item);
+                }
+                for (hc, ov) in provider_card_slice.iter().zip(next_cards.iter()) {
                     if hc.view.update_overview(&ov.model, width) {
                         self.menu.itemChanged(&hc.item);
                     }
@@ -455,7 +486,7 @@ impl MenuController {
                 card_item.setEnabled(false);
                 self.menu.addItem(&card_item);
                 if let Some(buy) = buy_credits {
-                    let buy_item = self.make_entry_item(mtm, buy, &mut url_actions);
+                    let buy_item = self.make_entry_item(mtm, buy, width, &mut url_actions);
                     self.menu.addItem(&buy_item);
                 }
                 self.menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -466,12 +497,27 @@ impl MenuController {
                 });
             }
             PrimaryContent::Overview {
+                spend_summary,
                 share_action,
                 cards: overview_cards,
             } => {
-                if let Some(share) = share_action {
-                    let share_item = self.make_entry_item(mtm, share, &mut url_actions);
-                    self.menu.addItem(&share_item);
+                if let Some(summary) = spend_summary {
+                    let summary_view = CardView::new(mtm);
+                    summary_view.update_spend_summary(summary, width);
+                    let summary_item = NSMenuItem::new(mtm);
+                    summary_item.setTitle(&NSString::from_str(""));
+                    summary_item.setView(Some(&summary_view));
+                    summary_item.setEnabled(false);
+                    self.menu.addItem(&summary_item);
+                    cards.push(HighlightableCard {
+                        item: summary_item,
+                        view: summary_view,
+                        allows_highlight: false,
+                    });
+                    if let Some(share) = share_action {
+                        let share_item = self.make_entry_item(mtm, share, width, &mut url_actions);
+                        self.menu.addItem(&share_item);
+                    }
                     self.menu.addItem(&NSMenuItem::separatorItem(mtm));
                 }
                 for (index, ov) in overview_cards.iter().enumerate() {
@@ -512,7 +558,7 @@ impl MenuController {
 
         if !structure.history.is_empty() {
             for entry in &structure.history {
-                let menu_item = self.make_entry_item(mtm, entry, &mut url_actions);
+                let menu_item = self.make_entry_item(mtm, entry, width, &mut url_actions);
                 self.menu.addItem(&menu_item);
             }
             self.menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -520,14 +566,14 @@ impl MenuController {
 
         if !structure.actions.is_empty() {
             for entry in &structure.actions {
-                let menu_item = self.make_entry_item(mtm, entry, &mut url_actions);
+                let menu_item = self.make_entry_item(mtm, entry, width, &mut url_actions);
                 self.menu.addItem(&menu_item);
             }
             self.menu.addItem(&NSMenuItem::separatorItem(mtm));
         }
 
         for entry in &structure.meta {
-            let menu_item = self.make_entry_item(mtm, entry, &mut url_actions);
+            let menu_item = self.make_entry_item(mtm, entry, width, &mut url_actions);
             self.menu.addItem(&menu_item);
         }
 
@@ -541,14 +587,11 @@ impl MenuController {
         &self,
         mtm: MainThreadMarker,
         entry: &MenuEntry,
+        width: f64,
         url_actions: &mut Vec<String>,
     ) -> Retained<NSMenuItem> {
         match entry {
-            MenuEntry::SecondaryText(text) => {
-                let it = item(mtm, text, None, "");
-                it.setEnabled(false);
-                it
-            }
+            MenuEntry::SecondaryText(text) => make_wrapped_secondary_text_item(mtm, text, width),
             MenuEntry::Action {
                 title,
                 system_image,
@@ -682,4 +725,135 @@ fn item(
             &NSString::from_str(key),
         )
     }
+}
+
+/// Measures the menu card width from standard (non-custom-view) menu items only,
+/// floored at [`card_layout::MIN_CARD_WIDTH`] (`310.0` pt), matching
+/// `StatusItemController.measuredMenuWidth(for:)` (`StatusItemController+MenuWidthCache.swift:67-87`).
+fn measured_menu_width(mtm: MainThreadMarker, structure: &MenuStructure) -> f64 {
+    let measuring = NSMenu::new(mtm);
+    measuring.setAutoenablesItems(false);
+    match &structure.primary {
+        PrimaryContent::Disconnected { message } => {
+            measuring.addItem(&item(mtm, message, None, ""));
+        }
+        PrimaryContent::Provider { buy_credits, .. } => {
+            if let Some(MenuEntry::Action {
+                title,
+                system_image,
+                key_equivalent,
+                ..
+            }) = buy_credits
+            {
+                let it = item(mtm, title, None, key_equivalent);
+                if let Some(sym) = system_image {
+                    set_symbol_image(&it, sym);
+                }
+                measuring.addItem(&it);
+            }
+        }
+        PrimaryContent::Overview { share_action, .. } => {
+            if let Some(MenuEntry::Action {
+                title,
+                system_image,
+                key_equivalent,
+                ..
+            }) = share_action
+            {
+                let it = item(mtm, title, None, key_equivalent);
+                if let Some(sym) = system_image {
+                    set_symbol_image(&it, sym);
+                }
+                measuring.addItem(&it);
+            }
+        }
+    }
+    for entry in structure
+        .history
+        .iter()
+        .chain(structure.actions.iter())
+        .chain(structure.meta.iter())
+    {
+        match entry {
+            // SecondaryText rows use `make_wrapped_secondary_text_item` (a custom view
+            // constrained to `width`), so they are excluded from the standard item width probe
+            // (`StatusItemController+MenuWidthCache.swift:69`).
+            MenuEntry::SecondaryText(_) => {}
+            MenuEntry::Action {
+                title,
+                system_image,
+                key_equivalent,
+                ..
+            } => {
+                let it = item(mtm, title, None, key_equivalent);
+                if let Some(sym) = system_image {
+                    set_symbol_image(&it, sym);
+                }
+                measuring.addItem(&it);
+            }
+            MenuEntry::Submenu {
+                title,
+                system_image,
+                ..
+            } => {
+                let it = item(mtm, title, None, "");
+                if let Some(sym) = system_image {
+                    set_symbol_image(&it, sym);
+                }
+                measuring.addItem(&it);
+            }
+        }
+    }
+    card_layout::rendered_width(measuring.size().width)
+}
+
+/// Builds a disabled menu item whose custom view wraps secondary text inside `width`
+/// (`StatusItemController.makeWrappedSecondaryTextItem`, `StatusItemController+MenuTextRows.swift:4-43`).
+fn make_wrapped_secondary_text_item(
+    mtm: MainThreadMarker,
+    text: &str,
+    width: f64,
+) -> Retained<NSMenuItem> {
+    let menu_item = item(mtm, "", None, "");
+    menu_item.setEnabled(false);
+    menu_item.setToolTip(Some(&NSString::from_str(text)));
+
+    let horizontal_leading: f64 = 18.0;
+    let horizontal_trailing: f64 = 10.0;
+    let vertical_padding: f64 = 2.0;
+    let available_width = (width - horizontal_leading - horizontal_trailing).max(120.0);
+
+    let label = NSTextField::wrappingLabelWithString(&NSString::from_str(text), mtm);
+    let font = NSFont::menuFontOfSize(NSFont::smallSystemFontSize());
+    label.setFont(Some(&font));
+    label.setTextColor(Some(&NSColor::secondaryLabelColor()));
+    label.setSelectable(false);
+    label.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
+    label.setMaximumNumberOfLines(0);
+    label.setPreferredMaxLayoutWidth(available_width);
+    label.setFrameSize(NSSize::new(available_width, 0.0));
+    let label_height = label
+        .cell()
+        .map(|cell| {
+            cell.cellSizeForBounds(NSRect::new(
+                NSPoint::new(0.0, 0.0),
+                NSSize::new(available_width, 100_000.0),
+            ))
+            .height
+            .ceil()
+        })
+        .unwrap_or_else(|| label.fittingSize().height.ceil());
+    let row_height = (label_height + vertical_padding * 2.0).max(18.0);
+
+    let container = NSView::initWithFrame(
+        NSView::alloc(mtm),
+        NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, row_height)),
+    );
+    label.setFrame(NSRect::new(
+        NSPoint::new(horizontal_leading, vertical_padding),
+        NSSize::new(available_width, label_height),
+    ));
+    container.addSubview(&label);
+    menu_item.setView(Some(&container));
+    menu_item
 }

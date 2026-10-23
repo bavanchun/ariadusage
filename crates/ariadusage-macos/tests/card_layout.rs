@@ -5,9 +5,10 @@ use ariadusage_macos::card::{
 };
 use ariadusage_macos::card_layout::{
     Align, CardLayout, Item, MIN_CARD_WIDTH, TextColor, Truncation, layout, overview_layout,
-    rendered_width,
+    rendered_width, spend_summary_layout,
 };
 use ariadusage_macos::geometry::Rect;
+use ariadusage_macos::menu_descriptor::OverviewSpendSummary;
 use ariadusage_macos::progress_bar::WorkdayTickAppearance;
 use common::FixedMeasure;
 
@@ -289,4 +290,35 @@ fn overview_layout_omits_dividers_and_credits() {
         "overview card omits credits bar"
     );
     assert_eq!(frame_of(&l, "Session 58% left").y, 39.0 + 6.0 + 10.0);
+}
+
+#[test]
+fn spend_summary_layout_places_five_rows_at_310pt_width() {
+    let summary = OverviewSpendSummary {
+        day_range_text: "30d".to_string(),
+        primary_spend_text: "~$298.80".to_string(),
+        provider_coverage_text: "2 of 3 subscriptions have spend".to_string(),
+        token_text: Some("12.6M tokens".to_string()),
+        history_coverage_text: "Coverage: 30 / 30".to_string(),
+        provenance_text: "Metered and list-price".to_string(),
+        pricing_coverage_text: "Priced 3,570 · Unpriced 0 · Unmetered 0 · Estimated 0".to_string(),
+    };
+    let l = spend_summary_layout(&summary, 310.0, &FixedMeasure);
+    assert_eq!(l.size.w, 310.0);
+    assert_eq!(frame_of(&l, "Usage & Spend").x, 20.0);
+    assert_eq!(frame_of(&l, "Usage & Spend").y, 10.0);
+    assert_eq!(frame_of(&l, "30d").y, 12.0);
+    let spend = frame_of(&l, "~$298.80");
+    assert_eq!(spend.x, 20.0);
+    assert_eq!(spend.y, 26.0 + 7.0);
+    let cov = frame_of(&l, "2 of 3 subscriptions have spend");
+    let tok = frame_of(&l, "12.6M tokens");
+    assert_eq!(cov.y, spend.max_y() + 7.0);
+    assert_eq!(tok.y, cov.y);
+    assert!(tok.x > cov.max_x());
+    let prov = frame_of(&l, "Coverage: 30 / 30 · Metered and list-price");
+    assert_eq!(prov.y, cov.max_y() + 7.0);
+    let pricing = frame_of(&l, "Priced 3,570 · Unpriced 0 · Unmetered 0 · Estimated 0");
+    assert_eq!(pricing.y, prov.max_y() + 7.0);
+    assert_eq!(l.size.h, pricing.max_y() + 10.0);
 }

@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/UsageFormatter.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexPlanFormatting.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/TextParsing.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/ShareStatsPayload.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Text formats shared by the menu and the status item.
 //!
@@ -286,6 +287,111 @@ pub fn token_count_string(value: i64) -> String {
         }
     }
     value.to_string()
+}
+
+/// Compact token count for `OverviewSpendSummary` (`ShareStatsFormatting.compactCount`
+/// in `ShareStatsPayload.swift:379-391`): 2 fraction digits below 10x, 1 below 100x,
+/// 0 at 100x+, trailing zeros stripped.
+pub fn share_stats_compact_count(value: u64) -> String {
+    let magnitude = value as f64;
+    let (mut divisor, mut suffix, next) = if value >= 1_000_000_000 {
+        (1_000_000_000.0, "B", None)
+    } else if value >= 1_000_000 {
+        (1_000_000.0, "M", Some((1_000_000_000.0, "B")))
+    } else if value >= 1_000 {
+        (1_000.0, "K", Some((1_000_000.0, "M")))
+    } else {
+        return grouped_u64(value);
+    };
+    let round_compact = |v: f64| -> f64 {
+        let factor = if v >= 100.0 {
+            1.0
+        } else if v >= 10.0 {
+            10.0
+        } else {
+            100.0
+        };
+        (v * factor).round() / factor
+    };
+    let scaled = magnitude / divisor;
+    if let Some((next_div, next_suf)) = next
+        && round_compact(scaled) >= next_div / divisor
+    {
+        divisor = next_div;
+        suffix = next_suf;
+    }
+    let scaled = magnitude / divisor;
+    let rounded = round_compact(scaled);
+    let digits = if rounded >= 100.0 {
+        0
+    } else if rounded >= 10.0 {
+        1
+    } else {
+        2
+    };
+    let raw = match digits {
+        0 => format!("{rounded:.0}"),
+        1 => format!("{rounded:.1}"),
+        _ => format!("{rounded:.2}"),
+    };
+    let trimmed = if raw.contains('.') {
+        raw.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        &raw
+    };
+    format!("{trimmed}{suffix}")
+}
+
+/// Formats `value` with `en_US` thousands separators (`1,234,567`).
+pub fn grouped_u64(value: u64) -> String {
+    let digits = value.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (idx, ch) in digits.chars().enumerate() {
+        if idx > 0 && (digits.len() - idx).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn currency_symbol(currency_code: &str) -> String {
+    let upper = currency_code.trim().to_ascii_uppercase();
+    match upper.as_str() {
+        "" | "USD" => "$".to_string(),
+        "EUR" => "€".to_string(),
+        "GBP" => "£".to_string(),
+        "JPY" => "¥".to_string(),
+        other => format!("{other}\u{00A0}"),
+    }
+}
+
+/// Currency string in `en_US` locale (`UsageFormatter.currencyString`, e.g. `$2,422.13`).
+pub fn currency_string(value: f64, currency_code: &str) -> String {
+    if !value.is_finite() {
+        return "—".to_string();
+    }
+    let sign = if value < -0.000_001 { "-" } else { "" };
+    let symbol = currency_symbol(currency_code);
+    let cents = (value.abs() * 100.0).round() as u64;
+    let whole = grouped_u64(cents / 100);
+    let rem = cents % 100;
+    format!("{sign}{symbol}{whole}.{rem:02}")
+}
+
+/// Compact currency string in `en_US` locale (`UsageFormatter.compactCurrencyString`):
+/// two decimals when `0 < |value| < 1`, whole dollars otherwise.
+pub fn compact_currency_string(value: f64, currency_code: &str) -> String {
+    if !value.is_finite() {
+        return "—".to_string();
+    }
+    if value != 0.0 && value.abs() < 1.0 {
+        return currency_string(value, currency_code);
+    }
+    let sign = if value < -0.5 { "-" } else { "" };
+    let symbol = currency_symbol(currency_code);
+    let whole = grouped_u64(value.abs().round() as u64);
+    format!("{sign}{symbol}{whole}")
 }
 
 static ANSI_CSI: LazyLock<Regex> =

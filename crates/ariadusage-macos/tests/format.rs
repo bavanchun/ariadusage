@@ -4,9 +4,10 @@
 mod common;
 
 use ariadusage_macos::format::{
-    ResetTimeDisplayStyle, clean_plan_name, credits_number_string, credits_string, percent_string,
-    percent_text, plan_display, remaining_string, reset_countdown_description, reset_description,
-    reset_line, token_count_string, updated_string, usage_line,
+    ResetTimeDisplayStyle, clean_plan_name, compact_currency_string, credits_number_string,
+    credits_string, currency_string, grouped_u64, percent_string, percent_text, plan_display,
+    remaining_string, reset_countdown_description, reset_description, reset_line,
+    share_stats_compact_count, token_count_string, updated_string, usage_line,
 };
 use ariadusage_protocol::usage::RateWindow;
 use common::{FixedDates, ts};
@@ -348,4 +349,18 @@ fn plan_display_uses_codex_tier_names_for_codex_only() {
     assert_eq!(plan_display("codex", "Plus Plan"), "Plus");
     assert_eq!(plan_display("codex", "k12_edu"), "K12 Edu");
     assert_eq!(plan_display("claude", "pro"), "Pro");
+}
+
+#[test]
+fn currency_and_share_stats_compact_counts_match_upstream_rules() {
+    assert_eq!(grouped_u64(0), "0");
+    assert_eq!(grouped_u64(3_570), "3,570");
+    assert_eq!(grouped_u64(90_141), "90,141");
+    assert_eq!(currency_string(298.8, "USD"), "$298.80");
+    assert_eq!(currency_string(2422.13, "USD"), "$2,422.13");
+    assert_eq!(compact_currency_string(298.8, "USD"), "$299");
+    assert_eq!(share_stats_compact_count(950), "950");
+    assert_eq!(share_stats_compact_count(12_600_000), "12.6M");
+    assert_eq!(share_stats_compact_count(999_950_000), "1B");
+    assert_eq!(share_stats_compact_count(1_235_792_510), "1.24B");
 }
