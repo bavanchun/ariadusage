@@ -454,11 +454,12 @@ Logos and icons are generated as code under `brand/`, following the same process
 12. **Multi-monitor bar height adaptation.** The bar widget currently uses fixed `implicitHeight: 16` designed for Omarchy's standard 32 px bar. How should it scale dynamically if users configure non-standard bar heights? (Spike recommendation for M9).
 13. **Keyboard navigation in the Omarchy panel.** Tab navigation moves across panels, but full arrow-key traversal through provider rows and settings controls needs standard Quickshell focus-group handling in M9.
 14. **`cookieSource: auto` on Linux — resolved in M2.** Unset = manual header only, explicit `auto` = import in the provider's browser order (phase 10), none found = `NoBrowserSession`.
-15. **Child process environment allowlist completeness.** Does the exact-name allowlist cover every variable needed by `claude`, `codex` and `agy` in user environments? Validated through M3–M5 owner-run live smoke tests; adding variables is a one-line change with a test.
-16. **Codex account promotion foreign write.** §6.3 specifies read-only access for CredentialFile; M4 requires adding a user-initiated foreign-write API to support Codex account promotion (`auth.json` update). Amend §6.3 in M4.
-17. **Refresh-failure gate decision.** Antigravity self-owned token refresh has no failure gate in CodexBar. Decided in M5 whether to introduce a gate or follow CodexBar.
-18. **Engine hosting on macOS.** Does the engine run as a separate daemon under a launchd user agent, talking to the app over the Unix socket like every other frontend, or inside the app process? The answer also fixes the socket directory on macOS (§6.5). Decided before M8.
-19. **Minimum macOS version.** CodexBar v0.79.0 requires macOS 14. Match it, or raise the floor to drop pre-macOS 26 Settings chrome branches?
-20. **macOS distribution and signing.** Direct download, Homebrew cask, or both; Developer ID signing and notarization; update mechanism.
-21. **Omarchy plugin during the macOS work.** Does the plugin keep pace with contract changes in M2.3, or pause until M9?
+15. **Claude OAuth environment variable — resolved in M3.** Use `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` and `ARIADUSAGE_CLAUDE_OAUTH_SCOPES` only, with no `CODEXBAR_*` fallback (see Decision Log).
+16. **Child process environment allowlist completeness.** Does the exact-name allowlist cover every variable needed by `claude`, `codex` and `agy` in user environments? Validated through M3–M5 owner-run live smoke tests; adding variables is a one-line change with a test.
+17. **Codex account promotion foreign write.** §6.3 specifies read-only access for CredentialFile; M4 requires adding a user-initiated foreign-write API to support Codex account promotion (`auth.json` update). Amend §6.3 in M4.
+18. **Refresh-failure gate decision.** Antigravity self-owned token refresh has no failure gate in CodexBar. Decided in M5 whether to introduce a gate or follow CodexBar.
+19. **Engine hosting on macOS.** Does the engine run as a separate daemon under a launchd user agent, talking to the app over the Unix socket like every other frontend, or inside the app process? The answer also fixes the socket directory on macOS (§6.5). Decided before M8.
+20. **Minimum macOS version.** CodexBar v0.79.0 requires macOS 14. Match it, or raise the floor to drop pre-macOS 26 Settings chrome branches?
+21. **macOS distribution and signing.** Direct download, Homebrew cask, or both; Developer ID signing and notarization; update mechanism.
+22. **Omarchy plugin during the macOS work.** Does the plugin keep pace with contract changes in M2.3, or pause until M9?
 

@@ -552,13 +552,15 @@ impl ClaudeProviderPlan {
     }
 
     /// Compatibility helper matching `ClaudeProviderDescriptor.resolveUsageStrategy`.
+    /// Returns `None` when `selected_data_source` is `Auto` and no planned step is available,
+    /// because `ClaudeSourceSelectedStrategy` excludes `Auto` by type.
     pub fn resolve_usage_strategy(
         selected_data_source: SourceMode,
         web_extras_enabled: bool,
         has_web_session: bool,
         has_cli: bool,
         has_oauth_credentials: bool,
-    ) -> ClaudeUsageStrategy {
+    ) -> Option<ClaudeUsageStrategy> {
         let plan = ClaudeSourcePlanner::resolve(ClaudeSourcePlanningInput {
             runtime: FetchRuntime::Daemon,
             selected_data_source,
@@ -567,16 +569,19 @@ impl ClaudeProviderPlan {
             has_cli,
             has_oauth_credentials,
         });
-        plan.compatibility_strategy()
-            .unwrap_or(ClaudeUsageStrategy {
-                data_source: match selected_data_source {
-                    SourceMode::Api => ClaudeSourceSelectedStrategy::Api,
-                    SourceMode::Oauth => ClaudeSourceSelectedStrategy::Oauth,
-                    SourceMode::Web => ClaudeSourceSelectedStrategy::Web,
-                    SourceMode::Cli | SourceMode::Auto => ClaudeSourceSelectedStrategy::Cli,
-                },
+        plan.compatibility_strategy().or_else(|| {
+            let data_source = match selected_data_source {
+                SourceMode::Auto => return None,
+                SourceMode::Api => ClaudeSourceSelectedStrategy::Api,
+                SourceMode::Oauth => ClaudeSourceSelectedStrategy::Oauth,
+                SourceMode::Web => ClaudeSourceSelectedStrategy::Web,
+                SourceMode::Cli => ClaudeSourceSelectedStrategy::Cli,
+            };
+            Some(ClaudeUsageStrategy {
+                data_source,
                 use_web_extras: false,
             })
+        })
     }
 
     fn resolve_selected_account_strategies(
@@ -594,21 +599,18 @@ impl ClaudeProviderPlan {
                 .map(SecretString::expose_secret),
         );
 
-        if matches!(route, ClaudeCredentialRoute::AdminApiKey(_))
-            || (matches!(cx.source_mode, SourceMode::Auto | SourceMode::Api)
-                && has_admin_api_key(&cx.env))
-        {
+        if matches!(route, ClaudeCredentialRoute::AdminApiKey(_)) || has_admin_api_key(&cx.env) {
             return vec![Box::new(ClaudeUnavailableFetchStrategy::admin_api())];
         }
 
-        if matches!(cx.source_mode, SourceMode::Auto | SourceMode::Oauth)
+        if cx.source_mode == SourceMode::Oauth
             && (matches!(route, ClaudeCredentialRoute::Oauth { .. })
                 || load_from_environment(&cx.env).is_some())
         {
             return vec![Box::new(ClaudeOAuthFetchStrategy::new(self.config.clone()))];
         }
 
-        if matches!(cx.source_mode, SourceMode::Auto | SourceMode::Web)
+        if cx.source_mode == SourceMode::Web
             && matches!(route, ClaudeCredentialRoute::WebCookie { .. })
         {
             return vec![Box::new(ClaudeUnavailableFetchStrategy::web())];

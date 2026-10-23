@@ -593,6 +593,15 @@ fn ineligible_absent_or_unreadable_reset_credits_block_shows_nothing() {
             Some(12.0)
         );
     }
+
+    // A non-boolean `usable_now` is ignored rather than dropping a valid grant.
+    let lenient_usable_now = r#"{"five_hour": {"utilization": 12.0}, "cedar_ember": {"eligible": true, "grants": [{"paused": false, "resets_left": 1, "resets_total": 1, "usable_now": "yes"}]}}"#;
+    let dec =
+        ClaudeOAuthUsageFetcher::decode_usage_response(lenient_usable_now.as_bytes()).unwrap();
+    let map = ClaudeOAuthUsageFetcher::map_usage_response(&dec, None, None, None, None, true, now)
+        .unwrap();
+    let credits = map.reset_credits.expect("valid grant retained");
+    assert_eq!(credits.resets_left, 1);
 }
 
 #[test]
@@ -627,6 +636,10 @@ fn parses_retry_after_delta_seconds_and_http_dates_and_rejects_malformed_dates()
     assert_eq!(
         parse_retry_after(Some("37"), now),
         Some("1994-11-06T08:49:37Z".parse::<Timestamp>().unwrap())
+    );
+    assert_eq!(
+        parse_retry_after(Some("1.5"), now),
+        Some("1994-11-06T08:49:01.500Z".parse::<Timestamp>().unwrap())
     );
     assert_eq!(parse_retry_after(Some("0"), now), Some(now));
     assert_eq!(
@@ -811,18 +824,34 @@ fn oauth_usage_user_agent_uses_claude_code_version_and_skips_detector_when_disab
 
 #[test]
 fn scope_based_strategy_resolution_matches_descriptor() {
-    let s1 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, true, true);
+    let s1 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, true, true)
+        .expect("s1");
     assert_eq!(s1.data_source, ClaudeSourceSelectedStrategy::Oauth);
 
-    let s2 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, true, false);
+    let s2 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, true, false)
+        .expect("s2");
     assert_eq!(s2.data_source, ClaudeSourceSelectedStrategy::Cli);
 
-    let s3 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, false, true);
+    let s3 = ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, true, false, true)
+        .expect("s3");
     assert_eq!(s3.data_source, ClaudeSourceSelectedStrategy::Oauth);
 
     let s4 =
-        ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, false, true, false);
+        ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, false, true, false)
+            .expect("s4");
     assert_eq!(s4.data_source, ClaudeSourceSelectedStrategy::Cli);
+
+    let none_auto =
+        ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Auto, false, false, false, false);
+    assert_eq!(none_auto, None);
+
+    let explicit_oauth_fallback =
+        ClaudeProviderPlan::resolve_usage_strategy(SourceMode::Oauth, false, false, false, false)
+            .expect("explicit oauth fallback");
+    assert_eq!(
+        explicit_oauth_fallback.data_source,
+        ClaudeSourceSelectedStrategy::Oauth
+    );
 }
 
 #[tokio::test]
@@ -1354,6 +1383,18 @@ async fn resolve_strategies_respects_admin_api_pre_gate_and_selected_account_bou
     assert!(
         selected_plan
             .resolve_strategies(&selected_web_cx)
+            .await
+            .is_empty()
+    );
+
+    // Selected account with OAuth token in Auto mode routes to no strategy (matching upstream)
+    let selected_auto_cx = FetchContext {
+        source_mode: SourceMode::Auto,
+        ..selected_web_cx.clone()
+    };
+    assert!(
+        selected_plan
+            .resolve_strategies(&selected_auto_cx)
             .await
             .is_empty()
     );

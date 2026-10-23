@@ -59,10 +59,7 @@ impl OAuthCedarEmberGrant {
                 Some(s.to_owned())
             }
         };
-        let usable_now = match obj.get("usable_now") {
-            Some(Value::Null) | None => None,
-            Some(v) => Some(v.as_bool()?),
-        };
+        let usable_now = obj.get("usable_now").and_then(Value::as_bool);
         Some(Self {
             paused: Some(paused),
             resets_left: Some(resets_left),
