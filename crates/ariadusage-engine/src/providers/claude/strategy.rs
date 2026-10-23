@@ -1,22 +1,29 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeSourcePlanner.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use ariadusage_core::config::CookieSource;
+use ariadusage_core::cookie as cookie_core;
 use ariadusage_core::oauth::{ExpiredAction, TokenOwner, decide_on_expired};
 use ariadusage_core::pipeline::{
     BoxFuture, ClassifiedError, FetchContext, FetchError, FetchResult, FetchRuntime, FetchStrategy,
-    ProviderPlan,
+    ProviderPlan, TransportClass,
 };
 use ariadusage_core::providers::SourceMode;
+use ariadusage_protocol::ProviderId;
 use ariadusage_protocol::metric::SourceKind;
 use ariadusage_protocol::secret::SecretString;
 use ariadusage_protocol::usage::ProviderErrorKind;
+use cookie_core::normalize;
 use jiff::Timestamp;
 
 use crate::brokers::call::BrokerCall;
+use crate::brokers::cookie_cache::{CacheScope, CookieCache};
 use crate::brokers::credential_file::CredentialDecl;
 use crate::brokers::net::NetBroker;
 use crate::brokers::oauth::{DelegatedCoordinatorResult, DelegatedRefreshCoordinator};
@@ -33,7 +40,16 @@ use super::planner::{
     ClaudeSourceSelectedStrategy, ClaudeUsageStrategy,
 };
 use super::rate_limit_gate::ClaudeOAuthUsageRateLimitGate;
+use super::subscription_metadata::{
+    ClaudeSubscriptionFetchResult, ClaudeSubscriptionMetadataFetcher,
+    DEFAULT_SUBSCRIPTION_METADATA_TIMEOUT,
+};
 use super::usage_fetcher::{ClaudeOAuthEndpointConfig, ClaudeOAuthUsageFetcher};
+use super::web_extras::{WebExtrasApplyParams, apply_web_extras_if_needed};
+use super::web_fetcher::{
+    ClaudeWebAPIFetcher, ClaudeWebBrowserFetchGate, ClaudeWebEndpointConfig, ClaudeWebFetchError,
+    ClaudeWebFetchOptions, ClaudeWebSessionImporter, WebUsageData,
+};
 
 pub const CLAUDE_OAUTH_STRATEGY_ID: &str = "claude.oauth";
 pub const CLAUDE_CLI_STRATEGY_ID: &str = "claude.cli";
@@ -41,14 +57,34 @@ pub const CLAUDE_WEB_STRATEGY_ID: &str = "claude.web";
 pub const CLAUDE_ADMIN_API_STRATEGY_ID: &str = "claude.admin-api";
 
 pub const ADMIN_API_KEY_ENV_KEYS: &[&str] = &["ANTHROPIC_ADMIN_KEY", "ANTHROPIC_ADMIN_API_KEY"];
+pub const DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS: f64 = 15.0;
 
-/// Shared runtime dependencies and configuration for the Claude OAuth strategy and provider plan.
+pub type ClaudeWebAvailabilityProbe =
+    Arc<dyn Fn(&FetchContext) -> BoxFuture<'static, bool> + Send + Sync>;
+pub type ClaudeWebUsageLoader = Arc<
+    dyn Fn(&FetchContext) -> BoxFuture<'static, Result<WebUsageData, ClaudeWebFetchError>>
+        + Send
+        + Sync,
+>;
+
+/// Web enrichment cookie access resolved from `CookieSource`, manual cookie header, or `CookieCache`.
+#[derive(Debug, Clone)]
+pub struct ClaudeWebEnrichmentAccess {
+    pub is_available: bool,
+    pub manual_cookie_header: Option<String>,
+}
+
+/// Shared runtime dependencies and configuration for the Claude strategies and provider plan.
 #[derive(Clone)]
 pub struct ClaudeOAuthStrategyConfig {
     pub net: Arc<NetBroker>,
     pub endpoint: ClaudeOAuthEndpointConfig,
+    pub web_endpoint: ClaudeWebEndpointConfig,
     pub rate_limit_gate: Arc<ClaudeOAuthUsageRateLimitGate>,
     pub delegated_refresh: Option<Arc<DelegatedRefreshCoordinator>>,
+    pub cookie_cache: Arc<CookieCache>,
+    pub session_importer: ClaudeWebSessionImporter,
+    pub browser_fetch_gate: Arc<ClaudeWebBrowserFetchGate>,
     pub working_directory: PathBuf,
     pub home_directory: PathBuf,
     pub allow_background_delegated_refresh: bool,
@@ -56,10 +92,19 @@ pub struct ClaudeOAuthStrategyConfig {
     pub include_optional_usage: bool,
     pub token_account_token: Option<SecretString>,
     pub manual_cookie_header: Option<SecretString>,
+    pub cookie_source: Option<CookieSource>,
+    pub use_desktop_cookies: bool,
+    pub web_organization_id: Option<String>,
+    pub web_timeout_seconds: f64,
+    pub subscription_metadata_timeout: Duration,
+    pub cache_scope: Option<CacheScope>,
     pub has_web_session: bool,
     pub has_cli: bool,
     pub web_extras_enabled: bool,
     pub clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
+    pub deadline_now: Arc<dyn Fn() -> Instant + Send + Sync>,
+    pub web_availability_probe: Option<ClaudeWebAvailabilityProbe>,
+    pub web_usage_loader: Option<ClaudeWebUsageLoader>,
 }
 
 impl ClaudeOAuthStrategyConfig {
@@ -71,8 +116,12 @@ impl ClaudeOAuthStrategyConfig {
         Self {
             net,
             endpoint: ClaudeOAuthEndpointConfig::default(),
+            web_endpoint: ClaudeWebEndpointConfig::default(),
             rate_limit_gate: Arc::new(ClaudeOAuthUsageRateLimitGate::new()),
             delegated_refresh: None,
+            cookie_cache: Arc::new(CookieCache::new()),
+            session_importer: ClaudeWebSessionImporter::None,
+            browser_fetch_gate: Arc::new(ClaudeWebBrowserFetchGate::new()),
             working_directory: working_directory.into(),
             home_directory: home_directory.into(),
             allow_background_delegated_refresh: false,
@@ -80,15 +129,29 @@ impl ClaudeOAuthStrategyConfig {
             include_optional_usage: true,
             token_account_token: None,
             manual_cookie_header: None,
+            cookie_source: None,
+            use_desktop_cookies: false,
+            web_organization_id: None,
+            web_timeout_seconds: DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS,
+            subscription_metadata_timeout: DEFAULT_SUBSCRIPTION_METADATA_TIMEOUT,
+            cache_scope: None,
             has_web_session: false,
             has_cli: false,
             web_extras_enabled: false,
             clock: Arc::new(Timestamp::now),
+            deadline_now: Arc::new(Instant::now),
+            web_availability_probe: None,
+            web_usage_loader: None,
         }
     }
 
     pub fn with_endpoint(mut self, endpoint: ClaudeOAuthEndpointConfig) -> Self {
         self.endpoint = endpoint;
+        self
+    }
+
+    pub fn with_web_endpoint(mut self, web_endpoint: ClaudeWebEndpointConfig) -> Self {
+        self.web_endpoint = web_endpoint;
         self
     }
 
@@ -99,6 +162,51 @@ impl ClaudeOAuthStrategyConfig {
 
     pub fn with_delegated_refresh(mut self, coordinator: Arc<DelegatedRefreshCoordinator>) -> Self {
         self.delegated_refresh = Some(coordinator);
+        self
+    }
+
+    pub fn with_cookie_cache(mut self, cookie_cache: Arc<CookieCache>) -> Self {
+        self.cookie_cache = cookie_cache;
+        self
+    }
+
+    pub fn with_session_importer(mut self, importer: ClaudeWebSessionImporter) -> Self {
+        self.session_importer = importer;
+        self
+    }
+
+    pub fn with_browser_fetch_gate(mut self, gate: Arc<ClaudeWebBrowserFetchGate>) -> Self {
+        self.browser_fetch_gate = gate;
+        self
+    }
+
+    pub fn with_cookie_source(mut self, cookie_source: Option<CookieSource>) -> Self {
+        self.cookie_source = cookie_source;
+        self
+    }
+
+    pub fn with_manual_cookie_header(mut self, header: Option<SecretString>) -> Self {
+        self.manual_cookie_header = header;
+        self
+    }
+
+    pub fn with_use_desktop_cookies(mut self, enabled: bool) -> Self {
+        self.use_desktop_cookies = enabled;
+        self
+    }
+
+    pub fn with_web_organization_id(mut self, org_id: Option<String>) -> Self {
+        self.web_organization_id = org_id;
+        self
+    }
+
+    pub fn with_web_timeout_seconds(mut self, seconds: f64) -> Self {
+        self.web_timeout_seconds = seconds;
+        self
+    }
+
+    pub fn with_subscription_metadata_timeout(mut self, timeout: Duration) -> Self {
+        self.subscription_metadata_timeout = timeout;
         self
     }
 
@@ -117,11 +225,43 @@ impl ClaudeOAuthStrategyConfig {
         self
     }
 
+    pub fn with_web_extras_enabled(mut self, enabled: bool) -> Self {
+        self.web_extras_enabled = enabled;
+        self
+    }
+
     pub fn with_clock<F>(mut self, clock: F) -> Self
     where
         F: Fn() -> Timestamp + Send + Sync + 'static,
     {
         self.clock = Arc::new(clock);
+        self
+    }
+
+    pub fn with_deadline_now<F>(mut self, deadline_now: F) -> Self
+    where
+        F: Fn() -> Instant + Send + Sync + 'static,
+    {
+        self.deadline_now = Arc::new(deadline_now);
+        self
+    }
+
+    pub fn with_web_availability_probe<F>(mut self, probe: F) -> Self
+    where
+        F: Fn(&FetchContext) -> BoxFuture<'static, bool> + Send + Sync + 'static,
+    {
+        self.web_availability_probe = Some(Arc::new(probe));
+        self
+    }
+
+    pub fn with_web_usage_loader<F>(mut self, loader: F) -> Self
+    where
+        F: Fn(&FetchContext) -> BoxFuture<'static, Result<WebUsageData, ClaudeWebFetchError>>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.web_usage_loader = Some(Arc::new(loader));
         self
     }
 
@@ -135,6 +275,109 @@ impl ClaudeOAuthStrategyConfig {
 
     pub fn is_cli_available(&self) -> bool {
         self.has_cli || self.delegated_refresh.is_some()
+    }
+
+    pub fn effective_cookie_source(&self) -> CookieSource {
+        if let Some(source) = self.cookie_source {
+            return source;
+        }
+        if self.manual_cookie_header.is_some()
+            || matches!(
+                ClaudeCredentialRouting::resolve(
+                    self.token_account_token
+                        .as_ref()
+                        .map(SecretString::expose_secret),
+                    None,
+                ),
+                ClaudeCredentialRoute::WebCookie { .. }
+            )
+        {
+            return CookieSource::Manual;
+        }
+        CookieSource::Auto
+    }
+
+    pub fn effective_manual_cookie_header(&self) -> Option<String> {
+        if self.effective_cookie_source() != CookieSource::Manual {
+            return None;
+        }
+        if let Some(header) = &self.manual_cookie_header {
+            return normalize(header.expose_secret());
+        }
+        if let ClaudeCredentialRoute::WebCookie { header } = ClaudeCredentialRouting::resolve(
+            self.token_account_token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            None,
+        ) {
+            return Some(header.expose_secret().to_owned());
+        }
+        None
+    }
+
+    pub fn has_manual_session_key(&self) -> bool {
+        ClaudeWebAPIFetcher::has_session_key_in_header(
+            self.effective_manual_cookie_header().as_deref(),
+        )
+    }
+
+    pub fn has_plausible_web_session(&self, cx: &FetchContext) -> bool {
+        match cx.source_mode {
+            SourceMode::Api | SourceMode::Oauth | SourceMode::Cli => return false,
+            SourceMode::Web => return self.effective_cookie_source() != CookieSource::Off,
+            SourceMode::Auto => {}
+        }
+
+        if self.has_web_session {
+            return true;
+        }
+
+        match self.effective_cookie_source() {
+            CookieSource::Off => false,
+            CookieSource::Manual => self.has_manual_session_key(),
+            CookieSource::Auto => {
+                // Keep planning synchronous and let the web step perform the bounded availability
+                // check if Daemon Auto reaches its fallback, or inside the bounded fetch for CLI Auto.
+                true
+            }
+        }
+    }
+
+    pub fn web_enrichment_access(&self) -> ClaudeWebEnrichmentAccess {
+        match self.effective_cookie_source() {
+            CookieSource::Off => ClaudeWebEnrichmentAccess {
+                is_available: false,
+                manual_cookie_header: None,
+            },
+            CookieSource::Manual => {
+                let header = self.effective_manual_cookie_header();
+                let is_available =
+                    ClaudeWebAPIFetcher::has_session_key_in_header(header.as_deref());
+                ClaudeWebEnrichmentAccess {
+                    is_available,
+                    manual_cookie_header: header,
+                }
+            }
+            CookieSource::Auto => {
+                if self.use_desktop_cookies {
+                    return ClaudeWebEnrichmentAccess {
+                        is_available: false,
+                        manual_cookie_header: None,
+                    };
+                }
+                let provider_id = ProviderId::new("claude").expect("valid provider id");
+                let header = self
+                    .cookie_cache
+                    .load(&provider_id, self.cache_scope.as_ref())
+                    .map(|entry| entry.header.expose_secret().to_owned());
+                let is_available =
+                    ClaudeWebAPIFetcher::has_session_key_in_header(header.as_deref());
+                ClaudeWebEnrichmentAccess {
+                    is_available,
+                    manual_cookie_header: header,
+                }
+            }
+        }
     }
 }
 
@@ -428,8 +671,75 @@ impl FetchStrategy for ClaudeOAuthFetchStrategy {
             )
             .map_err(FetchError::Classified)?;
 
-            Ok(FetchResult::new(
+            let enrichment = self.config.web_enrichment_access();
+            let use_web_extras = cx.runtime == FetchRuntime::Daemon
+                && self.config.web_extras_enabled
+                && enrichment.is_available;
+            let include_prepaid_balance = cx.runtime == FetchRuntime::Daemon
+                && self.config.include_optional_usage
+                && enrichment.is_available;
+
+            let mut snapshot = apply_web_extras_if_needed(
                 mapped.snapshot,
+                WebExtrasApplyParams {
+                    net: &self.config.net,
+                    oauth_endpoint: &self.config.endpoint,
+                    web_endpoint: &self.config.web_endpoint,
+                    cookie_cache: &self.config.cookie_cache,
+                    importer: &self.config.session_importer,
+                    browser_gate: &self.config.browser_fetch_gate,
+                    manual_cookie_header: enrichment.manual_cookie_header.as_deref(),
+                    oauth_access_token: Some(&record.credentials.access_token),
+                    oauth_profile: account_identity.as_ref(),
+                    use_web_extras,
+                    include_prepaid_balance,
+                    web_extras_timeout: ClaudeWebFetchStrategy::timeout_duration(
+                        self.config.web_timeout_seconds,
+                    ),
+                    options: ClaudeWebFetchOptions {
+                        target_organization_id: self.config.web_organization_id.clone(),
+                        include_usage_details: use_web_extras,
+                        include_prepaid_balance,
+                        use_desktop_cookies: self.config.use_desktop_cookies,
+                        cache_scope: self.config.cache_scope.clone(),
+                        now: fetch_now,
+                    },
+                    call: &call,
+                },
+            )
+            .await?;
+
+            if enrichment.is_available
+                && let Some(cookie_hdr) = enrichment.manual_cookie_header.as_ref()
+            {
+                let expected_owner_id = snapshot
+                    .identity
+                    .as_ref()
+                    .and_then(|i| i.account_id.clone());
+                let cookie_secret = SecretString::new(cookie_hdr.clone());
+                if let ClaudeSubscriptionFetchResult::Available(metadata) =
+                    ClaudeSubscriptionMetadataFetcher::fetch(
+                        &self.config.net,
+                        &self.config.web_endpoint,
+                        &self.config.endpoint,
+                        &cookie_secret,
+                        expected_owner_id.as_deref(),
+                        Some(&record.credentials.access_token),
+                        self.config.subscription_metadata_timeout,
+                        &call,
+                    )
+                    .await
+                {
+                    snapshot = metadata.applying(&snapshot);
+                }
+            }
+
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+
+            Ok(FetchResult::new(
+                snapshot,
                 "oauth",
                 CLAUDE_OAUTH_STRATEGY_ID,
                 SourceKind::Oauth,
@@ -455,7 +765,345 @@ impl FetchStrategy for ClaudeOAuthFetchStrategy {
     }
 }
 
-/// Placeholder strategy for Claude sources pending implementation (`cli`, `web`, `admin-api`).
+/// Shared deadline budget state across `is_available` and `fetch` for a single `ClaudeWebFetchStrategy` run.
+#[derive(Default)]
+pub struct ClaudeWebFetchDeadlineState {
+    deadline: Mutex<Option<Instant>>,
+}
+
+impl ClaudeWebFetchDeadlineState {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn remaining_budget(&self, full_budget: Duration, now: Instant) -> Duration {
+        let mut guard = self
+            .deadline
+            .lock()
+            .expect("web fetch deadline lock not poisoned");
+        let target = match *guard {
+            Some(existing) => existing,
+            None => {
+                let computed = now.checked_add(full_budget).unwrap_or(now);
+                *guard = Some(computed);
+                computed
+            }
+        };
+        target.saturating_duration_since(now)
+    }
+}
+
+/// Deadline and timeout errors emitted by `ClaudeWebFetchStrategy`.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum ClaudeWebFetchStrategyError {
+    #[error(
+        "Claude web usage fetch timeout must be a finite, nonnegative value within the supported range."
+    )]
+    InvalidTimeout,
+    #[error("Claude web usage fetch timed out after {seconds} seconds.")]
+    TimedOut { seconds: f64 },
+}
+
+impl ClaudeWebFetchStrategyError {
+    pub fn into_classified_error(self) -> ClassifiedError {
+        let msg = self.to_string();
+        match self {
+            Self::InvalidTimeout => ClassifiedError::new(ProviderErrorKind::ApiFailure, msg),
+            Self::TimedOut { .. } => ClassifiedError::new(ProviderErrorKind::NetworkFailure, msg)
+                .with_transport(TransportClass::Timeout),
+        }
+    }
+
+    pub fn into_fetch_error(self) -> FetchError {
+        FetchError::Classified(self.into_classified_error())
+    }
+}
+
+/// Strategy executing Claude Web usage fetching (`claude.web`).
+pub struct ClaudeWebFetchStrategy {
+    config: ClaudeOAuthStrategyConfig,
+    planned_step: Option<ClaudeFetchPlanStep>,
+    deadline_state: Arc<ClaudeWebFetchDeadlineState>,
+}
+
+impl ClaudeWebFetchStrategy {
+    pub fn new(config: ClaudeOAuthStrategyConfig) -> Self {
+        Self {
+            config,
+            planned_step: None,
+            deadline_state: Arc::new(ClaudeWebFetchDeadlineState::new()),
+        }
+    }
+
+    pub fn with_planned_step(mut self, step: ClaudeFetchPlanStep) -> Self {
+        self.planned_step = Some(step);
+        self
+    }
+
+    pub fn timeout_duration(timeout: f64) -> Option<Duration> {
+        if !timeout.is_finite() || timeout < 0.0 || timeout > (i64::MAX as f64) {
+            return None;
+        }
+        Duration::try_from_secs_f64(timeout).ok()
+    }
+
+    async fn has_browser_session_key(&self, cx: &FetchContext, timeout: Duration) -> bool {
+        if cx.cancel.is_cancelled() || timeout.is_zero() {
+            return false;
+        }
+        let child_cancel = cx.cancel.child_token();
+        let sub_call = BrokerCall {
+            interaction: cx.interaction,
+            cancel: child_cancel.clone(),
+            request_id: cx.request_id.clone(),
+        };
+
+        let fut = async {
+            if let Some(probe) = &self.config.web_availability_probe {
+                probe(cx).await
+            } else {
+                ClaudeWebAPIFetcher::has_session_key(
+                    &self.config.cookie_cache,
+                    self.config.cache_scope.as_ref(),
+                    &self.config.session_importer,
+                    self.config.use_desktop_cookies,
+                    &sub_call,
+                )
+                .await
+            }
+        };
+
+        match tokio::time::timeout(timeout, cx.cancel.run_until_cancelled(fut)).await {
+            Ok(Some(is_available)) => is_available,
+            Ok(None) | Err(_) => {
+                child_cancel.cancel();
+                false
+            }
+        }
+    }
+
+    pub async fn load_web_usage_data(&self, cx: &FetchContext) -> Result<WebUsageData, FetchError> {
+        let timeout_secs = self.config.web_timeout_seconds;
+        let Some(full_budget) = Self::timeout_duration(timeout_secs) else {
+            return Err(ClaudeWebFetchStrategyError::InvalidTimeout.into_fetch_error());
+        };
+        let remaining_budget = self
+            .deadline_state
+            .remaining_budget(full_budget, (self.config.deadline_now)());
+        if remaining_budget.is_zero() {
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+            return Err(ClaudeWebFetchStrategyError::TimedOut {
+                seconds: timeout_secs,
+            }
+            .into_fetch_error());
+        }
+
+        let child_cancel = cx.cancel.child_token();
+        let sub_call = BrokerCall {
+            interaction: cx.interaction,
+            cancel: child_cancel.clone(),
+            request_id: cx.request_id.clone(),
+        };
+        let fetch_now = (self.config.clock)();
+
+        let fut = async {
+            if let Some(loader) = &self.config.web_usage_loader {
+                return loader(cx).await.map_err(|e| e.into_fetch_error());
+            }
+
+            let options = ClaudeWebFetchOptions {
+                target_organization_id: self.config.web_organization_id.clone(),
+                include_usage_details: true,
+                include_prepaid_balance: self.config.include_optional_usage,
+                use_desktop_cookies: self.config.use_desktop_cookies,
+                cache_scope: self.config.cache_scope.clone(),
+                now: fetch_now,
+            };
+
+            if let Some(manual_header) = self.config.effective_manual_cookie_header() {
+                ClaudeWebAPIFetcher::fetch_usage_with_cookie_header(
+                    &self.config.net,
+                    &self.config.web_endpoint,
+                    &manual_header,
+                    &options,
+                    &sub_call,
+                )
+                .await
+                .map_err(|e| e.into_fetch_error())
+            } else {
+                ClaudeWebAPIFetcher::fetch_usage_serialized(
+                    &self.config.net,
+                    &self.config.web_endpoint,
+                    &self.config.cookie_cache,
+                    &self.config.session_importer,
+                    &self.config.browser_fetch_gate,
+                    &options,
+                    &sub_call,
+                )
+                .await
+                .map_err(|e| e.into_fetch_error())
+            }
+        };
+
+        match tokio::time::timeout(remaining_budget, cx.cancel.run_until_cancelled(fut)).await {
+            Ok(Some(Ok(usage))) => {
+                if cx.cancel.is_cancelled() {
+                    return Err(FetchError::Cancelled);
+                }
+                Ok(usage)
+            }
+            Ok(Some(Err(err))) => Err(err),
+            Ok(None) => {
+                child_cancel.cancel();
+                Err(FetchError::Cancelled)
+            }
+            Err(_) => {
+                child_cancel.cancel();
+                if cx.cancel.is_cancelled() {
+                    return Err(FetchError::Cancelled);
+                }
+                Err(ClaudeWebFetchStrategyError::TimedOut {
+                    seconds: timeout_secs,
+                }
+                .into_fetch_error())
+            }
+        }
+    }
+}
+
+impl FetchStrategy for ClaudeWebFetchStrategy {
+    fn id(&self) -> &'static str {
+        CLAUDE_WEB_STRATEGY_ID
+    }
+
+    fn kind(&self) -> SourceKind {
+        SourceKind::Web
+    }
+
+    fn is_available<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            if let Some(step) = &self.planned_step
+                && cx.source_mode == SourceMode::Auto
+            {
+                if !step.is_plausibly_available {
+                    return false;
+                }
+                // In CLI Auto mode, defer cookie import to the bounded `fetch` step.
+                if cx.runtime == FetchRuntime::Cli {
+                    return true;
+                }
+            }
+
+            let app_auto_remaining_budget =
+                if cx.runtime == FetchRuntime::Daemon && cx.source_mode == SourceMode::Auto {
+                    let Some(full_budget) = Self::timeout_duration(self.config.web_timeout_seconds)
+                    else {
+                        return false;
+                    };
+                    let remaining = self
+                        .deadline_state
+                        .remaining_budget(full_budget, (self.config.deadline_now)());
+                    if remaining.is_zero() {
+                        return false;
+                    }
+                    Some(remaining)
+                } else {
+                    None
+                };
+
+            match self.config.effective_cookie_source() {
+                CookieSource::Off => false,
+                CookieSource::Manual => self.config.has_manual_session_key(),
+                CookieSource::Auto => {
+                    if let Some(remaining) = app_auto_remaining_budget {
+                        self.has_browser_session_key(cx, remaining).await
+                    } else {
+                        // Explicit web and CLI auto perform the real browser import inside the bounded fetch.
+                        true
+                    }
+                }
+            }
+        })
+    }
+
+    fn fetch<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
+        Box::pin(async move {
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+
+            let web_data = self.load_web_usage_data(cx).await?;
+            let fetch_now = (self.config.clock)();
+            // Billing uses the owner already present in the authenticated web response.
+            let mut snapshot = web_data
+                .to_usage_snapshot(true, self.config.include_optional_usage, fetch_now)
+                .map_err(FetchError::Classified)?;
+
+            let enrichment = self.config.web_enrichment_access();
+            if enrichment.is_available
+                && let Some(cookie_hdr) = enrichment.manual_cookie_header.as_ref()
+            {
+                let expected_owner_id = snapshot
+                    .identity
+                    .as_ref()
+                    .and_then(|i| i.account_id.clone());
+                let cookie_secret = SecretString::new(cookie_hdr.clone());
+                let call = BrokerCall {
+                    interaction: cx.interaction,
+                    cancel: cx.cancel.clone(),
+                    request_id: cx.request_id.clone(),
+                };
+                if let ClaudeSubscriptionFetchResult::Available(metadata) =
+                    ClaudeSubscriptionMetadataFetcher::fetch(
+                        &self.config.net,
+                        &self.config.web_endpoint,
+                        &self.config.endpoint,
+                        &cookie_secret,
+                        expected_owner_id.as_deref(),
+                        None,
+                        self.config.subscription_metadata_timeout,
+                        &call,
+                    )
+                    .await
+                {
+                    snapshot = metadata.applying(&snapshot);
+                }
+            }
+
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+
+            Ok(FetchResult::new(
+                snapshot,
+                "web",
+                CLAUDE_WEB_STRATEGY_ID,
+                SourceKind::Web,
+            ))
+        })
+    }
+
+    fn should_fallback(&self, error: &FetchError, cx: &FetchContext) -> bool {
+        if cx.source_mode != SourceMode::Auto {
+            return false;
+        }
+        if cx.cancel.is_cancelled() || matches!(error, FetchError::Cancelled) {
+            return false;
+        }
+        if let FetchError::Classified(c) = error
+            && c.transport == Some(TransportClass::Cancelled)
+        {
+            return false;
+        }
+        // In CLI runtime auto mode, web comes before CLI so fallback is required.
+        // In Daemon (app) runtime auto mode, web is terminal and surfaces its concrete error.
+        cx.runtime == FetchRuntime::Cli
+    }
+}
+
+/// Placeholder strategy for Claude sources pending implementation (`cli`, `admin-api`).
 ///
 /// Reports `is_available = false` so `fetch_outcome` records `AttemptOutcome::Skipped` (`skipped: unavailable`),
 /// and returns a typed `ProviderUnavailable` error if invoked directly.
@@ -544,7 +1192,7 @@ impl ClaudeProviderPlan {
             runtime: cx.runtime,
             selected_data_source: cx.source_mode,
             web_extras_enabled: self.config.web_extras_enabled,
-            has_web_session: self.config.has_web_session,
+            has_web_session: self.config.has_plausible_web_session(cx),
             has_cli: self.config.has_cli,
             has_oauth_credentials: should_attempt_oauth,
         };
@@ -611,9 +1259,13 @@ impl ClaudeProviderPlan {
         }
 
         if cx.source_mode == SourceMode::Web
-            && matches!(route, ClaudeCredentialRoute::WebCookie { .. })
+            && self.config.effective_cookie_source() == CookieSource::Manual
+            && let ClaudeCredentialRoute::WebCookie { header } = route
         {
-            return vec![Box::new(ClaudeUnavailableFetchStrategy::web())];
+            let mut web_config = self.config.clone();
+            web_config.cookie_source = Some(CookieSource::Manual);
+            web_config.manual_cookie_header = Some(header);
+            return vec![Box::new(ClaudeWebFetchStrategy::new(web_config))];
         }
 
         Vec::new()
@@ -656,9 +1308,10 @@ impl ProviderPlan for ClaudeProviderPlan {
                         ClaudeSourceSelectedStrategy::Cli => {
                             Box::new(ClaudeUnavailableFetchStrategy::cli())
                         }
-                        ClaudeSourceSelectedStrategy::Web => {
-                            Box::new(ClaudeUnavailableFetchStrategy::web())
-                        }
+                        ClaudeSourceSelectedStrategy::Web => Box::new(
+                            ClaudeWebFetchStrategy::new(self.config.clone())
+                                .with_planned_step(step),
+                        ),
                         ClaudeSourceSelectedStrategy::Api => {
                             Box::new(ClaudeUnavailableFetchStrategy::admin_api())
                         }
