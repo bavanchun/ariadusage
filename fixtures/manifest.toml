@@ -674,3 +674,32 @@ sources = ["TestsLinux/ProcNetTCPListeningPortParserLinuxTests.swift"]
 path = "crates/ariadusage-engine/tests/probe_processes.rs"
 sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift"]
 
+[[ported]]
+path = "crates/ariadusage-macos/src/icon.rs"
+sources = ["Sources/CodexBar/IconRenderer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/presentation.rs"
+sources = ["Sources/CodexBar/IconRemainingResolver.swift", "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/format.rs"
+sources = ["Sources/CodexBarCore/UsageFormatter.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/appkit/menu.rs"
+sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/icon_layout.rs"
+sources = ["Sources/CodexBar/IconRenderer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/format.rs"
+sources = ["Sources/CodexBarCore/UsageFormatter.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
