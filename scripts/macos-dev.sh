@@ -10,7 +10,8 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # TMPDIR is a per-user private directory on macOS, unlike /tmp.
-SOCKET_DIR="${TMPDIR%/}/ariadusage-dev"
+TMP_ROOT="${TMPDIR:-$(getconf DARWIN_USER_TEMP_DIR)}"
+SOCKET_DIR="${TMP_ROOT%/}/ariadusage-dev"
 SOCKET="$SOCKET_DIR/engine.sock"
 STEP_SECONDS="${ARIADUSAGE_FIXTURE_STEP_SECONDS:-5}"
 
@@ -20,6 +21,7 @@ cargo build --quiet -p ariadusage-macos
 
 mkdir -p "$SOCKET_DIR"
 chmod 700 "$SOCKET_DIR"
+rm -f "$SOCKET"
 
 target/debug/examples/fixture_server --socket "$SOCKET" --step-seconds "$STEP_SECONDS" &
 FIXTURE_PID=$!

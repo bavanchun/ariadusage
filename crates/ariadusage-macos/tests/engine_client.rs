@@ -24,6 +24,28 @@ fn read_frame_skips_oversized_frames_and_keeps_reading() {
     assert_eq!(read_frame(&mut input, 16).unwrap(), Some(b"ok".to_vec()));
 }
 
+#[test]
+fn read_frame_caps_content_excluding_line_terminator() {
+    let exact_lf = b"0123456789abcdef\n";
+    let exact_crlf = b"0123456789abcdef\r\n";
+    let one_over = b"0123456789abcdefg\n";
+    let mut data = Vec::new();
+    data.extend_from_slice(exact_lf);
+    data.extend_from_slice(exact_crlf);
+    data.extend_from_slice(one_over);
+    data.extend_from_slice(b"after\n");
+    let mut input = std::io::BufReader::with_capacity(5, Cursor::new(data));
+    assert_eq!(
+        read_frame(&mut input, 16).unwrap(),
+        Some(b"0123456789abcdef".to_vec())
+    );
+    assert_eq!(
+        read_frame(&mut input, 16).unwrap(),
+        Some(b"0123456789abcdef".to_vec())
+    );
+    assert_eq!(read_frame(&mut input, 16).unwrap(), Some(b"after".to_vec()));
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn client_handshakes_and_receives_snapshots_from_the_engine() {
     let dir = tempfile::tempdir().unwrap();
@@ -62,4 +84,84 @@ async fn client_handshakes_and_receives_snapshots_from_the_engine() {
     assert!(events.0, "the welcome arrives before the first snapshot");
     assert_eq!(events.1.providers.len(), 3);
     server.stop().await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn client_reconnects_after_the_engine_restarts() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("engine.sock");
+    let mut server = start_fixture_server(FixtureConfig {
+        socket_path: socket_path.clone(),
+        ..FixtureConfig::default()
+    })
+    .await
+    .unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    let client = EngineClient::spawn(socket_path.clone(), move |event| {
+        let _ = tx.send(event);
+    })
+    .unwrap();
+
+    let rx = tokio::task::spawn_blocking(move || {
+        loop {
+            if let EngineEvent::Snapshot(_) = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("first snapshot")
+            {
+                break;
+            }
+        }
+        rx
+    })
+    .await
+    .unwrap();
+
+    // Queue an unread refresh before stopping the server so closing the peer
+    // can surface ECONNRESET rather than a clean EOF, then restart the server.
+    client.refresh(None);
+    server.stop().await;
+
+    let rx = tokio::task::spawn_blocking(move || {
+        loop {
+            if let EngineEvent::Disconnected = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("disconnect event")
+            {
+                break;
+            }
+        }
+        rx
+    })
+    .await
+    .unwrap();
+
+    let mut server2 = start_fixture_server(FixtureConfig {
+        socket_path,
+        ..FixtureConfig::default()
+    })
+    .await
+    .unwrap();
+
+    let reconnected = tokio::task::spawn_blocking(move || {
+        let mut connected = false;
+        let mut snapshot = None;
+        while snapshot.is_none() {
+            match rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("reconnect event")
+            {
+                EngineEvent::Connected { .. } => connected = true,
+                EngineEvent::Snapshot(s) => snapshot = Some(s),
+                EngineEvent::Disconnected => {}
+            }
+        }
+        (connected, snapshot.unwrap())
+    })
+    .await
+    .unwrap();
+
+    assert!(reconnected.0);
+    assert_eq!(reconnected.1.providers.len(), 3);
+    server2.stop().await;
 }

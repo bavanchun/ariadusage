@@ -1,3 +1,5 @@
+// Ported from CodexBar Sources/CodexBar/IconRenderer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 //! Renders an [`IconLayout`] into an 18 × 18 pt template `NSImage` drawn at 2×.
 
 use objc2::AllocAnyThread;
@@ -95,7 +97,7 @@ fn draw_bar(bar: &Bar, layout: &IconLayout) {
         // Clip to the capsule so the progress edge stays straight.
         NSGraphicsContext::saveGraphicsState_class();
         track.addClip();
-        label(palette.fill_alpha * bar.alpha).setFill();
+        label(bar.alpha).setFill();
         let fill = RectPx::new(bar.rect.x, bar.rect.y, fill_px, bar.rect.h);
         NSBezierPath::bezierPathWithRect(px_rect(fill)).fill();
         NSGraphicsContext::restoreGraphicsState_class();

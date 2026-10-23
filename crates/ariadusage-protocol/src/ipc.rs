@@ -14,8 +14,9 @@ pub const PROTOCOL_V1: &str = "ariadusage-ipc/1";
 /// All protocol versions supported by this engine build, in descending order of preference.
 pub const SUPPORTED_PROTOCOLS: &[&str] = &[PROTOCOL_V1];
 
-/// Maximum allowed length of a single frame in bytes (1 MiB), including the
-/// trailing newline. Producers never emit a larger frame and consumers drop one.
+/// Maximum allowed length of a single frame's content in bytes (1 MiB),
+/// excluding the line terminator. Producers never emit a larger frame and
+/// consumers drop one.
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 /// Subscription topics supported by the IPC engine.

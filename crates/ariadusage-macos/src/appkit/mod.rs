@@ -1,3 +1,5 @@
+// Ported from CodexBar Sources/CodexBar/StatusItemController+StatusItemVending.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 //! AppKit bridge: the application, its status item and its menu.
 //!
 //! Everything here runs on the main thread. Engine events arrive on the
@@ -17,7 +19,7 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSStatusBar, NSStatusItem,
+    NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSStatusBar, NSStatusItem,
     NSVariableStatusItemLength,
 };
 use objc2_foundation::NSString;
@@ -28,6 +30,8 @@ use crate::presentation::{self, IconPreferences};
 
 /// Autosave name of the merged status item, so macOS keeps its position.
 const STATUS_ITEM_AUTOSAVE_NAME: &str = "ariadusage-merged";
+const STATUS_ITEM_ACCESSIBILITY_TITLE: &str = "AriadUsage";
+const STATUS_ITEM_ACCESSIBILITY_IDENTIFIER: &str = "AriadUsage.StatusItem";
 
 struct AppState {
     status_item: Retained<NSStatusItem>,
@@ -82,7 +86,10 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     item.setLength(NSVariableStatusItemLength);
     if let Some(button) = item.button(mtm) {
         button.setImageScaling(objc2_app_kit::NSImageScaling::ScaleNone);
-        button.setToolTip(Some(&NSString::from_str("AriadUsage")));
+        button.setAccessibilityIdentifier(Some(&NSString::from_str(
+            STATUS_ITEM_ACCESSIBILITY_IDENTIFIER,
+        )));
+        button.setAccessibilityTitle(Some(&NSString::from_str(STATUS_ITEM_ACCESSIBILITY_TITLE)));
     }
     item
 }
