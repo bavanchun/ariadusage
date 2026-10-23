@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::fmt;
 use std::time::Duration;
@@ -41,6 +41,8 @@ pub enum PtyError {
     Io,
     #[error("PTY could not be opened or configured")]
     Infrastructure,
+    #[error("PTY could not be opened (errno {errno}: {description})")]
+    OpenFailed { errno: i32, description: String },
     #[error("PTY operation is unsupported on this platform")]
     Unsupported,
     #[error("process operation failed: {0}")]
@@ -51,6 +53,24 @@ impl From<ProcessError> for PtyError {
     fn from(error: ProcessError) -> Self {
         Self::Process(error)
     }
+}
+
+impl PtyError {
+    /// A PTY allocation failure carrying the captured POSIX error and its description.
+    pub fn open_failed(errno: i32) -> Self {
+        let text = std::io::Error::from_raw_os_error(errno).to_string();
+        let description = text
+            .strip_suffix(&format!(" (os error {errno})"))
+            .map_or_else(|| text.clone(), str::to_owned);
+        Self::OpenFailed { errno, description }
+    }
+}
+
+/// Makes the next PTY allocation in this process fail with `errno`, so tests can
+/// observe how allocation failures are reported.
+#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+pub fn fail_next_open_for_test(errno: i32) {
+    linux::FAIL_NEXT_OPEN.store(errno, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,6 +283,32 @@ mod linux {
     };
 
     static NEXT_MARKER: AtomicU64 = AtomicU64::new(1);
+    #[cfg(feature = "test-hooks")]
+    pub(super) static FAIL_NEXT_OPEN: std::sync::atomic::AtomicI32 =
+        std::sync::atomic::AtomicI32::new(0);
+
+    fn open_pty() -> pty_process::Result<(pty_process::Pty, pty_process::Pts)> {
+        #[cfg(feature = "test-hooks")]
+        {
+            let errno = FAIL_NEXT_OPEN.swap(0, Ordering::SeqCst);
+            if errno != 0 {
+                return Err(pty_process::Error::Io(std::io::Error::from_raw_os_error(
+                    errno,
+                )));
+            }
+        }
+        open()
+    }
+
+    /// Reports the POSIX error behind a PTY allocation failure when there is one.
+    fn open_failed(error: pty_process::Error) -> PtyError {
+        let errno = match &error {
+            pty_process::Error::Io(error) => error.raw_os_error(),
+            pty_process::Error::Rustix(errno) => Some(errno.raw_os_error()),
+            _ => None,
+        };
+        errno.map_or(PtyError::Infrastructure, PtyError::open_failed)
+    }
 
     pub(super) struct PtyInner {
         master: Option<pty_process::Pty>,
@@ -316,10 +362,10 @@ mod linux {
             ));
         }
         let mut permit = registry.register()?;
-        let (master, slave) = open().map_err(|_| PtyError::Infrastructure)?;
+        let (master, slave) = open_pty().map_err(open_failed)?;
         master
             .resize(Size::new(size.rows, size.cols))
-            .map_err(|_| PtyError::Infrastructure)?;
+            .map_err(open_failed)?;
         let marker = command.reap_marker.then(|| {
             let sequence = NEXT_MARKER.fetch_add(1, Ordering::Relaxed);
             format!("{}-{sequence:016x}", std::process::id())
