@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 #[cfg(target_os = "linux")]
