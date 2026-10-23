@@ -19,7 +19,8 @@ use ariadusage_protocol::ids::ProviderId;
 use sha2::{Digest, Sha256};
 
 use cookie_db::{
-    ChromiumRow, StaticKeys, TestHome, authorization, insert_chromium, insert_firefox,
+    ChromiumRow, StaticKeys, TestHome, authorization, create_chromium_database, insert_chromium,
+    insert_firefox,
 };
 
 fn encrypted_v11(host: &str, value: &str) -> Vec<u8> {
@@ -176,8 +177,8 @@ fn a_dismissal_persists_browser_and_family_cooldowns() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:81
-fn background_reads_skip_a_dismissed_chromium_family() {
+// CodexBar: BrowserDetectionTests.swift:397
+fn background_reads_proceed_during_a_dismissed_chromium_family() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
     add_v11_profile(&home, Browser::Brave, "Personal");
@@ -193,17 +194,16 @@ fn background_reads_skip_a_dismissed_chromium_family() {
     );
 
     let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
-    let skipped = read(
+    let candidates = read(
         &home,
         &[Browser::Brave],
         FetchInteraction::Background,
         keys.clone(),
-    );
-    assert_eq!(
-        skipped.expect_err("family cooldown active"),
-        BrowserError::Dismissed
-    );
-    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+    )
+    .expect("background read proceeds during family cooldown");
+    assert_eq!(candidates[0].records[0].value.expose_secret(), "Personal");
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(cooldown_count(&home), 2);
 }
 
 fn dismiss(home: &TestHome, browser: Browser) {
@@ -271,21 +271,132 @@ fn acknowledged_retry_reads_through_the_cooldown_and_clears_it() {
 
 #[test]
 // CodexBar: BrowserCookieAccessGateTests.swift:55
-fn acknowledgement_does_not_bypass_a_cooldown_in_the_background() {
+fn acknowledgement_does_not_clear_a_cooldown_in_the_background() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
     dismiss(&home, Browser::Chrome);
 
     let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
-    let error = read_acknowledged(
+    let candidates = read_acknowledged(
         &home,
         &[Browser::Chrome],
         FetchInteraction::Background,
         keys.clone(),
     )
-    .expect_err("background stays suppressed");
+    .expect("background read recovers during cooldown");
+    assert_eq!(candidates[0].records[0].value.expose_secret(), "Work");
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(cooldown_count(&home), 2);
+
+    let error = read(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+    )
+    .expect_err("cooldown still blocks user-initiated retry");
     assert_eq!(error, BrowserError::Dismissed);
-    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+// CodexBar: BrowserCookieAccessGateTests.swift:102
+fn background_refresh_recovers_during_browser_and_family_cooldowns_when_access_becomes_allowed() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Chrome Work");
+    add_v11_profile(&home, Browser::Brave, "Brave Personal");
+    dismiss(&home, Browser::Chrome);
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    for (browser, expected_val) in [
+        (Browser::Chrome, "Chrome Work"),
+        (Browser::Brave, "Brave Personal"),
+    ] {
+        let candidates = read(
+            &home,
+            &[browser],
+            FetchInteraction::Background,
+            keys.clone(),
+        )
+        .expect("background refresh recovers during cooldown");
+        assert_eq!(candidates[0].records[0].value.expose_secret(), expected_val);
+
+        // A background success does not clear the interactive path's persisted denial policy.
+        let error = read(
+            &home,
+            &[browser],
+            FetchInteraction::UserInitiated,
+            keys.clone(),
+        )
+        .expect_err("user-initiated retry stays blocked by cooldown");
+        assert_eq!(error, BrowserError::Dismissed);
+    }
+    assert_eq!(cooldown_count(&home), 2);
+}
+
+#[test]
+// CodexBar: BrowserDetectionTests.swift:397
+fn acknowledged_retry_with_two_profiles_reuses_cached_key_under_remaining_family_cooldown() {
+    let home = TestHome::new();
+    let default_prof = home.chromium_profile(Browser::Chrome, "Default");
+    let val_default = encrypted_v11(".claude.ai", "Default");
+    insert_chromium(
+        &default_prof.join("Cookies"),
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "sid",
+            expires_utc: 0,
+            value: "",
+            encrypted: &val_default,
+            partition_key: "",
+        },
+    );
+    let extra = home.config.join("google-chrome/Profile 1");
+    std::fs::create_dir_all(&extra).expect("extra profile");
+    create_chromium_database(&extra.join("Cookies"), 24);
+    let val_work = encrypted_v11(".claude.ai", "Work");
+    insert_chromium(
+        &extra.join("Cookies"),
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "sid",
+            expires_utc: 0,
+            value: "",
+            encrypted: &val_work,
+            partition_key: "",
+        },
+    );
+    let local_state = home.config.join("google-chrome/Local State");
+    std::fs::write(
+        &local_state,
+        serde_json::json!({
+            "profile": {
+                "info_cache": {
+                    "Default": { "name": "Default" },
+                    "Profile 1": { "name": "Work" }
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("local state");
+
+    add_v11_profile(&home, Browser::Brave, "Personal");
+    dismiss(&home, Browser::Brave);
+    assert_eq!(cooldown_count(&home), 2);
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    let candidates = read_acknowledged(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+    )
+    .expect("acknowledged retry");
+
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].records[0].value.expose_secret(), "Default");
+    assert_eq!(candidates[1].records[0].value.expose_secret(), "Work");
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
     assert_eq!(cooldown_count(&home), 2);
 }
 
@@ -386,7 +497,7 @@ fn plaintext_cookie_does_not_clear_family_dismissal_for_a_later_profile() {
     let candidates = read(
         &home,
         &[Browser::Chrome, Browser::Brave],
-        FetchInteraction::Background,
+        FetchInteraction::UserInitiated,
         keys.clone(),
     )
     .expect("legacy plaintext remains available");

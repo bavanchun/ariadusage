@@ -11,8 +11,10 @@ use ariadusage_core::cookie as cookie_core;
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::browser::{
     Browser, BrowserBroker, BrowserError, BrowserPaths, CookieQuery, DEFAULT_IMPORT_ORDER,
+    SafeStorageKeyProvider,
 };
 use ariadusage_engine::brokers::call::BrokerCall;
+use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageError;
 use ariadusage_protocol::ids::ProviderId;
 
 use cookie_db::{
@@ -310,4 +312,55 @@ fn profile_discovery_results_are_cached_for_the_broker_lifetime() {
             .len(),
         1
     );
+}
+
+struct CancellingKeys;
+
+impl SafeStorageKeyProvider for CancellingKeys {
+    fn chromium_safe_storage<'a>(
+        &'a self,
+        _app_attribute: &'a str,
+        call: &'a BrokerCall,
+    ) -> ariadusage_engine::brokers::browser::SafeStorageFuture<'a> {
+        call.cancel.cancel();
+        Box::pin(async { Err(SafeStorageError::Dismissed) })
+    }
+}
+
+#[test]
+fn cancellation_after_priming_surfaces_no_browser_session_instead_of_stale_error() {
+    let home = TestHome::new();
+    let profile = home.chromium_profile(Browser::Chrome, "Work");
+    insert_chromium(
+        &profile.join("Cookies"),
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "sid",
+            expires_utc: 0,
+            value: "",
+            encrypted: b"v11synthetic-ciphertext",
+            partition_key: "",
+        },
+    );
+    let broker = home.broker(Arc::new(CancellingKeys));
+    let domains = cookie_core::DeclaredDomains::new(["claude.ai"]).expect("declared host");
+    let query = CookieQuery {
+        provider: ProviderId::new("claude").expect("provider id"),
+        domains: &domains,
+        names: None,
+        browsers: &[Browser::Chrome, Browser::Brave],
+        acknowledged_retry: false,
+    };
+    let call = BrokerCall {
+        interaction: FetchInteraction::UserInitiated,
+        cancel: tokio_util::sync::CancellationToken::new(),
+        request_id: "cancel-test".to_owned(),
+    };
+    let error = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(broker.candidates(&call, authorization(), query))
+        .expect_err("cancelled during priming returns NoBrowserSession");
+    assert_eq!(error, BrowserError::NoBrowserSession);
 }

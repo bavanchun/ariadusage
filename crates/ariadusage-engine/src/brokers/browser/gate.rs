@@ -15,9 +15,11 @@ const COOLDOWN_SECONDS: i64 = 6 * 60 * 60;
 
 /// Retry state shared by every read of one browser-import call.
 ///
-/// A saved denial cooldown blocks every read, user-initiated ones included. Only an
-/// acknowledged, user-initiated retry may make one keyring read through the cooldown.
+/// A saved denial cooldown blocks user-initiated reads unless the caller acknowledges
+/// the retry, which permits one keyring read through the cooldown. Background reads
+/// skip the cooldown because they already run noninteractively (`allow_unlock=false`).
 pub struct RetryScope {
+    interaction: FetchInteraction,
     bypasses_cooldown: bool,
     chromium_retry_used: bool,
     chromium_dismissed_in_scope: bool,
@@ -26,6 +28,7 @@ pub struct RetryScope {
 impl RetryScope {
     pub fn new(call: &BrokerCall, acknowledged_retry: bool) -> Self {
         Self {
+            interaction: call.interaction,
             bypasses_cooldown: acknowledged_retry
                 && call.interaction == FetchInteraction::UserInitiated,
             chromium_retry_used: false,
@@ -55,6 +58,9 @@ impl BrowserGate {
         }
         if retry_scope.chromium_dismissed_in_scope {
             return Ok(false);
+        }
+        if retry_scope.interaction == FetchInteraction::Background {
+            return Ok(true);
         }
         let state = self.state.load().map_err(|_| BrowserError::Io)?;
         let browser_until = state

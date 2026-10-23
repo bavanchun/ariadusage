@@ -125,12 +125,14 @@ async fn read_attempt(
 
     let mut key_error = None;
     let mut safe_storage_key = None;
+    let has_cached_key = matches!(access.key_cache.get(&profile.browser), Some(Ok(Some(_))));
     if !encrypted_v11.is_empty()
-        && access.gate.should_attempt_key(
-            profile.browser,
-            access.retry_scope,
-            unix_now_seconds(),
-        )?
+        && (has_cached_key
+            || access.gate.should_attempt_key(
+                profile.browser,
+                access.retry_scope,
+                unix_now_seconds(),
+            )?)
     {
         let attribute = profile
             .browser
