@@ -71,11 +71,43 @@ impl RpcSession {
     ) -> Result<Box<RawValue>, RpcError> {
         #[cfg(unix)]
         {
+            self.inner
+                .request(method, params, timeout)
+                .await
+                .map_err(|(error, _)| error)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (method, params, timeout);
+            Err(RpcError::Process(ProcessError::Unsupported))
+        }
+    }
+
+    pub async fn request_with_error_message(
+        &self,
+        method: &str,
+        params: &RawValue,
+        timeout: Duration,
+    ) -> Result<Box<RawValue>, (RpcError, Option<zeroize::Zeroizing<String>>)> {
+        #[cfg(target_os = "linux")]
+        {
             self.inner.request(method, params, timeout).await
         }
         #[cfg(not(unix))]
         {
             let _ = (method, params, timeout);
+            Err((RpcError::Process(ProcessError::Unsupported), None))
+        }
+    }
+
+    pub async fn notify(&self, method: &str, params: &RawValue) -> Result<(), RpcError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.notify(method, params).await
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (method, params);
             Err(RpcError::Process(ProcessError::Unsupported))
         }
     }
@@ -146,6 +178,18 @@ mod unix {
         params: &'a RawValue,
     }
 
+    #[derive(Serialize)]
+    struct NotificationBody<'a> {
+        method: &'a str,
+        params: &'a RawValue,
+    }
+
+    #[derive(Deserialize)]
+    struct ErrorField {
+        #[serde(default)]
+        message: Option<String>,
+    }
+
     #[derive(Deserialize)]
     struct Response {
         id: Option<u64>,
@@ -153,8 +197,8 @@ mod unix {
         method: bool,
         #[serde(default, deserialize_with = "raw_value")]
         result: Option<Box<RawValue>>,
-        #[serde(default, deserialize_with = "present")]
-        error: bool,
+        #[serde(default, deserialize_with = "error_field")]
+        error: Option<Option<Zeroizing<String>>>,
     }
 
     fn present<'de, D>(deserializer: D) -> Result<bool, D::Error>
@@ -172,7 +216,20 @@ mod unix {
         Box::<RawValue>::deserialize(deserializer).map(Some)
     }
 
-    type PendingResult = Result<Box<RawValue>, RpcError>;
+    fn error_field<'de, D>(deserializer: D) -> Result<Option<Option<Zeroizing<String>>>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = Box::<RawValue>::deserialize(deserializer)?;
+        let message = serde_json::from_str::<ErrorField>(raw.get())
+            .ok()
+            .and_then(|field| field.message)
+            .map(Zeroizing::new);
+        Ok(Some(message))
+    }
+
+    type PendingFailure = (RpcError, Option<Zeroizing<String>>);
+    type PendingResult = Result<Box<RawValue>, PendingFailure>;
     type PendingMap = HashMap<u64, oneshot::Sender<PendingResult>>;
 
     pub(super) struct RpcInner {
@@ -351,12 +408,12 @@ mod unix {
             method: &str,
             params: &RawValue,
             timeout: Duration,
-        ) -> Result<Box<RawValue>, RpcError> {
+        ) -> PendingResult {
             if self.closed.load(Ordering::Acquire) {
-                return Err(RpcError::Closed);
+                return Err((RpcError::Closed, None));
             }
             if self.cancel.is_cancelled() {
-                return Err(RpcError::Cancelled);
+                return Err((RpcError::Cancelled, None));
             }
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let (sender, receiver) = oneshot::channel();
@@ -364,7 +421,7 @@ mod unix {
             let mut bytes = Zeroizing::new(Vec::new());
             if serde_json::to_writer(&mut *bytes, &RequestBody { id, method, params }).is_err() {
                 lock(&self.pending).remove(&id);
-                return Err(RpcError::Malformed);
+                return Err((RpcError::Malformed, None));
             }
             bytes.push(b'\n');
             let write_result = {
@@ -379,7 +436,7 @@ mod unix {
                 lock(&self.pending).remove(&id);
                 let inner = Arc::clone(self);
                 tokio::spawn(async move { inner.shutdown().await });
-                return Err(RpcError::Closed);
+                return Err((RpcError::Closed, None));
             }
             let mut timeout = timeout_future(timeout);
             tokio::select! {
@@ -387,20 +444,52 @@ mod unix {
                 _ = &mut timeout => {
                     lock(&self.pending).remove(&id);
                     self.shutdown().await;
-                    Err(RpcError::TimedOut)
+                    Err((RpcError::TimedOut, None))
                 },
                 _ = self.cancel.cancelled() => {
                     lock(&self.pending).remove(&id);
-                    Err(RpcError::Cancelled)
+                    Err((RpcError::Cancelled, None))
                 },
                 result = receiver => {
-                    let result = result.unwrap_or(Err(RpcError::Closed));
-                    if matches!(&result, Err(RpcError::LineTooLong)) {
+                    let result = result.unwrap_or(Err((RpcError::Closed, None)));
+                    if matches!(&result, Err((RpcError::LineTooLong, _))) {
                         self.shutdown().await;
                     }
                     result
                 },
             }
+        }
+
+        pub(super) async fn notify(
+            self: &Arc<Self>,
+            method: &str,
+            params: &RawValue,
+        ) -> Result<(), RpcError> {
+            if self.closed.load(Ordering::Acquire) {
+                return Err(RpcError::Closed);
+            }
+            if self.cancel.is_cancelled() {
+                return Err(RpcError::Cancelled);
+            }
+            let mut bytes = Zeroizing::new(Vec::new());
+            if serde_json::to_writer(&mut *bytes, &NotificationBody { method, params }).is_err() {
+                return Err(RpcError::Malformed);
+            }
+            bytes.push(b'\n');
+            let write_result = {
+                let mut writer = self.writer.lock().await;
+                match writer.as_mut() {
+                    Some(writer) => writer.write_all(&bytes).await,
+                    None => Err(io::Error::new(io::ErrorKind::BrokenPipe, "closed")),
+                }
+            };
+            bytes.zeroize();
+            if write_result.is_err() {
+                let inner = Arc::clone(self);
+                tokio::spawn(async move { inner.shutdown().await });
+                return Err(RpcError::Closed);
+            }
+            Ok(())
         }
 
         pub(super) async fn shutdown(self: &Arc<Self>) {
@@ -434,7 +523,7 @@ mod unix {
         fn fail_pending(&self, error: RpcError) {
             let pending = std::mem::take(&mut *lock(&self.pending));
             for (_, sender) in pending {
-                let _ = sender.send(Err(error.clone()));
+                let _ = sender.send(Err((error.clone(), None)));
             }
         }
     }
@@ -508,14 +597,14 @@ mod unix {
         let Some(sender) = lock(&inner.pending).remove(&id) else {
             return;
         };
-        let result = if message.error {
-            Err(RpcError::RequestFailed)
+        let result = if let Some(error_message) = message.error {
+            Err((RpcError::RequestFailed, error_message))
         } else if message.method {
-            Err(RpcError::Malformed)
+            Err((RpcError::Malformed, None))
         } else if let Some(result) = message.result {
             Ok(result)
         } else {
-            Err(RpcError::Malformed)
+            Err((RpcError::Malformed, None))
         };
         let _ = sender.send(result);
     }
