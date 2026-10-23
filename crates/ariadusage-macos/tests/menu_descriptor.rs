@@ -89,12 +89,34 @@ fn overview_tab_lists_share_action_and_enabled_provider_cards() {
     assert!(structure.actions.is_empty());
 
     let PrimaryContent::Overview {
+        spend_summary,
         share_action,
         cards,
     } = &structure.primary
     else {
         panic!("expected Overview primary content");
     };
+    let summary = spend_summary
+        .as_ref()
+        .expect("overview spend summary present");
+    assert_eq!(summary.day_range_text, "30d");
+    assert!(summary.primary_spend_text.starts_with("~$"));
+    assert_eq!(
+        summary.provider_coverage_text,
+        "2 of 3 subscriptions have spend"
+    );
+    assert!(
+        summary
+            .token_text
+            .as_deref()
+            .is_some_and(|t| t.ends_with(" tokens"))
+    );
+    assert_eq!(summary.history_coverage_text, "Coverage: 30 / 30");
+    assert_eq!(summary.provenance_text, "Metered and list-price");
+    assert_eq!(
+        summary.pricing_coverage_text,
+        "Priced 3,578 · Unpriced 0 · Unmetered 0 · Estimated 0"
+    );
     assert_eq!(
         *share_action,
         Some(MenuEntry::Action {
@@ -107,6 +129,34 @@ fn overview_tab_lists_share_action_and_enabled_provider_cards() {
     );
     let ids: Vec<&str> = cards.iter().map(|c| c.provider_id.as_str()).collect();
     assert_eq!(ids, ["claude", "codex", "antigravity"]);
+}
+
+#[test]
+fn overview_without_cost_history_omits_spend_summary_and_share_action() {
+    let mut snap = generate_scenario_snapshot(0);
+    for provider in &mut snap.providers {
+        provider.cost_history = None;
+    }
+    let now = snap.generated_at;
+    let structure = menu_descriptor::build(
+        Some(&snap),
+        true,
+        Some(&SwitcherSelection::Overview),
+        &CardPreferences::default(),
+        now,
+        &FixedDates::utc(),
+    );
+    let PrimaryContent::Overview {
+        spend_summary,
+        share_action,
+        cards,
+    } = &structure.primary
+    else {
+        panic!("expected Overview primary content");
+    };
+    assert!(spend_summary.is_none());
+    assert!(share_action.is_none());
+    assert_eq!(cards.len(), 3);
 }
 
 #[test]

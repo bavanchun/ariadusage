@@ -1,4 +1,6 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuPresentation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+MenuCardItems.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! The usage card hosted as an `NSMenuItem` view.
 //!
@@ -15,8 +17,9 @@ use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_se
 use objc2_app_kit::{
     NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSFont, NSFontTextStyle,
     NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleFootnote, NSFontTextStyleHeadline,
-    NSFontTextStyleSubheadline, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
-    NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField, NSView,
+    NSFontTextStyleSubheadline, NSFontTextStyleTitle2, NSFontWeightBold, NSFontWeightMedium,
+    NSFontWeightRegular, NSFontWeightSemibold, NSLineBreakMode, NSResponder, NSTextAlignment,
+    NSTextField, NSView,
 };
 use objc2_foundation::{
     NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -31,6 +34,7 @@ use crate::card_layout::{
 };
 use crate::geometry::{Rect, Size};
 use crate::highlight_style;
+use crate::menu_descriptor::OverviewSpendSummary;
 
 /// Labels draw their text 2 pt inside their frame on each side.
 const LABEL_INSET: f64 = 2.0;
@@ -47,6 +51,7 @@ type ClickCallback = Rc<dyn Fn()>;
 #[derive(Default)]
 pub struct CardState {
     model: Option<CardModel>,
+    spend_summary: Option<OverviewSpendSummary>,
     overview_mode: bool,
     layout: Option<CardLayout>,
     highlighted: bool,
@@ -158,6 +163,43 @@ impl CardView {
         self.update_with_mode(model, width, true)
     }
 
+    /// Shows `summary` at `width` in the Overview spend summary card layout (`OverviewSpendSummaryCardView`).
+    pub fn update_spend_summary(&self, summary: &OverviewSpendSummary, width: f64) -> bool {
+        {
+            let state = self.ivars().borrow();
+            let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width);
+            if same_width && state.spend_summary.as_ref() == Some(summary) {
+                return false;
+            }
+        }
+        let mtm = self.mtm();
+        let measure = AppKitMeasure::new(mtm);
+        let layout = card_layout::spend_summary_layout(summary, width, &measure);
+        self.apply_layout(layout, Accent::System, &measure);
+        {
+            let mut state = self.ivars().borrow_mut();
+            state.model = None;
+            state.spend_summary = Some(summary.clone());
+            state.overview_mode = false;
+        }
+        true
+    }
+
+    /// Whether `summary` at `width` produces the same height as the currently rendered layout.
+    pub fn has_compatible_spend_summary_height(
+        &self,
+        summary: &OverviewSpendSummary,
+        width: f64,
+    ) -> bool {
+        let Some(existing_h) = self.ivars().borrow().layout.as_ref().map(|l| l.size.h) else {
+            return false;
+        };
+        let mtm = self.mtm();
+        let measure = AppKitMeasure::new(mtm);
+        let next = card_layout::spend_summary_layout(summary, width, &measure);
+        (existing_h - next.size.h).abs() <= 0.5
+    }
+
     /// Whether `model` at `width` in `overview_mode` produces the same height as the
     /// currently rendered layout (`MenuCardRefreshMonitor.hasCompatibleTrackedLayout`).
     pub fn has_compatible_height(
@@ -197,6 +239,18 @@ impl CardView {
         } else {
             card_layout::layout(model, width, &measure)
         };
+        self.apply_layout(layout, model.accent, &measure);
+        {
+            let mut state = self.ivars().borrow_mut();
+            state.model = Some(model.clone());
+            state.spend_summary = None;
+            state.overview_mode = overview_mode;
+        }
+        true
+    }
+
+    fn apply_layout(&self, layout: CardLayout, accent: Accent, measure: &AppKitMeasure) {
+        let mtm = self.mtm();
         let highlighted = self.ivars().borrow().highlighted;
 
         for view in self.subviews().iter() {
@@ -221,7 +275,7 @@ impl CardView {
                         mtm,
                         placed.frame,
                         spec.clone(),
-                        model.accent,
+                        accent,
                         accessibility_label,
                     );
                     bar.set_highlighted(highlighted);
@@ -233,14 +287,11 @@ impl CardView {
         }
         {
             let mut state = self.ivars().borrow_mut();
-            state.model = Some(model.clone());
-            state.overview_mode = overview_mode;
             state.layout = Some(layout);
             state.labels = labels;
             state.bars = bars;
         }
         self.setNeedsDisplay(true);
-        true
     }
 
     /// Switches between the normal and the highlighted colors.
@@ -429,6 +480,7 @@ fn text_style(style: TextStyle) -> &'static NSFontTextStyle {
     // SAFETY: the text style constants are immutable AppKit globals.
     unsafe {
         match style {
+            TextStyle::Title2 => NSFontTextStyleTitle2,
             TextStyle::Headline => NSFontTextStyleHeadline,
             TextStyle::Subheadline => NSFontTextStyleSubheadline,
             TextStyle::Body => NSFontTextStyleBody,
@@ -451,6 +503,7 @@ fn system_font(font: Font) -> Retained<NSFont> {
             Weight::Regular => NSFontWeightRegular,
             Weight::Medium => NSFontWeightMedium,
             Weight::Semibold => NSFontWeightSemibold,
+            Weight::Bold => NSFontWeightBold,
         }
     };
     NSFont::systemFontOfSize_weight(preferred.pointSize(), weight)

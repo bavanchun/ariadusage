@@ -60,6 +60,7 @@ pub const CHAR_WIDTH: f64 = 6.0;
 
 pub fn line_height(font: Font) -> f64 {
     match font.style {
+        TextStyle::Title2 => 22.0,
         TextStyle::Headline | TextStyle::Body => 16.0,
         TextStyle::Subheadline => 14.0,
         TextStyle::Footnote | TextStyle::Caption => 13.0,
@@ -68,6 +69,7 @@ pub fn line_height(font: Font) -> f64 {
 
 pub fn baseline(font: Font) -> f64 {
     match font.style {
+        TextStyle::Title2 => 18.0,
         TextStyle::Headline | TextStyle::Body => 13.0,
         TextStyle::Subheadline => 11.0,
         TextStyle::Footnote | TextStyle::Caption => 10.0,

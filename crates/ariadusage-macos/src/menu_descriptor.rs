@@ -1,7 +1,5 @@
 // Ported from CodexBar Sources/CodexBar/MenuDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Menu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/StatusItemController+CostMenuCard.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -15,10 +13,13 @@
 //! contextual provider actions and meta section in CodexBar's order and wording
 //! with AriadUsage's own identity.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ariadusage_protocol::metric::{Metric, MetricState};
 use ariadusage_protocol::snapshot::{EngineSnapshot, ProviderSnapshot};
 use ariadusage_protocol::usage::{
-    Cost, CostHistory, Identity, PlanUtilizationSeries, ProviderStatus, RateWindow, StatusIndicator,
+    Cost, CostHistory, CostProvenance, Identity, PlanUtilizationSeries, ProviderStatus, RateWindow,
+    StatusIndicator,
 };
 use jiff::Timestamp;
 
@@ -142,6 +143,19 @@ pub enum MenuEntry {
     },
 }
 
+/// Summary card model shown at the top of the `Overview` tab (`OverviewSpendSummary`,
+/// `StatusItemController+OverviewSpend.swift:6-14`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OverviewSpendSummary {
+    pub day_range_text: String,
+    pub primary_spend_text: String,
+    pub provider_coverage_text: String,
+    pub token_text: Option<String>,
+    pub history_coverage_text: String,
+    pub provenance_text: String,
+    pub pricing_coverage_text: String,
+}
+
 /// One provider row on the `Overview` tab (`OverviewMenuCardRowView`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverviewCard {
@@ -156,6 +170,7 @@ pub enum PrimaryContent {
     Disconnected { message: String },
     /// Shown when the `Overview` tab is active (`addOverviewRows`).
     Overview {
+        spend_summary: Option<OverviewSpendSummary>,
         share_action: Option<MenuEntry>,
         cards: Vec<OverviewCard>,
     },
@@ -223,7 +238,8 @@ pub fn build(
     let switcher = switcher::segments(snapshot, prefs.show_used);
     match &selection {
         SwitcherSelection::Overview => {
-            let share_action = has_overview_spend_data(&enabled).then(|| MenuEntry::Action {
+            let spend_summary = overview_spend_summary(&enabled);
+            let share_action = spend_summary.is_some().then(|| MenuEntry::Action {
                 title: "Share Usage Snapshot…".to_string(),
                 system_image: MenuAction::ShareUsageSnapshot.system_image(),
                 key_equivalent: MenuAction::ShareUsageSnapshot.key_equivalent(),
@@ -241,6 +257,7 @@ pub fn build(
                 selection: Some(selection),
                 switcher,
                 primary: PrimaryContent::Overview {
+                    spend_summary,
                     share_action,
                     cards,
                 },
@@ -277,21 +294,224 @@ pub fn build(
     }
 }
 
-/// Whether any enabled provider carries spend data for the Overview share action
-/// (`StatusItemController+OverviewSpend.swift:148-163`).
-fn has_overview_spend_data(enabled: &[&ProviderSnapshot]) -> bool {
-    enabled.iter().any(|provider| {
-        let has_history = provider
-            .cost_history
-            .as_ref()
-            .and_then(displayable_value)
-            .is_some_and(|h| {
-                h.session_cost_usd.is_some()
-                    || h.last_30_days_cost_usd.is_some()
-                    || !h.daily.is_empty()
-            });
-        let has_cost = provider.cost.as_ref().and_then(displayable_value).is_some();
-        has_history || has_cost
+/// Builds the `OverviewSpendSummary` across enabled providers from their
+/// 30-day `cost_history` snapshots (`StatusItemController+OverviewSpend.swift:61-147`).
+/// Returns `None` when no enabled provider has displayable cost history, which
+/// also suppresses `Share Usage Snapshot…` (`StatusItemController+Menu.swift:562-579`).
+pub fn overview_spend_summary(enabled: &[&ProviderSnapshot]) -> Option<OverviewSpendSummary> {
+    if enabled.is_empty() {
+        return None;
+    }
+    let total_provider_count = enabled.len();
+    let histories: Vec<&CostHistory> = enabled
+        .iter()
+        .filter_map(|p| p.cost_history.as_ref().and_then(displayable_value))
+        .filter(|h| {
+            h.last_30_days_cost_usd.is_some()
+                || h.last_30_days_tokens.is_some()
+                || h.session_cost_usd.is_some()
+                || h.session_tokens.is_some()
+                || !h.daily.is_empty()
+        })
+        .collect();
+    if histories.is_empty() {
+        return None;
+    }
+
+    let requested_days: u32 = 30;
+    let included_provider_count = histories.len();
+
+    #[derive(Default)]
+    struct GroupAgg {
+        provider_count: usize,
+        priced_provider_count: usize,
+        total_cost: Option<f64>,
+        has_partial_cost: bool,
+        total_tokens: Option<u64>,
+        covered_days: Option<u32>,
+    }
+
+    let mut groups: BTreeMap<String, GroupAgg> = BTreeMap::new();
+    let mut saw_vendor_metered = false;
+    let mut saw_estimate = false;
+    let mut priced_requests: u64 = 0;
+    let mut unpriced_requests: u64 = 0;
+
+    for history in &histories {
+        let code = history
+            .currency_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("USD")
+            .to_ascii_uppercase();
+        let group = groups.entry(code).or_default();
+        group.provider_count += 1;
+
+        let prov_cost = history.last_30_days_cost_usd.or_else(|| {
+            let mut sum = 0.0;
+            let mut any = false;
+            for d in &history.daily {
+                if let Some(c) = d.cost_usd.filter(|c| c.is_finite() && *c >= 0.0) {
+                    sum += c;
+                    any = true;
+                }
+            }
+            any.then_some(sum)
+        });
+
+        let prov_tokens = history.last_30_days_tokens.or_else(|| {
+            let mut sum = 0_u64;
+            let mut any = false;
+            for d in &history.daily {
+                if let Some(t) = d.total_tokens {
+                    sum = sum.saturating_add(t);
+                    any = true;
+                }
+            }
+            any.then_some(sum)
+        });
+
+        let incomplete_reqs = history
+            .comparison_windows
+            .iter()
+            .find(|w| w.days == requested_days)
+            .and_then(|w| w.incomplete_request_count)
+            .unwrap_or(0);
+        let has_unpriced_daily = history
+            .daily
+            .iter()
+            .any(|d| d.total_tokens.unwrap_or(0) > 0 && d.cost_usd.is_none());
+
+        if let Some(c) = prov_cost.filter(|c| c.is_finite() && *c >= 0.0) {
+            group.priced_provider_count += 1;
+            group.total_cost = Some(group.total_cost.unwrap_or(0.0) + c);
+            if history.history_scan_is_partial || incomplete_reqs > 0 || has_unpriced_daily {
+                group.has_partial_cost = true;
+            }
+            match history.cost_provenance.unwrap_or(CostProvenance::Unknown) {
+                CostProvenance::VendorMetered => saw_vendor_metered = true,
+                CostProvenance::ListPriceEstimate | CostProvenance::Unknown => saw_estimate = true,
+                CostProvenance::Mixed => {
+                    saw_vendor_metered = true;
+                    saw_estimate = true;
+                }
+            }
+            if history.metered_cost_usd.is_some()
+                && requested_days >= history.history_days.unwrap_or(requested_days)
+            {
+                saw_vendor_metered = true;
+            }
+        } else {
+            group.has_partial_cost = true;
+        }
+
+        if let Some(t) = prov_tokens {
+            group.total_tokens = Some(group.total_tokens.unwrap_or(0).saturating_add(t));
+        }
+
+        let distinct_days = history
+            .daily
+            .iter()
+            .map(|d| d.date.trim())
+            .filter(|d| !d.is_empty())
+            .collect::<BTreeSet<_>>()
+            .len() as u32;
+        let prov_covered = if distinct_days > 0 {
+            distinct_days.min(requested_days)
+        } else if history.history_coverage_is_established {
+            history.history_days.unwrap_or(0).min(requested_days)
+        } else {
+            0
+        };
+        group.covered_days = Some(match group.covered_days {
+            Some(prev) => prev.min(prov_covered),
+            None => prov_covered,
+        });
+
+        if !history.daily.is_empty() {
+            for entry in &history.daily {
+                let req = entry.total_requests.unwrap_or(0);
+                if entry.cost_usd.is_some() || entry.total_tokens == Some(0) {
+                    priced_requests = priced_requests.saturating_add(req);
+                } else {
+                    unpriced_requests = unpriced_requests.saturating_add(req);
+                }
+            }
+        } else if let Some(req) = history.last_30_days_requests {
+            if prov_cost.is_some() {
+                priced_requests = priced_requests.saturating_add(req);
+            } else {
+                unpriced_requests = unpriced_requests.saturating_add(req);
+            }
+        }
+        unpriced_requests = unpriced_requests.saturating_add(incomplete_reqs);
+    }
+
+    let priced_provider_count: usize = groups.values().map(|g| g.priced_provider_count).sum();
+    let has_unpriced_providers = included_provider_count < total_provider_count
+        || groups.values().any(|g| g.total_cost.is_none());
+
+    let priced_groups: Vec<(&String, &GroupAgg)> = groups
+        .iter()
+        .filter(|(_, g)| g.total_cost.is_some())
+        .collect();
+    let primary_spend_text = if priced_groups.is_empty() {
+        "Spend unavailable".to_string()
+    } else {
+        priced_groups
+            .into_iter()
+            .map(|(code, g)| {
+                let cost = g.total_cost.unwrap_or(0.0);
+                let formatted = format::currency_string(cost, code);
+                let is_partial = g.has_partial_cost
+                    || g.priced_provider_count < g.provider_count
+                    || has_unpriced_providers;
+                if is_partial {
+                    format!("~{formatted}")
+                } else {
+                    formatted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+
+    let total_tokens: u64 = groups.values().filter_map(|g| g.total_tokens).sum();
+    let has_tokens = groups.values().any(|g| g.total_tokens.is_some());
+    let token_text =
+        has_tokens.then(|| format!("{} tokens", format::share_stats_compact_count(total_tokens)));
+
+    let covered_days = groups
+        .values()
+        .filter_map(|g| g.covered_days)
+        .max()
+        .unwrap_or(0);
+    let history_coverage_text = format!("Coverage: {covered_days} / {requested_days}");
+
+    let provenance_text = match (saw_vendor_metered, saw_estimate) {
+        (true, true) => "Metered and list-price".to_string(),
+        (true, false) => "Vendor-metered".to_string(),
+        (false, true) => "List-price estimate".to_string(),
+        (false, false) => "Provenance unavailable".to_string(),
+    };
+
+    let pricing_coverage_text = format!(
+        "Priced {} · Unpriced {} · Unmetered 0 · Estimated 0",
+        format::grouped_u64(priced_requests),
+        format::grouped_u64(unpriced_requests),
+    );
+
+    Some(OverviewSpendSummary {
+        day_range_text: format!("{requested_days}d"),
+        primary_spend_text,
+        provider_coverage_text: format!(
+            "{priced_provider_count} of {total_provider_count} subscriptions have spend"
+        ),
+        token_text,
+        history_coverage_text,
+        provenance_text,
+        pricing_coverage_text,
     })
 }
 
@@ -510,11 +730,7 @@ fn cost_submenu(provider: &ProviderSnapshot) -> Option<MenuEntry> {
 }
 
 fn format_currency(amount: f64, currency_code: &str) -> String {
-    if currency_code.eq_ignore_ascii_case("USD") || currency_code.trim().is_empty() {
-        format!("${amount:.2}")
-    } else {
-        format!("{} {amount:.2}", currency_code.trim())
-    }
+    format::currency_string(amount, currency_code)
 }
 
 /// Builds the contextual actions section for `provider` (`MenuDescriptor.actionsSection`).
