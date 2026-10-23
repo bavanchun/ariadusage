@@ -64,9 +64,10 @@ fn subscription_metadata_replacement_switches_renewal_to_expiration() {
     )
     .unwrap();
 
-    let replaced = original
-        .clone()
-        .with_subscription_metadata(Some(expiration), None);
+    let replaced =
+        original
+            .clone()
+            .with_subscription_metadata(Some(expiration), None, false, false);
 
     assert_eq!(replaced.primary, original.primary);
     assert_eq!(replaced.updated_at, original.updated_at);

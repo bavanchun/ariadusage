@@ -75,6 +75,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-core/src/model/cost.rs"
 sources = ["Sources/CodexBarCore/ProviderCostSnapshot.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/model/snapshot.rs"
@@ -82,6 +83,12 @@ sources = [
     "Sources/CodexBarCore/UsageFetcher.swift",
     "Sources/CodexBarCore/UsageSnapshot+AccountLabel.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/tests/snapshot_subscription_date_only.rs"
+sources = ["Tests/CodexBarTests/ClaudeSubscriptionMetadataTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/model/backfill.rs"
