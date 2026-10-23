@@ -318,6 +318,8 @@ fn rgb_parses_only_hash_rrggbb() {
 #[test]
 fn extra_windows_keep_engine_titles_and_mark_unknown_usage_unavailable() {
     let mut p = claude_with_session();
+    let mut unknown_with_reset = Metric::unknown();
+    unknown_with_reset.value = Some(window(0.0, 60, 2 * 3600));
     p.windows.extra = vec![
         NamedWindow {
             id: "burst".to_string(),
@@ -330,6 +332,11 @@ fn extra_windows_keep_engine_titles_and_mark_unknown_usage_unavailable() {
             window: Metric::unknown(),
         },
         NamedWindow {
+            id: "unknown-with-reset".to_string(),
+            title: "Quota summary".to_string(),
+            window: unknown_with_reset,
+        },
+        NamedWindow {
             id: "loading".to_string(),
             title: "Loading".to_string(),
             window: Metric::loading(None),
@@ -337,10 +344,92 @@ fn extra_windows_keep_engine_titles_and_mark_unknown_usage_unavailable() {
     ];
     let card = build(&p, &CardPreferences::default());
     let ids: Vec<&str> = card.metrics.iter().map(|m| m.id.as_str()).collect();
-    assert_eq!(ids, ["primary", "burst", "unknown"]);
+    assert_eq!(ids, ["primary", "burst", "unknown", "unknown-with-reset"]);
     assert_eq!(card.metrics[1].title_text(), "1-Hour Burst 85% left");
     assert_eq!(card.metrics[1].reset_text.as_deref(), Some("Resets in 45m"));
     assert_eq!(card.metrics[2].status_text.as_deref(), Some("Unavailable"));
+    assert_eq!(
+        card.metrics[3].status_text.as_deref(),
+        Some("Unavailable - Resets in 2h")
+    );
+    assert_eq!(card.metrics[3].reset_text, None);
+}
+
+#[test]
+fn claude_scoped_weekly_extra_windows_format_as_model_weekly() {
+    let mut p = claude_with_session();
+    p.windows.extra = vec![
+        NamedWindow {
+            id: "claude-weekly-scoped-fable".to_string(),
+            title: "Fable only".to_string(),
+            window: value(window(20.0, 10080, 3 * 24 * 3600)),
+        },
+        NamedWindow {
+            id: "claude-weekly-scoped-opus".to_string(),
+            title: "Opus 4   ONLY  ".to_string(),
+            window: value(window(40.0, 10080, 3 * 24 * 3600)),
+        },
+        NamedWindow {
+            id: "claude-weekly-scoped-sonnet".to_string(),
+            title: "Sonnet".to_string(),
+            window: value(window(10.0, 10080, 3 * 24 * 3600)),
+        },
+    ];
+    let card = build(&p, &CardPreferences::default());
+    let titles: Vec<&str> = card.metrics.iter().map(|m| m.title.as_str()).collect();
+    assert_eq!(
+        titles,
+        ["Session", "Fable weekly", "Opus 4 weekly", "Sonnet weekly"]
+    );
+
+    let mut non_claude = provider("codex", "Codex");
+    non_claude.windows.extra = vec![NamedWindow {
+        id: "claude-weekly-scoped-fable".to_string(),
+        title: "Fable only".to_string(),
+        window: value(window(20.0, 10080, 3 * 24 * 3600)),
+    }];
+    let codex_card = build(&non_claude, &CardPreferences::default());
+    assert_eq!(codex_card.metrics[0].title, "Fable only");
+}
+
+#[test]
+fn claude_daily_routines_and_optional_extras_respect_visibility_preferences() {
+    let mut p = claude_with_session();
+    p.windows.extra = vec![
+        NamedWindow {
+            id: "claude-weekly-scoped-fable".to_string(),
+            title: "Fable only".to_string(),
+            window: value(window(20.0, 10080, 3 * 24 * 3600)),
+        },
+        NamedWindow {
+            id: "claude-routines".to_string(),
+            title: "Daily Routines".to_string(),
+            window: value(window(0.0, 10080, 3 * 24 * 3600)),
+        },
+    ];
+
+    let default_card = build(&p, &CardPreferences::default());
+    let default_ids: Vec<&str> = default_card.metrics.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(
+        default_ids,
+        ["primary", "claude-weekly-scoped-fable", "claude-routines"]
+    );
+
+    let routines_hidden = CardPreferences {
+        claude_daily_routines_usage_visible: false,
+        ..CardPreferences::default()
+    };
+    let card = build(&p, &routines_hidden);
+    let ids: Vec<&str> = card.metrics.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["primary", "claude-weekly-scoped-fable"]);
+
+    let extras_hidden = CardPreferences {
+        show_optional_credits_and_extra_usage: false,
+        ..CardPreferences::default()
+    };
+    let card = build(&p, &extras_hidden);
+    let ids: Vec<&str> = card.metrics.iter().map(|m| m.id.as_str()).collect();
+    assert_eq!(ids, ["primary", "claude-weekly-scoped-fable"]);
 }
 
 #[test]
