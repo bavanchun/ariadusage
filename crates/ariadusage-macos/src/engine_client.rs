@@ -7,6 +7,7 @@
 //! caller's thread through a shared write handle.
 
 use std::io::{self, BufRead, BufReader, Write};
+use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -58,11 +59,29 @@ impl EngineClient {
     where
         F: Fn(EngineEvent) + Send + 'static,
     {
+        Self::spawn_with_backoff(socket_path, &RECONNECT_BACKOFF, on_event)
+    }
+
+    /// Starts the connection thread with a custom reconnect backoff schedule.
+    /// An empty slice defaults to [`RECONNECT_BACKOFF`].
+    pub fn spawn_with_backoff<F>(
+        socket_path: PathBuf,
+        backoff: &'static [Duration],
+        on_event: F,
+    ) -> io::Result<Self>
+    where
+        F: Fn(EngineEvent) + Send + 'static,
+    {
+        let backoff = if backoff.is_empty() {
+            &RECONNECT_BACKOFF[..]
+        } else {
+            backoff
+        };
         let client = Self::default();
         let writer = Arc::clone(&client.writer);
         thread::Builder::new()
             .name("engine-client".into())
-            .spawn(move || run(&socket_path, &writer, &on_event))?;
+            .spawn(move || run(&socket_path, &writer, backoff, &on_event))?;
         Ok(client)
     }
 
@@ -77,13 +96,18 @@ impl EngineClient {
         if let Some(stream) = guard.as_mut()
             && write_message(stream, message).is_err()
         {
+            let _ = stream.shutdown(Shutdown::Both);
             *guard = None;
         }
     }
 }
 
-fn run<F>(socket_path: &PathBuf, writer: &Mutex<Option<UnixStream>>, on_event: &F)
-where
+fn run<F>(
+    socket_path: &PathBuf,
+    writer: &Mutex<Option<UnixStream>>,
+    backoff: &[Duration],
+    on_event: &F,
+) where
     F: Fn(EngineEvent),
 {
     let mut attempt = 0usize;
@@ -97,7 +121,7 @@ where
         }
         *writer.lock().unwrap_or_else(PoisonError::into_inner) = None;
         on_event(EngineEvent::Disconnected);
-        let delay = RECONNECT_BACKOFF[attempt.min(RECONNECT_BACKOFF.len() - 1)];
+        let delay = backoff[attempt.min(backoff.len() - 1)];
         attempt += 1;
         thread::sleep(delay);
     }
