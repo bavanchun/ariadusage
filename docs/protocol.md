@@ -232,6 +232,16 @@ Because the window is carried inside a `Metric<RateWindow>` envelope, extra wind
 - **Non-Value States (`loading` / `error` / `unknown`)**: The `value` field is strictly omitted. Non-value states must never emit synthetic, placeholder, or default numeric values (such as `0` or `100`).
 - JSON schemas enforce this metric invariant at both provider and account hierarchy levels.
 
+#### 6.2.2 Provider Presentation (`ProviderPresentation`)
+Each provider snapshot may carry an optional `presentation` object with the window titles and accent color the engine holds in its provider descriptors. Frontends use it to title the positional windows and tint their progress bars instead of keeping their own copy of this metadata:
+- `shortDisplayName`: Compact provider name for tight layouts (e.g. `"Anti"` for Antigravity).
+- `sessionLabel`: Title of the `primary` window (e.g. `"Session"`, or `"Gemini Models"` for Antigravity).
+- `weeklyLabel`: Title of the `secondary` window (e.g. `"Weekly"`, or `"Claude and GPT"` for Antigravity).
+- `tertiaryLabel` (optional): Title of the `tertiary` window when the provider has one (e.g. `"Sonnet"` for Claude).
+- `accentColor` (optional): Provider accent color as uppercase `#RRGGBB` hex (e.g. `"#CC7C5E"`). Any other format is rejected by the schema and by decoding.
+
+The engine sets `presentation` only for providers it has a descriptor for and omits it otherwise. The field is additive: payloads without it remain valid.
+
 ### 6.3 `settingsChanged`
 Pushed when configuration or secrets change, prompting clients to re-query `getSettings`.
 ```json

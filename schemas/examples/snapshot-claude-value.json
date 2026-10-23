@@ -12,6 +12,13 @@
       "displayName": "Claude",
       "enabled": true,
       "sourceMode": "cli",
+      "presentation": {
+        "shortDisplayName": "Claude",
+        "sessionLabel": "Session",
+        "weeklyLabel": "Weekly",
+        "tertiaryLabel": "Sonnet",
+        "accentColor": "#CC7C5E"
+      },
       "windows": {
         "primary": {
           "state": "value",

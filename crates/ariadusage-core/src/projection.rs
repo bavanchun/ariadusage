@@ -236,6 +236,8 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         display_name: input.display_name.clone(),
         enabled: input.enabled,
         source_mode: input.source_mode.clone(),
+        presentation: crate::providers::find_by_id(&input.provider)
+            .map(crate::providers::ProviderDescriptor::presentation),
         windows,
         credits: None,
         cost,

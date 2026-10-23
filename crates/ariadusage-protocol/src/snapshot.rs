@@ -1,5 +1,7 @@
 //! Engine and provider usage snapshots.
 
+use std::fmt;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -62,6 +64,109 @@ pub struct AccountSnapshot {
     pub updated_at: Option<jiff::Timestamp>,
 }
 
+/// Validation error for [`ProviderPresentation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPresentationError(pub String);
+
+impl fmt::Display for ProviderPresentationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ProviderPresentationError {}
+
+/// Engine-owned labels and accent color that frontends use to title a
+/// provider's usage windows and tint its progress bars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPresentation {
+    /// Compact provider name for tight layouts (e.g. "Anti").
+    pub short_display_name: String,
+    /// Title of the primary window (e.g. "Session").
+    pub session_label: String,
+    /// Title of the secondary window (e.g. "Weekly").
+    pub weekly_label: String,
+    /// Title of the tertiary window, when the provider has one (e.g. "Sonnet").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tertiary_label: Option<String>,
+    /// Provider accent color as uppercase `#RRGGBB` hex.
+    #[schemars(regex(pattern = r"^#[0-9A-F]{6}$"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
+}
+
+impl ProviderPresentation {
+    /// Create a presentation block, rejecting an accent color that is not
+    /// uppercase `#RRGGBB` hex.
+    pub fn new(
+        short_display_name: impl Into<String>,
+        session_label: impl Into<String>,
+        weekly_label: impl Into<String>,
+        tertiary_label: Option<String>,
+        accent_color: Option<String>,
+    ) -> Result<Self, ProviderPresentationError> {
+        if let Some(color) = &accent_color {
+            Self::validate_accent_color(color)?;
+        }
+        Ok(Self {
+            short_display_name: short_display_name.into(),
+            session_label: session_label.into(),
+            weekly_label: weekly_label.into(),
+            tertiary_label,
+            accent_color,
+        })
+    }
+
+    /// Format an RGB triple as an uppercase `#RRGGBB` accent color.
+    #[must_use]
+    pub fn accent_color_from_rgb(red: u8, green: u8, blue: u8) -> String {
+        format!("#{red:02X}{green:02X}{blue:02X}")
+    }
+
+    /// Check that `color` is exactly `#` followed by six uppercase hex digits.
+    pub fn validate_accent_color(color: &str) -> Result<(), ProviderPresentationError> {
+        let valid = color.len() == 7
+            && color.starts_with('#')
+            && color[1..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'A'..=b'F').contains(&b));
+        if valid {
+            Ok(())
+        } else {
+            Err(ProviderPresentationError(
+                "presentation.accentColor must be uppercase #RRGGBB hex".to_string(),
+            ))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProviderPresentationRaw {
+    short_display_name: String,
+    session_label: String,
+    weekly_label: String,
+    #[serde(default)]
+    tertiary_label: Option<String>,
+    #[serde(default)]
+    accent_color: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for ProviderPresentation {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = ProviderPresentationRaw::deserialize(deserializer)?;
+        Self::new(
+            raw.short_display_name,
+            raw.session_label,
+            raw.weekly_label,
+            raw.tertiary_label,
+            raw.accent_color,
+        )
+        .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Snapshot of a single AI provider's usage and state.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -70,6 +175,10 @@ pub struct ProviderSnapshot {
     pub display_name: String,
     pub enabled: bool,
     pub source_mode: String,
+    /// Window titles and accent color for known providers; absent for
+    /// providers the engine has no descriptor for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<ProviderPresentation>,
     #[serde(default)]
     pub windows: ProviderWindows,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +219,7 @@ impl ProviderSnapshot {
             display_name: display_name.into(),
             enabled,
             source_mode: source_mode.into(),
+            presentation: None,
             windows: ProviderWindows::default(),
             credits: None,
             cost: None,
@@ -131,6 +241,8 @@ struct ProviderSnapshotRaw {
     display_name: String,
     enabled: bool,
     source_mode: String,
+    #[serde(default)]
+    presentation: Option<ProviderPresentation>,
     #[serde(default)]
     windows: ProviderWindows,
     #[serde(default)]
@@ -162,6 +274,7 @@ impl<'de> Deserialize<'de> for ProviderSnapshot {
             display_name: raw.display_name,
             enabled: raw.enabled,
             source_mode: raw.source_mode,
+            presentation: raw.presentation,
             windows: raw.windows,
             credits: raw.credits,
             cost: raw.cost,
