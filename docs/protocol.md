@@ -2,7 +2,7 @@
 
 > **Status: DRAFT**
 >
-> This specification defines the wire contract for IPC v1 between the AriadUsage engine daemon, CLI tools, and desktop user interfaces (such as the Omarchy Quickshell plugin). It remains a draft during initial client and engine implementation and will be frozen prior to the M9 plugin release. After freeze, changes within v1 are additive only.
+> This specification defines the wire contract for IPC v1 between the AriadUsage engine daemon, CLI tools, and desktop user interfaces (the macOS menu-bar app and the Omarchy Quickshell plugin). It remains a draft during initial client and engine implementation and will be frozen before the first frontend release. After freeze, changes within v1 are additive only.
 
 ---
 

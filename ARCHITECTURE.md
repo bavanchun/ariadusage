@@ -277,7 +277,7 @@ What AriadUsage reads, writes and sends is documented for users in [docs/privacy
 
 On Windows, AriadUsage never bypasses Chrome's App-Bound Encryption: it uses Firefox cookies or a manually pasted cookie header instead.
 
-On macOS, Keychain reads of other tools' items (Claude Code's OAuth item, the browsers' Safe Storage keys) can raise a system prompt. Background work never triggers one: such reads happen only on user-initiated refreshes or after the user allows them in Settings, matching CodexBar's Keychain prompt policy.
+On macOS, Keychain reads of other tools' items (Claude Code's OAuth item, the browsers' Safe Storage keys) can raise a system prompt. Following Principle 4, background work never triggers one: such reads happen only on user-initiated refreshes (matching CodexBar's default `onlyOnUserAction` Keychain prompt mode; CodexBar's `always` mode, which allows background Keychain reads, is not used for background prompts).
 
 ---
 
@@ -344,7 +344,7 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 | **M6 · Cost** | Cost engine for the three providers | Totals match CodexBar on the same fixtures; unknown days never show $0 | Planned |
 | **M7 · Status and events** | Status incidents, notifications, hooks, agent sessions | Ported tests pass; notification budget holds | Planned |
 | **M8 · Daemon** | Daemon, socket server, CLI parity, `serve` and dashboard; engine hosting for the macOS app | CLI commands, JSON schemas and exit codes documented and tested; the macOS app shows live data | Planned |
-| **M9 · Omarchy UI** | Full plugin UI to the UX bar in §10; IPC v1 frozen before the first plugin release | Every UX criterion measured and met | Planned |
+| **M9 · Omarchy UI** | Full plugin UI to the UX bar in §10; IPC v1 frozen before the first frontend release (§7) | Every UX criterion measured and met | Planned |
 | **M10 · Release** | macOS app release; AUR package, plugin publishing, marketplace submission, tag rulesets and immutable releases | Signed macOS build; clean-chroot AUR build; plugin listed with `manual-setup` and no security findings | Planned |
 
 **After v1:** a JavaScript plugin host compatible with CodexBar's plugin contract, then CodexBar's remaining providers in waves; then other Linux desktops and Windows frontends.
@@ -362,7 +362,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Plugin boundary | Plugins never read files, run processes or touch credentials; the host injects cookies and secrets | Granting plugins file or process capabilities | Same boundary as CodexBar; keeps third-party code away from credentials |
 | Distribution | Thin Omarchy plugin plus an AUR engine; accept `manual-setup` | Shipping the binary inside the plugin; a QML-only implementation | Binaries in a plugin repo trigger review; QML cannot hold the engine's I/O and secret isolation |
 | Platform order | macOS app first, then Omarchy, other Linux desktops, Windows | Omarchy first with macOS after v1 (the earlier order) | Owner decision: the owner uses CodexBar on a Mac daily, and a faithful macOS clone is the first product; the engine and contract stay shared, so Omarchy follows without rework |
-| v1 scope | Claude, Codex and Antigravity at full parity | All 91 providers before the first release | A deep first release ships far sooner; the owner uses these three daily |
+| v1 scope | Claude, Codex and Antigravity at full parity | All providers before the first release | A deep first release ships far sooner; the owner uses these three daily |
 | Parity baseline | CodexBar v0.79.0, commit `b49d42eb53bbf79785b344492d594760dd163eac` | Tracking upstream HEAD; keeping `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce` | Owner decision: v0.79.0 is the release the owner runs, so its source and the running app describe the same behavior and UI; a fixed target still makes parity testable. Earlier ports are re-checked in M2.1 |
 | UI reference | CodexBar's source at the baseline, plus captures of the running CodexBar app at the same commit made with REA on the owner's Mac | Source only; screenshots from CodexBar's docs | Owner decision: captures give pixel-level references the source cannot; they show real account data, so they stay out of the repository |
 | Linux browser cookies | Automatic Chromium and Firefox import, opt-in per provider and limited to declared domains; manual paste kept | Manual-only, as CodexBar on Linux | Deliberate superset over CodexBar; opt-in and domain scoping keep it reviewable |
