@@ -18,6 +18,11 @@ name = "card_render"
 path = "tests/card_render.rs"
 harness = false
 
+[[test]]
+name = "settings_render"
+path = "tests/settings_render.rs"
+harness = false
+
 [dependencies]
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
 jiff = { workspace = true }

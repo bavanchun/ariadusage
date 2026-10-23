@@ -73,7 +73,7 @@ async fn client_handshakes_and_receives_snapshots_from_the_engine() {
             {
                 EngineEvent::Connected { .. } => connected = true,
                 EngineEvent::Snapshot(s) => snapshot = Some(s),
-                EngineEvent::Disconnected => {}
+                EngineEvent::Settings(_) | EngineEvent::Disconnected => {}
             }
         }
         (connected, snapshot.unwrap())
@@ -170,7 +170,7 @@ async fn client_reconnects_and_resets_backoff_after_the_engine_restarts() {
             {
                 EngineEvent::Connected { .. } => connected = true,
                 EngineEvent::Snapshot(s) => snapshot = Some(s),
-                EngineEvent::Disconnected => {}
+                EngineEvent::Settings(_) | EngineEvent::Disconnected => {}
             }
         }
         (connected, snapshot.unwrap())

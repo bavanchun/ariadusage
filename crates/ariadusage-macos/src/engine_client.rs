@@ -15,10 +15,11 @@ use std::thread;
 use std::time::Duration;
 
 use ariadusage_protocol::MAX_FRAME_BYTES;
-use ariadusage_protocol::ids::ProviderId;
+use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
 use ariadusage_protocol::ipc::{
     ClientInfo, ClientMessage, PROTOCOL_V1, ServerMessage, Topic, parse_server_message,
 };
+use ariadusage_protocol::settings::{SettingsPage, SettingsScope};
 use ariadusage_protocol::snapshot::EngineSnapshot;
 
 /// Name this client reports in its handshake.
@@ -43,6 +44,8 @@ pub enum EngineEvent {
     Connected { engine_version: String },
     /// The engine pushed a new snapshot.
     Snapshot(Box<EngineSnapshot>),
+    /// The engine returned a settings page.
+    Settings(Box<SettingsPage>),
     /// The connection failed or closed; a reconnect is scheduled.
     Disconnected,
 }
@@ -91,14 +94,33 @@ impl EngineClient {
         self.send(&ClientMessage::Refresh { provider, id: None });
     }
 
+    /// Requests the settings descriptors for `scope`.
+    pub fn get_settings(&self, scope: SettingsScope) {
+        self.send(&ClientMessage::GetSettings { scope, id: None });
+    }
+
+    /// Updates a non-secret setting in the engine.
+    pub fn set_setting(&self, id: SettingId, value: serde_json::Value) {
+        self.send(&ClientMessage::SetSetting { id, value });
+    }
+
+    /// Runs a maintenance or provider action in the engine.
+    pub fn run_action(&self, id: ActionId, confirm: Option<bool>) {
+        self.send(&ClientMessage::RunAction { id, confirm });
+    }
+
     fn send(&self, message: &ClientMessage) {
-        let mut guard = self.writer.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(stream) = guard.as_mut()
-            && write_message(stream, message).is_err()
-        {
-            let _ = stream.shutdown(Shutdown::Both);
-            *guard = None;
-        }
+        send_to_writer(&self.writer, message);
+    }
+}
+
+fn send_to_writer(writer: &Mutex<Option<UnixStream>>, message: &ClientMessage) {
+    let mut guard = writer.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(stream) = guard.as_mut()
+        && write_message(stream, message).is_err()
+    {
+        let _ = stream.shutdown(Shutdown::Both);
+        *guard = None;
     }
 }
 
@@ -145,11 +167,18 @@ where
     write_message(
         &mut write_half,
         &ClientMessage::Subscribe {
-            topics: vec![Topic::Snapshot],
+            topics: vec![Topic::Snapshot, Topic::Settings],
             id: None,
         },
     )?;
     write_message(&mut write_half, &ClientMessage::GetSnapshot { id: None })?;
+    write_message(
+        &mut write_half,
+        &ClientMessage::GetSettings {
+            scope: SettingsScope::App,
+            id: None,
+        },
+    )?;
     *writer.lock().unwrap_or_else(PoisonError::into_inner) = Some(write_half);
 
     let mut reader = BufReader::new(stream);
@@ -165,7 +194,19 @@ where
                 *got_snapshot = true;
                 on_event(EngineEvent::Snapshot(snapshot));
             }
-            // Responses, notices and settings pushes are not used yet.
+            Ok(ServerMessage::SettingsChanged { scope }) => {
+                send_to_writer(writer, &ClientMessage::GetSettings { scope, id: None });
+            }
+            Ok(ServerMessage::Response {
+                ok: Some(true),
+                payload: Some(payload),
+                ..
+            }) => {
+                if let Ok(page) = serde_json::from_value::<SettingsPage>(payload) {
+                    on_event(EngineEvent::Settings(Box::new(page)));
+                }
+            }
+            // Other responses and notices are not used yet.
             Ok(_) | Err(_) => {}
         }
     }

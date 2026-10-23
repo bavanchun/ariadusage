@@ -29,7 +29,7 @@ use crate::presentation;
 use crate::switcher::{self, SwitcherSegment, SwitcherSelection};
 
 /// Default version string shown in `About AriadUsage (vX.Y.Z)`.
-pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub use crate::settings::APP_VERSION;
 
 /// Metadata for a provider's contextual menu actions (`ProviderMetadata`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

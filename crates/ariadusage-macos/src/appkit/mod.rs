@@ -15,10 +15,14 @@ mod date_texts;
 mod icon_image;
 mod menu;
 mod progress_bar_view;
+mod settings_view;
+mod settings_window;
 mod switcher_view;
 
 pub use card_view::{CardView, png_bytes};
 pub use date_texts::FoundationDateTexts;
+pub use settings_view::SettingsView;
+pub use settings_window::SettingsWindowController;
 pub use switcher_view::SwitcherView;
 
 use std::cell::RefCell;
@@ -34,9 +38,11 @@ use objc2_app_kit::{
 };
 use objc2_foundation::NSString;
 
+use crate::card::CardPreferences;
 use crate::engine_client::{EngineClient, EngineEvent};
 use crate::icon;
 use crate::presentation::{self, IconPreferences};
+use crate::settings::{SettingsPane, SettingsState};
 use crate::switcher::SwitcherSelection;
 
 /// Autosave name of the merged status item, so macOS keeps its position.
@@ -47,7 +53,9 @@ const STATUS_ITEM_ACCESSIBILITY_IDENTIFIER: &str = "AriadUsage.StatusItem";
 struct AppState {
     status_item: Retained<NSStatusItem>,
     menu: menu::MenuController,
+    settings_window: SettingsWindowController,
     snapshot: Option<EngineSnapshot>,
+    settings_state: SettingsState,
     connected: bool,
     selected_tab: Option<SwitcherSelection>,
     last_provider_id: Option<String>,
@@ -71,13 +79,16 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     .map_err(|err| format!("could not start the engine connection: {err}"))?;
 
     let status_item = make_status_item(mtm);
-    let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab);
+    let settings_window = SettingsWindowController::new(mtm, Some(client.clone()));
+    let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab, open_settings_window);
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
         *cell.borrow_mut() = Some(AppState {
             status_item,
             menu,
+            settings_window,
             snapshot: None,
+            settings_state: SettingsState::default(),
             connected: false,
             selected_tab: None,
             last_provider_id: None,
@@ -88,6 +99,14 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
 
     app.run();
     Ok(())
+}
+
+fn open_settings_window(pane: Option<SettingsPane>) {
+    STATE.with(|cell| {
+        let guard = cell.borrow();
+        let Some(state) = guard.as_ref() else { return };
+        state.settings_window.show_window(pane);
+    });
 }
 
 fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
@@ -115,7 +134,22 @@ fn handle_event(event: EngineEvent) {
             EngineEvent::Connected { .. } => state.connected = true,
             EngineEvent::Snapshot(snapshot) => {
                 state.connected = true;
+                state.settings_window.apply_snapshot((*snapshot).clone());
                 state.snapshot = Some(*snapshot);
+            }
+            EngineEvent::Settings(page) => {
+                state.connected = true;
+                state.settings_state.apply_page(&page);
+                state.prefs.show_used = state.settings_state.menu_bar_show_used;
+                let card_prefs = CardPreferences {
+                    show_used: state.settings_state.menu_bar_show_used,
+                    show_optional_credits_and_extra_usage: state
+                        .settings_state
+                        .show_optional_credits,
+                    ..CardPreferences::default()
+                };
+                state.menu.set_prefs(card_prefs);
+                state.settings_window.apply_settings_page(&page);
             }
             EngineEvent::Disconnected => state.connected = false,
         }

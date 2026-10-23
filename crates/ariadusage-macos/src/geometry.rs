@@ -34,6 +34,10 @@ impl Rect {
         self.y + self.h
     }
 
+    pub fn mid_y(&self) -> f64 {
+        self.y + self.h / 2.0
+    }
+
     /// The rectangle grown by `dy` above and below.
     pub fn outset_y(&self, dy: f64) -> Rect {
         Rect::new(self.x, self.y - dy, self.w, self.h + 2.0 * dy)
