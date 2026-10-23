@@ -1,6 +1,6 @@
 // Ported from CodexBar Tests/CodexBarTests/BrowserCookieAccessGateTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 #[path = "support/cookie_db.rs"]
 mod cookie_db;
@@ -19,15 +19,15 @@ use ariadusage_protocol::ids::ProviderId;
 use sha2::{Digest, Sha256};
 
 use cookie_db::{
-    ChromiumRow, StaticKeys, TestHome, authorization, create_chromium_database, insert_chromium,
-    insert_firefox,
+    ChromiumRow, KEYED_TAG, StaticKeys, TestHome, authorization, create_chromium_database,
+    insert_chromium, insert_firefox,
 };
 
 fn encrypted_v11(host: &str, value: &str) -> Vec<u8> {
     let mut plaintext = Sha256::digest(host.as_bytes()).to_vec();
     plaintext.extend_from_slice(value.as_bytes());
     let encrypted = test_support::encrypt_test(&plaintext, b"family-key").expect("test encryption");
-    let mut tagged = b"v11".to_vec();
+    let mut tagged = KEYED_TAG.to_vec();
     tagged.extend_from_slice(&encrypted);
     tagged
 }
@@ -103,22 +103,37 @@ fn read_with(
 fn background_locked_key_does_not_unlock_and_plaintext_version_ten_remains_available() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
-    let mut plaintext = Sha256::digest(b".claude.ai").to_vec();
-    plaintext.extend_from_slice(b"legacy-value");
-    let encrypted = test_support::encrypt_test(&plaintext, b"peanuts").expect("ciphertext");
-    let mut tagged = b"v10".to_vec();
-    tagged.extend_from_slice(&encrypted);
+    #[cfg(target_os = "macos")]
     insert_chromium(
         &profile.join("Cookies"),
         ChromiumRow {
             host: ".claude.ai",
             name: "legacy",
             expires_utc: 0,
-            value: "",
-            encrypted: &tagged,
+            value: "legacy-value",
+            encrypted: b"",
             partition_key: "",
         },
     );
+    #[cfg(not(target_os = "macos"))]
+    {
+        let mut plaintext = Sha256::digest(b".claude.ai").to_vec();
+        plaintext.extend_from_slice(b"legacy-value");
+        let encrypted = test_support::encrypt_test(&plaintext, b"peanuts").expect("ciphertext");
+        let mut tagged = b"v10".to_vec();
+        tagged.extend_from_slice(&encrypted);
+        insert_chromium(
+            &profile.join("Cookies"),
+            ChromiumRow {
+                host: ".claude.ai",
+                name: "legacy",
+                expires_utc: 0,
+                value: "",
+                encrypted: &tagged,
+                partition_key: "",
+            },
+        );
+    }
     let v11 = encrypted_v11(".claude.ai", "locked-v11");
     insert_chromium(
         &profile.join("Cookies"),
@@ -386,7 +401,7 @@ fn acknowledged_retry_with_two_profiles_reuses_cached_key_under_remaining_family
             partition_key: "",
         },
     );
-    let extra = home.config.join("google-chrome/Profile 1");
+    let extra = home.chromium_root(Browser::Chrome).join("Profile 1");
     std::fs::create_dir_all(&extra).expect("extra profile");
     create_chromium_database(&extra.join("Cookies"), 24);
     let val_work = encrypted_v11(".claude.ai", "Work");
@@ -401,7 +416,7 @@ fn acknowledged_retry_with_two_profiles_reuses_cached_key_under_remaining_family
             partition_key: "",
         },
     );
-    let local_state = home.config.join("google-chrome/Local State");
+    let local_state = home.chromium_root(Browser::Chrome).join("Local State");
     std::fs::write(
         &local_state,
         serde_json::json!({
@@ -516,7 +531,7 @@ fn plaintext_cookie_does_not_clear_family_dismissal_for_a_later_profile() {
         FetchInteraction::UserInitiated,
         Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
     );
-    let chrome_database = home.config.join("google-chrome/Default/Cookies");
+    let chrome_database = home.chromium_root(Browser::Chrome).join("Default/Cookies");
     insert_chromium(
         &chrome_database,
         ChromiumRow {
@@ -618,7 +633,7 @@ fn v11_rows_can_use_the_empty_password_fallback() {
     let mut plaintext = Sha256::digest(b".claude.ai").to_vec();
     plaintext.extend_from_slice(b"empty-fallback");
     let encrypted = test_support::encrypt_test(&plaintext, b"").expect("empty-key ciphertext");
-    let mut tagged = b"v11".to_vec();
+    let mut tagged = KEYED_TAG.to_vec();
     tagged.extend_from_slice(&encrypted);
     insert_chromium(
         &profile.join("Cookies"),
@@ -676,4 +691,124 @@ fn dismissal_cooldown_keeps_only_opaque_digest_keys() {
     let serialized = serde_json::to_string(&state).expect("serialized state");
     assert!(!serialized.contains("private profile name"));
     assert!(state.browser_cooldowns.keys().all(|key| key.len() == 64));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_keychain_safe_storage_source_enforces_background_no_ui_and_dismissal_cooldown() {
+    use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageKeySource;
+    use ariadusage_engine::brokers::secret_store::service::{
+        MacosKeychainOperations, ServiceBackend, os_status,
+    };
+    use std::sync::Mutex;
+    use zeroize::Zeroizing;
+
+    struct ScriptedKeychain {
+        calls: Mutex<Vec<(String, String, bool)>>,
+        next_status: Mutex<i32>,
+    }
+
+    impl MacosKeychainOperations for ScriptedKeychain {
+        fn read_generic_password(
+            &self,
+            service: &str,
+            account: &str,
+            allow_interaction: bool,
+        ) -> Result<Zeroizing<Vec<u8>>, i32> {
+            self.calls.lock().expect("lock").push((
+                service.to_owned(),
+                account.to_owned(),
+                allow_interaction,
+            ));
+            let status = *self.next_status.lock().expect("lock");
+            if status == os_status::ERR_SEC_SUCCESS {
+                Ok(Zeroizing::new(b"family-key".to_vec()))
+            } else {
+                Err(status)
+            }
+        }
+
+        fn write_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+            _label: &str,
+            _password: &[u8],
+        ) -> Result<(), i32> {
+            Err(os_status::ERR_SEC_UNIMPLEMENTED)
+        }
+    }
+
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Chrome Work");
+    add_v11_profile(&home, Browser::Brave, "Brave Personal");
+
+    let keychain = Arc::new(ScriptedKeychain {
+        calls: Mutex::new(Vec::new()),
+        next_status: Mutex::new(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED),
+    });
+    let key_source: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(
+        ServiceBackend::with_operations(Arc::clone(&keychain)),
+    ));
+
+    // 1. Background read passes allow_interaction=false; ERR_SEC_INTERACTION_NOT_ALLOWED -> Locked (no cooldown)
+    let bg_err = read(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::Background,
+        Arc::clone(&key_source),
+    )
+    .expect_err("background interaction disallowed");
+    assert_eq!(bg_err, BrowserError::Locked);
+    assert_eq!(cooldown_count(&home), 0);
+    assert_eq!(
+        keychain.calls.lock().expect("lock").as_slice(),
+        &[("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), false)]
+    );
+
+    // 2. User-initiated read passes allow_interaction=true; ERR_SEC_USER_CANCELED -> Dismissed + 6h cooldown,
+    //    and stops before prompting Brave in the same user action.
+    keychain.calls.lock().expect("lock").clear();
+    *keychain.next_status.lock().expect("lock") = os_status::ERR_SEC_USER_CANCELED;
+    let user_err = read(
+        &home,
+        &[Browser::Chrome, Browser::Brave],
+        FetchInteraction::UserInitiated,
+        Arc::clone(&key_source),
+    )
+    .expect_err("user cancelled Keychain prompt");
+    assert_eq!(user_err, BrowserError::Dismissed);
+    assert_eq!(cooldown_count(&home), 2);
+    assert_eq!(
+        keychain.calls.lock().expect("lock").as_slice(),
+        &[("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true)]
+    );
+
+    // 3. Subsequent user-initiated read without acknowledged_retry is blocked by cooldown (0 Keychain calls).
+    keychain.calls.lock().expect("lock").clear();
+    *keychain.next_status.lock().expect("lock") = os_status::ERR_SEC_SUCCESS;
+    let blocked = read(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        Arc::clone(&key_source),
+    )
+    .expect_err("blocked by cooldown");
+    assert_eq!(blocked, BrowserError::Dismissed);
+    assert!(keychain.calls.lock().expect("lock").is_empty());
+
+    // 4. Acknowledged retry bypasses cooldown, decrypts v10 cookie, and clears cooldown.
+    let candidates = read_acknowledged(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        Arc::clone(&key_source),
+    )
+    .expect("acknowledged retry succeeds");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].records[0].value.expose_secret(),
+        "Chrome Work"
+    );
+    assert_eq!(cooldown_count(&home), 0);
 }

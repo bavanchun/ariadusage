@@ -67,7 +67,7 @@ pub fn create(_call: &BrokerCall) -> Result<PrivateTempDir, TempDirError> {
 
 /// Creates a new private temporary directory under the specified parent directory with mode 0700.
 pub fn create_in(parent: &Path) -> Result<PrivateTempDir, TempDirError> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::fs::PermissionsExt;
         let tempdir = tempfile::Builder::new()
@@ -80,7 +80,7 @@ pub fn create_in(parent: &Path) -> Result<PrivateTempDir, TempDirError> {
             path,
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = parent;
         Err(TempDirError::Unsupported)

@@ -1,5 +1,5 @@
 // Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 #[path = "support/cookie_db.rs"]
 mod cookie_db;
@@ -117,7 +117,7 @@ fn firefox_container_rows_are_separate_candidates_and_partitioned_rows_are_dropp
 // CodexBar: BrowserDetectionTests.swift:796
 fn firefox_profile_without_its_default_database_has_no_session() {
     let home = TestHome::new();
-    let root = home.config.join("mozilla/firefox");
+    let root = home.firefox_root();
     std::fs::create_dir_all(root.join("default-release")).expect("Firefox profile directory");
     std::fs::write(
         root.join("profiles.ini"),

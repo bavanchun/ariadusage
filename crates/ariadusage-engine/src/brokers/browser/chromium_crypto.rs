@@ -8,6 +8,9 @@ use zeroize::Zeroizing;
 type Aes128CbcDecryptor = cbc::Decryptor<Aes128>;
 
 const SALT: &[u8] = b"saltysalt";
+#[cfg(target_os = "macos")]
+const ITERATIONS: u32 = 1003;
+#[cfg(not(target_os = "macos"))]
 const ITERATIONS: u32 = 1;
 const IV: [u8; 16] = [0x20; 16];
 const V10_PASSWORD: &[u8] = b"peanuts";

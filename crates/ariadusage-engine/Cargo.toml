@@ -34,17 +34,19 @@ tokio-util = { workspace = true, features = ["codec"] }
 zeroize = { workspace = true }
 serde_json = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "pipe"] }
 aes = { workspace = true }
 cbc = { workspace = true }
 pbkdf2 = { workspace = true }
+rusqlite = { workspace = true }
+sha1 = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
 process-wrap = { workspace = true }
 procfs = { workspace = true }
 nix = { workspace = true, optional = true }
 pty-process = { workspace = true, features = ["async"] }
-rusqlite = { workspace = true }
-sha1 = { workspace = true }
 secret-service = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
