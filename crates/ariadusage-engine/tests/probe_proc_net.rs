@@ -1,5 +1,5 @@
 // Ported from CodexBar TestsLinux/ProcNetTCPListeningPortParserLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::collections::HashSet;
 use std::fs;

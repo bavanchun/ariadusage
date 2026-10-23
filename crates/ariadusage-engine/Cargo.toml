@@ -52,6 +52,7 @@ procfs = { workspace = true }
 secret-service = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+listeners = { workspace = true }
 proc_pidinfo = { workspace = true }
 security-framework = { workspace = true }
 sysinfo = { workspace = true }

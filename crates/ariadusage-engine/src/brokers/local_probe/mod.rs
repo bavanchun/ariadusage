@@ -1,19 +1,22 @@
-//! LocalProbe broker for same-user process and listening TCP port discovery via procfs.
+// Ported from CodexBar Sources/CodexBarCore/DarwinProcessEnumerator.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+//! LocalProbe broker for same-user process and listening TCP port discovery.
 
 pub mod error;
 pub mod proc_net;
 
 use std::fmt;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::io::Read;
 use std::path::Path;
-#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+#[cfg(any(unix, feature = "test-hooks"))]
 use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::brokers::call::BrokerCall;
 use crate::brokers::process::ProcessIdentity;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use crate::brokers::process::procscan;
 
 pub use error::ProbeError;
@@ -117,31 +120,51 @@ pub fn parse_cmdline(bytes: &[u8]) -> Vec<String> {
 /// The LocalProbe broker discovery interface.
 #[derive(Clone, Debug)]
 pub struct LocalProbe {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     proc_root: PathBuf,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     uid: u32,
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     own_net_ns: Option<String>,
+}
+
+#[cfg(unix)]
+fn proc_source_available(proc_root: &Path) -> bool {
+    #[cfg(target_os = "macos")]
+    if procscan::is_live_proc_root(proc_root) {
+        return true;
+    }
+    proc_root.exists()
+}
+
+#[cfg(unix)]
+fn read_process_argv(proc_root: &Path, pid: i32) -> Option<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    if procscan::is_live_proc_root(proc_root) {
+        return procscan::darwin_process_argv(pid);
+    }
+    let cmdline_path = proc_root.join(pid.to_string()).join("cmdline");
+    let file = std::fs::File::open(cmdline_path).ok()?;
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024).read_to_end(&mut bytes).ok()?;
+    Some(parse_cmdline(&bytes))
 }
 
 impl LocalProbe {
     /// Creates a LocalProbe with system defaults.
     pub fn new() -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let proc_root = PathBuf::from("/proc");
             let uid = rustix::process::getuid().as_raw();
-            let own_net_ns = std::fs::read_link("/proc/self/ns/net")
-                .ok()
-                .map(|p| p.to_string_lossy().into_owned());
+            let own_net_ns = procscan::process_net_ns(&proc_root, std::process::id() as i32);
             Self {
                 proc_root,
                 uid,
                 own_net_ns,
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             Self {}
         }
@@ -150,13 +173,15 @@ impl LocalProbe {
     /// Creates a LocalProbe with injected proc root, uid, and own network namespace identifier.
     #[cfg(feature = "test-hooks")]
     pub fn with_hooks(proc_root: PathBuf, uid: u32, own_net_ns: Option<String>) -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             let resolved_ns = own_net_ns.or_else(|| {
                 std::fs::read_link(proc_root.join("self/ns/net"))
-                    .or_else(|_| std::fs::read_link("/proc/self/ns/net"))
                     .ok()
                     .map(|p| p.to_string_lossy().into_owned())
+                    .or_else(|| {
+                        procscan::process_net_ns(Path::new("/proc"), std::process::id() as i32)
+                    })
             });
             Self {
                 proc_root,
@@ -164,7 +189,7 @@ impl LocalProbe {
                 own_net_ns: resolved_ns,
             }
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (proc_root, uid, own_net_ns);
             Self {}
@@ -173,11 +198,11 @@ impl LocalProbe {
 
     /// Accessor for the configured proc root path.
     pub fn proc_root(&self) -> &Path {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             &self.proc_root
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             Path::new("/proc")
         }
@@ -195,17 +220,17 @@ impl LocalProbe {
     where
         F: FnMut(&ArgvView<'_>) -> bool + Send + 'static,
     {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (call, keep);
             Err(ProbeError::Unsupported)
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             if call.cancel.is_cancelled() {
                 return Err(ProbeError::Cancelled);
             }
-            if !self.proc_root.exists() {
+            if !proc_source_available(&self.proc_root) {
                 return Err(ProbeError::ProcUnavailable);
             }
             let Some(own_net_ns) = self.own_net_ns.clone() else {
@@ -229,15 +254,9 @@ impl LocalProbe {
                         if net_ns.as_ref() != Some(&own_net_ns) {
                             continue;
                         }
-                        let cmdline_path = proc_root.join(identity.pid.to_string()).join("cmdline");
-                        let Ok(file) = std::fs::File::open(&cmdline_path) else {
+                        let Some(argv) = read_process_argv(&proc_root, identity.pid) else {
                             continue;
                         };
-                        let mut bytes = Vec::new();
-                        if file.take(1024 * 1024).read_to_end(&mut bytes).is_err() {
-                            continue;
-                        }
-                        let argv = parse_cmdline(&bytes);
                         let view = ArgvView::new(&argv);
                         if keep(&view) {
                             matched.push(ProbeProcess {
@@ -265,19 +284,19 @@ impl LocalProbe {
         }
     }
 
-    /// Discovers listening TCP ports for the specified `pid` from its open socket inodes.
+    /// Discovers listening TCP ports for the specified `pid` from its open socket descriptors.
     pub async fn listening_tcp_ports(
         &self,
         call: &BrokerCall,
         pid: i32,
         timeout: Duration,
     ) -> Result<Vec<u16>, ProbeError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (call, pid, timeout);
             Err(ProbeError::Unsupported)
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             if call.cancel.is_cancelled() {
                 return Err(ProbeError::Cancelled);
@@ -288,7 +307,7 @@ impl LocalProbe {
             if pid <= 0 {
                 return Err(ProbeError::NoListeningPorts);
             }
-            if !self.proc_root.exists() {
+            if !proc_source_available(&self.proc_root) {
                 return Err(ProbeError::ProcUnavailable);
             }
 
@@ -330,12 +349,12 @@ impl LocalProbe {
         identity: ProcessIdentity,
         port: u16,
     ) -> Result<bool, ProbeError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (call, identity, port);
             Err(ProbeError::Unsupported)
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             if call.cancel.is_cancelled() {
                 return Err(ProbeError::Cancelled);
@@ -343,7 +362,7 @@ impl LocalProbe {
             if identity.pid <= 0 {
                 return Ok(false);
             }
-            if !self.proc_root.exists() {
+            if !proc_source_available(&self.proc_root) {
                 return Err(ProbeError::ProcUnavailable);
             }
 
