@@ -87,11 +87,12 @@ impl BrowserBrokerInner {
             last_error: None,
         };
         while cursor.pending.is_empty() && cursor.read_next_browser().await {}
-        if call.cancel.is_cancelled() {
-            return Err(BrowserError::NoBrowserSession);
-        }
         if cursor.pending.is_empty() {
-            return Err(cursor.last_error.unwrap_or(BrowserError::NoBrowserSession));
+            return Err(if call.cancel.is_cancelled() {
+                BrowserError::NoBrowserSession
+            } else {
+                cursor.last_error.unwrap_or(BrowserError::NoBrowserSession)
+            });
         }
         Ok(cursor)
     }
