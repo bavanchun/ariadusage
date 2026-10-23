@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::sync::Mutex;
 
@@ -11,13 +11,67 @@ enum TestError {
 }
 
 #[tokio::test]
+async fn test_lazy_candidates_stop_loading_as_soon_as_an_attempt_succeeds() {
+    let loaded = Mutex::new(Vec::new());
+    let candidates = [1, 2, 3].into_iter().inspect(|&candidate| {
+        loaded.lock().unwrap().push(candidate);
+    });
+
+    let output = CandidateRetryRunner::run(
+        candidates,
+        |_error| true,
+        |_candidate, _err| {},
+        |candidate| {
+            let c = *candidate;
+            async move {
+                if c == 1 {
+                    Err(TestError::Retryable(c))
+                } else {
+                    Ok(c)
+                }
+            }
+        },
+    )
+    .await
+    .expect("Expected successful output");
+
+    assert_eq!(output, 2);
+    assert_eq!(*loaded.lock().unwrap(), vec![1, 2]);
+}
+
+#[tokio::test]
+async fn test_rejected_retry_does_not_load_the_next_candidate() {
+    let loaded = Mutex::new(Vec::new());
+    let candidates = [1, 2].into_iter().inspect(|&candidate| {
+        loaded.lock().unwrap().push(candidate);
+    });
+
+    let res: Result<i32, _> = CandidateRetryRunner::run(
+        candidates,
+        |error| matches!(error, TestError::Retryable(_)),
+        |_candidate, _err| {},
+        |candidate| {
+            let c = *candidate;
+            async move { Err(TestError::NonRetryable(c)) }
+        },
+    )
+    .await;
+
+    assert_eq!(
+        res,
+        Err(CandidateRetryError::Attempt(TestError::NonRetryable(1)))
+    );
+    assert_eq!(*loaded.lock().unwrap(), vec![1]);
+}
+
+#[tokio::test]
 async fn test_retries_then_succeeds() {
     let candidates = vec![1, 2, 3];
     let attempted = Mutex::new(Vec::new());
     let retried = Mutex::new(Vec::new());
 
     let output = CandidateRetryRunner::run(
-        &candidates,
+        candidates,
         |error| matches!(error, TestError::Retryable(_)),
         |candidate, _err| {
             retried.lock().unwrap().push(*candidate);
@@ -49,7 +103,7 @@ async fn test_non_retryable_fails_immediately() {
     let retried = Mutex::new(Vec::new());
 
     let res: Result<i32, _> = CandidateRetryRunner::run(
-        &candidates,
+        candidates,
         |error| matches!(error, TestError::Retryable(_)),
         |candidate, _err| {
             retried.lock().unwrap().push(*candidate);
@@ -78,7 +132,7 @@ async fn test_exhausted_retryable_throws_last_error() {
     let retried = Mutex::new(Vec::new());
 
     let res: Result<i32, _> = CandidateRetryRunner::run(
-        &candidates,
+        candidates,
         |error| matches!(error, TestError::Retryable(_)),
         |candidate, _err| {
             retried.lock().unwrap().push(*candidate);
@@ -105,7 +159,7 @@ async fn test_empty_candidates_throws_no_candidates() {
     let candidates: Vec<i32> = vec![];
 
     let res: Result<i32, CandidateRetryError<TestError>> = CandidateRetryRunner::run(
-        &candidates,
+        candidates,
         |_error| true,
         |_candidate, _err| {},
         |_candidate| async move { Ok(1) },

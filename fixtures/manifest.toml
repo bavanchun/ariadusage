@@ -314,6 +314,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/candidate.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderCandidateRetryRunner.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/outcome.rs"
@@ -338,6 +339,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_candidate_retry.rs"
 sources = ["Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_diagnostics.rs"
