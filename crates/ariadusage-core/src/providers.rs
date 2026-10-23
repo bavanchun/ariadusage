@@ -52,14 +52,14 @@ impl ProviderDescriptor {
     /// Presentation block that snapshots carry for this provider.
     pub fn presentation(&self) -> ProviderPresentation {
         let (red, green, blue) = self.accent_rgb;
+        let accent_color = ProviderPresentation::accent_color_from_rgb(red, green, blue);
+        debug_assert!(ProviderPresentation::validate_accent_color(&accent_color).is_ok());
         ProviderPresentation {
             short_display_name: self.short_display_name.to_string(),
             session_label: self.session_label.to_string(),
             weekly_label: self.weekly_label.to_string(),
             tertiary_label: self.opus_label.map(str::to_string),
-            accent_color: Some(ProviderPresentation::accent_color_from_rgb(
-                red, green, blue,
-            )),
+            accent_color: Some(accent_color),
         }
     }
 }
