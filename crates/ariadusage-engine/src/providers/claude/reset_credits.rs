@@ -208,6 +208,18 @@ impl ClaudeRateLimitResetCredits {
         })
     }
 
+    /// Converts these rate-limit reset credits into the Snapshot v1 `ResetCredits` struct.
+    ///
+    /// Note: Snapshot v1 projects Claude's `cedar_ember` reset credits into `UsageSnapshot.details`
+    /// via [`Self::detail_sections`] so grants remain visible when no `Credits` balance metric exists.
+    pub fn to_protocol_reset_credits(&self) -> Option<ariadusage_protocol::usage::ResetCredits> {
+        let available_count = u32::try_from(self.resets_left).ok()?;
+        Some(ariadusage_protocol::usage::ResetCredits {
+            available_count,
+            next_expires_at: self.expires_at,
+        })
+    }
+
     /// Projects reset credits to a bounded `DetailSection` for `UsageSnapshot.details`.
     pub fn detail_sections(&self) -> Vec<DetailSection> {
         if !(1..=Self::MAXIMUM_RESETS).contains(&self.resets_left) {

@@ -27,6 +27,22 @@ pub struct BillingDate {
     pub is_date_only: bool,
 }
 
+impl BillingDate {
+    /// Converts this billing date into the Snapshot v1 wire type.
+    pub fn to_protocol_billing_date(self) -> ariadusage_protocol::BillingDate {
+        ariadusage_protocol::BillingDate {
+            at: self.date,
+            date_only: self.is_date_only,
+        }
+    }
+}
+
+impl From<BillingDate> for ariadusage_protocol::BillingDate {
+    fn from(value: BillingDate) -> Self {
+        value.to_protocol_billing_date()
+    }
+}
+
 /// Error returned when `subscription_details` payload does not match the recognized schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ClaudeSubscriptionParseError {
@@ -50,6 +66,14 @@ impl ClaudeSubscriptionMetadata {
             self.expires.is_some_and(|d| d.is_date_only),
             self.renews.is_some_and(|d| d.is_date_only),
         )
+    }
+
+    /// Converts this subscription metadata into the Snapshot v1 wire type.
+    pub fn to_subscription_dates(&self) -> ariadusage_protocol::SubscriptionDates {
+        ariadusage_protocol::SubscriptionDates {
+            renews: self.renews.map(BillingDate::to_protocol_billing_date),
+            expires: self.expires.map(BillingDate::to_protocol_billing_date),
+        }
     }
 
     /// Parses a raw `subscription_details` JSON payload.
@@ -98,6 +122,18 @@ impl ClaudeSubscriptionMetadata {
             renews: renewal,
             expires: end,
         })
+    }
+}
+
+impl From<&ClaudeSubscriptionMetadata> for ariadusage_protocol::SubscriptionDates {
+    fn from(value: &ClaudeSubscriptionMetadata) -> Self {
+        value.to_subscription_dates()
+    }
+}
+
+impl From<ClaudeSubscriptionMetadata> for ariadusage_protocol::SubscriptionDates {
+    fn from(value: ClaudeSubscriptionMetadata) -> Self {
+        value.to_subscription_dates()
     }
 }
 

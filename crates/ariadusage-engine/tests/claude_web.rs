@@ -2756,3 +2756,120 @@ async fn web_extras_profile_strict_failure_email_override_and_redaction_invarian
     );
     m_web_orgs.delete();
 }
+
+#[test]
+fn claude_snapshot_projects_into_protocol_v1_subscription_cost_identity_and_details() {
+    use ariadusage_core::projection::{ProjectionInput, RefreshState, provider_snapshot};
+    use ariadusage_engine::providers::claude::{
+        ClaudeAccountIdentity, ClaudeOAuthUsageFetcher, ClaudeSubscriptionMetadata,
+    };
+    use ariadusage_protocol::SourceKind;
+
+    let now = Timestamp::from_second(1_800_000_000).unwrap();
+    let oauth_json = br#"{
+      "five_hour": { "utilization": 25.0, "resets_at": "2027-01-15T15:00:00Z" },
+      "seven_day": { "utilization": 40.0, "resets_at": "2027-01-20T00:00:00Z" },
+      "extra_usage": {
+        "is_enabled": true,
+        "monthly_limit": 5000,
+        "used_credits": 1250,
+        "currency": "USD"
+      },
+      "cedar_ember": {
+        "eligible": true,
+        "grants": [
+          {
+            "paused": false,
+            "resets_left": 2,
+            "resets_total": 3,
+            "ends_at": "2027-02-01T00:00:00Z"
+          }
+        ]
+      }
+    }"#;
+    let resp = ClaudeOAuthUsageFetcher::decode_usage_response(oauth_json).unwrap();
+    let identity = ClaudeAccountIdentity {
+        account_uuid: Some("acct-uuid-1".to_owned()),
+        email: Some("user@example.invalid".to_owned()),
+        organization_uuid: Some("org-uuid-1".to_owned()),
+        organization_name: Some("Example Org".to_owned()),
+    };
+    let mapped = ClaudeOAuthUsageFetcher::map_usage_response(
+        &resp,
+        Some("max"),
+        None,
+        Some(&identity),
+        Some("owner-1".to_owned()),
+        true,
+        now,
+    )
+    .unwrap();
+
+    assert_eq!(
+        mapped
+            .reset_credits
+            .as_ref()
+            .and_then(|rc| rc.to_protocol_reset_credits())
+            .map(|rc| rc.available_count),
+        Some(2)
+    );
+
+    let sub_json = br#"{
+      "status": "active",
+      "next_charge_at": null,
+      "next_charge_date": "2027-02-15",
+      "plan_ending_at": null,
+      "plan_ending_before": null
+    }"#;
+    let sub_meta = ClaudeSubscriptionMetadata::parse(sub_json).unwrap();
+    let proto_dates = sub_meta.to_subscription_dates();
+    assert!(proto_dates.renews.is_some_and(|d| d.date_only));
+    assert!(proto_dates.expires.is_none());
+
+    let mut snap = sub_meta.applying(&mapped.snapshot);
+    let mut cost = snap.provider_cost.clone().unwrap();
+    cost.balance = Some(75.0);
+    snap.provider_cost = Some(cost);
+    snap.identity.as_mut().unwrap().account_organization = Some("Example Org".to_owned());
+
+    let projected = provider_snapshot(
+        &snap,
+        &ProjectionInput {
+            provider: ProviderId::new("claude").unwrap(),
+            display_name: "Claude".to_owned(),
+            enabled: true,
+            source_mode: "auto".to_owned(),
+            refresh: RefreshState::Fresh,
+            kept_snapshot: false,
+            as_of: now,
+            source_kind: SourceKind::Oauth,
+            source_label: "oauth".to_owned(),
+            error: None,
+            pace: None,
+        },
+    );
+
+    let sub_metric = projected.subscription.expect("subscription metric");
+    assert_eq!(sub_metric.value, Some(proto_dates));
+    assert_eq!(sub_metric.source.unwrap().label, "oauth");
+
+    let cost_metric = projected.cost.expect("cost metric");
+    let cost_val = cost_metric.value.expect("cost value");
+    assert_eq!(cost_val.used, 12.5);
+    assert_eq!(cost_val.limit, Some(50.0));
+    assert_eq!(cost_val.balance, Some(75.0));
+    assert_eq!(cost_val.currency_code, "USD");
+
+    let id_metric = projected.identity.expect("identity metric");
+    let id_val = id_metric.value.expect("identity value");
+    assert_eq!(
+        id_val.account_email.as_deref(),
+        Some("user@example.invalid")
+    );
+    assert_eq!(id_val.account_organization.as_deref(), Some("Example Org"));
+    assert_eq!(id_val.plan.as_deref(), Some("Claude Max"));
+
+    assert_eq!(projected.details.len(), 1);
+    assert_eq!(projected.details[0].rows[0].label, "Limit Reset Credits");
+    assert_eq!(projected.details[0].rows[0].value, "2 available");
+}
