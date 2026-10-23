@@ -74,7 +74,7 @@ impl BrowserBrokerInner {
         let mut found = Vec::new();
         let mut saw_profile = false;
         let mut last_error = None;
-        let mut retry_scope = RetryScope::new();
+        let mut retry_scope = RetryScope::new(call, query.acknowledged_retry);
         let mut safe_storage_keys = HashMap::new();
         let mut chromium_access = super::chromium::ChromiumAccess::new(
             &self.gate,

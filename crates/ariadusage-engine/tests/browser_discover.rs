@@ -43,6 +43,7 @@ fn candidates_with_broker(
         domains: &domains,
         names: None,
         browsers,
+        acknowledged_retry: false,
     };
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -92,6 +93,7 @@ fn test_hooks_suppress_a_real_home_symlink_alias_before_discovery() {
         domains: &domains,
         names: None,
         browsers: &[],
+        acknowledged_retry: false,
     };
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -130,6 +132,7 @@ fn test_hooks_report_typed_suppression_for_the_injected_process_home() {
         domains: &domains,
         names: None,
         browsers: &[],
+        acknowledged_retry: false,
     };
     let result = tokio::runtime::Builder::new_current_thread()
         .enable_all()

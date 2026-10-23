@@ -1,4 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/BrowserCookieAccessGateTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/BrowserCookieAccessGateTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/cookie_db.rs"]
@@ -17,7 +18,9 @@ use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageError;
 use ariadusage_protocol::ids::ProviderId;
 use sha2::{Digest, Sha256};
 
-use cookie_db::{ChromiumRow, StaticKeys, TestHome, authorization, insert_chromium};
+use cookie_db::{
+    ChromiumRow, StaticKeys, TestHome, authorization, insert_chromium, insert_firefox,
+};
 
 fn encrypted_v11(host: &str, value: &str) -> Vec<u8> {
     let mut plaintext = Sha256::digest(host.as_bytes()).to_vec();
@@ -44,12 +47,35 @@ fn add_v11_profile(home: &TestHome, browser: Browser, name: &str) {
     );
 }
 
+type CandidatesResult =
+    Result<Vec<ariadusage_engine::brokers::browser::CookieCandidate>, BrowserError>;
+
 fn read(
     home: &TestHome,
     browsers: &[Browser],
     interaction: FetchInteraction,
     keys: Arc<dyn SafeStorageKeyProvider>,
-) -> Result<Vec<ariadusage_engine::brokers::browser::CookieCandidate>, BrowserError> {
+) -> CandidatesResult {
+    read_with(home, browsers, interaction, false, keys)
+}
+
+/// Reads as a retry the user acknowledged, the only kind allowed through a saved cooldown.
+fn read_acknowledged(
+    home: &TestHome,
+    browsers: &[Browser],
+    interaction: FetchInteraction,
+    keys: Arc<dyn SafeStorageKeyProvider>,
+) -> CandidatesResult {
+    read_with(home, browsers, interaction, true, keys)
+}
+
+fn read_with(
+    home: &TestHome,
+    browsers: &[Browser],
+    interaction: FetchInteraction,
+    acknowledged_retry: bool,
+    keys: Arc<dyn SafeStorageKeyProvider>,
+) -> CandidatesResult {
     let broker = home.broker(keys);
     let domains = cookie_core::DeclaredDomains::new(["claude.ai"]).expect("declared host");
     let query = CookieQuery {
@@ -57,6 +83,7 @@ fn read(
         domains: &domains,
         names: None,
         browsers,
+        acknowledged_retry,
     };
     let call = BrokerCall {
         interaction,
@@ -71,7 +98,7 @@ fn read(
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:54
+// CodexBar: BrowserCookieAccessGateTests.swift:55
 fn background_locked_key_does_not_unlock_and_plaintext_version_ten_remains_available() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
@@ -119,7 +146,7 @@ fn background_locked_key_does_not_unlock_and_plaintext_version_ten_remains_avail
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:74
+// CodexBar: BrowserCookieAccessGateTests.swift:73
 fn a_dismissal_persists_browser_and_family_cooldowns() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
@@ -149,7 +176,7 @@ fn a_dismissal_persists_browser_and_family_cooldowns() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:82
+// CodexBar: BrowserCookieAccessGateTests.swift:81
 fn background_reads_skip_a_dismissed_chromium_family() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
@@ -179,34 +206,156 @@ fn background_reads_skip_a_dismissed_chromium_family() {
     assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
 }
 
-#[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:92
-fn one_user_retry_can_clear_a_family_dismissal() {
-    let home = TestHome::new();
-    add_v11_profile(&home, Browser::Chrome, "Work");
-    let _ = read(
-        &home,
-        &[Browser::Chrome],
+fn dismiss(home: &TestHome, browser: Browser) {
+    let error = read(
+        home,
+        &[browser],
         FetchInteraction::UserInitiated,
         Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
-    );
+    )
+    .expect_err("dismissal surfaced");
+    assert_eq!(error, BrowserError::Dismissed);
+}
+
+fn cooldown_count(home: &TestHome) -> usize {
+    home.state_store()
+        .load()
+        .expect("saved state")
+        .browser_cooldowns
+        .len()
+}
+
+#[test]
+// CodexBar: BrowserCookieAccessGateTests.swift:55
+// CodexBar: BrowserDetectionTests.swift:529
+fn manual_retry_respects_browser_and_family_denial_cooldowns() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Work");
+    add_v11_profile(&home, Browser::Brave, "Personal");
+    dismiss(&home, Browser::Chrome);
+
     let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
-    let candidates = read(
+    for browser in [Browser::Chrome, Browser::Brave] {
+        let error = read(
+            &home,
+            &[browser],
+            FetchInteraction::UserInitiated,
+            keys.clone(),
+        )
+        .expect_err("cooldown blocks a manual retry");
+        assert_eq!(error, BrowserError::Dismissed);
+    }
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(cooldown_count(&home), 2);
+}
+
+#[test]
+// CodexBar: BrowserDetectionTests.swift:397
+fn acknowledged_retry_reads_through_the_cooldown_and_clears_it() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Work");
+    dismiss(&home, Browser::Chrome);
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    let candidates = read_acknowledged(
         &home,
         &[Browser::Chrome],
         FetchInteraction::UserInitiated,
         keys.clone(),
     )
-    .expect("explicit retry");
+    .expect("acknowledged retry");
     assert_eq!(candidates[0].records[0].value.expose_secret(), "Work");
     assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
-    assert!(
-        home.state_store()
-            .load()
-            .expect("cleared cooldown")
-            .browser_cooldowns
-            .is_empty()
+    assert_eq!(cooldown_count(&home), 0);
+}
+
+#[test]
+// CodexBar: BrowserCookieAccessGateTests.swift:55
+fn acknowledgement_does_not_bypass_a_cooldown_in_the_background() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Work");
+    dismiss(&home, Browser::Chrome);
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    let error = read_acknowledged(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::Background,
+        keys.clone(),
+    )
+    .expect_err("background stays suppressed");
+    assert_eq!(error, BrowserError::Dismissed);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(cooldown_count(&home), 2);
+}
+
+#[test]
+fn acknowledged_success_keeps_another_browsers_family_cooldown() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Work");
+    add_v11_profile(&home, Browser::Brave, "Personal");
+    dismiss(&home, Browser::Brave);
+    let error = read_acknowledged(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
+    )
+    .expect_err("acknowledged retry dismissed");
+    assert_eq!(error, BrowserError::Dismissed);
+    assert_eq!(cooldown_count(&home), 3);
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    read_acknowledged(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+    )
+    .expect("acknowledged retry");
+    assert_eq!(cooldown_count(&home), 2);
+
+    let error = read(
+        &home,
+        &[Browser::Chrome],
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+    )
+    .expect_err("the remaining family cooldown still applies");
+    assert_eq!(error, BrowserError::Dismissed);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+// CodexBar: BrowserCookieAccessGateTests.swift:180
+fn firefox_reads_ignore_a_chromium_family_cooldown() {
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Work");
+    dismiss(&home, Browser::Chrome);
+    let profile = home.firefox_profile("default-release", 17);
+    let expires = (jiff::Timestamp::now().as_second() + 3600) * 1000;
+    insert_firefox(
+        &profile.join("cookies.sqlite"),
+        ".claude.ai",
+        "sid",
+        expires,
+        "firefox-value",
+        "",
     );
+
+    let keys = Arc::new(StaticKeys::available(b"family-key".to_vec()));
+    let candidates = read(
+        &home,
+        &[Browser::Firefox],
+        FetchInteraction::Background,
+        keys.clone(),
+    )
+    .expect("Firefox candidate");
+    assert_eq!(
+        candidates[0].records[0].value.expose_secret(),
+        "firefox-value"
+    );
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -258,19 +407,14 @@ fn plaintext_cookie_does_not_clear_family_dismissal_for_a_later_profile() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:103
+// CodexBar: BrowserDetectionTests.swift:440
 fn one_retry_scope_does_not_prompt_twice_after_a_retry_dismissal() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
     add_v11_profile(&home, Browser::Brave, "Personal");
-    let _ = read(
-        &home,
-        &[Browser::Chrome],
-        FetchInteraction::UserInitiated,
-        Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
-    );
+    dismiss(&home, Browser::Chrome);
     let keys = Arc::new(StaticKeys::failing(SafeStorageError::Dismissed));
-    let error = read(
+    let error = read_acknowledged(
         &home,
         &[Browser::Chrome, Browser::Brave],
         FetchInteraction::UserInitiated,
@@ -282,7 +426,8 @@ fn one_retry_scope_does_not_prompt_twice_after_a_retry_dismissal() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:139
+// CodexBar: BrowserCookieAccessGateTests.swift:138
+// CodexBar: BrowserDetectionTests.swift:312
 fn a_locked_key_does_not_persist_dismissal_cooldown() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
@@ -304,7 +449,7 @@ fn a_locked_key_does_not_persist_dismissal_cooldown() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:157
+// CodexBar: BrowserCookieAccessGateTests.swift:156
 fn safe_storage_key_is_requested_once_for_a_browser_refresh() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
@@ -320,7 +465,7 @@ fn safe_storage_key_is_requested_once_for_a_browser_refresh() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:173
+// CodexBar: BrowserCookieAccessGateTests.swift:172
 fn v11_rows_can_use_the_empty_password_fallback() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
@@ -354,7 +499,7 @@ fn v11_rows_can_use_the_empty_password_fallback() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:181
+// CodexBar: BrowserCookieAccessGateTests.swift:180
 fn background_key_errors_do_not_escape_candidate_debug_output() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "Work");
@@ -371,7 +516,7 @@ fn background_key_errors_do_not_escape_candidate_debug_output() {
 }
 
 #[test]
-// CodexBar: BrowserCookieAccessGateTests.swift:208
+// CodexBar: BrowserCookieAccessGateTests.swift:209
 fn dismissal_cooldown_keeps_only_opaque_digest_keys() {
     let home = TestHome::new();
     add_v11_profile(&home, Browser::Chrome, "private profile name");

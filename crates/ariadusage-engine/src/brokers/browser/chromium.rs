@@ -1,3 +1,4 @@
+// Ported from CodexBar Sources/CodexBarCore/BrowserCookieAccessGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -127,7 +128,6 @@ async fn read_attempt(
     if !encrypted_v11.is_empty()
         && access.gate.should_attempt_key(
             profile.browser,
-            call,
             access.retry_scope,
             unix_now_seconds(),
         )?
@@ -145,7 +145,9 @@ async fn read_attempt(
         };
         match key_result {
             Ok(Some(key)) => {
-                access.gate.record_success(profile.browser)?;
+                access
+                    .gate
+                    .record_success(profile.browser, access.retry_scope)?;
                 safe_storage_key = Some(key);
             }
             Ok(None) => key_error = Some(BrowserError::Unsupported),
