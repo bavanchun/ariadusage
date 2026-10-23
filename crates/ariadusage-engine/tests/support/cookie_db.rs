@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 #![expect(
     dead_code,
     reason = "shared synthetic browser fixtures are used by separate test binaries"
@@ -21,6 +21,11 @@ use rusqlite::{Connection, params};
 use tempfile::TempDir;
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "macos")]
+pub const KEYED_TAG: &[u8; 3] = b"v10";
+#[cfg(not(target_os = "macos"))]
+pub const KEYED_TAG: &[u8; 3] = b"v11";
+
 pub struct TestHome {
     _home_root: TempDir,
     _runtime_root: TempDir,
@@ -40,10 +45,16 @@ impl TestHome {
         std::fs::create_dir_all(&config).expect("config directory");
         std::fs::create_dir_all(&process_home).expect("synthetic process home");
 
+        #[cfg(target_os = "linux")]
         let runtime_root = tempfile::Builder::new()
             .prefix("ariadusage-browser-test-")
             .tempdir_in("/dev/shm")
             .expect("tmpfs runtime directory");
+        #[cfg(target_os = "macos")]
+        let runtime_root = tempfile::Builder::new()
+            .prefix("ariadusage-browser-test-")
+            .tempdir()
+            .expect("macos private runtime directory");
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(runtime_root.path(), std::fs::Permissions::from_mode(0o700))
             .expect("private runtime permissions");
@@ -87,16 +98,37 @@ impl TestHome {
         .expect("injected browser paths")
     }
 
+    pub fn chromium_root(&self, browser: Browser) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.home
+                .join("Library/Application Support")
+                .join(match browser {
+                    Browser::Chrome => "Google/Chrome",
+                    Browser::Edge => "Microsoft Edge",
+                    Browser::Brave => "BraveSoftware/Brave-Browser",
+                    Browser::Chromium => "Chromium",
+                    Browser::Vivaldi => "Vivaldi",
+                    Browser::Firefox => panic!("Firefox profile requested as Chromium"),
+                    Browser::Opera => "com.operasoftware.Opera",
+                })
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.config.join(match browser {
+                Browser::Chrome => "google-chrome",
+                Browser::Edge => "microsoft-edge",
+                Browser::Brave => "BraveSoftware/Brave-Browser",
+                Browser::Chromium => "chromium",
+                Browser::Vivaldi => "vivaldi",
+                Browser::Firefox => panic!("Firefox profile requested as Chromium"),
+                Browser::Opera => "opera",
+            })
+        }
+    }
+
     pub fn chromium_profile(&self, browser: Browser, label: &str) -> PathBuf {
-        let root = self.config.join(match browser {
-            Browser::Chrome => "google-chrome",
-            Browser::Edge => "microsoft-edge",
-            Browser::Brave => "BraveSoftware/Brave-Browser",
-            Browser::Chromium => "chromium",
-            Browser::Vivaldi => "vivaldi",
-            Browser::Firefox => panic!("Firefox profile requested as Chromium"),
-            Browser::Opera => "opera",
-        });
+        let root = self.chromium_root(browser);
         let profile = root.join("Default");
         std::fs::create_dir_all(&profile).expect("browser profile");
         std::fs::write(
@@ -115,15 +147,30 @@ impl TestHome {
         profile
     }
 
+    pub fn firefox_root(&self) -> PathBuf {
+        #[cfg(target_os = "macos")]
+        {
+            self.home.join("Library/Application Support/Firefox")
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.config.join("mozilla/firefox")
+        }
+    }
+
     pub fn firefox_profile(&self, profile_name: &str, schema_version: i64) -> PathBuf {
-        let root = self.config.join("mozilla/firefox");
-        let profile = root.join("test-profile");
+        let root = self.firefox_root();
+        #[cfg(target_os = "macos")]
+        let rel_path = "Profiles/test-profile";
+        #[cfg(not(target_os = "macos"))]
+        let rel_path = "test-profile";
+        let profile = root.join(rel_path);
         std::fs::create_dir_all(&profile).expect("Firefox profile");
         std::fs::create_dir_all(&root).expect("Firefox profile root");
         std::fs::write(
             root.join("profiles.ini"),
             format!(
-                "[General]\nVersion=2\n[Profile0]\nName={profile_name}\nIsRelative=1\nPath=test-profile\nDefault=1\n"
+                "[General]\nVersion=2\n[Profile0]\nName={profile_name}\nIsRelative=1\nPath={rel_path}\nDefault=1\n"
             ),
         )
         .expect("Firefox profile listing");

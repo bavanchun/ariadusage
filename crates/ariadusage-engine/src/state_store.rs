@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::brokers::credential_file::StatFingerprint;
 use crate::error::StoreError;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::private_file::{WriteHooks, repair_permissions, write_private};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::trust::{TrustPolicy, check_file_trust, check_parent_trust};
 
 /// Warnings recorded during broker state store operations.
@@ -63,7 +63,7 @@ pub struct BrokerStateStore {
     path: PathBuf,
     warning_count: AtomicUsize,
     warnings: Mutex<Vec<StateWarning>>,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     hooks: WriteHooks,
 }
 
@@ -74,7 +74,7 @@ impl BrokerStateStore {
             path: path.into(),
             warning_count: AtomicUsize::new(0),
             warnings: Mutex::new(Vec::new()),
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             hooks: WriteHooks::default(),
         }
     }
@@ -101,7 +101,7 @@ impl BrokerStateStore {
         self.warnings.lock().unwrap().clone()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn record_warning(&self, warning: StateWarning) {
         self.warning_count.fetch_add(1, Ordering::SeqCst);
         self.warnings.lock().unwrap().push(warning);
@@ -113,7 +113,7 @@ impl BrokerStateStore {
     /// If permissions are looser than 0600 on Unix, repairs them and records a warning.
     /// If the file is corrupt or has an unknown schema version, resets to empty and records a warning.
     pub fn load(&self) -> Result<BrokerState, StoreError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             if let Some(parent) = self.path.parent()
                 && parent.exists()
@@ -162,7 +162,7 @@ impl BrokerStateStore {
             Ok(state)
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(StoreError::Unsupported(
                 "broker state is unsupported on this platform",
@@ -172,7 +172,7 @@ impl BrokerStateStore {
 
     /// Saves `state` to disk atomically with 0600 permissions under a file lock.
     pub fn save(&self, state: &BrokerState) -> Result<(), StoreError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(|| {
                 let mut bytes = serde_json::to_vec_pretty(state).map_err(|e| {
@@ -183,7 +183,7 @@ impl BrokerStateStore {
             })
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = state;
             Err(StoreError::Unsupported(
@@ -194,7 +194,7 @@ impl BrokerStateStore {
 
     /// Acquires the file lock, loads current state, executes `f`, and saves under the lock.
     pub fn update<R>(&self, f: impl FnOnce(&mut BrokerState) -> R) -> Result<R, StoreError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(|| {
                 let mut state = self.load()?;
@@ -208,7 +208,7 @@ impl BrokerStateStore {
             })
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = f;
             Err(StoreError::Unsupported(
@@ -217,7 +217,7 @@ impl BrokerStateStore {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn with_write_lock<R>(
         &self,
         body: impl FnOnce() -> Result<R, StoreError>,

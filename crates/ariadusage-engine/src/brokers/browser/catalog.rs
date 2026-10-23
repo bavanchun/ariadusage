@@ -48,61 +48,97 @@ impl Browser {
     }
 
     pub fn safe_storage_attribute(self) -> Option<&'static str> {
-        match self {
-            Self::Chrome | Self::Vivaldi => Some("chrome"),
-            Self::Edge | Self::Chromium | Self::Opera => Some("chromium"),
-            Self::Brave => Some("brave"),
-            Self::Firefox => None,
+        #[cfg(target_os = "macos")]
+        {
+            match self {
+                Self::Chrome => Some("chrome"),
+                Self::Edge => Some("edge"),
+                Self::Brave => Some("brave"),
+                Self::Chromium => Some("chromium"),
+                Self::Vivaldi => Some("vivaldi"),
+                Self::Firefox => None,
+                Self::Opera => Some("opera"),
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            match self {
+                Self::Chrome | Self::Vivaldi => Some("chrome"),
+                Self::Edge | Self::Chromium | Self::Opera => Some("chromium"),
+                Self::Brave => Some("brave"),
+                Self::Firefox => None,
+            }
         }
     }
 
     pub(super) fn roots(self, paths: &BrowserPaths) -> Vec<ProfileRoot> {
-        let mut roots = Vec::new();
-        let config_root = match self {
-            Self::Chrome => "google-chrome",
-            Self::Edge => "microsoft-edge",
-            Self::Brave => "BraveSoftware/Brave-Browser",
-            Self::Chromium => "chromium",
-            Self::Vivaldi => "vivaldi",
-            Self::Firefox => return firefox_roots(paths),
-            Self::Opera => "opera",
-        };
-        roots.push(ProfileRoot {
-            path: paths.config_home.join(config_root),
-            sandboxed: false,
-            unverified: matches!(self, Self::Edge | Self::Vivaldi | Self::Opera),
-        });
-
-        let flatpak = match self {
-            Self::Chrome => Some(("com.google.Chrome", "google-chrome")),
-            Self::Edge => Some(("com.microsoft.Edge", "microsoft-edge")),
-            Self::Brave => Some(("com.brave.Browser", "BraveSoftware/Brave-Browser")),
-            Self::Chromium => Some(("org.chromium.Chromium", "chromium")),
-            Self::Vivaldi => Some(("com.vivaldi.Vivaldi", "vivaldi")),
-            Self::Opera => Some(("com.operasoftware.Opera", "opera")),
-            Self::Firefox => None,
-        };
-        if let Some((app_id, root)) = flatpak {
-            roots.push(ProfileRoot {
-                path: paths
-                    .home
-                    .join(".var/app")
-                    .join(app_id)
-                    .join("config")
-                    .join(root),
-                sandboxed: true,
-                unverified: true,
-            });
+        #[cfg(target_os = "macos")]
+        {
+            let app_support = paths.home.join("Library/Application Support");
+            let rel = match self {
+                Self::Chrome => "Google/Chrome",
+                Self::Edge => "Microsoft Edge",
+                Self::Brave => "BraveSoftware/Brave-Browser",
+                Self::Chromium => "Chromium",
+                Self::Vivaldi => "Vivaldi",
+                Self::Firefox => return firefox_roots(paths),
+                Self::Opera => "com.operasoftware.Opera",
+            };
+            vec![ProfileRoot {
+                path: app_support.join(rel),
+                sandboxed: false,
+                unverified: matches!(self, Self::Edge | Self::Vivaldi | Self::Opera),
+            }]
         }
-
-        if self == Self::Chromium {
+        #[cfg(not(target_os = "macos"))]
+        {
+            let mut roots = Vec::new();
+            let config_root = match self {
+                Self::Chrome => "google-chrome",
+                Self::Edge => "microsoft-edge",
+                Self::Brave => "BraveSoftware/Brave-Browser",
+                Self::Chromium => "chromium",
+                Self::Vivaldi => "vivaldi",
+                Self::Firefox => return firefox_roots(paths),
+                Self::Opera => "opera",
+            };
             roots.push(ProfileRoot {
-                path: paths.home.join("snap/chromium/common/chromium"),
-                sandboxed: true,
-                unverified: true,
+                path: paths.config_home.join(config_root),
+                sandboxed: false,
+                unverified: matches!(self, Self::Edge | Self::Vivaldi | Self::Opera),
             });
+
+            let flatpak = match self {
+                Self::Chrome => Some(("com.google.Chrome", "google-chrome")),
+                Self::Edge => Some(("com.microsoft.Edge", "microsoft-edge")),
+                Self::Brave => Some(("com.brave.Browser", "BraveSoftware/Brave-Browser")),
+                Self::Chromium => Some(("org.chromium.Chromium", "chromium")),
+                Self::Vivaldi => Some(("com.vivaldi.Vivaldi", "vivaldi")),
+                Self::Opera => Some(("com.operasoftware.Opera", "opera")),
+                Self::Firefox => None,
+            };
+            if let Some((app_id, root)) = flatpak {
+                roots.push(ProfileRoot {
+                    path: paths
+                        .home
+                        .join(".var/app")
+                        .join(app_id)
+                        .join("config")
+                        .join(root),
+                    sandboxed: true,
+                    unverified: true,
+                });
+            }
+
+            if self == Self::Chromium {
+                roots.push(ProfileRoot {
+                    path: paths.home.join("snap/chromium/common/chromium"),
+                    sandboxed: true,
+                    unverified: true,
+                });
+            }
+            roots
         }
-        roots
     }
 }
 
@@ -113,35 +149,46 @@ impl std::fmt::Display for Browser {
 }
 
 fn firefox_roots(paths: &BrowserPaths) -> Vec<ProfileRoot> {
-    vec![
-        ProfileRoot {
-            path: paths.config_home.join("mozilla/firefox"),
+    #[cfg(target_os = "macos")]
+    {
+        vec![ProfileRoot {
+            path: paths.home.join("Library/Application Support/Firefox"),
             sandboxed: false,
             unverified: false,
-        },
-        ProfileRoot {
-            path: paths.home.join(".mozilla/firefox"),
-            sandboxed: false,
-            unverified: false,
-        },
-        ProfileRoot {
-            path: paths
-                .home
-                .join(".var/app/org.mozilla.firefox/config/mozilla/firefox"),
-            sandboxed: true,
-            unverified: true,
-        },
-        ProfileRoot {
-            path: paths
-                .home
-                .join(".var/app/org.mozilla.firefox/.mozilla/firefox"),
-            sandboxed: true,
-            unverified: true,
-        },
-        ProfileRoot {
-            path: paths.home.join("snap/firefox/common/.mozilla/firefox"),
-            sandboxed: true,
-            unverified: true,
-        },
-    ]
+        }]
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        vec![
+            ProfileRoot {
+                path: paths.config_home.join("mozilla/firefox"),
+                sandboxed: false,
+                unverified: false,
+            },
+            ProfileRoot {
+                path: paths.home.join(".mozilla/firefox"),
+                sandboxed: false,
+                unverified: false,
+            },
+            ProfileRoot {
+                path: paths
+                    .home
+                    .join(".var/app/org.mozilla.firefox/config/mozilla/firefox"),
+                sandboxed: true,
+                unverified: true,
+            },
+            ProfileRoot {
+                path: paths
+                    .home
+                    .join(".var/app/org.mozilla.firefox/.mozilla/firefox"),
+                sandboxed: true,
+                unverified: true,
+            },
+            ProfileRoot {
+                path: paths.home.join("snap/firefox/common/.mozilla/firefox"),
+                sandboxed: true,
+                unverified: true,
+            },
+        ]
+    }
 }

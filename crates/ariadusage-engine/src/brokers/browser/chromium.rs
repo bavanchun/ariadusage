@@ -107,6 +107,14 @@ async fn read_attempt(
             records.push(to_record(row, plain)?);
             continue;
         }
+        #[cfg(target_os = "macos")]
+        if row.encrypted.starts_with(b"v10") {
+            encrypted_v11.push(row);
+        } else {
+            let tag = encryption_tag(&row.encrypted);
+            *diagnostics.unsupported_by_tag.entry(tag).or_default() += 1;
+        }
+        #[cfg(not(target_os = "macos"))]
         if row.encrypted.starts_with(b"v10") {
             match super::chromium_crypto::decrypt_v10(&row.encrypted[3..], &row.host, version) {
                 Ok(plain) => records.push(to_record(row, plain)?),

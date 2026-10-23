@@ -1,5 +1,5 @@
 // Ported from CodexBar Tests/CodexBarTests/BrowserCookieImportSupportTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 #[path = "support/cookie_db.rs"]
 mod cookie_db;
@@ -18,7 +18,8 @@ use ariadusage_protocol::ids::ProviderId;
 use sha2::{Digest, Sha256};
 
 use cookie_db::{
-    ChromiumRow, StaticKeys, TestHome, authorization, call, insert_chromium, insert_firefox,
+    ChromiumRow, KEYED_TAG, StaticKeys, TestHome, authorization, call, insert_chromium,
+    insert_firefox,
 };
 
 const CHROMIUM_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
@@ -124,14 +125,14 @@ fn add_plain_session(home: &TestHome, browser: Browser, names: &[&str], value: &
     }
 }
 
-/// A session that needs the browser's Secret Service key, so reading it counts a key call.
+/// A session that needs the browser's Secret Service / Keychain key, so reading it counts a key call.
 fn add_keyed_session(home: &TestHome, browser: Browser) {
     let profile = home.chromium_profile(browser, browser.display_name());
     let value = encrypted_value(
         ".claude.ai",
         browser.display_name().as_bytes(),
         SYNTHETIC_PASSWORD,
-        b"v11",
+        KEYED_TAG,
     );
     insert_chromium(
         &profile.join("Cookies"),
@@ -443,6 +444,9 @@ fn decrypts_v10_v11_and_plaintext_rows_and_reports_rejections_by_count() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
     let database = profile.join("Cookies");
+    #[cfg(target_os = "macos")]
+    let v10 = encrypted_value(".claude.ai", b"v10-value", b"synthetic-password", b"v10");
+    #[cfg(not(target_os = "macos"))]
     let v10 = encrypted_value(".claude.ai", b"v10-value", b"peanuts", b"v10");
     let v11 = encrypted_value(".claude.ai", b"v11-value", b"synthetic-password", b"v11");
     let expired = encrypted_value(".claude.ai", b"old", b"peanuts", b"v10");
@@ -537,9 +541,20 @@ fn decrypts_v10_v11_and_plaintext_rows_and_reports_rejections_by_count() {
         .map(|record| record.value.expose_secret())
         .collect::<Vec<_>>();
     assert!(values.contains(&"v10-value"));
-    assert!(values.contains(&"v11-value"));
     assert!(values.contains(&"plaintext-wins"));
-    assert_eq!(values.len(), 3);
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(values.len(), 2);
+        assert_eq!(
+            candidate.diagnostics.unsupported_by_tag.get("v11"),
+            Some(&1)
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert!(values.contains(&"v11-value"));
+        assert_eq!(values.len(), 3);
+    }
     assert_eq!(candidate.diagnostics.rows_read, 6);
     assert_eq!(candidate.diagnostics.expired, 1);
     assert_eq!(candidate.diagnostics.partitioned, 1);
@@ -557,11 +572,11 @@ fn v11_falls_back_to_the_empty_password_and_bad_v24_host_hash_is_counted() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
     let database = profile.join("Cookies");
-    let v11 = encrypted_value(".claude.ai", b"empty-password-value", b"", b"v11");
+    let v11 = encrypted_value(".claude.ai", b"empty-password-value", b"", KEYED_TAG);
     let mut mismatch_plain = vec![0xA5; 32];
     mismatch_plain.extend_from_slice(b"wrong-host-prefix");
-    let encrypted = test_support::encrypt_test(&mismatch_plain, b"peanuts").expect("ciphertext");
-    let mut tagged_mismatch = b"v10".to_vec();
+    let encrypted = test_support::encrypt_test(&mismatch_plain, b"").expect("ciphertext");
+    let mut tagged_mismatch = KEYED_TAG.to_vec();
     tagged_mismatch.extend_from_slice(&encrypted);
     insert_chromium(
         &database,
@@ -601,18 +616,42 @@ fn v11_falls_back_to_the_empty_password_and_bad_v24_host_hash_is_counted() {
 
 #[test]
 fn chromium_kdf_known_answer_is_stable() {
-    assert_eq!(
-        test_support::derive_test_key(b"peanuts"),
-        [
-            253, 98, 31, 229, 162, 180, 2, 83, 157, 250, 20, 124, 169, 39, 39, 120
-        ]
-    );
-    assert_eq!(
-        test_support::derive_test_key(b""),
-        [
-            208, 208, 236, 156, 125, 119, 212, 58, 197, 65, 135, 250, 72, 24, 209, 127
-        ]
-    );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(
+            test_support::derive_test_key(b"peanuts"),
+            [
+                217, 160, 157, 73, 155, 78, 27, 116, 97, 242, 142, 103, 151, 44, 109, 189
+            ]
+        );
+        assert_eq!(
+            test_support::derive_test_key(b""),
+            [
+                28, 190, 232, 38, 214, 147, 131, 39, 174, 144, 67, 246, 59, 252, 38, 215
+            ]
+        );
+        assert_eq!(
+            test_support::derive_test_key(b"synthetic-password"),
+            [
+                173, 71, 208, 64, 193, 132, 228, 3, 243, 175, 199, 176, 64, 84, 236, 82
+            ]
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        assert_eq!(
+            test_support::derive_test_key(b"peanuts"),
+            [
+                253, 98, 31, 229, 162, 180, 2, 83, 157, 250, 20, 124, 169, 39, 39, 120
+            ]
+        );
+        assert_eq!(
+            test_support::derive_test_key(b""),
+            [
+                208, 208, 236, 156, 125, 119, 212, 58, 197, 65, 135, 250, 72, 24, 209, 127
+            ]
+        );
+    }
 }
 
 #[test]
@@ -624,7 +663,11 @@ fn version_23_v10_plaintext_does_not_require_a_host_hash() {
         .expect("open synthetic database")
         .execute("UPDATE meta SET version=23", [])
         .expect("set legacy version");
-    let encrypted = test_support::encrypt_test(b"legacy-without-prefix", b"peanuts")
+    #[cfg(target_os = "macos")]
+    let password: &[u8] = SYNTHETIC_PASSWORD;
+    #[cfg(not(target_os = "macos"))]
+    let password: &[u8] = b"peanuts";
+    let encrypted = test_support::encrypt_test(b"legacy-without-prefix", password)
         .expect("version 23 ciphertext");
     let mut tagged = b"v10".to_vec();
     tagged.extend_from_slice(&encrypted);
@@ -639,8 +682,11 @@ fn version_23_v10_plaintext_does_not_require_a_host_hash() {
             partition_key: "",
         },
     );
-    let candidates = read_chrome(&home, Browser::Chrome, Arc::new(StaticKeys::without_key()))
-        .expect("version 23 candidate");
+    #[cfg(target_os = "macos")]
+    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    #[cfg(not(target_os = "macos"))]
+    let keys = Arc::new(StaticKeys::without_key());
+    let candidates = read_chrome(&home, Browser::Chrome, keys).expect("version 23 candidate");
     assert_eq!(
         candidates[0].records[0].value.expose_secret(),
         "legacy-without-prefix"
@@ -679,12 +725,12 @@ fn unsupported_only_rows_remain_visible_in_diagnostics() {
 fn safe_storage_is_queried_once_for_multiple_profiles_of_one_browser() {
     let home = TestHome::new();
     let default = home.chromium_profile(Browser::Chrome, "Work");
-    let extra = home.config.join("google-chrome/Profile 1");
+    let extra = home.chromium_root(Browser::Chrome).join("Profile 1");
     std::fs::create_dir_all(&extra).expect("extra browser profile");
     cookie_db::create_chromium_database(&extra.join("Cookies"), 24);
     let password = b"synthetic-password";
     for database in [default.join("Cookies"), extra.join("Cookies")] {
-        let value = encrypted_value(".claude.ai", b"same-browser", password, b"v11");
+        let value = encrypted_value(".claude.ai", b"same-browser", password, KEYED_TAG);
         insert_chromium(
             &database,
             ChromiumRow {
@@ -701,6 +747,109 @@ fn safe_storage_is_queried_once_for_multiple_profiles_of_one_browser() {
     let candidates = read_chrome(&home, Browser::Chrome, keys.clone()).expect("two profiles");
     assert_eq!(candidates.len(), 2);
     assert_eq!(keys.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_chromium_browsers_read_distinct_safe_storage_keychain_services_via_key_source() {
+    use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageKeySource;
+    use ariadusage_engine::brokers::secret_store::service::{
+        MacosKeychainOperations, ServiceBackend, os_status,
+    };
+    use std::sync::Mutex;
+    use zeroize::Zeroizing;
+
+    struct FakeKeychain {
+        queries: Mutex<Vec<(String, String, bool)>>,
+    }
+
+    impl MacosKeychainOperations for FakeKeychain {
+        fn read_generic_password(
+            &self,
+            service: &str,
+            account: &str,
+            allow_interaction: bool,
+        ) -> Result<Zeroizing<Vec<u8>>, i32> {
+            self.queries.lock().expect("lock").push((
+                service.to_owned(),
+                account.to_owned(),
+                allow_interaction,
+            ));
+            Ok(Zeroizing::new(format!("key-for-{account}").into_bytes()))
+        }
+
+        fn write_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+            _label: &str,
+            _password: &[u8],
+        ) -> Result<(), i32> {
+            Err(os_status::ERR_SEC_UNIMPLEMENTED)
+        }
+    }
+
+    let home = TestHome::new();
+    let browsers = [
+        (Browser::Chrome, "Chrome Safe Storage", "Chrome"),
+        (
+            Browser::Edge,
+            "Microsoft Edge Safe Storage",
+            "Microsoft Edge",
+        ),
+        (Browser::Brave, "Brave Safe Storage", "Brave"),
+        (Browser::Chromium, "Chromium Safe Storage", "Chromium"),
+        (Browser::Vivaldi, "Vivaldi Safe Storage", "Vivaldi"),
+        (Browser::Opera, "Opera Safe Storage", "Opera"),
+    ];
+
+    for (browser, _service, account) in browsers {
+        let profile = home.chromium_profile(browser, browser.display_name());
+        let password = format!("key-for-{account}");
+        let ciphertext = encrypted_value(
+            ".claude.ai",
+            browser.display_name().as_bytes(),
+            password.as_bytes(),
+            b"v10",
+        );
+        insert_chromium(
+            &profile.join("Cookies"),
+            ChromiumRow {
+                host: ".claude.ai",
+                name: "sid",
+                expires_utc: 0,
+                value: "",
+                encrypted: &ciphertext,
+                partition_key: "",
+            },
+        );
+    }
+
+    let keychain = Arc::new(FakeKeychain {
+        queries: Mutex::new(Vec::new()),
+    });
+    let backend = ServiceBackend::with_operations(Arc::clone(&keychain));
+    let key_source: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(backend));
+
+    let order = browsers.map(|(b, _, _)| b);
+    let candidates = read_in_order(&home, &order, key_source).expect("all 6 Chromium browsers");
+    assert_eq!(candidates.len(), 6);
+    for (candidate, (browser, _, _)) in candidates.iter().zip(browsers.iter()) {
+        assert_eq!(candidate.browser, *browser);
+        assert_eq!(
+            candidate.records[0].value.expose_secret(),
+            browser.display_name()
+        );
+    }
+
+    let queries = keychain.queries.lock().expect("lock").clone();
+    assert_eq!(
+        queries,
+        browsers
+            .iter()
+            .map(|(_, service, account)| ((*service).to_owned(), (*account).to_owned(), true))
+            .collect::<Vec<_>>()
+    );
 }
 
 proptest::proptest! {

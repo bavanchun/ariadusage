@@ -323,28 +323,40 @@ fn discover_firefox(paths: &BrowserPaths) -> Vec<DiscoveredProfile> {
 }
 
 fn scan_firefox_profiles(root: &Path) -> Vec<super::profiles_ini::FirefoxProfileEntry> {
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return Vec::new();
-    };
-    let mut profiles = entries
-        .flatten()
-        .filter_map(|entry| {
+    let mut profiles = Vec::new();
+    for (scan_dir, prefix) in [
+        (root.join("Profiles"), Some("Profiles")),
+        (root.to_path_buf(), None),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&scan_dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if prefix.is_none() && name == "Profiles" {
+                continue;
+            }
             let path = entry.path();
-            let canonical = canonical_directory(&path)?;
+            let Some(canonical) = canonical_directory(&path) else {
+                continue;
+            };
             if !canonical.starts_with(root) || has_cookie_database(&canonical, &canonical).is_none()
             {
-                return None;
+                continue;
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
-            Some(super::profiles_ini::FirefoxProfileEntry {
+            let rel_path = match prefix {
+                Some(p) => format!("{p}/{name}"),
+                None => name.clone(),
+            };
+            profiles.push(super::profiles_ini::FirefoxProfileEntry {
                 section: name.clone(),
-                name: Some(name.clone()),
-                path: name,
+                name: Some(name),
+                path: rel_path,
                 is_relative: true,
                 is_default: false,
-            })
-        })
-        .collect::<Vec<_>>();
+            });
+        }
+    }
     profiles.sort_by_key(|entry| entry.path.clone());
     profiles
 }

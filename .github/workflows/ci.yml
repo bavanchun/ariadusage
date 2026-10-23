@@ -98,9 +98,9 @@ jobs:
       - name: Run portable checks
         run: just portable
 
-      - name: Run macOS Keychain invariant tests
+      - name: Run macOS Keychain and browser cookie invariant tests
         if: matrix.os == 'macos-26'
-        run: cargo nextest run -p ariadusage-engine --test secret_store --test credential_keychain --locked
+        run: cargo nextest run -p ariadusage-engine --test secret_store --test credential_keychain --test browser_discover --test browser_chromium --test browser_firefox --test browser_gate --locked
 
   brand:
     name: Brand

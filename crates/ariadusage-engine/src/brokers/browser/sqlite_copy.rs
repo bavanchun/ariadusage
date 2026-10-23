@@ -14,15 +14,19 @@ pub(super) fn create_copy_dir(
     runtime_dir: Option<&Path>,
 ) -> Result<crate::PrivateTempDir, BrowserError> {
     let runtime_dir = runtime_dir.ok_or(BrowserError::Unsupported)?;
-    if !is_trusted_tmpfs(runtime_dir) {
+    let runtime_dir = std::fs::canonicalize(runtime_dir).map_err(|_| BrowserError::Unsupported)?;
+    if !is_trusted_tmpfs(&runtime_dir) {
         return Err(BrowserError::Unsupported);
     }
-    crate::private_tempdir::create_in(runtime_dir).map_err(|_| BrowserError::Unsupported)
+    crate::private_tempdir::create_in(&runtime_dir).map_err(|_| BrowserError::Unsupported)
 }
 
 pub(super) fn sweep_stale(runtime_dir: Option<&Path>) {
-    if let Some(runtime_dir) = runtime_dir.filter(|path| is_trusted_tmpfs(path)) {
-        crate::private_tempdir::sweep_stale_in(runtime_dir);
+    if let Some(runtime_dir) = runtime_dir
+        .and_then(|path| std::fs::canonicalize(path).ok())
+        .filter(|path| is_trusted_tmpfs(path))
+    {
+        crate::private_tempdir::sweep_stale_in(&runtime_dir);
     }
 }
 
@@ -36,9 +40,16 @@ pub(super) fn is_trusted_tmpfs(path: &Path) -> bool {
     {
         return false;
     }
-    rustix::fs::statfs(path)
-        .map(|fs| fs.f_type as u64 == crate::paths::TMPFS_MAGIC)
-        .unwrap_or(false)
+    #[cfg(target_os = "linux")]
+    {
+        rustix::fs::statfs(path)
+            .map(|fs| fs.f_type as u64 == crate::paths::TMPFS_MAGIC)
+            .unwrap_or(false)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        true
+    }
 }
 
 pub(super) fn copy_database(source: &Path, target_dir: &Path) -> Result<PathBuf, BrowserError> {

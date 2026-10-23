@@ -1,4 +1,4 @@
-//! Opt-in browser cookie import. Platform-specific profile and database access lives on Linux.
+//! Opt-in browser cookie import. Platform-specific profile and database access lives on Linux and macOS.
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -13,28 +13,28 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::secret_store::safe_storage::{SafeStorageError, SafeStorageKeySource};
 use crate::state_store::BrokerStateStore;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod catalog;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod chromium;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod chromium_crypto;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod discover;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod error;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod firefox;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod gate;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod local_state;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod profiles_ini;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod sqlite_copy;
 
-#[cfg(all(target_os = "linux", feature = "test-hooks"))]
+#[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "test-hooks"))]
 pub mod test_support {
     pub use super::chromium_crypto::{DecryptFailure, derive_test_key, encrypt_test};
 
@@ -56,17 +56,17 @@ pub mod test_support {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use catalog::{Browser, DEFAULT_IMPORT_ORDER};
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub use catalog_stub::{Browser, DEFAULT_IMPORT_ORDER};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use error::BrowserError;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use discover::BrowserBrokerInner;
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod catalog_stub {
     use std::fmt;
 
@@ -106,7 +106,7 @@ mod catalog_stub {
     }
 }
 
-/// Injectable Secret Service seam used for Chromium-family key retrieval.
+/// Injectable Secret Service / Keychain seam used for Chromium-family key retrieval.
 pub type SafeStorageFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Zeroizing<Vec<u8>>>, SafeStorageError>> + Send + 'a>>;
 
@@ -132,7 +132,7 @@ impl SafeStorageKeyProvider for SafeStorageKeySource {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrowserError {
     Suppressed,
@@ -144,7 +144,7 @@ pub enum BrowserError {
     Malformed,
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl std::fmt::Display for BrowserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -159,7 +159,7 @@ impl std::fmt::Display for BrowserError {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl std::error::Error for BrowserError {}
 
 /// Paths are injected so tests never probe the process home or browser profiles.
@@ -168,7 +168,7 @@ pub struct BrowserPaths {
     pub home: PathBuf,
     pub config_home: PathBuf,
     pub runtime_dir: Option<PathBuf>,
-    #[cfg(all(feature = "test-hooks", target_os = "linux"))]
+    #[cfg(all(feature = "test-hooks", any(target_os = "linux", target_os = "macos")))]
     test_process_home: Option<PathBuf>,
 }
 
@@ -180,7 +180,7 @@ impl BrowserPaths {
         if !home.is_absolute() {
             return Err(BrowserError::Unsupported);
         }
-        #[cfg(all(feature = "test-hooks", target_os = "linux"))]
+        #[cfg(all(feature = "test-hooks", any(target_os = "linux", target_os = "macos")))]
         let test_process_home = env("HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute());
@@ -190,7 +190,8 @@ impl BrowserPaths {
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| home.join(".config"));
         let runtime_value = env("XDG_RUNTIME_DIR");
-        let runtime_dir = crate::paths::resolve_runtime_dir(
+        #[allow(unused_mut)]
+        let mut runtime_dir = crate::paths::resolve_runtime_dir(
             |key| {
                 (key == "XDG_RUNTIME_DIR")
                     .then(|| runtime_value.clone())
@@ -198,11 +199,18 @@ impl BrowserPaths {
             },
             Some(&home),
         );
+        #[cfg(target_os = "macos")]
+        if runtime_dir.is_none() {
+            runtime_dir = env("TMPDIR")
+                .and_then(|value| value.into_string().ok())
+                .map(|value| PathBuf::from(value.trim()))
+                .filter(|path| path.is_absolute());
+        }
         Ok(Self {
             home,
             config_home,
             runtime_dir,
-            #[cfg(all(feature = "test-hooks", target_os = "linux"))]
+            #[cfg(all(feature = "test-hooks", any(target_os = "linux", target_os = "macos")))]
             test_process_home,
         })
     }
@@ -264,7 +272,7 @@ impl std::fmt::Debug for CookieCandidate {
 }
 
 pub struct BrowserBroker {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     inner: BrowserBrokerInner,
 }
 
@@ -275,7 +283,7 @@ impl BrowserBroker {
         state: Arc<BrokerStateStore>,
         keys: Arc<dyn SafeStorageKeyProvider>,
     ) -> Self {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         sqlite_copy::sweep_stale(paths.runtime_dir.as_deref());
         Self::with_paths(paths, state, keys)
     }
@@ -286,10 +294,10 @@ impl BrowserBroker {
         state: Arc<BrokerStateStore>,
         keys: Arc<dyn SafeStorageKeyProvider>,
     ) -> Self {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = (paths, state, keys);
         Self {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             inner: BrowserBrokerInner::new(paths, state, keys),
         }
     }
@@ -320,14 +328,14 @@ impl BrowserBroker {
         _authorization: cookie_core::ImportAuthorized,
         query: CookieQuery<'a>,
     ) -> Result<CookieSessions<'a>, BrowserError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.inner
                 .sessions(call, query)
                 .await
                 .map(|inner| CookieSessions { inner })
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = (call, query);
             Err(BrowserError::Unsupported)
@@ -365,9 +373,9 @@ impl BrowserBroker {
 
 /// Browser sessions read on demand, one browser at a time, within one import call.
 pub struct CookieSessions<'a> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     inner: discover::SessionCursor<'a>,
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     _call: std::marker::PhantomData<&'a ()>,
 }
 
@@ -375,11 +383,11 @@ impl CookieSessions<'_> {
     /// Returns the next candidate, reading the next browser only when the earlier ones are
     /// used up. A browser that fails to read is skipped.
     pub async fn next(&mut self) -> Option<CookieCandidate> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.inner.next().await
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             None
         }

@@ -1,5 +1,5 @@
 // Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", target_os = "macos"))]
 
 #[path = "support/cookie_db.rs"]
 mod cookie_db;
@@ -215,8 +215,8 @@ fn chromium_local_state_account_fields_are_ignored_and_email_names_are_redacted(
 #[test]
 fn relative_escape_and_symlinked_firefox_profiles_are_refused() {
     let home = TestHome::new();
-    let root = home.config.join("mozilla/firefox");
-    let outside = home.config.join("outside-profile");
+    let root = home.firefox_root();
+    let outside = home.home.join("outside-profile");
     std::fs::create_dir_all(&outside).expect("outside profile");
     let outside_db = outside.join("cookies.sqlite");
     cookie_db::create_firefox_database(&outside_db, 17);
@@ -225,7 +225,7 @@ fn relative_escape_and_symlinked_firefox_profiles_are_refused() {
     std::os::unix::fs::symlink(&outside, root.join("escape-link")).expect("profile symlink");
     std::fs::write(
         root.join("profiles.ini"),
-        "[Profile0]\nName=escape-relative\nIsRelative=1\nPath=../../outside-profile\n[Profile1]\nName=escape-link\nIsRelative=1\nPath=escape-link\n",
+        "[Profile0]\nName=escape-relative\nIsRelative=1\nPath=../../../../outside-profile\n[Profile1]\nName=escape-link\nIsRelative=1\nPath=escape-link\n",
     )
     .expect("profile listing");
     assert_eq!(
@@ -234,6 +234,7 @@ fn relative_escape_and_symlinked_firefox_profiles_are_refused() {
     );
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn absolute_firefox_profile_under_flatpak_root_is_refused() {
     let home = TestHome::new();
@@ -331,6 +332,10 @@ impl SafeStorageKeyProvider for CancellingKeys {
 fn cancellation_after_priming_surfaces_no_browser_session_instead_of_stale_error() {
     let home = TestHome::new();
     let profile = home.chromium_profile(Browser::Chrome, "Work");
+    #[cfg(target_os = "macos")]
+    let encrypted: &[u8] = b"v10synthetic-ciphertext";
+    #[cfg(not(target_os = "macos"))]
+    let encrypted: &[u8] = b"v11synthetic-ciphertext";
     insert_chromium(
         &profile.join("Cookies"),
         ChromiumRow {
@@ -338,7 +343,7 @@ fn cancellation_after_priming_surfaces_no_browser_session_instead_of_stale_error
             name: "sid",
             expires_utc: 0,
             value: "",
-            encrypted: b"v11synthetic-ciphertext",
+            encrypted,
             partition_key: "",
         },
     );
@@ -363,4 +368,92 @@ fn cancellation_after_priming_surfaces_no_browser_session_instead_of_stale_error
         .block_on(broker.candidates(&call, authorization(), query))
         .expect_err("cancelled during priming returns NoBrowserSession");
     assert_eq!(error, BrowserError::NoBrowserSession);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_discovers_application_support_profiles_across_all_supported_browsers() {
+    let home = TestHome::new();
+    let app_support = home.home.join("Library/Application Support");
+    for (browser, rel_dir) in [
+        (Browser::Chrome, "Google/Chrome"),
+        (Browser::Edge, "Microsoft Edge"),
+        (Browser::Brave, "BraveSoftware/Brave-Browser"),
+        (Browser::Chromium, "Chromium"),
+        (Browser::Vivaldi, "Vivaldi"),
+        (Browser::Opera, "com.operasoftware.Opera"),
+    ] {
+        let profile = home.chromium_profile(browser, browser.display_name());
+        assert_eq!(profile, app_support.join(rel_dir).join("Default"));
+        insert_chromium(
+            &profile.join("Cookies"),
+            ChromiumRow {
+                host: ".claude.ai",
+                name: "sid",
+                expires_utc: 0,
+                value: browser.display_name(),
+                encrypted: b"",
+                partition_key: "",
+            },
+        );
+    }
+
+    let ff_profile = home.firefox_profile("default-release", 17);
+    assert_eq!(
+        ff_profile,
+        app_support.join("Firefox/Profiles/test-profile")
+    );
+    insert_firefox(
+        &ff_profile.join("cookies.sqlite"),
+        ".claude.ai",
+        "sid",
+        0,
+        "Firefox",
+        "",
+    );
+
+    let candidates = candidates_for(&home, &[]).expect("all macOS browsers discovered");
+    assert_eq!(
+        candidates.iter().map(|c| c.browser).collect::<Vec<_>>(),
+        DEFAULT_IMPORT_ORDER
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_firefox_fallback_scans_profiles_subdirectory_when_profiles_ini_is_missing() {
+    let home = TestHome::new();
+    let ff_profile = home
+        .home
+        .join("Library/Application Support/Firefox/Profiles/abcd1234.default-release");
+    std::fs::create_dir_all(&ff_profile).expect("Firefox Profiles directory");
+    let db = ff_profile.join("cookies.sqlite");
+    cookie_db::create_firefox_database(&db, 17);
+    insert_firefox(&db, ".claude.ai", "sid", 0, "fallback-session", "");
+
+    let candidates = firefox_candidates(&home).expect("Firefox fallback profile");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0].records[0].value.expose_secret(),
+        "fallback-session"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_browser_paths_falls_back_to_tmpdir_when_xdg_runtime_dir_is_unset() {
+    use std::ffi::OsString;
+
+    let home = PathBuf::from("/tmp/synthetic-browser-home");
+    let tmpdir = PathBuf::from("/var/folders/xx/synthetic/T");
+    let paths = BrowserPaths::from_env(
+        |key| match key {
+            "TMPDIR" => Some(OsString::from(tmpdir.as_os_str())),
+            _ => None,
+        },
+        home.clone(),
+    )
+    .expect("injected browser paths");
+    assert_eq!(paths.home, home);
+    assert_eq!(paths.runtime_dir, Some(tmpdir));
 }
