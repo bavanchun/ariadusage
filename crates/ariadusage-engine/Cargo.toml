@@ -47,6 +47,9 @@ rusqlite = { workspace = true }
 sha1 = { workspace = true }
 secret-service = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { workspace = true }
+
 [dev-dependencies]
 ariadusage-engine = { path = ".", features = ["test-hooks"] }
 httpmock = { workspace = true }

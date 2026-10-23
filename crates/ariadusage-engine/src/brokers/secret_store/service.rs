@@ -1,4 +1,10 @@
+// Ported from CodexBar Sources/CodexBarCore/KeychainAccessGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/KeychainNoUIQuery.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/KeychainStringStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::fmt;
+#[cfg(target_os = "macos")]
+use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
@@ -9,6 +15,8 @@ use std::time::Duration;
 
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_protocol::secret::SecretString;
+#[cfg(target_os = "macos")]
+use zeroize::Zeroizing;
 
 use super::{BackendFuture, SecretBackend, SecretId, SecretLookup, SecretStoreError};
 use crate::brokers::call::BrokerCall;
@@ -18,14 +26,118 @@ const DBUS_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "linux")]
 const USER_UNLOCK_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Secret Service backend. The kill switch is injected by the caller.
+/// macOS `Security.framework` `OSStatus` codes used to classify Keychain outcomes.
+pub mod os_status {
+    pub const ERR_SEC_SUCCESS: i32 = 0;
+    pub const ERR_SEC_UNIMPLEMENTED: i32 = -4;
+    pub const ERR_SEC_PARAM: i32 = -50;
+    pub const ERR_SEC_USER_CANCELED: i32 = -128;
+    pub const ERR_SEC_NO_ACCESS_FOR_ITEM: i32 = -25243;
+    pub const ERR_SEC_NOT_AVAILABLE: i32 = -25291;
+    pub const ERR_SEC_AUTH_FAILED: i32 = -25293;
+    pub const ERR_SEC_NO_SUCH_KEYCHAIN: i32 = -25294;
+    pub const ERR_SEC_INVALID_KEYCHAIN: i32 = -25295;
+    pub const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
+    pub const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
+    pub const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+}
+
+/// Low-level Keychain operations seam on macOS so tests can inject deterministic status codes
+/// or an isolated temporary `.keychain-db` file without touching the user's login Keychain.
+#[cfg(target_os = "macos")]
+pub trait MacosKeychainOperations: Send + Sync {
+    fn read_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        allow_interaction: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, i32>;
+
+    fn write_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        label: &str,
+        password: &[u8],
+    ) -> Result<(), i32>;
+}
+
+#[cfg(target_os = "macos")]
+impl<T: MacosKeychainOperations + ?Sized> MacosKeychainOperations for Arc<T> {
+    fn read_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        allow_interaction: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, i32> {
+        (**self).read_generic_password(service, account, allow_interaction)
+    }
+
+    fn write_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        label: &str,
+        password: &[u8],
+    ) -> Result<(), i32> {
+        (**self).write_generic_password(service, account, label, password)
+    }
+}
+
+/// Secret Service (Linux) and Keychain Services (macOS) backend.
+/// The kill switch (`ARIADUSAGE_DISABLE_KEYRING=1`) is injected by the caller.
 pub struct ServiceBackend {
     disabled: bool,
+    #[cfg(target_os = "macos")]
+    macos_ops: Option<Arc<dyn MacosKeychainOperations>>,
 }
 
 impl ServiceBackend {
     pub const fn new(disabled: bool) -> Self {
-        Self { disabled }
+        Self {
+            disabled,
+            #[cfg(target_os = "macos")]
+            macos_ops: None,
+        }
+    }
+
+    /// Creates a `ServiceBackend` backed by an isolated `SecKeychain` file (for tests).
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain(keychain: security_framework::os::macos::keychain::SecKeychain) -> Self {
+        Self::with_keychain_disabled(keychain, false)
+    }
+
+    /// Creates a `ServiceBackend` backed by an isolated `SecKeychain` file with an explicit
+    /// kill-switch flag.
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain_disabled(
+        keychain: security_framework::os::macos::keychain::SecKeychain,
+        disabled: bool,
+    ) -> Self {
+        Self {
+            disabled,
+            macos_ops: Some(Arc::new(SecKeychainOperations {
+                keychain: Some(keychain),
+            })),
+        }
+    }
+
+    /// Creates a `ServiceBackend` with injected Keychain operations (for deterministic tests).
+    #[cfg(target_os = "macos")]
+    pub fn with_operations(ops: impl MacosKeychainOperations + 'static) -> Self {
+        Self::with_operations_disabled(ops, false)
+    }
+
+    /// Creates a `ServiceBackend` with injected Keychain operations and an explicit kill-switch flag.
+    #[cfg(target_os = "macos")]
+    pub fn with_operations_disabled(
+        ops: impl MacosKeychainOperations + 'static,
+        disabled: bool,
+    ) -> Self {
+        Self {
+            disabled,
+            macos_ops: Some(Arc::new(ops)),
+        }
     }
 }
 
@@ -44,6 +156,9 @@ impl SecretBackend for ServiceBackend {
         call: &'a BrokerCall,
     ) -> BackendFuture<'a, Result<SecretLookup, SecretStoreError>> {
         Box::pin(async move {
+            if call.cancel.is_cancelled() {
+                return Err(SecretStoreError::Cancelled);
+            }
             if self.disabled {
                 return Ok(SecretLookup::Unavailable);
             }
@@ -51,7 +166,11 @@ impl SecretBackend for ServiceBackend {
             {
                 lookup_secret(id, call, false).await
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                lookup_secret_macos(self.macos_ops.as_deref(), id, call, false)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = (id, call);
                 Ok(SecretLookup::Unavailable)
@@ -65,6 +184,9 @@ impl SecretBackend for ServiceBackend {
         call: &'a BrokerCall,
     ) -> BackendFuture<'a, Result<SecretLookup, SecretStoreError>> {
         Box::pin(async move {
+            if call.cancel.is_cancelled() {
+                return Err(SecretStoreError::Cancelled);
+            }
             if self.disabled {
                 return Ok(SecretLookup::Unavailable);
             }
@@ -77,7 +199,16 @@ impl SecretBackend for ServiceBackend {
                 )
                 .await
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                lookup_secret_macos(
+                    self.macos_ops.as_deref(),
+                    id,
+                    call,
+                    call.interaction == FetchInteraction::UserInitiated,
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = (id, call);
                 Ok(SecretLookup::Unavailable)
@@ -92,6 +223,9 @@ impl SecretBackend for ServiceBackend {
         call: &'a BrokerCall,
     ) -> BackendFuture<'a, Result<(), SecretStoreError>> {
         Box::pin(async move {
+            if call.cancel.is_cancelled() {
+                return Err(SecretStoreError::Cancelled);
+            }
             if call.interaction != FetchInteraction::UserInitiated {
                 return Err(SecretStoreError::Locked);
             }
@@ -105,7 +239,11 @@ impl SecretBackend for ServiceBackend {
             {
                 set_secret(id, secret, call).await
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                set_secret_macos(self.macos_ops.as_deref(), id, secret, call)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = (id, call);
                 Err(SecretStoreError::Unavailable)
@@ -119,6 +257,9 @@ impl SecretBackend for ServiceBackend {
         call: &'a BrokerCall,
     ) -> BackendFuture<'a, Result<Option<zeroize::Zeroizing<Vec<u8>>>, SecretStoreError>> {
         Box::pin(async move {
+            if call.cancel.is_cancelled() {
+                return Err(SecretStoreError::Cancelled);
+            }
             if self.disabled {
                 return Err(SecretStoreError::Unavailable);
             }
@@ -126,7 +267,11 @@ impl SecretBackend for ServiceBackend {
             {
                 chromium_key(app_attribute, call, false).await
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                chromium_key_macos(self.macos_ops.as_deref(), app_attribute, call, false)
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = (app_attribute, call);
                 Err(SecretStoreError::Unavailable)
@@ -140,6 +285,9 @@ impl SecretBackend for ServiceBackend {
         call: &'a BrokerCall,
     ) -> BackendFuture<'a, Result<Option<zeroize::Zeroizing<Vec<u8>>>, SecretStoreError>> {
         Box::pin(async move {
+            if call.cancel.is_cancelled() {
+                return Err(SecretStoreError::Cancelled);
+            }
             if self.disabled {
                 return Err(SecretStoreError::Unavailable);
             }
@@ -152,12 +300,340 @@ impl SecretBackend for ServiceBackend {
                 )
                 .await
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "macos")]
+            {
+                chromium_key_macos(
+                    self.macos_ops.as_deref(),
+                    app_attribute,
+                    call,
+                    call.interaction == FetchInteraction::UserInitiated,
+                )
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
                 let _ = (app_attribute, call);
                 Err(SecretStoreError::Unavailable)
             }
         })
+    }
+}
+
+/// Runs `f` while serializing `Security.framework` user-interaction state across threads.
+///
+/// When `allow_interaction` is `false` and user interaction is currently enabled, disables
+/// Keychain UI (`SecKeychainSetUserInteractionAllowed(false)`) for the duration of `f`.
+/// If interaction was already disabled by an outer scope (such as a test guard), this helper
+/// intentionally avoids creating and dropping a nested `KeychainUserInteractionLock` so UI
+/// remains disabled.
+#[cfg(target_os = "macos")]
+pub(crate) fn with_macos_keychain_interaction<T>(
+    allow_interaction: bool,
+    f: impl FnOnce() -> T,
+) -> T {
+    use std::sync::Mutex;
+
+    use security_framework::os::macos::keychain::SecKeychain;
+
+    static INTERACTION_LOCK: Mutex<()> = Mutex::new(());
+
+    let _guard = INTERACTION_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _no_ui_guard =
+        if !allow_interaction && SecKeychain::user_interaction_allowed().unwrap_or(true) {
+            SecKeychain::disable_user_interaction().ok()
+        } else {
+            None
+        };
+    f()
+}
+
+#[cfg(target_os = "macos")]
+struct SecKeychainOperations {
+    keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+}
+
+#[cfg(target_os = "macos")]
+impl MacosKeychainOperations for SecKeychainOperations {
+    fn read_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        allow_interaction: bool,
+    ) -> Result<Zeroizing<Vec<u8>>, i32> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
+        use security_framework::os::macos::passwords::find_generic_password;
+
+        with_macos_keychain_interaction(allow_interaction, || {
+            let keychains = self.keychain.as_ref().map(std::slice::from_ref);
+            if !allow_interaction {
+                // First check with `kSecUseAuthenticationUISkip` (`skip_authenticated_items`).
+                // If an item exists in the keychain without authentication requirements,
+                // `find_generic_password` under `SecKeychainSetUserInteractionAllowed(0)`
+                // reads its bytes; if the keychain is locked or the item requires UI, it
+                // immediately fails with `errSecInteractionNotAllowed` (-25308) without prompting.
+                let mut skip_search = ItemSearchOptions::new();
+                skip_search
+                    .class(ItemClass::generic_password())
+                    .service(service)
+                    .account(account)
+                    .limit(Limit::Max(1))
+                    .load_attributes(true)
+                    .skip_authenticated_items(true);
+                if let Some(kc) = keychains {
+                    skip_search.keychains(kc);
+                }
+                if let Err(err) = skip_search.search() {
+                    if err.code() == os_status::ERR_SEC_ITEM_NOT_FOUND {
+                        // Distinguish a truly missing item from an item skipped because it requires
+                        // authentication by checking attributes without `skip_authenticated_items`
+                        // while `SecKeychainSetUserInteractionAllowed(0)` is held.
+                        let mut attr_probe = ItemSearchOptions::new();
+                        attr_probe
+                            .class(ItemClass::generic_password())
+                            .service(service)
+                            .account(account)
+                            .limit(Limit::Max(1))
+                            .load_attributes(true);
+                        if let Some(kc) = keychains {
+                            attr_probe.keychains(kc);
+                        }
+                        return match attr_probe.search() {
+                            Ok(_) => Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED),
+                            Err(probe_err) => Err(probe_err.code()),
+                        };
+                    }
+                    return Err(err.code());
+                }
+            }
+
+            let (password, _item) =
+                find_generic_password(keychains, service, account).map_err(|e| e.code())?;
+            Ok(Zeroizing::new(password.as_ref().to_vec()))
+        })
+    }
+
+    fn write_generic_password(
+        &self,
+        service: &str,
+        account: &str,
+        label: &str,
+        password: &[u8],
+    ) -> Result<(), i32> {
+        use security_framework::item::{
+            ItemClass, ItemSearchOptions, ItemUpdateOptions, update_item,
+        };
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        with_macos_keychain_interaction(true, || {
+            let target_keychain = match &self.keychain {
+                Some(kc) => kc.clone(),
+                None => SecKeychain::default().map_err(|e| e.code())?,
+            };
+            target_keychain
+                .set_generic_password(service, account, password)
+                .map_err(|e| e.code())?;
+
+            let mut search = ItemSearchOptions::new();
+            search
+                .class(ItemClass::generic_password())
+                .keychains(std::slice::from_ref(&target_keychain))
+                .service(service)
+                .account(account);
+            let mut update = ItemUpdateOptions::new();
+            update.set_label(label);
+            let _ = update_item(&search, &update);
+            Ok(())
+        })
+    }
+}
+
+/// Reads non-secret attribute dictionary entries (`acct`, `svce`, `labl`, etc.) for an item in
+/// an isolated `SecKeychain` without requesting secret data or allowing UI interaction.
+#[cfg(target_os = "macos")]
+pub fn read_keychain_item_attributes(
+    keychain: &security_framework::os::macos::keychain::SecKeychain,
+    service: &str,
+    account: &str,
+) -> Result<std::collections::HashMap<String, String>, i32> {
+    use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
+
+    with_macos_keychain_interaction(false, || {
+        let mut search = ItemSearchOptions::new();
+        search
+            .class(ItemClass::generic_password())
+            .keychains(std::slice::from_ref(keychain))
+            .service(service)
+            .account(account)
+            .limit(Limit::Max(1))
+            .load_attributes(true)
+            .skip_authenticated_items(true);
+        let results = search.search().map_err(|e| e.code())?;
+        for result in results {
+            if let SearchResult::Dict(_) = &result
+                && let Some(dict) = result.simplify_dict()
+            {
+                return Ok(dict);
+            }
+        }
+        Err(os_status::ERR_SEC_ITEM_NOT_FOUND)
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn lookup_secret_macos(
+    ops: Option<&dyn MacosKeychainOperations>,
+    id: &SecretId,
+    call: &BrokerCall,
+    user_initiated: bool,
+) -> Result<SecretLookup, SecretStoreError> {
+    if call.cancel.is_cancelled() {
+        return Err(SecretStoreError::Cancelled);
+    }
+
+    let default_ops = SecKeychainOperations { keychain: None };
+    let ops = ops.unwrap_or(&default_ops);
+    let service = id.keychain_service();
+    let account = id.keychain_account();
+
+    match ops.read_generic_password(service, &account, user_initiated) {
+        Ok(mut secret) => {
+            if secret.is_empty() {
+                return Ok(SecretLookup::Invalid);
+            }
+            let bytes = std::mem::take(&mut *secret);
+            let text = match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(error) => {
+                    drop(Zeroizing::new(error.into_bytes()));
+                    return Ok(SecretLookup::Invalid);
+                }
+            };
+            Ok(SecretLookup::Found(SecretString::new(text)))
+        }
+        Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Ok(SecretLookup::Missing),
+        Err(
+            os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+            | os_status::ERR_SEC_AUTH_FAILED
+            | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM
+            | os_status::ERR_SEC_USER_CANCELED,
+        ) if !user_initiated => Ok(SecretLookup::Locked),
+        Err(os_status::ERR_SEC_USER_CANCELED) => Err(SecretStoreError::Dismissed),
+        Err(
+            os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+            | os_status::ERR_SEC_AUTH_FAILED
+            | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM,
+        ) => Err(SecretStoreError::Locked),
+        Err(
+            os_status::ERR_SEC_NOT_AVAILABLE
+            | os_status::ERR_SEC_NO_SUCH_KEYCHAIN
+            | os_status::ERR_SEC_INVALID_KEYCHAIN
+            | os_status::ERR_SEC_UNIMPLEMENTED,
+        ) => {
+            if user_initiated {
+                Err(SecretStoreError::Unavailable)
+            } else {
+                Ok(SecretLookup::Unavailable)
+            }
+        }
+        Err(_) => Err(SecretStoreError::Storage),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn set_secret_macos(
+    ops: Option<&dyn MacosKeychainOperations>,
+    id: &SecretId,
+    secret: &SecretString,
+    call: &BrokerCall,
+) -> Result<(), SecretStoreError> {
+    if call.cancel.is_cancelled() {
+        return Err(SecretStoreError::Cancelled);
+    }
+
+    let default_ops = SecKeychainOperations { keychain: None };
+    let ops = ops.unwrap_or(&default_ops);
+    let service = id.keychain_service();
+    let account = id.keychain_account();
+    let label = id.label();
+
+    match ops.write_generic_password(service, &account, &label, secret.expose_secret().as_bytes()) {
+        Ok(()) => Ok(()),
+        Err(os_status::ERR_SEC_USER_CANCELED) => Err(SecretStoreError::Dismissed),
+        Err(
+            os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+            | os_status::ERR_SEC_AUTH_FAILED
+            | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM,
+        ) => Err(SecretStoreError::Locked),
+        Err(
+            os_status::ERR_SEC_NOT_AVAILABLE
+            | os_status::ERR_SEC_NO_SUCH_KEYCHAIN
+            | os_status::ERR_SEC_INVALID_KEYCHAIN
+            | os_status::ERR_SEC_UNIMPLEMENTED,
+        ) => Err(SecretStoreError::Unavailable),
+        Err(_) => Err(SecretStoreError::Storage),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn chromium_safe_storage_service_account(
+    app_attribute: &str,
+) -> Option<(&'static str, &'static str)> {
+    match app_attribute {
+        "chrome" | "Chrome" | "Google Chrome" => Some(("Chrome Safe Storage", "Chrome")),
+        "chromium" | "Chromium" => Some(("Chromium Safe Storage", "Chromium")),
+        "brave" | "Brave" | "Brave Browser" => Some(("Brave Safe Storage", "Brave")),
+        "vivaldi" | "Vivaldi" => Some(("Vivaldi Safe Storage", "Vivaldi")),
+        "edge" | "Edge" | "microsoft-edge" | "Microsoft Edge" => {
+            Some(("Microsoft Edge Safe Storage", "Microsoft Edge"))
+        }
+        "opera" | "Opera" => Some(("Opera Safe Storage", "Opera")),
+        _ => None,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn chromium_key_macos(
+    ops: Option<&dyn MacosKeychainOperations>,
+    app_attribute: &str,
+    call: &BrokerCall,
+    user_initiated: bool,
+) -> Result<Option<Zeroizing<Vec<u8>>>, SecretStoreError> {
+    if call.cancel.is_cancelled() {
+        return Err(SecretStoreError::Cancelled);
+    }
+
+    let Some((service, account)) = chromium_safe_storage_service_account(app_attribute) else {
+        return Err(SecretStoreError::Unsupported);
+    };
+
+    let default_ops = SecKeychainOperations { keychain: None };
+    let ops = ops.unwrap_or(&default_ops);
+
+    match ops.read_generic_password(service, account, user_initiated) {
+        Ok(key) => {
+            if key.is_empty() {
+                return Err(SecretStoreError::Invalid);
+            }
+            Ok(Some(key))
+        }
+        Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Err(SecretStoreError::Unsupported),
+        Err(os_status::ERR_SEC_USER_CANCELED) => Err(SecretStoreError::Dismissed),
+        Err(os_status::ERR_SEC_AUTH_FAILED | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM) => {
+            if user_initiated {
+                Err(SecretStoreError::Dismissed)
+            } else {
+                Err(SecretStoreError::Locked)
+            }
+        }
+        Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED) => Err(SecretStoreError::Locked),
+        Err(
+            os_status::ERR_SEC_NOT_AVAILABLE
+            | os_status::ERR_SEC_NO_SUCH_KEYCHAIN
+            | os_status::ERR_SEC_INVALID_KEYCHAIN
+            | os_status::ERR_SEC_UNIMPLEMENTED,
+        ) => Err(SecretStoreError::Unavailable),
+        Err(_) => Err(SecretStoreError::Storage),
     }
 }
 
