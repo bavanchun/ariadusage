@@ -12,7 +12,8 @@ invented values; redact anything real from logs before you share them.
 Reports are especially welcome for:
 
 - credential handling: reading other tools' credential files, token refresh,
-  the Secret Service keyring and any fallback secret file;
+  the Secret Service keyring on Linux, the macOS Keychain, and any fallback
+  secret file;
 - the engine's Unix socket and its clients;
 - browser cookie import;
 - the `serve` HTTP server and dashboard;

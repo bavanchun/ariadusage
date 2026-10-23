@@ -712,5 +712,17 @@ mod macos_tests {
             .await
             .unwrap();
         assert_eq!(&*safe_key, b"invented-chrome-safe-storage-secret");
+
+        // Pre-cancelled calls short-circuit before touching Keychain operations.
+        let cancelled = call(FetchInteraction::UserInitiated);
+        cancelled.cancel.cancel();
+        assert_eq!(
+            store
+                .user(cancelled)
+                .set(&api_id, &SecretString::new("invented-claude-key-v3"))
+                .await
+                .unwrap_err(),
+            SecretStoreError::Cancelled
+        );
     }
 }

@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::credential_file::{
-    CLAUDE_CODE_KEYCHAIN_SERVICE, CredentialFileError, KEYCHAIN_DENIAL_COOLDOWN_SECS,
+    CLAUDE_CODE_KEYCHAIN_SERVICE, CLAUDE_OAUTH_DIRECT_KEYCHAIN_READ_CONSENT_KEY,
+    CredentialFileError, DirectKeychainReadConsent, KEYCHAIN_DENIAL_COOLDOWN_SECS,
     KeychainAccessGate, KeychainCandidateRecord, KeychainCredentialDecl, KeychainCredentialError,
     KeychainCredentialRead, KeychainCredentialReader, KeychainCredentialSource,
     KeychainItemFingerprint, KeychainPromptMode, sha256_prefix, sort_keychain_candidates,
@@ -24,6 +25,19 @@ fn call(interaction: FetchInteraction) -> BrokerCall {
         interaction,
         cancel: CancellationToken::new(),
         request_id: "keychain-cred-test".to_owned(),
+    }
+}
+
+fn default_fake_fingerprint(decl: &KeychainCredentialDecl) -> KeychainItemFingerprint {
+    let ref_identity = format!(
+        "genp:{}:{}:1:1:fake",
+        decl.service(),
+        decl.account().unwrap_or_default()
+    );
+    KeychainItemFingerprint {
+        modified_at: Some(1),
+        created_at: Some(1),
+        persistent_ref_hash: Some(sha256_prefix(ref_identity.as_bytes())),
     }
 }
 
@@ -63,16 +77,12 @@ impl KeychainCredentialReader for FakeKeychainCredentialReader {
             .as_ref()
             .map(|b| Zeroizing::new(b.clone()))
             .ok_or(os_status::ERR_SEC_ITEM_NOT_FOUND)?;
-        let fingerprint =
-            self.fingerprint
-                .lock()
-                .unwrap()
-                .clone()
-                .unwrap_or(KeychainItemFingerprint {
-                    modified_at: Some(1),
-                    created_at: Some(1),
-                    persistent_ref_hash: Some(sha256_prefix(&bytes)),
-                });
+        let fingerprint = self
+            .fingerprint
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| default_fake_fingerprint(decl));
         Ok(KeychainCredentialRead { bytes, fingerprint })
     }
 
@@ -82,8 +92,99 @@ impl KeychainCredentialReader for FakeKeychainCredentialReader {
     ) -> Result<Option<KeychainItemFingerprint>, i32> {
         assert_eq!(decl.service(), CLAUDE_CODE_KEYCHAIN_SERVICE);
         self.fingerprint_probes.fetch_add(1, Ordering::SeqCst);
-        Ok(self.fingerprint.lock().unwrap().clone())
+        if let Some(explicit) = self.fingerprint.lock().unwrap().clone() {
+            return Ok(Some(explicit));
+        }
+        if self.payload.lock().unwrap().is_some() {
+            return Ok(Some(default_fake_fingerprint(decl)));
+        }
+        Ok(None)
     }
+}
+
+#[test]
+fn unconsented_user_initiated_read_returns_without_calling_reader() {
+    assert_eq!(
+        CLAUDE_OAUTH_DIRECT_KEYCHAIN_READ_CONSENT_KEY,
+        "claudeOAuthDirectKeychainReadAllowed"
+    );
+    assert_eq!(
+        DirectKeychainReadConsent::default(),
+        DirectKeychainReadConsent::Denied
+    );
+    assert!(!DirectKeychainReadConsent::from(false).is_allowed());
+    assert!(DirectKeychainReadConsent::from(true).is_allowed());
+
+    let reader = Arc::new(FakeKeychainCredentialReader::default());
+    *reader.payload.lock().unwrap() =
+        Some(b"{\"claudeAiOauth\":{\"accessToken\":\"invented\"}}".to_vec());
+
+    let gate = Arc::new(KeychainAccessGate::new(false));
+    let decl = KeychainCredentialDecl::claude_code();
+    // Default source starts with `DirectKeychainReadConsent::Denied`.
+    let mut source = KeychainCredentialSource::new(gate.clone())
+        .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+        .with_reader(reader.clone());
+    assert_eq!(source.consent(), DirectKeychainReadConsent::Denied);
+
+    let err = source
+        .read_at(&decl, &call(FetchInteraction::UserInitiated), 1_000)
+        .unwrap_err();
+    assert_eq!(err, KeychainCredentialError::ConsentRequired);
+    assert!(matches!(
+        CredentialFileError::from(err),
+        CredentialFileError::Unreadable
+    ));
+    assert_eq!(
+        source
+            .probe_fingerprint(&decl, &call(FetchInteraction::Background))
+            .unwrap(),
+        None
+    );
+    assert_eq!(reader.interactive_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(reader.non_interactive_reads.load(Ordering::SeqCst), 0);
+    assert_eq!(reader.fingerprint_probes.load(Ordering::SeqCst), 0);
+    assert_eq!(gate.prompt_attempt_generation(), 0);
+    assert!(gate.should_allow_prompt(CLAUDE_CODE_KEYCHAIN_SERVICE, 1_000));
+
+    // Once the user explicitly grants consent, user-initiated reads can proceed.
+    source.set_consent(DirectKeychainReadConsent::Granted);
+    let read = source
+        .read_at(&decl, &call(FetchInteraction::UserInitiated), 1_001)
+        .unwrap();
+    assert_eq!(
+        &*read.bytes,
+        b"{\"claudeAiOauth\":{\"accessToken\":\"invented\"}}"
+    );
+    assert_eq!(reader.interactive_reads.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn read_and_probe_fingerprints_agree_and_never_hash_secret_bytes() {
+    let reader = Arc::new(FakeKeychainCredentialReader::default());
+    let secret_payload = b"{\"claudeAiOauth\":{\"accessToken\":\"secret-token-1\"}}".to_vec();
+    *reader.payload.lock().unwrap() = Some(secret_payload.clone());
+
+    let gate = Arc::new(KeychainAccessGate::new(false));
+    let decl = KeychainCredentialDecl::claude_code();
+    let source =
+        KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+            .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+            .with_reader(reader.clone());
+
+    let probed = source
+        .probe_fingerprint(&decl, &call(FetchInteraction::Background))
+        .unwrap()
+        .expect("probed fingerprint present");
+    let read = source
+        .read_at(&decl, &call(FetchInteraction::Background), 1_000)
+        .unwrap();
+
+    assert_eq!(read.fingerprint, probed);
+    assert_ne!(
+        read.fingerprint.persistent_ref_hash.as_deref(),
+        Some(sha256_prefix(&secret_payload).as_str())
+    );
 }
 
 #[test]
@@ -159,9 +260,12 @@ fn background_reads_never_prompt_or_poison_denial_cooldown() {
 
     let gate = Arc::new(KeychainAccessGate::new(false));
     let decl = KeychainCredentialDecl::claude_code();
-    let source = KeychainCredentialSource::new(gate.clone())
-        .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
-        .with_reader(reader.clone());
+    let source = KeychainCredentialSource::new_with_consent(
+        gate.clone(),
+        DirectKeychainReadConsent::Granted,
+    )
+    .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+    .with_reader(reader.clone());
 
     // Background call uses non-interactive query (`allow_prompt == false`) and returns
     // `InteractionRequired` when the item requires user interaction, without recording a denial.
@@ -192,9 +296,12 @@ fn user_initiated_denial_records_six_hour_cooldown_and_blocks_repeat_prompts() {
 
     let gate = Arc::new(KeychainAccessGate::new(false).with_state_store(state_store));
     let decl = KeychainCredentialDecl::claude_code();
-    let source = KeychainCredentialSource::new(gate.clone())
-        .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
-        .with_reader(reader.clone());
+    let source = KeychainCredentialSource::new_with_consent(
+        gate.clone(),
+        DirectKeychainReadConsent::Granted,
+    )
+    .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+    .with_reader(reader.clone());
 
     let now = 5_000;
     assert_eq!(
@@ -240,9 +347,10 @@ fn prompt_mode_never_disables_prompts_even_on_user_initiated_reads() {
     let reader = Arc::new(FakeKeychainCredentialReader::default());
     let gate = Arc::new(KeychainAccessGate::new(false));
     let decl = KeychainCredentialDecl::claude_code();
-    let source = KeychainCredentialSource::new(gate)
-        .with_prompt_mode(KeychainPromptMode::Never)
-        .with_reader(reader.clone());
+    let source =
+        KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+            .with_prompt_mode(KeychainPromptMode::Never)
+            .with_reader(reader.clone());
 
     assert_eq!(
         source
@@ -267,9 +375,10 @@ fn keychain_credential_source_enforces_size_limit_and_converts_errors_to_credent
 
     let gate = Arc::new(KeychainAccessGate::new(false));
     let decl = KeychainCredentialDecl::claude_code();
-    let source = KeychainCredentialSource::new(gate)
-        .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
-        .with_reader(reader);
+    let source =
+        KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+            .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+            .with_reader(reader);
 
     let err = source
         .read_at(&decl, &call(FetchInteraction::Background), 1_000)
@@ -281,6 +390,48 @@ fn keychain_credential_source_enforces_size_limit_and_converts_errors_to_credent
         CredentialFileError::from(KeychainCredentialError::NotFound),
         CredentialFileError::NotFound
     ));
+}
+
+#[tokio::test]
+async fn async_keychain_read_and_probe_run_in_spawn_blocking_and_observe_cancellation() {
+    let reader = Arc::new(FakeKeychainCredentialReader::default());
+    *reader.payload.lock().unwrap() =
+        Some(b"{\"claudeAiOauth\":{\"accessToken\":\"invented\"}}".to_vec());
+
+    let gate = Arc::new(KeychainAccessGate::new(false));
+    let decl = KeychainCredentialDecl::claude_code();
+    let source =
+        KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+            .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+            .with_reader(reader.clone());
+
+    let probed = source
+        .probe_fingerprint_async(&decl, &call(FetchInteraction::Background))
+        .await
+        .unwrap()
+        .expect("fingerprint present");
+    let read = source
+        .read_at_async(&decl, &call(FetchInteraction::Background), 1_000)
+        .await
+        .unwrap();
+    assert_eq!(read.fingerprint, probed);
+
+    let cancelled_call = call(FetchInteraction::UserInitiated);
+    cancelled_call.cancel.cancel();
+    assert_eq!(
+        source
+            .read_at_async(&decl, &cancelled_call, 1_001)
+            .await
+            .unwrap_err(),
+        KeychainCredentialError::Cancelled
+    );
+    assert_eq!(
+        source
+            .probe_fingerprint_async(&decl, &cancelled_call)
+            .await
+            .unwrap_err(),
+        KeychainCredentialError::Cancelled
+    );
 }
 
 #[test]
@@ -331,8 +482,9 @@ mod macos_tests {
 
     use ariadusage_core::pipeline::FetchInteraction;
     use ariadusage_engine::brokers::credential_file::{
-        CLAUDE_CODE_KEYCHAIN_SERVICE, KeychainAccessGate, KeychainCredentialDecl,
-        KeychainCredentialError, KeychainCredentialSource, KeychainPromptMode,
+        CLAUDE_CODE_KEYCHAIN_SERVICE, DirectKeychainReadConsent, KeychainAccessGate,
+        KeychainCredentialDecl, KeychainCredentialError, KeychainCredentialSource,
+        KeychainPromptMode, sha256_prefix,
     };
     use security_framework::os::macos::keychain::{
         CreateOptions, KeychainSettings, KeychainUserInteractionLock, SecKeychain,
@@ -384,9 +536,10 @@ mod macos_tests {
         let keychain = temp_keychain.handle();
         let decl = KeychainCredentialDecl::claude_code();
         let gate = Arc::new(KeychainAccessGate::new(false));
-        let source = KeychainCredentialSource::new(gate)
-            .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
-            .with_keychain(keychain.clone());
+        let source =
+            KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+                .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+                .with_keychain(keychain.clone());
 
         assert_eq!(
             source
@@ -421,5 +574,10 @@ mod macos_tests {
             .unwrap();
         assert_eq!(&*read.bytes, payload);
         assert!(read.fingerprint.persistent_ref_hash.is_some());
+        assert_eq!(read.fingerprint, fingerprint);
+        assert_ne!(
+            read.fingerprint.persistent_ref_hash.as_deref(),
+            Some(sha256_prefix(payload).as_str())
+        );
     }
 }

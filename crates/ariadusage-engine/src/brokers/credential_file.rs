@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthDirectKeychainReadConsent.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthKeychainAccessGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthKeychainPromptMode.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials+Hashing.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -8,9 +9,12 @@
 // Ported from CodexBar Sources/CodexBarCore/KeychainNoUIQuery.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
+#[cfg(target_os = "macos")]
+use std::collections::BTreeSet;
 use std::fmt::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ariadusage_core::digest::sha256_hex;
 use ariadusage_core::pipeline::FetchInteraction;
@@ -28,12 +32,25 @@ pub const MAX_CREDENTIAL_FILE_SIZE: u64 = 1024 * 1024;
 /// macOS Keychain generic-password service name owned by Claude Code CLI.
 pub const CLAUDE_CODE_KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 
+/// Persistent setting key governing explicit user opt-in for direct reads of Claude Code's
+/// Keychain item (`"Claude Code-credentials"`), ported from
+/// `ClaudeOAuthDirectKeychainReadConsent.swift`.
+pub const CLAUDE_OAUTH_DIRECT_KEYCHAIN_READ_CONSENT_KEY: &str =
+    "claudeOAuthDirectKeychainReadAllowed";
+
 /// Cooldown after a user cancels or denies a foreign Keychain prompt (6 hours, matching
 /// upstream `ClaudeOAuthKeychainAccessGate.cooldownInterval`).
 pub const KEYCHAIN_DENIAL_COOLDOWN_SECS: i64 = 6 * 60 * 60;
 
 /// Length of the truncated SHA-256 hex digest used in `KeychainItemFingerprint`.
 pub const KEYCHAIN_FINGERPRINT_PREFIX_LEN: usize = 12;
+
+/// Timeout for non-interactive background Keychain queries (`5s`, matching `DBUS_TIMEOUT`).
+const KEYCHAIN_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Timeout for user-initiated interactive Keychain prompts (`120s`, matching
+/// `USER_UNLOCK_TIMEOUT`).
+const KEYCHAIN_USER_PROMPT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A declared path to a credential file.
 ///
@@ -249,6 +266,7 @@ impl fmt::Debug for KeychainCredentialDecl {
 /// Following `ARCHITECTURE.md` §9.3, background work never triggers a system prompt:
 /// `OnlyOnUserAction` (the default) allows interactive Keychain reads only on
 /// `FetchInteraction::UserInitiated` calls while keeping background reads strictly non-interactive.
+/// Upstream `ClaudeOAuthKeychainPromptMode.always` is intentionally omitted per Principle 4.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeychainPromptMode {
     /// Never access the foreign Keychain item.
@@ -256,6 +274,36 @@ pub enum KeychainPromptMode {
     /// Only allow interactive Keychain prompts on explicit user actions (default).
     #[default]
     OnlyOnUserAction,
+}
+
+/// Explicit user consent state for direct reads of a foreign tool's Keychain item (such as
+/// Claude Code's `"Claude Code-credentials"`), ported from
+/// `ClaudeOAuthDirectKeychainReadConsent.swift`.
+///
+/// Defaults to [`Self::Denied`]. Because Claude Code rewrites `"Claude Code-credentials"` on
+/// every token refresh and resets its ACL, direct reads are gated behind explicit opt-in
+/// (`claudeOAuthDirectKeychainReadAllowed`) so AriadUsage never prompts or reads the item without
+/// consent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DirectKeychainReadConsent {
+    /// Direct Keychain reads are not permitted (default).
+    #[default]
+    Denied,
+    /// User has explicitly opted in to direct Keychain reads.
+    Granted,
+}
+
+impl DirectKeychainReadConsent {
+    /// Returns `true` when explicit user consent has been granted.
+    pub const fn is_allowed(self) -> bool {
+        matches!(self, Self::Granted)
+    }
+}
+
+impl From<bool> for DirectKeychainReadConsent {
+    fn from(allowed: bool) -> Self {
+        if allowed { Self::Granted } else { Self::Denied }
+    }
 }
 
 /// Non-secret metadata fingerprint for a foreign Keychain item (ported from
@@ -288,6 +336,9 @@ pub enum KeychainCredentialError {
     #[error("keychain credential item not found")]
     NotFound,
 
+    #[error("direct keychain credential read requires explicit user consent")]
+    ConsentRequired,
+
     #[error("keychain credential item requires user interaction")]
     InteractionRequired,
 
@@ -306,6 +357,9 @@ pub enum KeychainCredentialError {
     #[error("keychain credential item is unreadable")]
     Unreadable,
 
+    #[error("keychain credential operation timed out")]
+    Timeout,
+
     #[error("operation cancelled")]
     Cancelled,
 }
@@ -317,11 +371,13 @@ impl KeychainCredentialError {
             Self::NotFound => CredentialFileError::NotFound,
             Self::TooLarge => CredentialFileError::TooLarge,
             Self::Cancelled => CredentialFileError::Cancelled,
-            Self::InteractionRequired
+            Self::ConsentRequired
+            | Self::InteractionRequired
             | Self::Dismissed
             | Self::CooldownActive
             | Self::Disabled
-            | Self::Unreadable => CredentialFileError::Unreadable,
+            | Self::Unreadable
+            | Self::Timeout => CredentialFileError::Unreadable,
         }
     }
 }
@@ -582,21 +638,52 @@ impl<T: KeychainCredentialReader + ?Sized> KeychainCredentialReader for Arc<T> {
 /// item `"Claude Code-credentials"`).
 ///
 /// By construction this type exposes only read and fingerprint-probe operations; AriadUsage never
-/// writes to or deletes another tool's Keychain item (`ARCHITECTURE.md` §9.2).
+/// writes to or deletes another tool's Keychain item (`ARCHITECTURE.md` §9.2). Direct reads
+/// default to [`DirectKeychainReadConsent::Denied`] (`claudeOAuthDirectKeychainReadAllowed = false`)
+/// until the user explicitly opts in.
+#[derive(Clone)]
 pub struct KeychainCredentialSource {
     gate: Arc<KeychainAccessGate>,
+    consent: DirectKeychainReadConsent,
     prompt_mode: KeychainPromptMode,
     reader: Arc<dyn KeychainCredentialReader>,
 }
 
 impl KeychainCredentialSource {
-    /// Creates a new read-only Keychain credential source governed by `gate`.
+    /// Creates a new read-only Keychain credential source governed by `gate` with direct-read
+    /// consent defaulting to [`DirectKeychainReadConsent::Denied`].
     pub fn new(gate: Arc<KeychainAccessGate>) -> Self {
+        Self::new_with_consent(gate, DirectKeychainReadConsent::Denied)
+    }
+
+    /// Creates a new read-only Keychain credential source governed by `gate` and explicit `consent`.
+    pub fn new_with_consent(
+        gate: Arc<KeychainAccessGate>,
+        consent: DirectKeychainReadConsent,
+    ) -> Self {
         Self {
             gate,
+            consent,
             prompt_mode: KeychainPromptMode::OnlyOnUserAction,
             reader: default_keychain_reader(),
         }
+    }
+
+    /// Sets the explicit user consent state (`claudeOAuthDirectKeychainReadAllowed`) for direct
+    /// reads of the foreign Keychain item.
+    pub fn with_consent(mut self, consent: DirectKeychainReadConsent) -> Self {
+        self.consent = consent;
+        self
+    }
+
+    /// Updates the explicit user consent state (`claudeOAuthDirectKeychainReadAllowed`).
+    pub fn set_consent(&mut self, consent: DirectKeychainReadConsent) {
+        self.consent = consent;
+    }
+
+    /// Returns the active [`DirectKeychainReadConsent`] state.
+    pub fn consent(&self) -> DirectKeychainReadConsent {
+        self.consent
     }
 
     /// Sets the prompt policy for foreign Keychain reads.
@@ -612,9 +699,7 @@ impl KeychainCredentialSource {
         mut self,
         keychain: security_framework::os::macos::keychain::SecKeychain,
     ) -> Self {
-        self.reader = Arc::new(MacosKeychainCredentialReader {
-            keychain: Some(keychain),
-        });
+        self.reader = Arc::new(MacosKeychainCredentialReader::new(Some(keychain)));
         self
     }
 
@@ -643,8 +728,61 @@ impl KeychainCredentialSource {
         self.read_at(decl, call, Timestamp::now().as_second())
     }
 
+    /// Asynchronously reads the declared Keychain item on `tokio::task::spawn_blocking` with a
+    /// bounded timeout (`120s` for user-initiated prompts, `5s` for background reads) and
+    /// cancellation checks before, during, and after the blocking call.
+    pub async fn read_async(
+        &self,
+        decl: &KeychainCredentialDecl,
+        call: &BrokerCall,
+    ) -> Result<KeychainCredentialRead, KeychainCredentialError> {
+        self.read_at_async(decl, call, Timestamp::now().as_second())
+            .await
+    }
+
+    /// Asynchronously reads the declared Keychain item at `now_seconds` on
+    /// `tokio::task::spawn_blocking`, bounded by `KEYCHAIN_USER_PROMPT_TIMEOUT` (`120s`) for
+    /// user-initiated prompts and `KEYCHAIN_BACKGROUND_TIMEOUT` (`5s`) for background reads.
+    pub async fn read_at_async(
+        &self,
+        decl: &KeychainCredentialDecl,
+        call: &BrokerCall,
+        now_seconds: i64,
+    ) -> Result<KeychainCredentialRead, KeychainCredentialError> {
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
+        }
+        let timeout_duration = match call.interaction {
+            FetchInteraction::UserInitiated => KEYCHAIN_USER_PROMPT_TIMEOUT,
+            FetchInteraction::Background => KEYCHAIN_BACKGROUND_TIMEOUT,
+        };
+        let source = self.clone();
+        let decl = decl.clone();
+        let call_for_task = call.clone();
+        let handle =
+            tokio::task::spawn_blocking(move || source.read_at(&decl, &call_for_task, now_seconds));
+        let outcome = tokio::select! {
+            _ = call.cancel.cancelled() => return Err(KeychainCredentialError::Cancelled),
+            timed = tokio::time::timeout(timeout_duration, handle) => {
+                match timed {
+                    Err(_) => return Err(KeychainCredentialError::Timeout),
+                    Ok(Err(_join_error)) => return Err(KeychainCredentialError::Unreadable),
+                    Ok(Ok(res)) => res,
+                }
+            }
+        };
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
+        }
+        outcome
+    }
+
     /// Reads the declared Keychain item at `now_seconds`.
     ///
+    /// - Requires [`DirectKeychainReadConsent::Granted`] (`claudeOAuthDirectKeychainReadAllowed`);
+    ///   when consent is [`DirectKeychainReadConsent::Denied`], returns
+    ///   [`KeychainCredentialError::ConsentRequired`] immediately without calling the reader or
+    ///   recording a denial cooldown.
     /// - Background calls (`FetchInteraction::Background`) never trigger a Keychain prompt: they
     ///   execute with `allow_prompt = false` (`kSecUseAuthenticationUISkip` and
     ///   `SecKeychainSetUserInteractionAllowed(false)`), and if the item requires interaction they
@@ -665,11 +803,14 @@ impl KeychainCredentialSource {
         if self.gate.is_disabled() {
             return Err(KeychainCredentialError::Disabled);
         }
+        if !self.consent.is_allowed() {
+            return Err(KeychainCredentialError::ConsentRequired);
+        }
         if self.prompt_mode == KeychainPromptMode::Never {
             return Err(KeychainCredentialError::InteractionRequired);
         }
 
-        match call.interaction {
+        let result = match call.interaction {
             FetchInteraction::Background => match self.reader.read_item(decl, false) {
                 Ok(read) => validate_keychain_read(read),
                 Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Err(KeychainCredentialError::NotFound),
@@ -706,7 +847,12 @@ impl KeychainCredentialSource {
                     Err(_) => Err(KeychainCredentialError::Unreadable),
                 }
             }
+        };
+
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
         }
+        result
     }
 
     /// Probes the item's non-secret attribute fingerprint without requesting secret data or
@@ -722,11 +868,11 @@ impl KeychainCredentialSource {
         if self.gate.is_disabled() {
             return Err(KeychainCredentialError::Disabled);
         }
-        if self.prompt_mode == KeychainPromptMode::Never {
+        if !self.consent.is_allowed() || self.prompt_mode == KeychainPromptMode::Never {
             return Ok(None);
         }
 
-        match self.reader.probe_fingerprint(decl) {
+        let result = match self.reader.probe_fingerprint(decl) {
             Ok(fp) => Ok(fp),
             Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Ok(None),
             Err(
@@ -736,7 +882,43 @@ impl KeychainCredentialSource {
                 | os_status::ERR_SEC_USER_CANCELED,
             ) => Err(KeychainCredentialError::InteractionRequired),
             Err(_) => Err(KeychainCredentialError::Unreadable),
+        };
+
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
         }
+        result
+    }
+
+    /// Asynchronously probes the item's non-secret attribute fingerprint on
+    /// `tokio::task::spawn_blocking`, bounded by `KEYCHAIN_BACKGROUND_TIMEOUT` (`5s`).
+    pub async fn probe_fingerprint_async(
+        &self,
+        decl: &KeychainCredentialDecl,
+        call: &BrokerCall,
+    ) -> Result<Option<KeychainItemFingerprint>, KeychainCredentialError> {
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
+        }
+        let source = self.clone();
+        let decl = decl.clone();
+        let call_for_task = call.clone();
+        let handle =
+            tokio::task::spawn_blocking(move || source.probe_fingerprint(&decl, &call_for_task));
+        let outcome = tokio::select! {
+            _ = call.cancel.cancelled() => return Err(KeychainCredentialError::Cancelled),
+            timed = tokio::time::timeout(KEYCHAIN_BACKGROUND_TIMEOUT, handle) => {
+                match timed {
+                    Err(_) => return Err(KeychainCredentialError::Timeout),
+                    Ok(Err(_join_error)) => return Err(KeychainCredentialError::Unreadable),
+                    Ok(Ok(res)) => res,
+                }
+            }
+        };
+        if call.cancel.is_cancelled() {
+            return Err(KeychainCredentialError::Cancelled);
+        }
+        outcome
     }
 }
 
@@ -744,6 +926,7 @@ impl fmt::Debug for KeychainCredentialSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("KeychainCredentialSource")
             .field("gate", &self.gate)
+            .field("consent", &self.consent)
             .field("prompt_mode", &self.prompt_mode)
             .finish()
     }
@@ -760,7 +943,7 @@ fn validate_keychain_read(
 
 #[cfg(target_os = "macos")]
 fn default_keychain_reader() -> Arc<dyn KeychainCredentialReader> {
-    Arc::new(MacosKeychainCredentialReader { keychain: None })
+    Arc::new(MacosKeychainCredentialReader::new(None))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -792,19 +975,34 @@ impl KeychainCredentialReader for UnsupportedKeychainCredentialReader {
 #[cfg(target_os = "macos")]
 struct MacosKeychainCredentialReader {
     keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    interaction_required_cache: Mutex<BTreeSet<(String, Option<String>)>>,
 }
 
 #[cfg(target_os = "macos")]
 #[derive(Clone, Debug)]
 struct DiscoveredAttrCandidate {
     account: String,
-    modified_at: Option<i64>,
-    created_at: Option<i64>,
-    attr_digest: String,
+    fingerprint: KeychainItemFingerprint,
 }
 
 #[cfg(target_os = "macos")]
 impl MacosKeychainCredentialReader {
+    fn new(keychain: Option<security_framework::os::macos::keychain::SecKeychain>) -> Self {
+        Self {
+            keychain,
+            interaction_required_cache: Mutex::new(BTreeSet::new()),
+        }
+    }
+
+    fn cache_key(decl: &KeychainCredentialDecl) -> (String, Option<String>) {
+        (decl.service().to_owned(), decl.account().map(str::to_owned))
+    }
+
+    /// Discovers generic-password candidates matching `decl` and computes each candidate's
+    /// [`KeychainItemFingerprint`] strictly from non-secret item reference attributes (`genp`,
+    /// `svce`, `acct`, `cdat`, `mdat`, `labl`). Both `read_item` and `probe_fingerprint` consume
+    /// the resulting `fingerprint` directly so secret payload bytes are never hashed and read vs.
+    /// probe fingerprints always match for an unchanged item.
     fn discover_candidates(
         &self,
         decl: &KeychainCredentialDecl,
@@ -833,27 +1031,66 @@ impl MacosKeychainCredentialReader {
                 && let Some(dict) = result.simplify_dict()
             {
                 let account = dict.get("acct").cloned().unwrap_or_default();
+                let label = dict.get("labl").cloned().unwrap_or_default();
                 let mdat_raw = dict.get("mdat").cloned().unwrap_or_default();
                 let cdat_raw = dict.get("cdat").cloned().unwrap_or_default();
                 let modified_at = parse_cfdate_description(&mdat_raw);
                 let created_at = parse_cfdate_description(&cdat_raw);
-                let digest_input = format!("{}:{account}:{mdat_raw}:{cdat_raw}", decl.service());
-                let attr_digest = sha256_prefix(digest_input.as_bytes());
+                let ref_identity = format!(
+                    "genp:{}:{account}:{cdat_raw}:{mdat_raw}:{label}",
+                    decl.service()
+                );
+                let persistent_ref_hash = Some(sha256_prefix(ref_identity.as_bytes()));
                 candidates.push(DiscoveredAttrCandidate {
                     account,
-                    modified_at,
-                    created_at,
-                    attr_digest,
+                    fingerprint: KeychainItemFingerprint {
+                        modified_at,
+                        created_at,
+                        persistent_ref_hash,
+                    },
                 });
             }
         }
 
         candidates.sort_by(|left, right| {
-            let left_ts = left.modified_at.or(left.created_at).unwrap_or(i64::MIN);
-            let right_ts = right.modified_at.or(right.created_at).unwrap_or(i64::MIN);
+            let left_ts = left
+                .fingerprint
+                .modified_at
+                .or(left.fingerprint.created_at)
+                .unwrap_or(i64::MIN);
+            let right_ts = right
+                .fingerprint
+                .modified_at
+                .or(right.fingerprint.created_at)
+                .unwrap_or(i64::MIN);
             right_ts.cmp(&left_ts)
         });
         Ok(candidates)
+    }
+
+    fn probe_unfiltered_interaction_required(&self, decl: &KeychainCredentialDecl) -> bool {
+        let key = Self::cache_key(decl);
+        if self
+            .interaction_required_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(&key)
+        {
+            return true;
+        }
+        if super::secret_store::service::is_macos_user_prompt_active() {
+            return false;
+        }
+        if let Ok(unfiltered) = self.discover_candidates(decl, false)
+            && !unfiltered.is_empty()
+        {
+            self.interaction_required_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key);
+            return true;
+        }
+        false
     }
 }
 
@@ -866,14 +1103,25 @@ impl KeychainCredentialReader for MacosKeychainCredentialReader {
     ) -> Result<KeychainCredentialRead, i32> {
         use security_framework::os::macos::passwords::find_generic_password;
 
+        let cache_key = Self::cache_key(decl);
+        if allow_prompt {
+            self.interaction_required_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&cache_key);
+        }
+
         super::secret_store::service::with_macos_keychain_interaction(allow_prompt, || {
             let candidates = match self.discover_candidates(decl, !allow_prompt) {
-                Ok(list) if !list.is_empty() => list,
+                Ok(list) if !list.is_empty() => {
+                    self.interaction_required_cache
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&cache_key);
+                    list
+                }
                 Ok(_) | Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
-                    if !allow_prompt
-                        && let Ok(unfiltered) = self.discover_candidates(decl, false)
-                        && !unfiltered.is_empty()
-                    {
+                    if !allow_prompt && self.probe_unfiltered_interaction_required(decl) {
                         return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
                     }
                     return Err(os_status::ERR_SEC_ITEM_NOT_FOUND);
@@ -888,14 +1136,9 @@ impl KeychainCredentialReader for MacosKeychainCredentialReader {
                 match find_generic_password(keychains, decl.service(), &candidate.account) {
                     Ok((password, _item)) => {
                         let bytes = Zeroizing::new(password.as_ref().to_vec());
-                        let persistent_ref_hash = Some(sha256_prefix(&bytes));
                         return Ok(KeychainCredentialRead {
                             bytes,
-                            fingerprint: KeychainItemFingerprint {
-                                modified_at: candidate.modified_at,
-                                created_at: candidate.created_at,
-                                persistent_ref_hash,
-                            },
+                            fingerprint: candidate.fingerprint,
                         });
                     }
                     Err(err) => {
@@ -921,22 +1164,20 @@ impl KeychainCredentialReader for MacosKeychainCredentialReader {
         &self,
         decl: &KeychainCredentialDecl,
     ) -> Result<Option<KeychainItemFingerprint>, i32> {
+        let cache_key = Self::cache_key(decl);
         super::secret_store::service::with_macos_keychain_interaction(false, || {
             match self.discover_candidates(decl, true) {
                 Ok(candidates) => {
-                    Ok(candidates
-                        .into_iter()
-                        .next()
-                        .map(|c| KeychainItemFingerprint {
-                            modified_at: c.modified_at,
-                            created_at: c.created_at,
-                            persistent_ref_hash: Some(c.attr_digest),
-                        }))
+                    if !candidates.is_empty() {
+                        self.interaction_required_cache
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&cache_key);
+                    }
+                    Ok(candidates.into_iter().next().map(|c| c.fingerprint))
                 }
                 Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
-                    if let Ok(unfiltered) = self.discover_candidates(decl, false)
-                        && !unfiltered.is_empty()
-                    {
+                    if self.probe_unfiltered_interaction_required(decl) {
                         return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
                     }
                     Ok(None)
