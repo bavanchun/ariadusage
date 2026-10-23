@@ -404,5 +404,15 @@ fn fixture_providers_carry_presentation_and_claude_tertiary_window() {
             }
             None => assert!(!has_data, "tertiary missing at step {step}"),
         }
+        match &claude.windows.secondary {
+            Some(secondary) => {
+                assert!(has_data, "weekly only when Claude has data (step {step})");
+                assert_eq!(secondary.state, primary_state);
+                let window = secondary.value.as_ref().expect("weekly value");
+                assert_eq!(window.window_minutes, Some(10080));
+                assert!(window.resets_at.is_some());
+            }
+            None => assert!(!has_data, "weekly missing at step {step}"),
+        }
     }
 }
