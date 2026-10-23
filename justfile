@@ -113,6 +113,9 @@ brand-ci: js
     just brand-check
     git diff --exit-code brand/svg
 
+macos-dev:
+    bash scripts/macos-dev.sh
+
 omarchy-check:
     bash scripts/omarchy-plugin.sh check
 

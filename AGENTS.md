@@ -4,7 +4,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Current state
 
-- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the pure domain crate `ariadusage-core` (`crates/ariadusage-core`), the engine runtime crate `ariadusage-engine` (`crates/ariadusage-engine`) with config store, atomic private writer and the full M2 broker suite (Net, Process runs, teardown and sessions, ExecutableResolver, CredentialFile and delegated refresh, SecretStore with in-process `secret set`, in-memory CookieCache, Browser cookie import, and LocalProbe), the helper child binary for process and PTY testing (`crates/ariadusage-engine/src/bin/test_child.rs`), the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
+- The repository contains the Cargo workspace with the `ariadusage` CLI binary skeleton (`crates/ariadusage-cli`), the pure domain crate `ariadusage-core` (`crates/ariadusage-core`), the engine runtime crate `ariadusage-engine` (`crates/ariadusage-engine`) with config store, atomic private writer and the full M2 broker suite (Net, Process runs, teardown and sessions, ExecutableResolver, CredentialFile and delegated refresh, SecretStore with in-process `secret set`, in-memory CookieCache, Browser cookie import, and LocalProbe), the helper child binary for process and PTY testing (`crates/ariadusage-engine/src/bin/test_child.rs`), the `ariadusage-protocol` crate with Snapshot v1 and IPC v1 schemas (`schemas/`), the macOS menu-bar app shell (`crates/ariadusage-macos`: status item with the bars icon, a basic menu and the IPC client), the Omarchy plugin prototype (`integrations/omarchy/`), and design-as-code brand assets (`brand/`).
 - The `fixtures/` directory holds test and parity data files recorded in `fixtures/manifest.toml`, exempt from the Markdown location rule.
 - Build, test, lint, schema, brand and plugin recipes are defined in [justfile](justfile). Toolchain and runtime versions are pinned in [rust-toolchain.toml](rust-toolchain.toml) and [.node-version](.node-version).
 - Commands:
@@ -12,6 +12,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
   - `just keyring-test`: runs the ignored Secret Service integration test inside a temporary D-Bus session and temporary HOME/XDG directories.
   - `just release-check`: builds the release CLI and verifies test hooks and the helper binary (`ariadusage-test-child`) are absent from release builds.
   - `just push`: runs `secrets` then pushes the current branch.
+  - `just macos-dev`: builds and runs the macOS app against the protocol fixture server on a private socket under `$TMPDIR`; quitting the app stops the server.
   - `just schemas`: regenerates and blesses JSON schemas for Snapshot v1 and IPC v1.
   - `pnpm --dir brand build`: builds brand SVG and PNG assets.
   - `just brand-ci`: runs frozen pnpm audit, brand build, contrast checks and SVG git diff.
