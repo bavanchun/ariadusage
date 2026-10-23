@@ -103,11 +103,12 @@ pub fn parse_retry_after(raw: Option<&str>, now: Timestamp) -> Option<Timestamp>
         return None;
     }
 
-    if let Ok(seconds) = trimmed.parse::<i64>() {
-        if seconds < 0 {
+    if let Ok(seconds) = trimmed.parse::<f64>() {
+        if !seconds.is_finite() || seconds < 0.0 {
             return None;
         }
-        return now.checked_add(SignedDuration::from_secs(seconds)).ok();
+        let delta = SignedDuration::try_from_secs_f64(seconds).ok()?;
+        return now.checked_add(delta).ok();
     }
 
     parse_http_date(trimmed)
