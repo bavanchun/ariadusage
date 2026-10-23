@@ -9,12 +9,14 @@ independent Rust reimplementation of [CodexBar](https://github.com/steipete/Code
 the same ideas and behavior, a different language, and no runtime bridge to the
 `codexbar` binary.
 
-**v1** is an Omarchy bar-widget plugin backed by a Rust engine. It reaches full
-CodexBar parity for exactly three providers, **Claude**, **Codex** and
-**Antigravity**: every source of data and every feature CodexBar has for them.
-CodexBar's other 88 providers arrive in waves after v1. The engine is built so
-that those providers, other Linux desktops, macOS and Windows can be added
-without rewriting it.
+**v1** is a native macOS menu-bar app and an Omarchy bar-widget plugin, both
+backed by one Rust engine. The macOS app comes first and reproduces CodexBar's
+UI and UX; the Omarchy plugin follows on the same engine and contract. v1
+reaches full CodexBar parity for exactly three providers, **Claude**, **Codex**
+and **Antigravity**: every source of data and every feature CodexBar has for
+them. CodexBar's other providers arrive in waves after v1. The engine is built
+so that those providers, other Linux desktops and Windows can be added without
+rewriting it.
 
 The name follows the Ariad family: Ariadne's thread is the line you follow to
 see how far you have gone and how much is left.
@@ -25,12 +27,12 @@ see how far you have gone and how much is left.
 
 | # | Principle | Concrete implications |
 |---|---|---|
-| 1 | One engine, many frontends | The engine owns all data, refresh, credentials and policy. Frontends (the Omarchy plugin now; KDE, GNOME, macOS and Windows later) only render and send intents over the same contract |
+| 1 | One engine, many frontends | The engine owns all data, refresh, credentials and policy. Frontends (the macOS app first, then the Omarchy plugin; KDE, GNOME and Windows later) only render and send intents over the same contract |
 | 2 | Behavioral parity with a pinned baseline | CodexBar's code and tests at the baseline commit are the specification; divergences are deliberate and recorded ([docs/porting.md](docs/porting.md)) |
 | 3 | Honest data | Every metric carries its state, age, source and confidence. Unknown, loading, stale and failed data never render as a real 0 % or 100 %, and missing cost never renders as $0 |
 | 4 | Least-privilege acquisition | Read credentials read-only by default, refresh only tokens AriadUsage owns, import browser cookies only on per-provider opt-in, and never prompt from background work |
 | 5 | Secrets stay in the engine | No secret in QML, argv, logs, notifications or the socket's push stream |
-| 6 | Linux first, portable by construction | The contract and domain crates build on Linux, macOS and Windows from the first commit; platform code is isolated behind `cfg` modules |
+| 6 | macOS and Linux first, portable by construction | The contract and domain crates build on Linux, macOS and Windows from the first commit; platform code is isolated behind `cfg` modules, and every broker the v1 providers use has a macOS and a Linux implementation |
 | 7 | Local only | No telemetry. Network traffic goes only to provider APIs, status feeds and the pricing source a feature needs |
 | 8 | License clean | MIT project; CodexBar attribution on every ported file; no GPL or AGPL linked into a distributed artifact |
 
@@ -47,7 +49,7 @@ see how far you have gone and how much is left.
 
 ### 2.1 Workspace crates
 
-Four crates, each a real boundary. Providers are modules, never one crate each.
+Five crates, each a real boundary. Providers are modules, never one crate each. `ariadusage-macos` is created with its first real code.
 
 | Crate | Role | Portability |
 |---|---|---|
@@ -55,8 +57,9 @@ Four crates, each a real boundary. Providers are modules, never one crate each.
 | `ariadusage-core` | Pure domain: provider ids, config model and validation, the fetch pipeline and classified errors, pace, cost math, hook transitions, notification policy, status model, and the capability traits a later script provider consumes. No I/O, no `cfg(target_os)` | Linux, macOS, Windows |
 | `ariadusage-engine` | All I/O: brokers, the three v1 providers, cost scanners and the SQLite store, status, notifier, hooks runner, scheduler, IPC server, `serve`, and `platform/` modules | Builds everywhere; Linux-only behavior returns a typed `Unsupported` elsewhere |
 | `ariadusage-cli` | The `ariadusage` binary: subcommands, renderers, exit codes, logging setup | Builds everywhere |
+| `ariadusage-macos` | The macOS menu-bar app: status items, menu, menu cards, charts and the Settings window, drawn with AppKit and Core Graphics through objc2. A frontend like any other: it renders snapshots and sends intents over IPC v1 | macOS only |
 
-Dependencies point one way: protocol ← core ← engine ← cli. `protocol` is separate from `core` so contract changes get their own review surface and schema generation, and so a future Rust frontend can link the contract alone. A crate is created only with its first real code, never as an empty placeholder.
+Dependencies point one way: protocol ← core ← engine ← cli. `ariadusage-macos` depends on `ariadusage-protocol` for the contract; whether it also links the engine in-process is an [open question](#16-open-questions). `protocol` is separate from `core` so contract changes get their own review surface and schema generation, and so a future Rust frontend can link the contract alone. A crate is created only with its first real code, never as an empty placeholder.
 
 ### 2.2 Chosen crates
 
@@ -89,6 +92,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
 | Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
 | Cookie header normalization | regex | Nine case-insensitive patterns to extract and normalize cookie strings from curl commands or raw headers; 64 KiB input cap |
+| macOS UI | objc2 with the objc2-app-kit, objc2-foundation and objc2-core-graphics bindings | Native AppKit (NSStatusItem, NSMenu with custom views, NSWindow) from Rust; SwiftUI and Swift Charts are not reachable from Rust, so CodexBar's SwiftUI views are redrawn as AppKit views and Core Graphics drawing |
 | Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split and browser crypto round-trip properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
@@ -99,6 +103,10 @@ Rejected alternatives are in the [Decision Log](#14-decision-log).
 
 ```mermaid
 flowchart LR
+  subgraph mac["macOS app (Rust, AppKit, display only)"]
+    status["Status items"] --> menu["Menu<br/>Switcher · cards · charts · actions"]
+    status --> prefs["Settings window"]
+  end
   subgraph plugin["Omarchy plugin (QML, display only)"]
     bar["BarWidget.qml"] --> panel["Panel.qml<br/>Overview · Detail · Spend · Settings · About"]
   end
@@ -112,7 +120,8 @@ flowchart LR
     serve["serve: HTTP + dashboard (opt-in)"]
   end
   terminal["Terminal / CLI client"]
-  later["Later frontends: KDE · GNOME · macOS · Windows"]
+  later["Later frontends: KDE · GNOME · Windows"]
+  mac <-->|"Unix socket, newline-delimited JSON"| ipc
   plugin <-->|"Unix socket, newline-delimited JSON"| ipc
   terminal -->|"setSecret and other intents"| ipc
   later -.->|"same contract"| ipc
@@ -121,7 +130,7 @@ flowchart LR
   sched --- store
 ```
 
-The plugin is a client: it never fetches, never holds a secret and never owns data. Any number of bar instances on any number of monitors read from one engine. The engine ships through the AUR with a systemd user unit; the plugin ships through the Omarchy marketplace.
+The macOS app and the plugin are clients: they never fetch, never hold a secret and never own data. Any number of bar instances on any number of monitors read from one engine. On Linux the engine ships through the AUR with a systemd user unit and the plugin ships through the Omarchy marketplace; the macOS distribution channel is an [open question](#16-open-questions).
 
 ---
 
@@ -134,6 +143,14 @@ The plugin is a client: it never fetches, never holds a secret and never owns da
 | Unix socket | `$XDG_RUNTIME_DIR/ariadusage/engine.sock`, owner-only. The only interface frontends use |
 | `serve` and dashboard | Opt-in HTTP server with a web dashboard. Loopback by default; anything else needs a token, matching CodexBar's hardening |
 | Omarchy plugin | Bar glyph plus panel; renders snapshots and descriptor-driven settings |
+| macOS app | Menu-bar status items, the dropdown menu and the Settings window; renders snapshots and descriptor-driven settings |
+
+### 4.1 macOS app
+
+- **Fidelity target.** The app reproduces CodexBar's UI and UX at the parity baseline: status-item icons and their animations, merged and per-provider items, the provider switcher, menu cards, history and cost charts, menu actions and every Settings pane that applies to the v1 providers. CodexBar's source at the baseline is the specification; captures of the running CodexBar app at the same commit are the visual reference.
+- **Rendering.** Everything is AppKit through objc2: `NSStatusItem` images drawn at 2× with Core Graphics, `NSMenu` items with custom `NSView`s sized through `intrinsicContentSize`, chart views drawn in `drawRect:` with shared geometry for drawing and hit testing, and a Settings window built from AppKit controls.
+- **Identity.** The app keeps AriadUsage's own name, bundle identifier, brand, links and binary names. It never reuses CodexBar's identifiers, defaults domain, About text or CLI symlink name.
+- **Secrets.** Secret fields in Settings show only whether a secret is set and where it comes from; values are entered through `ariadusage secret set`, as on Linux.
 
 ---
 
@@ -142,7 +159,7 @@ The plugin is a client: it never fetches, never holds a secret and never owns da
 | Path | Contents | Arrives |
 |---|---|---|
 | `docs/` | Architecture companions: protocol, privacy, porting, git workflow, security, brand direction | Now; `docs/protocol.md` and `docs/brand/design-direction.md` in M0 |
-| `crates/` | The workspace crates from §2.1 | `ariadusage-cli` and `ariadusage-protocol` in M0; `ariadusage-core` and `ariadusage-engine` with their first code from M1 |
+| `crates/` | The workspace crates from §2.1 | `ariadusage-cli` and `ariadusage-protocol` in M0; `ariadusage-core` and `ariadusage-engine` with their first code from M1; `ariadusage-macos` in M2.3 |
 | `schemas/` | JSON Schemas generated from `ariadusage-protocol`, with example messages | M0 |
 | `integrations/omarchy/` | Source of the Omarchy plugin, published to its own repository | Contract spike in M0; full UI in M9 |
 | `brand/` | Design-as-code logo pipeline and vendored provider logos | M0 |
@@ -189,6 +206,8 @@ Providers never touch the system directly. Brokers do, and every broker call say
 | SecretStore | AriadUsage's own secrets in the default login collection through Secret Service; stable attributes contain no account names or email. A trust-checked 0600 file is offered only after consent and only when the service is unavailable. Background work never unlocks or writes secrets |
 | ExecutableResolver | Finds `claude`, `codex` and `agy` (including mise, asdf and `~/.local/bin` installs) and returns absolute paths; an explicit override is authoritative |
 
+The M2 brokers are implemented and tested on Linux; their platform code is gated to Linux and returns a typed `Unsupported` elsewhere. Each broker the v1 providers use gets a macOS implementation behind the same interface and the same security invariants: LocalProbe through libproc and sysctl instead of procfs, SecretStore through the login Keychain instead of Secret Service, credential trust checks through rustix on macOS, Chromium cookie decryption with the macOS Keychain-held key, and Process sessions and the reaper on Darwin. Claude Code on macOS keeps its OAuth credentials in a Keychain item rather than a file, so the CredentialFile broker gains a read-only Keychain source on macOS that never prompts from background work.
+
 ### 6.4 Refresh invariants
 
 These come from CodexBar and are pinned by ported tests:
@@ -203,6 +222,7 @@ These come from CodexBar and are pinned by ported tests:
 
 - One config file holds every setting: `$XDG_CONFIG_HOME/ariadusage/config.json`. State lives in `$XDG_STATE_HOME/ariadusage/`, caches in `$XDG_CACHE_HOME/ariadusage/`, the socket in `$XDG_RUNTIME_DIR/ariadusage/`. Nothing is ever written inside the plugin directory.
 - Environment variables use the `ARIADUSAGE_` prefix.
+- On macOS the same XDG-style layout applies under the user's home. `XDG_RUNTIME_DIR` is normally unset there, so the socket needs a per-user private directory instead of the shared `/tmp` fallback; the location is decided together with engine hosting on macOS.
 - AriadUsage never reads or writes CodexBar's config, cache or state, and has no import command.
 
 ---
@@ -214,7 +234,7 @@ These come from CodexBar and are pinned by ported tests:
 - **Settings travel as descriptors.** The engine describes each setting (toggle, choice, number, text, secret, accounts, actions and so on); frontends render them generically. Omarchy does not render a manifest settings schema, so this is the only settings path.
 - **Secrets never enter QML.** A secret descriptor carries only whether it is set and where it comes from. Values are typed into the engine binary's own no-echo prompt, `ariadusage secret set`, which the Omarchy panel opens in a terminal and which users can also run directly; the panel never sends `setSecret`.
 - **Frame cap.** The engine never emits a frame larger than the documented limit. A QML reader can only see a line after Quickshell has buffered it, so the cap must hold on the producer side.
-- **Compatibility.** Clients tolerate unknown fields and enum values. IPC v1 stays a draft while the v1 providers land, and is frozen before the first plugin release (M9); after the freeze, changes within v1 are additive only.
+- **Compatibility.** Clients tolerate unknown fields and enum values. IPC v1 stays a draft while the v1 providers land, and is frozen before the first frontend release, whichever of the macOS app and the Omarchy plugin ships first; after the freeze, changes within v1 are additive only.
 - **Machine owner.** `schemas/` owns the exact shapes once it exists; `docs/protocol.md` (M0) owns framing, handshake, limits and client duties.
 
 ---
@@ -257,6 +277,8 @@ What AriadUsage reads, writes and sends is documented for users in [docs/privacy
 
 On Windows, AriadUsage never bypasses Chrome's App-Bound Encryption: it uses Firefox cookies or a manually pasted cookie header instead.
 
+On macOS, Keychain reads of other tools' items (Claude Code's OAuth item, the browsers' Safe Storage keys) can raise a system prompt. Background work never triggers one: such reads happen only on user-initiated refreshes or after the user allows them in Settings, matching CodexBar's Keychain prompt policy.
+
 ---
 
 ## 10. Quality
@@ -265,6 +287,7 @@ On Windows, AriadUsage never bypasses Chrome's App-Bound Encryption: it uses Fir
 - **Security tests.** Every relevant security invariant has at least one test: redirect policy, endpoint-override limits, identity silo, log redaction, no secrets in argv or QML, opt-in and domain-scoped cookie reads.
 - **Live smoke tests** run only on the owner's machine, only when the owner asks, and never in CI. CI uses fixtures and invented values only.
 - **Test scope.** Test the behavior AriadUsage owns at the lowest reliable layer. Broad, slow or concurrency-stress runs need a specific reason.
+- **UX bar** for the macOS app, measured in M2.3 on fixtures and again with live data: every surface in §4.1 matches captures of CodexBar at the baseline in layout, spacing, typography, colors, text formats and interaction, light and dark; menu updates while open cause no flicker or scroll jump; the status icon animates only while loading.
 - **UX bar** for the Omarchy plugin, measured in M9:
   - summon to first frame ≤ 100 ms p95 warm and ≤ 250 ms cold, showing cached data at once;
   - 0 px layout shift across 100 refresh cycles, no busy polling, idle CPU under 0.5 %, and one data owner for all monitors;
@@ -292,7 +315,7 @@ On Windows, AriadUsage never bypasses Chrome's App-Bound Encryption: it uses Fir
 ## 12. Tooling, CI and Distribution
 
 - **Task runner.** `just ci` is the local and CI quality gate: formatting, clippy with warnings denied, typos, tests, `cargo-deny`, gitleaks over the full history with AriadUsage's own secret rules, the Omarchy plugin gate and the brand build. Each CI job calls exactly one `just` recipe, and `just ci` composes the same recipes, so the local and CI gates cannot drift. It arrives in M0.
-- **CI (GitHub Actions).** Linux runs the full gate. macOS and Windows run clippy on the portable crates only, so portability regressions surface early without pretending the Linux-only daemon is tested there. A gitleaks job, an `omarchy` job (validator plus strict qmllint in an Arch container) and a `brand` job (frozen pnpm install with install scripts off, audit, build, SVG reproducibility) run beside them. One aggregator check, `CI result`, is the only required status check. Every action is pinned to a full commit SHA.
+- **CI (GitHub Actions).** Linux runs the full gate. macOS runs clippy and tests for the crates and broker code that have macOS implementations, plus the macOS app crate, as they land. Windows runs clippy on the portable crates only, so portability regressions surface early without pretending untested platform code is covered. A gitleaks job, an `omarchy` job (validator plus strict qmllint in an Arch container) and a `brand` job (frozen pnpm install with install scripts off, audit, build, SVG reproducibility) run beside them. One aggregator check, `CI result`, is the only required status check. Every action is pinned to a full commit SHA.
 - **Dependency updates.** Dependabot for Cargo, GitHub Actions and the Rust toolchain, targeting `dev`. The pnpm brand workspace is updated by hand.
 - **Release channels.**
 
@@ -311,17 +334,20 @@ A prebuilt `ariadusage-bin` AUR package is added only if source builds become a 
 |---|---|---|---|
 | **M0 · Foundations** | Repository, docs, pinned toolchain, Linux-first CI; Snapshot/IPC v1 types, schemas and a fixture server; a Quickshell contract spike under `integrations/omarchy/`; brand identity | `just ci` and CI green; schemas with a drift check; the spike renders all five states and edits settings through descriptors without a secret reaching QML; brand built by one command | Done |
 | **M1 · Core** | Core model, config store, provider pipeline, CodexBar fixture harness | Ported model, config and pipeline tests pass | Done |
-| **M2 · Brokers** | The brokers the three providers need | Broker security invariants tested | Done |
-| **M3 · Claude** | Every Claude source mode | Claude golden tests and a local live smoke test pass | Planned |
-| **M4 · Codex** | Every Codex source mode, app-server RPC, managed accounts | Codex golden tests and a local live smoke test pass | Planned |
-| **M5 · Antigravity** | Every Antigravity source mode | Antigravity golden tests and a local live smoke test pass | Planned |
+| **M2 · Brokers** | The brokers the three providers need, on Linux | Broker security invariants tested | Done |
+| **M2.1 · Baseline move** | Re-check every ported file, test and fixture against the new parity baseline; update code, headers and `fixtures/manifest.toml` | Ported tests pass at the new baseline | Planned |
+| **M2.2 · macOS brokers** | macOS implementations of the brokers in §6.3, including the Keychain sources | The broker security invariant tests pass on macOS | Planned |
+| **M2.3 · macOS app UI** | `ariadusage-macos` against the fixture server: status items, menu, cards, charts, Settings; the Snapshot and IPC additions the UI needs | The macOS UX bar in §10 met on fixture data | Planned |
+| **M3 · Claude** | Every Claude source mode, on macOS and Linux | Claude golden tests and a local live smoke test pass | Planned |
+| **M4 · Codex** | Every Codex source mode, app-server RPC, managed accounts, on macOS and Linux | Codex golden tests and a local live smoke test pass | Planned |
+| **M5 · Antigravity** | Every Antigravity source mode, on macOS and Linux | Antigravity golden tests and a local live smoke test pass | Planned |
 | **M6 · Cost** | Cost engine for the three providers | Totals match CodexBar on the same fixtures; unknown days never show $0 | Planned |
 | **M7 · Status and events** | Status incidents, notifications, hooks, agent sessions | Ported tests pass; notification budget holds | Planned |
-| **M8 · Daemon** | Daemon, socket server, CLI parity, `serve` and dashboard | CLI commands, JSON schemas and exit codes documented and tested | Planned |
+| **M8 · Daemon** | Daemon, socket server, CLI parity, `serve` and dashboard; engine hosting for the macOS app | CLI commands, JSON schemas and exit codes documented and tested; the macOS app shows live data | Planned |
 | **M9 · Omarchy UI** | Full plugin UI to the UX bar in §10; IPC v1 frozen before the first plugin release | Every UX criterion measured and met | Planned |
-| **M10 · Release** | AUR package, plugin publishing, marketplace submission, tag rulesets and immutable releases | Clean-chroot AUR build; plugin listed with `manual-setup` and no security findings | Planned |
+| **M10 · Release** | macOS app release; AUR package, plugin publishing, marketplace submission, tag rulesets and immutable releases | Signed macOS build; clean-chroot AUR build; plugin listed with `manual-setup` and no security findings | Planned |
 
-**After v1:** a JavaScript plugin host compatible with CodexBar's plugin contract, then CodexBar's remaining 88 providers in waves; then other Linux desktops, macOS and Windows frontends.
+**After v1:** a JavaScript plugin host compatible with CodexBar's plugin contract, then CodexBar's remaining providers in waves; then other Linux desktops and Windows frontends.
 
 The three providers are the hardest part of CodexBar, not the easiest, so the fixture harness comes first, each provider is its own milestone, Codex cost is its own milestone, and each provider ports its source modes from simplest to hardest.
 
@@ -335,11 +361,12 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Provider form (long term) | Native Rust providers on brokers, plus JavaScript plugins compatible with CodexBar's plugin contract | Pure Rust trait for every provider | Lets CodexBar's bundled plugins be reused; v1 needs no plugin host but keeps the provider seam open |
 | Plugin boundary | Plugins never read files, run processes or touch credentials; the host injects cookies and secrets | Granting plugins file or process capabilities | Same boundary as CodexBar; keeps third-party code away from credentials |
 | Distribution | Thin Omarchy plugin plus an AUR engine; accept `manual-setup` | Shipping the binary inside the plugin; a QML-only implementation | Binaries in a plugin repo trigger review; QML cannot hold the engine's I/O and secret isolation |
-| Platform order | Omarchy, other Linux desktops, macOS, Windows | Cross-platform from the first release | One maintainer; each platform is a phase |
+| Platform order | macOS app first, then Omarchy, other Linux desktops, Windows | Omarchy first with macOS after v1 (the earlier order) | Owner decision: the owner uses CodexBar on a Mac daily, and a faithful macOS clone is the first product; the engine and contract stay shared, so Omarchy follows without rework |
 | v1 scope | Claude, Codex and Antigravity at full parity | All 91 providers before the first release | A deep first release ships far sooner; the owner uses these three daily |
-| Parity baseline | CodexBar `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce` | Tracking upstream HEAD | The three providers change weekly upstream; a fixed target makes parity testable |
+| Parity baseline | CodexBar v0.79.0, commit `b49d42eb53bbf79785b344492d594760dd163eac` | Tracking upstream HEAD; keeping `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce` | Owner decision: v0.79.0 is the release the owner runs, so its source and the running app describe the same behavior and UI; a fixed target still makes parity testable. Earlier ports are re-checked in M2.1 |
+| UI reference | CodexBar's source at the baseline, plus captures of the running CodexBar app at the same commit made with REA on the owner's Mac | Source only; screenshots from CodexBar's docs | Owner decision: captures give pixel-level references the source cannot; they show real account data, so they stay out of the repository |
 | Linux browser cookies | Automatic Chromium and Firefox import, opt-in per provider and limited to declared domains; manual paste kept | Manual-only, as CodexBar on Linux | Deliberate superset over CodexBar; opt-in and domain scoping keep it reviewable |
-| macOS-only features | Linux equivalents: bar segment and panel charts for widgets, a sync folder for iCloud, managed Codex accounts ported, Codex WebView extras over a cookie API if feasible, otherwise deferred to the macOS phase | Dropping them; embedding a WebView in the daemon | Parity in intent without a browser engine in the daemon |
+| macOS-only features | Linux equivalents: bar segment and panel charts for widgets, a sync folder for iCloud, managed Codex accounts ported, Codex WebView extras over a cookie API if feasible. On macOS the app implements them natively where AppKit allows; WidgetKit widgets need a Swift extension and wait until after v1 | Dropping them; embedding a WebView in the daemon | Parity in intent without a browser engine in the daemon |
 | Verification | CodexBar fixture golden tests plus local live smoke tests | Fixtures only | Fixtures prove parity; live runs catch provider drift |
 | `omarchy.agents` | No interaction | Replacing or extending it | Independent plugin; no coupling to first-party internals |
 | Windows cookies | Never bypass App-Bound Encryption; Firefox or manual cookies only | Existing crates that ship an ABE bypass | Security and policy boundary |
@@ -353,14 +380,16 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Notification defaults | CodexBar macOS behavior: 50 % and 20 % remaining warnings off by default, depleted and restored on, credential expiry off, episodes persisted | CodexBar Linux's single in-memory threshold | The richer, persisted model; reversible default |
 | Display direction | "Remaining" by default with a used/remaining toggle | "Used" by default | Matches CodexBar; reversible default |
 | Config ownership | AriadUsage's own XDG config; no import; first run rescans | Sharing or importing CodexBar's config | No concurrent writers from two codebases |
-| First frontend | Quickshell plugin | Tauri | Tauri's tray and popover positioning are unsupported on Linux Wayland |
+| First frontend | Native macOS app in Rust; the Quickshell plugin is the first Linux frontend | Tauri | Tauri's tray and popover positioning are unsupported on Linux Wayland, and a webview popover does not feel like CodexBar's native menu |
+| macOS UI toolkit | Rust with objc2 and AppKit, Core Graphics for drawing and charts | SwiftUI app talking to the engine; Tauri or another webview | Owner decision: keep the whole product in Rust; costs a redraw of every SwiftUI view and Swift Charts chart in AppKit |
+| `unsafe` in the macOS app | `ariadusage-macos` alone allows `unsafe_code`, confined to its AppKit bridge modules; every `unsafe` block carries a `SAFETY:` comment, and layout, geometry and formatting stay in safe modules | Keeping the workspace-wide deny, which objc2 class definitions and many AppKit calls cannot satisfy; moving the app out of the workspace | Objective-C interop needs `unsafe`; isolating it keeps the rest of the workspace under `unsafe_code = "deny"` and keeps the app's logic testable without a window |
 | Local transport | Newline-delimited JSON over a same-user Unix socket, schema-versioned | Localhost HTTP by default | Private by construction; CodexBar's Linux adapter proved the framing; a Windows named pipe later reuses the protocol |
 | Metric honesty | Explicit metric state envelope | CodexBar's placeholder flags | No client can render a placeholder as real data |
 | Secret entry | The engine's own no-echo prompt, `ariadusage secret set --id <setting>`, opened in a terminal by a panel button (detached launch, as Omarchy launches terminals) or run directly | A hidden input field in the panel; CLI only | Marketplace rule and contract: no secret in QML; one click from the panel without the value passing through it |
 | Bar instances | `allowMultiple: true`; each instance selects its provider through a per-instance `provider` key in its `shell.json` entry, set with `omarchy bar set` | `allowMultiple: false` with one widget drawing several provider segments | Matches the "one icon per provider" default and uses Omarchy's own per-instance settings |
 | Protocol fixture feature | A dev-only `fixture` feature in `ariadusage-protocol` (Unix only) hosts the fixture server that tests call in-process | A fixture server in examples only; a separate fixture crate | Integration tests cannot launch example binaries; the default features stay free of I/O |
 | Node.js line | Node.js 26, pinned ahead of its LTS date | Node.js 24 LTS, switching later | Owner decision: Node 24 active support ends on 2026-10-20 and Node 26 becomes LTS on 2026-10-28, so pinning 26 avoids a switch weeks after M0; a deliberate exception to the latest-LTS rule |
-| Workspace shape | Four crates, providers as modules | One crate per provider | Crates only at real boundaries |
+| Workspace shape | Five crates (four engine-side plus the macOS app), providers as modules | One crate per provider | Crates only at real boundaries; the macOS app is a separate frontend boundary |
 | Storage | rusqlite, single writer | sqlx | A local single-writer store needs no async pool |
 | Secret store | secret-service | keyring / keyring-core, oo7 | The keyring store unlocks, and so prompts, on every access; oo7 brings a second crypto stack and its API is in flux |
 | Keyring collection | Secret Service's default login collection; a missing `default` alias means no keyring, and the in-memory `session` collection is never used | A dedicated collection or `session` fallback | Matches the user's login keyring and keeps unavailable-keyring behavior explicit |
@@ -382,7 +411,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Tag namespaces | `v*` for the engine, `omarchy-v*` for the plugin | One tag publishing both | A QML fix never forces an AUR rebuild, and an engine release never moves the frozen plugin branch |
 | Branching | `dev` for integration, `main` for promotions and hotfixes, tags on `main`; every change reaches `dev` through a short-lived branch and a pull request with `CI result` green; no ruleset bypass on either branch | Trunk-only; AriadShift's direct pushes to `dev` | Same branch model as AriadShift, but CI must pass before anything lands, with no exceptions |
 | Plans | Private, outside the repository | Committing plans | The repository is public |
-| CI breadth | Full gate on Linux; clippy of portable crates on macOS and Windows | Full gate on three OSes; Linux only | Catches portability regressions without spending on code that cannot run off Linux |
+| CI breadth | Full gate on Linux; clippy and tests on macOS for code with macOS implementations and the macOS app; clippy of portable crates on Windows | Full gate on three OSes; Linux only | macOS is now a first-class target; Windows stays a portability check |
 | Plugin lint gate | `qmllint -W 0` with Omarchy's qmldir imports | Plain `qmllint -I` | The plain form exits 0 on broken imports and unknown properties |
 | Detail string length | Grapheme cluster count (`unicode-segmentation`) | Unicode scalar count / char count | Swift `String.count` counts extended grapheme clusters; scalar/char counting rejects valid multi-byte emoji within the 120-limit |
 | Extra windows on the wire | `NamedWindow.window` becomes `Metric<RateWindow>` at provider and account level; schemas re-blessed | Keeping `window: RateWindow` without metric freshness/honesty envelopes on extra windows | Extra windows must enforce the exact same honesty and freshness invariants as positional windows, ensuring no synthetic or unknown quota state renders as a real value |
@@ -428,4 +457,8 @@ Logos and icons are generated as code under `brand/`, following the same process
 16. **Child process environment allowlist completeness.** Does the exact-name allowlist cover every variable needed by `claude`, `codex` and `agy` in user environments? Validated through M3–M5 owner-run live smoke tests; adding variables is a one-line change with a test.
 17. **Codex account promotion foreign write.** §6.3 specifies read-only access for CredentialFile; M4 requires adding a user-initiated foreign-write API to support Codex account promotion (`auth.json` update). Amend §6.3 in M4.
 18. **Refresh-failure gate decision.** Antigravity self-owned token refresh has no failure gate in CodexBar. Decided in M5 whether to introduce a gate or follow CodexBar.
+19. **Engine hosting on macOS.** Does the engine run as a separate daemon under a launchd user agent, talking to the app over the Unix socket like every other frontend, or inside the app process? The answer also fixes the socket directory on macOS (§6.5). Decided before M8.
+20. **Minimum macOS version.** CodexBar v0.79.0 requires macOS 14. Match it, or raise the floor to drop pre-macOS 26 Settings chrome branches?
+21. **macOS distribution and signing.** Direct download, Homebrew cask, or both; Developer ID signing and notarization; update mechanism.
+22. **Omarchy plugin during the macOS work.** Does the plugin keep pace with contract changes in M2.3, or pause until M9?
 

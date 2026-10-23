@@ -25,14 +25,23 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 - Do not add a crate, dependency, service or boundary that contradicts ARCHITECTURE.md. If a change is warranted, update ARCHITECTURE.md, including its "Decision Log" table, in the same change.
 - Providers are modules of `ariadusage-engine`, never their own crates. `ariadusage-protocol` and `ariadusage-core` stay free of I/O and `cfg(target_os)` in their default features. The one exception is `ariadusage-protocol`'s dev-only `fixture` feature, which no shipped crate may enable.
 - Create a crate only together with its first real code.
-- IPC v1 is a draft until frozen before the first plugin release in M9. Changes to protocol types must pass schema drift checks and be blessed with `just schemas`.
+- IPC v1 is a draft until frozen before the first frontend release (macOS app or Omarchy plugin). Changes to protocol types must pass schema drift checks and be blessed with `just schemas`.
 
 ## Parity with CodexBar
 
-- The baseline is `steipete/CodexBar` at `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce`. Port behavior from that commit only; upstream changes after it go to the post-v1 backlog.
+- The baseline is `steipete/CodexBar` v0.79.0 at `b49d42eb53bbf79785b344492d594760dd163eac`. Port behavior from that commit only; upstream changes after it go to the post-v1 backlog. Files ported from the previous baseline `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce` are re-checked against the new one before they are extended.
 - CodexBar's code and tests are the specification. Its docs are not: where they disagree with code, follow the code.
 - Record every deliberate divergence in [docs/porting.md](docs/porting.md) in the same change.
-- Never run `codexbar`, and never read CodexBar's config, cache or state on this machine.
+- Observing the installed CodexBar app (screenshots, accessibility trees, REA runtime captures) is allowed only on the owner's request, and only for the app built from the baseline commit. Captures show real account data: keep them outside the repository and never commit them.
+- Never read CodexBar's config, cache, state or Keychain items, and never run the `codexbar` CLI to discover behavior.
+
+## macOS app (`crates/ariadusage-macos`)
+
+- Reproduce CodexBar's UI and UX at the baseline: read the matching SwiftUI or AppKit source first and cite its constants, strings and defaults, then check against captures of the running app.
+- Use AppKit through objc2 only. Keep layout and chart geometry in plain Rust functions shared by drawing and hit testing, so they can be tested without a window.
+- This is the only crate that may use `unsafe`, and only in its AppKit bridge modules. Give every `unsafe` block a `SAFETY:` comment.
+- Use AriadUsage's own names, bundle identifier, brand and links. Never copy CodexBar's identifiers, About text, contact details or CLI symlink names.
+- The app never holds a secret: secret settings show only whether a value is set; values go through `ariadusage secret set`.
 
 ## Security
 
@@ -40,7 +49,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 - Never print a token, cookie, key, email or account identifier. Report counts or `[redacted]`.
 - Use invented values in tests, fixtures, schema examples and docs. Never commit real account data.
 - Never put a secret on argv, in QML, in a log line, in a notification or in a socket push.
-- QML never sends `setSecret`. Secrets are typed into `ariadusage secret set`, which the panel may only launch in a terminal.
+- QML and the macOS app never send `setSecret`. Secrets are typed into `ariadusage secret set`, which a frontend may only launch in a terminal.
 - Live smoke tests run locally on the owner's request only. Never add one to CI.
 
 ## Omarchy plugin (`integrations/omarchy/`)
@@ -62,7 +71,7 @@ Rules for AI agents working in this repository. Design authority is [ARCHITECTUR
 
 ## Licensing
 
-- Start every ported source or test file with: `Ported from CodexBar <path> at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt`. Record ported fixtures in `fixtures/manifest.toml`.
+- Start every ported source or test file with: `Ported from CodexBar <path> at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt`. Files still at `6a26b2e9b` keep that hash until they are re-checked against the new baseline. Record ported fixtures in `fixtures/manifest.toml`.
 - Do not add a dependency whose license `deny.toml` does not allow. Never link GPL, LGPL or AGPL code.
 
 ## Brand assets

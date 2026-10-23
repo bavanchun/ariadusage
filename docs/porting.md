@@ -6,8 +6,15 @@ for carrying that behavior over and the record of every deliberate divergence.
 ## Baseline
 
 The parity baseline is [steipete/CodexBar](https://github.com/steipete/CodexBar)
-at commit `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce`. v1 matches that commit
-for Claude, Codex and Antigravity, and nothing later.
+v0.79.0, at commit `b49d42eb53bbf79785b344492d594760dd163eac`. v1 matches that
+commit for Claude, Codex and Antigravity, and nothing later.
+
+The baseline moved from `6a26b2e9b1b60471970deb6fe663f9e5f284e2ce` to v0.79.0
+so that CodexBar's source and the released app the owner runs describe the
+same behavior and UI. Code, tests and fixtures ported from the old baseline
+keep its hash in their header and manifest entry until they are re-checked
+against v0.79.0: diff the upstream files between the two commits, port the
+changes, then update the header and the manifest entry in the same change.
 
 ## What counts as the specification
 
@@ -22,8 +29,14 @@ In order of precedence:
    code resolves `auto` to personal access token, then OAuth, then CLI. Trust
    the code.
 
-Never run `codexbar` to discover behavior, and never read CodexBar's config,
-cache or state. Read its code and tests.
+Never run the `codexbar` CLI to discover behavior, and never read CodexBar's
+config, cache, state or Keychain items. Read its code and tests.
+
+For the macOS app's UI and UX, captures of the running CodexBar app built from
+the baseline commit are a visual reference next to the source: they show how
+the source renders, but where a capture and the source disagree, the source
+wins. Captures are made only on the owner's request and stay outside the
+repository, because they show real account data.
 
 ## Translation conventions
 
@@ -55,8 +68,10 @@ cache or state. Read its code and tests.
 Every ported source or test file starts with a comment in this form:
 
 ```text
-Ported from CodexBar <path> at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+Ported from CodexBar <path> at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 ```
+
+Files not yet re-checked against v0.79.0 still carry `at 6a26b2e9b`.
 
 `<path>` is the file's path in the CodexBar repository. A file that combines
 several sources lists each path. The full CodexBar license is in
@@ -136,6 +151,7 @@ it changes the architecture, also add a Decision Log row.
 | Cookie domain matching | SweetCookieKit / CodexBar uses string substring / contains check (`host.contains(domain)`) | `domain_matches` requires exact host match or dot-suffix (`.domain`); leading dots stripped | Security divergence: `notclaude.ai` must never match `claude.ai` |
 | Cookie cache storage | In-memory `CookieHeaderCache` with conditional mutation and fingerprinting | In-memory `CookieCache` with `ConditionalMutationCoordinator` and SHA-256 fingerprinting | Parity with CodexBar baseline (Q5 resolved) |
 | Managed-account cookie scopes and refresh-read suppression | Managed-account cache scopes and UI refresh-read suppression in `CookieHeaderCache` | Deferred: managed-account scopes deferred to M4; refresh-read suppression deferred to M8 with its UI caller | Keeps M2 scope focused on core cookie cache and header delivery |
+| macOS UI toolkit | SwiftUI views, Swift Charts and AppKit menus | AppKit through objc2 with Core Graphics drawing; same layout constants, strings, defaults and interactions | SwiftUI and Swift Charts are not reachable from Rust; fidelity is checked against captures of the running app |
 | LocalProbe procfs-only discovery | Uses `ps -ax` and `lsof` subprocesses with procfs fallback | Direct procfs inspection (`/proc/<pid>/cmdline`, `fd/`, `net/tcp{,6}`); no `ps` or `lsof` subprocesses | Avoids subprocess execution overhead and external tool dependencies on Linux |
 | LocalProbe user and namespace scoping | `ps -ax` lists processes across all users; does not check network namespace | Same-UID and same-network-namespace only (`readlink /proc/<pid>/ns/net == /proc/self/ns/net`); non-matching argv dropped immediately; kept argv redacted in `Debug` | Prevents inspecting other users' processes or connecting to listeners in foreign network namespaces |
 | LocalProbe listener ownership recheck | No recheck before loopback request | `listener_still_owned` verifies process identity, UID, namespace, and socket inode ownership in TCP table | Defends against port rebinding attacks prior to token transfer |

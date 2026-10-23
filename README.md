@@ -2,11 +2,11 @@
 
 ![AriadUsage](brand/png/ariadusage-lockup-1200.png)
 
-AriadUsage tracks the usage, quotas and cost of AI coding assistants on Linux. It is an independent Rust reimplementation of [CodexBar](https://github.com/steipete/CodexBar): the same ideas and behavior, written in a different language, with no runtime dependency on CodexBar. The first release targets [Omarchy](https://omarchy.org), bringing full CodexBar parity to **Claude**, **Codex** and **Antigravity**, with additional providers, desktop environments, macOS and Windows planned for later releases.
+AriadUsage tracks the usage, quotas and cost of AI coding assistants on macOS and Linux. It is an independent Rust reimplementation of [CodexBar](https://github.com/steipete/CodexBar): the same ideas and behavior, written in a different language, with no runtime dependency on CodexBar. The first release is a native macOS menu-bar app that reproduces CodexBar's UI and UX, followed by an [Omarchy](https://omarchy.org) bar widget on the same engine, bringing full CodexBar parity to **Claude**, **Codex** and **Antigravity**, with additional providers, desktop environments and Windows planned for later releases.
 
 ## Status
 
-AriadUsage is in development; there is nothing to install yet. Milestones M1 (Core domain model, config store, provider pipeline, and fixture harness) and M2 (Brokers: Net, Process runs, teardown and sessions, ExecutableResolver, CredentialFile and delegated refresh, SecretStore, Browser cookie import, and LocalProbe) are complete. The planned install route has two parts:
+AriadUsage is in development; there is nothing to install yet. Milestones M1 (Core domain model, config store, provider pipeline, and fixture harness) and M2 (Brokers: Net, Process runs, teardown and sessions, ExecutableResolver, CredentialFile and delegated refresh, SecretStore, Browser cookie import, and LocalProbe) are complete; the M2 brokers run on Linux, and their macOS implementations come next. On macOS, AriadUsage will ship as a menu-bar app; its distribution channel is still open. On Linux, the planned install route has two parts:
 
 - the `ariadusage` engine (one binary with a CLI and a background daemon), packaged on the AUR;
 - a thin Omarchy bar-widget plugin, `io.github.bavanchun.ariadusage`, listed on the Omarchy plugin marketplace.
