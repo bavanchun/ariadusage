@@ -7,7 +7,6 @@ use ariadusage_protocol::metric::{Metric, MetricState};
 use ariadusage_protocol::snapshot::{EngineSnapshot, ProviderSnapshot};
 use ariadusage_protocol::usage::{RateWindow, StatusIndicator};
 
-use crate::format;
 use crate::icon::{IconInput, StatusLevel};
 
 /// Display preferences that change what the icon meters show.
@@ -56,55 +55,15 @@ pub fn icon_input(provider: &ProviderSnapshot, prefs: IconPreferences) -> IconIn
     }
 }
 
-/// One informational line at the top of the menu.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderLine {
-    pub provider_id: String,
-    pub text: String,
-}
-
-/// Lines describing each enabled provider's primary window, or the engine
-/// connection state when there is nothing to show yet.
-pub fn provider_lines(
-    snapshot: Option<&EngineSnapshot>,
-    connected: bool,
-    prefs: IconPreferences,
-) -> Vec<ProviderLine> {
-    let Some(snapshot) = snapshot.filter(|_| connected) else {
-        return vec![ProviderLine {
-            provider_id: String::new(),
-            text: if connected {
-                "Refreshing…".to_string()
-            } else {
-                "Waiting for the AriadUsage engine…".to_string()
-            },
-        }];
-    };
-    snapshot
-        .providers
-        .iter()
-        .filter(|p| p.enabled)
-        .map(|p| ProviderLine {
-            provider_id: p.id.as_str().to_string(),
-            text: format!("{}: {}", p.display_name, primary_summary(p, prefs)),
-        })
-        .collect()
-}
-
-fn primary_summary(provider: &ProviderSnapshot, prefs: IconPreferences) -> String {
-    if let Some(error) = &provider.last_error {
-        return error.message.clone();
-    }
-    match &provider.windows.primary {
-        Some(metric) => match (metric.state, displayable_value(metric)) {
-            (_, Some(window)) => {
-                let used = window.used_percent.clamp(0.0, 100.0);
-                format::usage_line(100.0 - used, used, prefs.show_used)
-            }
-            (MetricState::Loading, None) => "Refreshing…".to_string(),
-            _ => "Not fetched yet".to_string(),
-        },
-        None => "Not fetched yet".to_string(),
+/// The menu line describing the engine connection while there is no
+/// snapshot to show a card for.
+pub fn connection_status(snapshot: Option<&EngineSnapshot>, connected: bool) -> Option<String> {
+    if !connected {
+        Some("Waiting for the AriadUsage engine…".to_string())
+    } else if snapshot.is_none() {
+        Some("Refreshing…".to_string())
+    } else {
+        None
     }
 }
 

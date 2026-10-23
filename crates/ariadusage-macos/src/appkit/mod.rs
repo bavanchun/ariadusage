@@ -8,8 +8,15 @@
 
 #![allow(unsafe_code)]
 
+mod card_view;
+mod color;
+mod date_texts;
 mod icon_image;
 mod menu;
+mod progress_bar_view;
+
+pub use card_view::{CardView, png_bytes};
+pub use date_texts::FoundationDateTexts;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -59,7 +66,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     .map_err(|err| format!("could not start the engine connection: {err}"))?;
 
     let status_item = make_status_item(mtm);
-    let menu = menu::MenuController::new(mtm, client);
+    let menu = menu::MenuController::new(mtm, client, refresh_ui);
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
         *cell.borrow_mut() = Some(AppState {
@@ -110,7 +117,7 @@ fn handle_event(event: EngineEvent) {
     refresh_ui();
 }
 
-/// Redraws the icon and rebuilds the menu from the current state.
+/// Redraws the icon and updates the menu from the current state.
 fn refresh_ui() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
@@ -135,6 +142,11 @@ fn refresh_ui() {
         {
             button.setImage(Some(&image));
         }
-        state.menu.rebuild(state.snapshot.as_ref(), state.connected);
+        // The card shows the icon's provider while the engine is connected.
+        let card_provider = provider.filter(|_| state.connected);
+        let status = presentation::connection_status(state.snapshot.as_ref(), state.connected);
+        state
+            .menu
+            .update(card_provider, status.as_deref(), state.connected);
     });
 }
