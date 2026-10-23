@@ -699,6 +699,7 @@ sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthDirectKeychainReadConsent.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthKeychainAccessGate.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthKeychainPromptMode.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials+Hashing.swift",

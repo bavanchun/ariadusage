@@ -21,7 +21,7 @@ files are never modified unless a rule in [Token refresh](#token-refresh) says o
 
 | Provider | May read |
 |---|---|
-| Claude | An Admin API key you enter; Claude Code's OAuth credentials file (`~/.claude/.credentials.json`, or under `$CLAUDE_CONFIG_DIR`); the output of the `claude` CLI's `/usage` and `/status` screens; a claude.ai session cookie, pasted by you or imported on opt-in; Claude Code's local project logs (under `~/.claude/projects`) to compute cost |
+| Claude | An Admin API key you enter; Claude Code's OAuth credentials file (`~/.claude/.credentials.json`, or under `$CLAUDE_CONFIG_DIR`), or on macOS Claude Code's `"Claude Code-credentials"` Keychain item when you explicitly opt in (`claudeOAuthDirectKeychainReadAllowed`, default off); the output of the `claude` CLI's `/usage` and `/status` screens; a claude.ai session cookie, pasted by you or imported on opt-in; Claude Code's local project logs (under `~/.claude/projects`) to compute cost |
 | Codex | Codex's OAuth credentials (`auth.json` under `$CODEX_HOME`, default `~/.codex`, or the keyring through `codex app-server`); account and rate-limit data from `codex app-server`; the chatgpt.com usage dashboard with a session cookie, pasted by you or imported on opt-in; Codex session logs and its local SQLite log to compute cost |
 | Antigravity | The process list, command-line flags and listening ports of the local Antigravity language server, and its local RPC answers; the output of the `agy` CLI; Google OAuth credentials as a fallback |
 
@@ -68,24 +68,39 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 ## Secrets
 
 - Secrets you give AriadUsage (API keys, pasted cookies, account tokens) are
-  stored in the default login collection through Secret Service. AriadUsage
-  never uses the in-memory `session` collection; if there is no `default`
-  collection alias, the keyring is unavailable.
-- Secret Service items use a fixed attribute schema for application, provider,
-  secret kind and opaque account ID. Labels contain only the provider and kind;
-  they never contain an account name, email or secret value.
-- If Secret Service is unavailable, `secret set` asks before writing
+  stored in the platform credential store:
+  - On Linux, in the default login collection through Secret Service
+    (`io.github.bavanchun.ariadusage.Secret`). AriadUsage never uses the
+    in-memory `session` collection; if there is no `default` collection alias,
+    the keyring is unavailable.
+  - On macOS, in the login Keychain as generic-password items under service
+    `io.github.bavanchun.ariadusage` and account `<provider>:<kind>[:<accountId>]`
+    with label `AriadUsage <Provider> <kind>`.
+- Keyring and Keychain items use a fixed attribute schema for application,
+  provider, secret kind and validated opaque account ID (`[A-Za-z0-9_-]{1,64}`).
+  Labels and attributes never contain an account name, email or secret value.
+- If Secret Service is unavailable on Linux, `secret set` asks before writing
   `$XDG_DATA_HOME/ariadusage/secrets.json`. The file is mode 0600 in a
   trust-checked mode-0700 directory. Consent is persisted as the typed
   `secretFileFallback` config field after the user allows the fallback.
   The first non-interactive fallback use needs `--allow-file-fallback`; later
   uses honor the saved consent.
-- File fallback and its consent persistence are Linux-only. On macOS and
-  Windows, Secret Service reports unavailable and file fallback is unsupported.
-- `ARIADUSAGE_DISABLE_KEYRING=1` disables keyring access and avoids D-Bus
-  connections; tests use it with temporary homes and XDG directories.
-- Background refreshes never unlock the keyring and never show a prompt. A
-  locked keyring is reported as locked.
+- File fallback and its consent persistence are Linux-only. On macOS, AriadUsage
+  uses the login Keychain directly and file fallback is unsupported. On Windows,
+  keyring access reports unavailable and file fallback is unsupported.
+- `ARIADUSAGE_DISABLE_KEYRING=1` disables Secret Service and macOS Keychain
+  access; tests use it with temporary homes, XDG directories, or isolated
+  temporary `.keychain-db` files with Keychain UI disabled.
+- Background refreshes never unlock the keyring or Keychain and never show a
+  system prompt (`kSecUseAuthenticationUISkip` and
+  `SecKeychainSetUserInteractionAllowed(false)` on macOS). A locked keyring or
+  Keychain item is reported as locked.
+- On macOS, reading Claude Code's `"Claude Code-credentials"` Keychain item is
+  strictly read-only and off by default (`claudeOAuthDirectKeychainReadAllowed = false`)
+  because Claude Code rewrites that item's ACL on token refresh. Even when you
+  opt in, background refreshes never prompt, and canceling or denying a
+  user-initiated Keychain prompt suppresses further prompts for that item for
+  six hours.
 - Secrets are entered with `ariadusage secret set`, through a no-echo terminal
   prompt or stdin. The Omarchy panel can open that terminal for you, but the
   value never passes through the panel. Secrets never appear on a command line,
@@ -115,7 +130,7 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 - Supported profile roots include Chrome (`~/.config/google-chrome`), Edge (`~/.config/microsoft-edge`), Brave (`~/.config/BraveSoftware/Brave-Browser`), Chromium (`~/.config/chromium`), Vivaldi (`~/.config/vivaldi`), Opera (`~/.config/opera`), and Firefox (`$XDG_CONFIG_HOME/mozilla/firefox` or `~/.mozilla/firefox`). Flatpak roots under `~/.var/app/<app-id>/config/` and the Chromium and Firefox Snap roots are included but remain unverified. The Edge, Vivaldi and Opera roots and safe-storage application names also remain unverified.
 - Profile labels use only a profile's `name` field. Account names and email fields are ignored.
 - SQLite is read from a temporary copy under a trusted, owner-only tmpfs `$XDG_RUNTIME_DIR`; only the database and its `-wal` file are copied, never `-journal`. Copies are limited to 64 MiB total and removed after each read.
-- Chromium safe-storage lookup uses the browser's Secret Service `application` attribute. Background reads never unlock the keyring. A dismissal blocks user-initiated keyring reads of the Chromium family for six hours; only a retry in which you acknowledge the keyring prompt may make one keyring read during that cooldown. Background refreshes never unlock the keyring and keep reading an already-unlocked keyring during the cooldown.
+- Chromium safe-storage lookup uses the browser's Secret Service `application` attribute on Linux and the browser's `<Browser> Safe Storage` Keychain item (`Chrome Safe Storage`, `Chromium Safe Storage`, `Brave Safe Storage`, `Vivaldi Safe Storage`, `Microsoft Edge Safe Storage`, `Opera Safe Storage`) on macOS. Background reads never unlock the keyring or Keychain and never show an OS prompt. A dismissal blocks user-initiated keyring or Keychain reads of the Chromium family for six hours; only a retry in which you acknowledge the prompt may make one read during that cooldown. Background refreshes never unlock the keyring or Keychain and keep reading an already-unlocked store during the cooldown.
 - Chromium v12 and unknown encrypted-value tags are counted as unsupported. Firefox containers and partitioned-cookie handling follow the browser-import policy documented in the architecture and porting notes.
 - Imported cookies are stored in an in-memory cache, used only for that provider's requests, and are never
   sent to another host, including on redirects.
@@ -147,7 +162,9 @@ dashboard is off by default and binds to loopback when enabled.
 3. Uninstall the `ariadusage` package.
 4. Delete `~/.config/ariadusage/`, `~/.local/state/ariadusage/` and
    `~/.cache/ariadusage/` (or their `$XDG_*` equivalents).
-5. Delete AriadUsage's entries from your keyring, for example with Seahorse.
+5. Delete AriadUsage's entries (`io.github.bavanchun.ariadusage`) from your
+   keyring or macOS Keychain, for example with Seahorse on Linux or Keychain
+   Access on macOS.
 
 Credential files belonging to Claude Code, Codex, Antigravity or your browsers
 are left untouched.

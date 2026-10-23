@@ -92,11 +92,15 @@ jobs:
       - name: Install command-line tools
         uses: taiki-e/install-action@183e4297cca2404691e9380e1307288dced5c82a # v2.87.25
         with:
-          tool: just@1.58.0
+          tool: just@1.58.0,cargo-nextest@0.9.146
           fallback: none
 
       - name: Run portable checks
         run: just portable
+
+      - name: Run macOS Keychain invariant tests
+        if: matrix.os == 'macos-26'
+        run: cargo nextest run -p ariadusage-engine --test secret_store --test credential_keychain --locked
 
   brand:
     name: Brand

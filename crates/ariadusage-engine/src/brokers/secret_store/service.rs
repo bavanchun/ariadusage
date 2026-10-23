@@ -2,15 +2,19 @@
 // Ported from CodexBar Sources/CodexBarCore/KeychainNoUIQuery.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/KeychainStringStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+#[cfg(target_os = "macos")]
+use std::collections::BTreeSet;
 use std::fmt;
 #[cfg(target_os = "macos")]
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(target_os = "macos")]
+use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
 use std::future::Future;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::time::Duration;
 
 use ariadusage_core::pipeline::FetchInteraction;
@@ -23,8 +27,10 @@ use crate::brokers::call::BrokerCall;
 
 #[cfg(target_os = "linux")]
 const DBUS_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(target_os = "linux")]
-const USER_UNLOCK_TIMEOUT: Duration = Duration::from_secs(120);
+#[cfg(target_os = "macos")]
+pub(crate) const KEYCHAIN_BACKGROUND_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const USER_UNLOCK_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// macOS `Security.framework` `OSStatus` codes used to classify Keychain outcomes.
 pub mod os_status {
@@ -116,9 +122,7 @@ impl ServiceBackend {
     ) -> Self {
         Self {
             disabled,
-            macos_ops: Some(Arc::new(SecKeychainOperations {
-                keychain: Some(keychain),
-            })),
+            macos_ops: Some(Arc::new(SecKeychainOperations::new(Some(keychain)))),
         }
     }
 
@@ -168,7 +172,13 @@ impl SecretBackend for ServiceBackend {
             }
             #[cfg(target_os = "macos")]
             {
-                lookup_secret_macos(self.macos_ops.as_deref(), id, call, false)
+                let ops = self.macos_ops.clone();
+                let id = id.clone();
+                let call_for_task = call.clone();
+                run_macos_blocking(call, KEYCHAIN_BACKGROUND_TIMEOUT, move || {
+                    lookup_secret_macos(ops.as_deref(), &id, &call_for_task, false)
+                })
+                .await
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
@@ -201,12 +211,19 @@ impl SecretBackend for ServiceBackend {
             }
             #[cfg(target_os = "macos")]
             {
-                lookup_secret_macos(
-                    self.macos_ops.as_deref(),
-                    id,
-                    call,
-                    call.interaction == FetchInteraction::UserInitiated,
-                )
+                let user_initiated = call.interaction == FetchInteraction::UserInitiated;
+                let timeout = if user_initiated {
+                    USER_UNLOCK_TIMEOUT
+                } else {
+                    KEYCHAIN_BACKGROUND_TIMEOUT
+                };
+                let ops = self.macos_ops.clone();
+                let id = id.clone();
+                let call_for_task = call.clone();
+                run_macos_blocking(call, timeout, move || {
+                    lookup_secret_macos(ops.as_deref(), &id, &call_for_task, user_initiated)
+                })
+                .await
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
@@ -241,7 +258,14 @@ impl SecretBackend for ServiceBackend {
             }
             #[cfg(target_os = "macos")]
             {
-                set_secret_macos(self.macos_ops.as_deref(), id, secret, call)
+                let ops = self.macos_ops.clone();
+                let id = id.clone();
+                let secret = secret.clone();
+                let call_for_task = call.clone();
+                run_macos_blocking(call, USER_UNLOCK_TIMEOUT, move || {
+                    set_secret_macos(ops.as_deref(), &id, &secret, &call_for_task)
+                })
+                .await
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
@@ -269,7 +293,13 @@ impl SecretBackend for ServiceBackend {
             }
             #[cfg(target_os = "macos")]
             {
-                chromium_key_macos(self.macos_ops.as_deref(), app_attribute, call, false)
+                let ops = self.macos_ops.clone();
+                let app_attribute = app_attribute.to_owned();
+                let call_for_task = call.clone();
+                run_macos_blocking(call, KEYCHAIN_BACKGROUND_TIMEOUT, move || {
+                    chromium_key_macos(ops.as_deref(), &app_attribute, &call_for_task, false)
+                })
+                .await
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
@@ -302,12 +332,24 @@ impl SecretBackend for ServiceBackend {
             }
             #[cfg(target_os = "macos")]
             {
-                chromium_key_macos(
-                    self.macos_ops.as_deref(),
-                    app_attribute,
-                    call,
-                    call.interaction == FetchInteraction::UserInitiated,
-                )
+                let user_initiated = call.interaction == FetchInteraction::UserInitiated;
+                let timeout = if user_initiated {
+                    USER_UNLOCK_TIMEOUT
+                } else {
+                    KEYCHAIN_BACKGROUND_TIMEOUT
+                };
+                let ops = self.macos_ops.clone();
+                let app_attribute = app_attribute.to_owned();
+                let call_for_task = call.clone();
+                run_macos_blocking(call, timeout, move || {
+                    chromium_key_macos(
+                        ops.as_deref(),
+                        &app_attribute,
+                        &call_for_task,
+                        user_initiated,
+                    )
+                })
+                .await
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
@@ -318,10 +360,70 @@ impl SecretBackend for ServiceBackend {
     }
 }
 
+/// Runs a blocking macOS Keychain closure on `tokio::task::spawn_blocking`, bounded by
+/// `timeout_duration` (`USER_UNLOCK_TIMEOUT` for interactive user operations,
+/// `KEYCHAIN_BACKGROUND_TIMEOUT` for non-interactive background queries), while observing
+/// `call.cancel` before, during, and after the blocking execution.
+#[cfg(target_os = "macos")]
+async fn run_macos_blocking<F, T>(
+    call: &BrokerCall,
+    timeout_duration: Duration,
+    f: F,
+) -> Result<T, SecretStoreError>
+where
+    F: FnOnce() -> Result<T, SecretStoreError> + Send + 'static,
+    T: Send + 'static,
+{
+    if call.cancel.is_cancelled() {
+        return Err(SecretStoreError::Cancelled);
+    }
+
+    let handle = tokio::task::spawn_blocking(f);
+    let outcome = tokio::select! {
+        _ = call.cancel.cancelled() => return Err(SecretStoreError::Cancelled),
+        timed = tokio::time::timeout(timeout_duration, handle) => {
+            match timed {
+                Err(_) => return Err(SecretStoreError::Timeout),
+                Ok(Err(_join_error)) => return Err(SecretStoreError::Storage),
+                Ok(Ok(res)) => res,
+            }
+        }
+    };
+
+    if call.cancel.is_cancelled() {
+        return Err(SecretStoreError::Cancelled);
+    }
+    outcome
+}
+
+#[cfg(target_os = "macos")]
+static USER_PROMPT_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(target_os = "macos")]
+static BACKGROUND_NO_UI_LOCK: Mutex<()> = Mutex::new(());
+#[cfg(target_os = "macos")]
+static LABEL_UPDATE_WARNING_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+/// Returns `true` if a user-initiated macOS Keychain operation is currently holding the
+/// interactive prompt lock.
+#[cfg(target_os = "macos")]
+pub(crate) fn is_macos_user_prompt_active() -> bool {
+    USER_PROMPT_LOCK.try_lock().is_err()
+}
+
+/// Returns the cumulative count of non-fatal Keychain item label update failures on macOS.
+#[cfg(target_os = "macos")]
+pub fn macos_label_update_warning_count() -> usize {
+    LABEL_UPDATE_WARNING_COUNT.load(Ordering::SeqCst)
+}
+
 /// Runs `f` while serializing `Security.framework` user-interaction state across threads.
 ///
-/// When `allow_interaction` is `false` and user interaction is currently enabled, disables
-/// Keychain UI (`SecKeychainSetUserInteractionAllowed(false)`) for the duration of `f`.
+/// User-initiated operations (`allow_interaction == true`) acquire `USER_PROMPT_LOCK` so at most
+/// one interactive prompt runs at a time, without blocking background queries.
+/// Background operations (`allow_interaction == false`) acquire `BACKGROUND_NO_UI_LOCK` so a
+/// waiting interactive prompt on another thread never stalls background refreshes; when no
+/// interactive prompt is active and user interaction is currently enabled, this helper also holds
+/// `SecKeychainSetUserInteractionAllowed(false)` for the duration of `f`.
 /// If interaction was already disabled by an outer scope (such as a test guard), this helper
 /// intentionally avoids creating and dropping a nested `KeychainUserInteractionLock` so UI
 /// remains disabled.
@@ -330,27 +432,51 @@ pub(crate) fn with_macos_keychain_interaction<T>(
     allow_interaction: bool,
     f: impl FnOnce() -> T,
 ) -> T {
-    use std::sync::Mutex;
-
     use security_framework::os::macos::keychain::SecKeychain;
 
-    static INTERACTION_LOCK: Mutex<()> = Mutex::new(());
-
-    let _guard = INTERACTION_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let _no_ui_guard =
-        if !allow_interaction && SecKeychain::user_interaction_allowed().unwrap_or(true) {
+    if allow_interaction {
+        let _user_guard = USER_PROMPT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        f()
+    } else {
+        let _bg_guard = BACKGROUND_NO_UI_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // If no user-initiated prompt is active, also hold `USER_PROMPT_LOCK` briefly and disable
+        // process-wide UI for defense-in-depth alongside per-query `kSecUseAuthenticationUISkip`.
+        let maybe_user_guard = USER_PROMPT_LOCK.try_lock().ok();
+        let _no_ui_guard = if maybe_user_guard.is_some()
+            && SecKeychain::user_interaction_allowed().unwrap_or(true)
+        {
             SecKeychain::disable_user_interaction().ok()
         } else {
             None
         };
-    f()
+        f()
+    }
 }
 
 #[cfg(target_os = "macos")]
 struct SecKeychainOperations {
     keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    interaction_required_cache: Mutex<BTreeSet<(String, String)>>,
+}
+
+#[cfg(target_os = "macos")]
+impl SecKeychainOperations {
+    fn new(keychain: Option<security_framework::os::macos::keychain::SecKeychain>) -> Self {
+        Self {
+            keychain,
+            interaction_required_cache: Mutex::new(BTreeSet::new()),
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn default_sec_keychain_operations() -> &'static SecKeychainOperations {
+    static DEFAULT_OPS: OnceLock<SecKeychainOperations> = OnceLock::new();
+    DEFAULT_OPS.get_or_init(|| SecKeychainOperations::new(None))
 }
 
 #[cfg(target_os = "macos")]
@@ -363,6 +489,14 @@ impl MacosKeychainOperations for SecKeychainOperations {
     ) -> Result<Zeroizing<Vec<u8>>, i32> {
         use security_framework::item::{ItemClass, ItemSearchOptions, Limit};
         use security_framework::os::macos::passwords::find_generic_password;
+
+        let cache_key = (service.to_owned(), account.to_owned());
+        if allow_interaction {
+            self.interaction_required_cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .remove(&cache_key);
+        }
 
         with_macos_keychain_interaction(allow_interaction, || {
             let keychains = self.keychain.as_ref().map(std::slice::from_ref);
@@ -383,11 +517,30 @@ impl MacosKeychainOperations for SecKeychainOperations {
                 if let Some(kc) = keychains {
                     skip_search.keychains(kc);
                 }
-                if let Err(err) = skip_search.search() {
-                    if err.code() == os_status::ERR_SEC_ITEM_NOT_FOUND {
+                match skip_search.search() {
+                    Ok(_) => {
+                        self.interaction_required_cache
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .remove(&cache_key);
+                    }
+                    Err(err) if err.code() == os_status::ERR_SEC_ITEM_NOT_FOUND => {
+                        if self
+                            .interaction_required_cache
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner())
+                            .contains(&cache_key)
+                        {
+                            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+                        }
+                        if is_macos_user_prompt_active() {
+                            return Err(os_status::ERR_SEC_ITEM_NOT_FOUND);
+                        }
                         // Distinguish a truly missing item from an item skipped because it requires
                         // authentication by checking attributes without `skip_authenticated_items`
-                        // while `SecKeychainSetUserInteractionAllowed(0)` is held.
+                        // while `SecKeychainSetUserInteractionAllowed(0)` is held, caching positive
+                        // `InteractionRequired` hits so subsequent background refreshes do not
+                        // repeat the unfiltered query.
                         let mut attr_probe = ItemSearchOptions::new();
                         attr_probe
                             .class(ItemClass::generic_password())
@@ -399,11 +552,17 @@ impl MacosKeychainOperations for SecKeychainOperations {
                             attr_probe.keychains(kc);
                         }
                         return match attr_probe.search() {
-                            Ok(_) => Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED),
+                            Ok(_) => {
+                                self.interaction_required_cache
+                                    .lock()
+                                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                                    .insert(cache_key);
+                                Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED)
+                            }
                             Err(probe_err) => Err(probe_err.code()),
                         };
                     }
-                    return Err(err.code());
+                    Err(err) => return Err(err.code()),
                 }
             }
 
@@ -425,6 +584,12 @@ impl MacosKeychainOperations for SecKeychainOperations {
         };
         use security_framework::os::macos::keychain::SecKeychain;
 
+        let cache_key = (service.to_owned(), account.to_owned());
+        self.interaction_required_cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&cache_key);
+
         with_macos_keychain_interaction(true, || {
             let target_keychain = match &self.keychain {
                 Some(kc) => kc.clone(),
@@ -442,7 +607,9 @@ impl MacosKeychainOperations for SecKeychainOperations {
                 .account(account);
             let mut update = ItemUpdateOptions::new();
             update.set_label(label);
-            let _ = update_item(&search, &update);
+            if update_item(&search, &update).is_err() {
+                LABEL_UPDATE_WARNING_COUNT.fetch_add(1, Ordering::SeqCst);
+            }
             Ok(())
         })
     }
@@ -491,8 +658,7 @@ fn lookup_secret_macos(
         return Err(SecretStoreError::Cancelled);
     }
 
-    let default_ops = SecKeychainOperations { keychain: None };
-    let ops = ops.unwrap_or(&default_ops);
+    let ops = ops.unwrap_or_else(|| default_sec_keychain_operations());
     let service = id.keychain_service();
     let account = id.keychain_account();
 
@@ -551,8 +717,7 @@ fn set_secret_macos(
         return Err(SecretStoreError::Cancelled);
     }
 
-    let default_ops = SecKeychainOperations { keychain: None };
-    let ops = ops.unwrap_or(&default_ops);
+    let ops = ops.unwrap_or_else(|| default_sec_keychain_operations());
     let service = id.keychain_service();
     let account = id.keychain_account();
     let label = id.label();
@@ -607,8 +772,7 @@ fn chromium_key_macos(
         return Err(SecretStoreError::Unsupported);
     };
 
-    let default_ops = SecKeychainOperations { keychain: None };
-    let ops = ops.unwrap_or(&default_ops);
+    let ops = ops.unwrap_or_else(|| default_sec_keychain_operations());
 
     match ops.read_generic_password(service, account, user_initiated) {
         Ok(key) => {
