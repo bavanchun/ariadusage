@@ -16,6 +16,16 @@
             }
           ]
         },
+        "costHistory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "credits": {
           "anyOf": [
             {
@@ -32,7 +42,7 @@
         "identity": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric4"
+              "$ref": "#/$defs/Metric5"
             },
             {
               "type": "null"
@@ -55,7 +65,7 @@
         "pace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric6"
+              "$ref": "#/$defs/Metric8"
             },
             {
               "type": "null"
@@ -65,18 +75,52 @@
         "status": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric5"
+              "$ref": "#/$defs/Metric6"
             },
             {
               "type": "null"
             }
           ]
         },
+        "statusPage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric7"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subscriptionExpiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionExpiresAtIsDateOnly": {
+          "type": "boolean"
+        },
+        "subscriptionRenewsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionRenewsAtIsDateOnly": {
+          "type": "boolean"
+        },
         "updatedAt": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "utilization": {
+          "items": {
+            "$ref": "#/$defs/PlanUtilizationSeries"
+          },
+          "type": "array"
         },
         "windows": {
           "$ref": "#/$defs/ProviderWindows",
@@ -158,12 +202,30 @@
       "type": "string"
     },
     "Cost": {
-      "description": "Cost and spend tracking snapshot.",
+      "description": "Cost and spend tracking snapshot (e.g. extra usage spend cap and prepaid cloud balance).",
       "properties": {
         "balance": {
           "format": "double",
           "type": [
             "number",
+            "null"
+          ]
+        },
+        "balanceIsUnavailable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "balanceIsWorkspace": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "balanceUpdatedAt": {
+          "type": [
+            "string",
             "null"
           ]
         },
@@ -177,13 +239,33 @@
             "null"
           ]
         },
+        "nextRegenAmount": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "period": {
           "type": [
             "string",
             "null"
           ]
         },
+        "personalUsed": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
           "type": [
             "string",
             "null"
@@ -200,6 +282,341 @@
       ],
       "type": "object"
     },
+    "CostDailyEntry": {
+      "description": "Single day in the 30-day token and cost ledger.",
+      "properties": {
+        "costUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "date": {
+          "description": "Calendar date in `YYYY-MM-DD` format.",
+          "type": "string"
+        },
+        "modelBreakdowns": {
+          "items": {
+            "$ref": "#/$defs/CostModelBreakdown"
+          },
+          "type": "array"
+        },
+        "modelsUsed": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "totalRequests": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "date"
+      ],
+      "type": "object"
+    },
+    "CostHistory": {
+      "description": "Local or provider-reported token cost history for the card Cost section and\nthe Usage Breakdown chart submenu.",
+      "properties": {
+        "comparisonWindows": {
+          "items": {
+            "$ref": "#/$defs/CostWindowSummary"
+          },
+          "type": "array"
+        },
+        "costProvenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostProvenance"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currencyCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "daily": {
+          "items": {
+            "$ref": "#/$defs/CostDailyEntry"
+          },
+          "type": "array"
+        },
+        "hintLines": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "historyCoverageIsEstablished": {
+          "type": "boolean"
+        },
+        "historyDays": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "historyLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "historyScanIsPartial": {
+          "type": "boolean"
+        },
+        "last30DaysCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "last30DaysRequests": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last30DaysTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "meteredCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sessionCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sessionRequests": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "topModel": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostModelBreakdown"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CostModelBreakdown": {
+      "description": "Per-model cost and token breakdown within a daily entry or rolling window.",
+      "properties": {
+        "costUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "modelName": {
+          "type": "string"
+        },
+        "priorityCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "priorityTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "standardCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "standardTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "modelName"
+      ],
+      "type": "object"
+    },
+    "CostProvenance": {
+      "description": "Provenance of reported token cost figures.",
+      "enum": [
+        "billedSpend",
+        "providerEstimate",
+        "localPricingEstimate",
+        "mixedProviderAndLocalEstimate",
+        "quotaOnly",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "CostWindowSummary": {
+      "description": "Rolling comparison window summary (e.g. 7d / 14d / 30d) shown in the Cost section.",
+      "properties": {
+        "costUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "days": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "isPartial": {
+          "type": "boolean"
+        },
+        "label": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "totalRequests": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "days"
+      ],
+      "type": "object"
+    },
+    "CreditLimit": {
+      "description": "Recurring credit limit allowance paired with a provider's credits balance.",
+      "properties": {
+        "remaining": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resetDescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "total": {
+          "format": "double",
+          "type": "number"
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "used",
+        "total"
+      ],
+      "type": "object"
+    },
     "Credits": {
       "description": "Token or service credits snapshot.",
       "properties": {
@@ -209,9 +626,50 @@
             "null"
           ]
         },
+        "balanceReadSucceeded": {
+          "description": "False when the balance read failed and `remaining` should not be rendered as a live number.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "creditLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CreditLimit"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Recurring credit allowance limit and reset cadence, when the provider exposes one."
+        },
+        "creditsAvailable": {
+          "description": "Whether credits can currently be spent on this account.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "nextResetCreditExpiresAt": {
+          "description": "Expiry timestamp of the next expiring reset credit grant.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "remaining": {
           "format": "double",
           "type": "number"
+        },
+        "resetCreditsAvailableCount": {
+          "description": "Number of instant-reset credit grants available (e.g. Codex reset credits).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "unit": {
           "type": [
@@ -665,7 +1123,7 @@
         "value": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Identity"
+              "$ref": "#/$defs/CostHistory"
             },
             {
               "type": "null"
@@ -742,7 +1200,7 @@
         "value": {
           "anyOf": [
             {
-              "$ref": "#/$defs/StatusIndicator"
+              "$ref": "#/$defs/Identity"
             },
             {
               "type": "null"
@@ -762,6 +1220,160 @@
       "type": "object"
     },
     "Metric6": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StatusIndicator"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric7": {
+      "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
+      "else": {
+        "not": {
+          "required": [
+            "value"
+          ]
+        }
+      },
+      "if": {
+        "properties": {
+          "state": {
+            "enum": [
+              "value",
+              "stale"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "properties": {
+        "asOf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricError"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MetricSource"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/MetricState"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "state",
+        "confidence"
+      ],
+      "then": {
+        "required": [
+          "value"
+        ]
+      },
+      "type": "object"
+    },
+    "Metric8": {
       "description": "Envelope for metric values that carries freshness, honesty, and provenance.\n\nInvariant: `value` is present if and only if `state` is `MetricState::Value` or `MetricState::Stale`.",
       "else": {
         "not": {
@@ -928,6 +1540,20 @@
           "format": "double",
           "type": "number"
         },
+        "runOutProbability": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "speedMultiplierToReset": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
         "stage": {
           "$ref": "#/$defs/PaceStage"
         },
@@ -960,6 +1586,59 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "PlanUtilizationEntry": {
+      "description": "A single historical observation in a plan utilization series.",
+      "properties": {
+        "capturedAt": {
+          "type": "string"
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usedPercent": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "capturedAt",
+        "usedPercent"
+      ],
+      "type": "object"
+    },
+    "PlanUtilizationSeries": {
+      "description": "Historical utilization series for a plan rate window (e.g. `\"session\"`, `\"weekly\"`, `\"opus\"`),\nbacking the Plan Usage submenu and quota burndown chart.",
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/PlanUtilizationEntry"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "windowMinutes": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "windowMinutes"
+      ],
+      "type": "object"
     },
     "ProviderError": {
       "description": "A classified provider error with a safe message.",
@@ -1078,6 +1757,16 @@
             }
           ]
         },
+        "costHistory": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric4"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "credits": {
           "anyOf": [
             {
@@ -1107,7 +1796,7 @@
         "identity": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric4"
+              "$ref": "#/$defs/Metric5"
             },
             {
               "type": "null"
@@ -1127,7 +1816,7 @@
         "pace": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric6"
+              "$ref": "#/$defs/Metric8"
             },
             {
               "type": "null"
@@ -1151,18 +1840,52 @@
         "status": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric5"
+              "$ref": "#/$defs/Metric6"
             },
             {
               "type": "null"
             }
           ]
         },
+        "statusPage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric7"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subscriptionExpiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionExpiresAtIsDateOnly": {
+          "type": "boolean"
+        },
+        "subscriptionRenewsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionRenewsAtIsDateOnly": {
+          "type": "boolean"
+        },
         "updatedAt": {
           "type": [
             "string",
             "null"
           ]
+        },
+        "utilization": {
+          "items": {
+            "$ref": "#/$defs/PlanUtilizationSeries"
+          },
+          "type": "array"
         },
         "windows": {
           "$ref": "#/$defs/ProviderWindows",
@@ -1174,6 +1897,42 @@
         "displayName",
         "enabled",
         "sourceMode"
+      ],
+      "type": "object"
+    },
+    "ProviderStatus": {
+      "description": "Full provider status page snapshot backing the card status banner and Status Page submenu.",
+      "properties": {
+        "components": {
+          "items": {
+            "$ref": "#/$defs/StatusComponent"
+          },
+          "type": "array"
+        },
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "indicator": {
+          "$ref": "#/$defs/StatusIndicator"
+        },
+        "pageUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "indicator"
       ],
       "type": "object"
     },
@@ -1230,6 +1989,17 @@
             "null"
           ]
         },
+        "pace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Pace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Per-window pace comparing consumption to elapsed window progress."
+        },
         "resetDescription": {
           "description": "Human-readable description of reset timing (e.g. \"Resets tomorrow at 9 AM\").",
           "type": [
@@ -1243,6 +2013,17 @@
             "string",
             "null"
           ]
+        },
+        "sessionEquivalent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionEquivalentForecast"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Session-equivalent forecast for weekly windows when primary session pace is known."
         },
         "usedPercent": {
           "description": "Percentage of quota consumed (raw, may exceed 100%).",
@@ -1292,6 +2073,28 @@
       ],
       "type": "string"
     },
+    "SessionEquivalentForecast": {
+      "description": "Session-equivalent forecast estimating how many full primary sessions the\nremaining weekly headroom can cover at the current session pace.",
+      "properties": {
+        "remainderPercent": {
+          "description": "Remaining partial session percentage (`0..100`).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "wholeSessionCount": {
+          "description": "Whole primary-session equivalents remaining before the weekly window resets.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "wholeSessionCount",
+        "remainderPercent"
+      ],
+      "type": "object"
+    },
     "SourceKind": {
       "description": "Strategy kind that acquired the metric.",
       "enum": [
@@ -1304,6 +2107,48 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "StatusComponent": {
+      "description": "Individual service component on a provider status page, with optional nested subcomponents.",
+      "properties": {
+        "children": {
+          "items": {
+            "$ref": "#/$defs/StatusComponent"
+          },
+          "type": "array"
+        },
+        "id": {
+          "type": "string"
+        },
+        "indicator": {
+          "$ref": "#/$defs/StatusIndicator"
+        },
+        "name": {
+          "type": "string"
+        },
+        "rawStatus": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "status",
+        "indicator"
+      ],
+      "type": "object"
     },
     "StatusIndicator": {
       "description": "High-level service status indicator.",

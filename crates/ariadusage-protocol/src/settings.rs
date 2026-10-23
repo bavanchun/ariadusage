@@ -302,12 +302,15 @@ impl<'de> Deserialize<'de> for DescriptorKind {
 pub struct SettingDescriptor {
     pub id: SettingId,
     pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub help: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_when: Option<SettingCondition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled_when: Option<SettingCondition>,
+    /// Whether this setting is informational/read-only (e.g. detected CLI version or config path).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     pub kind: DescriptorKind,
 }
 
@@ -319,8 +322,33 @@ impl SettingDescriptor {
             help: None,
             visible_when: None,
             enabled_when: None,
+            read_only: false,
             kind,
         }
+    }
+
+    #[must_use]
+    pub fn with_help(mut self, help: impl Into<String>) -> Self {
+        self.help = Some(help.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_visible_when(mut self, condition: SettingCondition) -> Self {
+        self.visible_when = Some(condition);
+        self
+    }
+
+    #[must_use]
+    pub fn with_enabled_when(mut self, condition: SettingCondition) -> Self {
+        self.enabled_when = Some(condition);
+        self
+    }
+
+    #[must_use]
+    pub fn with_read_only(mut self, read_only: bool) -> Self {
+        self.read_only = read_only;
+        self
     }
 }
 
@@ -330,6 +358,12 @@ impl SettingDescriptor {
 pub struct SettingsSection {
     pub id: String,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    /// Optional pane identifier for multi-tab settings windows (e.g. `"general"`, `"menuBar"`,
+    /// `"menu"`, `"notifications"`, `"advanced"`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
     pub descriptors: Vec<SettingDescriptor>,
 }
 
@@ -342,8 +376,22 @@ impl SettingsSection {
         Self {
             id: id.into(),
             title: title.into(),
+            subtitle: None,
+            pane: None,
             descriptors,
         }
+    }
+
+    #[must_use]
+    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
+        self.subtitle = Some(subtitle.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_pane(mut self, pane: impl Into<String>) -> Self {
+        self.pane = Some(pane.into());
+        self
     }
 }
 

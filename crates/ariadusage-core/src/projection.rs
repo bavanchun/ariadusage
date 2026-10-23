@@ -168,6 +168,12 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
                 period: c.period.clone(),
                 resets_at: c.resets_at,
                 balance: c.balance,
+                next_regen_amount: c.next_regen_amount,
+                personal_used: c.personal_used,
+                balance_updated_at: c.balance_updated_at,
+                balance_is_workspace: c.balance_is_workspace,
+                balance_is_unavailable: c.balance_is_unavailable,
+                updated_at: Some(c.updated_at),
             })
         } else {
             None
@@ -231,6 +237,8 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         retry_after_seconds: e.retry_after_seconds,
     });
 
+    let has_data = matches!(data_state, MetricState::Value | MetricState::Stale);
+
     ProviderSnapshot {
         id: input.provider.clone(),
         display_name: input.display_name.clone(),
@@ -241,9 +249,22 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         windows,
         credits: None,
         cost,
+        cost_history: None,
         identity,
         status: None,
+        status_page: None,
         pace,
+        utilization: Vec::new(),
+        subscription_expires_at: has_data
+            .then_some(snapshot.subscription_expires_at)
+            .flatten(),
+        subscription_renews_at: has_data
+            .then_some(snapshot.subscription_renews_at)
+            .flatten(),
+        subscription_expires_at_is_date_only: has_data
+            && snapshot.subscription_expires_at_is_date_only,
+        subscription_renews_at_is_date_only: has_data
+            && snapshot.subscription_renews_at_is_date_only,
         details: snapshot.details.clone(),
         accounts: Vec::new(),
         last_error,
@@ -286,6 +307,8 @@ fn project_rate_window(win: &crate::model::RateWindow) -> RateWindow {
         resets_at: win.resets_at,
         reset_description: win.reset_description.clone(),
         next_regen_percent: win.next_regen_percent,
+        pace: None,
+        session_equivalent: None,
     }
 }
 
@@ -304,6 +327,8 @@ pub fn project_pace(pace: &UsagePace, provider: &ProviderId, now: jiff::Timestam
         expected_used_percent: pace.expected_used_percent.round(),
         will_last_to_reset: pace.will_last_to_reset,
         eta_seconds: pace.eta_seconds.map(|s| s.max(0.0).round() as u64),
+        speed_multiplier_to_reset: pace.speed_multiplier_to_reset,
+        run_out_probability: pace.run_out_probability,
         summary,
     }
 }

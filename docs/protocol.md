@@ -245,6 +245,35 @@ The engine sets `presentation` only for providers it has a descriptor for and om
 #### 6.2.3 Detail Row Severity
 Each row in a provider's `details` sections may carry an optional `severity`: `normal`, `warning` or `critical`. Frontends use it to emphasize the row (for example, tinting its value or progress bar); a row without it renders as before. The field is omitted when the provider sets none, and payloads without it remain valid. Following §4.3, an unrecognized value decodes as `unknown`, which clients render like a row without severity.
 
+#### 6.2.4 Per-Window Pace, Session-Equivalent Forecast, and Subscription Dates
+Each `RateWindow` (positional or named) may carry:
+- `pace` (optional `Pace`): Per-window pace comparing consumption to elapsed window progress (`stage`, `deltaPercent`, `expectedUsedPercent`, `willLastToReset`, optional `etaSeconds`, optional `speedMultiplierToReset`, optional `runOutProbability`, and pre-formatted `summary`).
+- `sessionEquivalent` (optional `SessionEquivalentForecast`): On weekly windows, estimates how many full primary sessions the remaining weekly headroom can cover at the current session pace (`wholeSessionCount` and `remainderPercent`).
+
+Both `ProviderSnapshot` and `AccountSnapshot` may also carry optional subscription renewal/expiry dates (`subscriptionExpiresAt`, `subscriptionRenewsAt`) paired with boolean flags (`subscriptionExpiresAtIsDateOnly`, `subscriptionRenewsAtIsDateOnly`) indicating when the timestamp represents a calendar date without a meaningful time-of-day.
+
+#### 6.2.5 Credits, Credit Limit, and Cost (`Credits` / `Cost`)
+- `Credits` carries `remaining`, optional `unit`, `balanceIsWorkspace`, `updatedAt`, `balanceReadSucceeded`, `creditsAvailable`, optional `creditLimit` (`used`, `total`, `remaining`, `unit`, `resetsAt`, `resetDescription`), and optional instant-reset credit grant counters (`resetCreditsAvailableCount`, `nextResetCreditExpiresAt`).
+- `Cost` carries `used`, optional `limit`, `currencyCode`, optional `period`, `resetsAt`, `balance`, `nextRegenAmount`, `personalUsed`, `balanceUpdatedAt`, `balanceIsWorkspace`, `balanceIsUnavailable`, and `updatedAt`.
+
+#### 6.2.6 Cost History and Usage Breakdown (`costHistory`)
+Both `ProviderSnapshot` and `AccountSnapshot` may carry an optional `costHistory` (`Metric<CostHistory>`) envelope backing the card's Cost section and the Usage Breakdown chart submenu:
+- Today / current session counters: `sessionTokens`, `sessionCostUsd`, `sessionRequests`.
+- Rolling window totals: `last30DaysTokens`, `last30DaysCostUsd`, `last30DaysRequests`, `historyDays`, `historyLabel`, `historyCoverageIsEstablished`, `historyScanIsPartial`, `meteredCostUsd`.
+- Currency and provenance: `currencyCode` and `costProvenance` (`billedSpend`, `providerEstimate`, `localPricingEstimate`, `mixedProviderAndLocalEstimate`, `quotaOnly`, or `unknown`).
+- Daily ledger and breakdowns: `daily` (`CostDailyEntry` items with `date`, `totalTokens`, `costUsd`, `totalRequests`, `modelsUsed`, and `modelBreakdowns` including optional `standardCostUsd` / `priorityCostUsd` / `standardTokens` / `priorityTokens`), `comparisonWindows` (`CostWindowSummary` for e.g. 7d / 14d / 30d), `topModel`, and `hintLines`.
+
+#### 6.2.7 Plan Utilization History (`utilization`)
+Both `ProviderSnapshot` and `AccountSnapshot` carry an optional `utilization` list (`PlanUtilizationSeries`, omitted when empty) for the Plan Usage submenu and quota burndown charts. Each series contains `name` (e.g. `"session"`, `"weekly"`, `"opus"`), `windowMinutes`, optional `title`, and chronological `entries` (`capturedAt`, `usedPercent`, optional `resetsAt`).
+
+#### 6.2.8 Provider Status and Status Page Submenu (`status` / `statusPage`)
+Alongside the top-level `status` (`Metric<StatusIndicator>`) used by status icons, `ProviderSnapshot` and `AccountSnapshot` may carry `statusPage` (`Metric<ProviderStatus>`) with `indicator`, optional `description`, `updatedAt`, `pageUrl`, and a tree of `components` (`StatusComponent` with `id`, `name`, `status`, optional `rawStatus`, `indicator`, `updatedAt`, and recursive `children`).
+
+#### 6.2.9 Settings Section Panes and Read-Only Descriptors
+In `SettingsPage` responses (`getSettings`):
+- `SettingsSection` may carry optional `subtitle` and `pane` (e.g. `"general"`, `"menuBar"`, `"menu"`, `"providers"`, `"notifications"`, `"advanced"`) so multi-tab settings windows can group sections by tab.
+- `SettingDescriptor` may carry `readOnly: true` (omitted when `false`) for informational fields such as detected CLI versions or configuration paths.
+
 ### 6.3 `settingsChanged`
 Pushed when configuration or secrets change, prompting clients to re-query `getSettings`.
 ```json

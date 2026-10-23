@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/ProviderDetailSection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-//! Usage data models including rate windows, credits, cost, identity, pace, status, and detail sections.
+//! Usage data models including rate windows, credits, cost, cost history, plan utilization,
+//! identity, pace, status components, and bounded detail sections.
 
 use std::fmt;
 
@@ -10,6 +11,27 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::ids::ProviderId;
 use crate::metric::Metric;
 
+/// Session-equivalent forecast estimating how many full primary sessions the
+/// remaining weekly headroom can cover at the current session pace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEquivalentForecast {
+    /// Whole primary-session equivalents remaining before the weekly window resets.
+    pub whole_session_count: u32,
+    /// Remaining partial session percentage (`0..100`).
+    pub remainder_percent: u32,
+}
+
+impl SessionEquivalentForecast {
+    #[must_use]
+    pub const fn new(whole_session_count: u32, remainder_percent: u32) -> Self {
+        Self {
+            whole_session_count,
+            remainder_percent,
+        }
+    }
+}
+
 /// A rate window indicating quota consumption and reset timing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -17,7 +39,7 @@ pub struct RateWindow {
     /// Percentage of quota consumed (raw, may exceed 100%).
     pub used_percent: f64,
     /// Duration of the window in minutes (e.g. 300 for 5 hours, 10080 for weekly).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_minutes: Option<u32>,
     /// Timestamp when this window resets.
     #[schemars(with = "Option<String>")]
@@ -28,11 +50,17 @@ pub struct RateWindow {
     )]
     pub resets_at: Option<jiff::Timestamp>,
     /// Human-readable description of reset timing (e.g. "Resets tomorrow at 9 AM").
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_description: Option<String>,
     /// Percentage restored on next regeneration increment, if applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_regen_percent: Option<f64>,
+    /// Per-window pace comparing consumption to elapsed window progress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace: Option<Pace>,
+    /// Session-equivalent forecast for weekly windows when primary session pace is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_equivalent: Option<SessionEquivalentForecast>,
 }
 
 impl RateWindow {
@@ -43,6 +71,8 @@ impl RateWindow {
             resets_at: None,
             reset_description: None,
             next_regen_percent: None,
+            pace: None,
+            session_equivalent: None,
         }
     }
 }
@@ -56,15 +86,99 @@ pub struct NamedWindow {
     pub window: Metric<RateWindow>,
 }
 
+/// Recurring credit limit allowance paired with a provider's credits balance.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreditLimit {
+    pub used: f64,
+    pub total: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub resets_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_description: Option<String>,
+}
+
 /// Token or service credits snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct Credits {
     pub remaining: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub balance_is_workspace: Option<bool>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub updated_at: Option<jiff::Timestamp>,
+    /// False when the balance read failed and `remaining` should not be rendered as a live number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_read_succeeded: Option<bool>,
+    /// Whether credits can currently be spent on this account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credits_available: Option<bool>,
+    /// Recurring credit allowance limit and reset cadence, when the provider exposes one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_limit: Option<CreditLimit>,
+    /// Number of instant-reset credit grants available (e.g. Codex reset credits).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_credits_available_count: Option<u32>,
+    /// Expiry timestamp of the next expiring reset credit grant.
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub next_reset_credit_expires_at: Option<jiff::Timestamp>,
+}
+
+/// Cost and spend tracking snapshot (e.g. extra usage spend cap and prepaid cloud balance).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Cost {
+    pub used: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<f64>,
+    pub currency_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub period: Option<String>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub resets_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_regen_amount: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub personal_used: Option<f64>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub balance_updated_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_is_workspace: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance_is_unavailable: Option<bool>,
     #[schemars(with = "Option<String>")]
     #[serde(
         default,
@@ -74,16 +188,129 @@ pub struct Credits {
     pub updated_at: Option<jiff::Timestamp>,
 }
 
-/// Cost and spend tracking snapshot.
+/// Provenance of reported token cost figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum CostProvenance {
+    BilledSpend,
+    ProviderEstimate,
+    LocalPricingEstimate,
+    MixedProviderAndLocalEstimate,
+    QuotaOnly,
+    #[serde(other)]
+    Unknown,
+}
+
+/// Per-model cost and token breakdown within a daily entry or rolling window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct Cost {
-    pub used: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub limit: Option<f64>,
-    pub currency_code: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub period: Option<String>,
+pub struct CostModelBreakdown {
+    pub model_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_tokens: Option<u64>,
+}
+
+/// Single day in the 30-day token and cost ledger.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CostDailyEntry {
+    /// Calendar date in `YYYY-MM-DD` format.
+    pub date: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models_used: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub model_breakdowns: Vec<CostModelBreakdown>,
+}
+
+/// Rolling comparison window summary (e.g. 7d / 14d / 30d) shown in the Cost section.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CostWindowSummary {
+    pub days: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_partial: bool,
+}
+
+/// Local or provider-reported token cost history for the card Cost section and
+/// the Usage Breakdown chart submenu.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CostHistory {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_30_days_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_30_days_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_30_days_requests: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_label: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_coverage_is_established: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_scan_is_partial: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metered_cost_usd: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub currency_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_provenance: Option<CostProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daily: Vec<CostDailyEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparison_windows: Vec<CostWindowSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_model: Option<CostModelBreakdown>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hint_lines: Vec<String>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub updated_at: Option<jiff::Timestamp>,
+}
+
+/// A single historical observation in a plan utilization series.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanUtilizationEntry {
+    #[schemars(with = "String")]
+    #[serde(with = "crate::time::rfc3339")]
+    pub captured_at: jiff::Timestamp,
+    pub used_percent: f64,
     #[schemars(with = "Option<String>")]
     #[serde(
         default,
@@ -91,8 +318,19 @@ pub struct Cost {
         with = "crate::time::rfc3339_opt"
     )]
     pub resets_at: Option<jiff::Timestamp>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance: Option<f64>,
+}
+
+/// Historical utilization series for a plan rate window (e.g. `"session"`, `"weekly"`, `"opus"`),
+/// backing the Plan Usage submenu and quota burndown chart.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanUtilizationSeries {
+    pub name: String,
+    pub window_minutes: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<PlanUtilizationEntry>,
 }
 
 /// Identity and account provenance for a provider.
@@ -135,8 +373,12 @@ pub struct Pace {
     pub delta_percent: f64,
     pub expected_used_percent: f64,
     pub will_last_to_reset: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speed_multiplier_to_reset: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_out_probability: Option<f64>,
     pub summary: String,
 }
 
@@ -151,6 +393,47 @@ pub enum StatusIndicator {
     Maintenance,
     #[serde(other)]
     Unknown,
+}
+
+/// Individual service component on a provider status page, with optional nested subcomponents.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusComponent {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_status: Option<String>,
+    pub indicator: StatusIndicator,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub updated_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub children: Vec<StatusComponent>,
+}
+
+/// Full provider status page snapshot backing the card status banner and Status Page submenu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderStatus {
+    pub indicator: StatusIndicator,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub updated_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<StatusComponent>,
 }
 
 /// Classified error kinds matching CodexBar's error model.

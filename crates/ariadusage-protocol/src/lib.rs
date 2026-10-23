@@ -35,11 +35,13 @@ pub use snapshot::{
     ProviderSnapshot, ProviderWindows,
 };
 pub use usage::{
-    Chart, ChartKind, ChartPoint, Cost, Credits, DetailRow, DetailSection,
+    Chart, ChartKind, ChartPoint, Cost, CostDailyEntry, CostHistory, CostModelBreakdown,
+    CostProvenance, CostWindowSummary, CreditLimit, Credits, DetailRow, DetailSection,
     DetailSectionValidationError, Identity, MAXIMUM_POINTS_PER_CHART, MAXIMUM_ROWS_PER_SECTION,
     MAXIMUM_SECTIONS_PER_SNAPSHOT, MAXIMUM_STRING_LENGTH, NamedWindow, Pace, PaceStage,
-    ProviderError, ProviderErrorCategory, ProviderErrorKind, RateWindow, RowProgress, RowSeverity,
-    StatusIndicator,
+    PlanUtilizationEntry, PlanUtilizationSeries, ProviderError, ProviderErrorCategory,
+    ProviderErrorKind, ProviderStatus, RateWindow, RowProgress, RowSeverity,
+    SessionEquivalentForecast, StatusComponent, StatusIndicator,
 };
 
 #[cfg(feature = "codec")]
