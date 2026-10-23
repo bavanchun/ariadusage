@@ -305,3 +305,80 @@ fn broker_request_response_and_error_formatting_redacts_synthetic_secrets() {
         assert!(!formatted.contains(secret), "redaction failed: {formatted}");
     }
 }
+
+#[tokio::test]
+async fn send_response_returns_non_2xx_status_and_body_while_enforcing_origin_and_cap() {
+    let server = https::start_server();
+    let not_found = server.mock(|when, then| {
+        when.method(GET).path("/not-found");
+        then.status(404).body("404!");
+    });
+    let oversized_error = server.mock(|when, then| {
+        when.method(GET).path("/oversized-error");
+        then.status(500).body("123456");
+    });
+
+    let broker = https::broker(NetConfig {
+        body_cap: 5,
+        ..NetConfig::default()
+    });
+    let call = https::call();
+    let not_found_url = Url::parse(&server.url("/not-found")).unwrap();
+    let declared = https::declared(&not_found_url);
+
+    // 1. send_response returns Ok with status 404 and zeroizing body
+    let resp_404 = broker
+        .send_response(
+            &call,
+            &declared,
+            NetRequest::new(Method::GET, not_found_url.clone()),
+        )
+        .await
+        .expect("send_response returns 404");
+    assert_eq!(resp_404.status.as_u16(), 404);
+    assert_eq!(resp_404.body(), b"404!");
+    let debug_404 = format!("{resp_404:?}");
+    assert!(!debug_404.contains("404!"));
+
+    // 2. send still maps the same 404 to NetError::Http
+    assert!(matches!(
+        broker
+            .send(
+                &call,
+                &declared,
+                NetRequest::new(Method::GET, not_found_url.clone())
+            )
+            .await,
+        Err(NetError::Http { status: 404 })
+    ));
+    assert_eq!(not_found.calls(), 2);
+
+    // 3. Undeclared origin is still rejected by send_response
+    let other_hosts = ProviderHosts::new(["provider.invalid"]).unwrap();
+    let undeclared =
+        ariadusage_engine::brokers::net::DeclaredOrigins::from_provider_hosts(&other_hosts);
+    assert!(matches!(
+        broker
+            .send_response(
+                &call,
+                &undeclared,
+                NetRequest::new(Method::GET, not_found_url),
+            )
+            .await,
+        Err(NetError::OriginNotDeclared)
+    ));
+
+    // 4. Body cap still applies to 4xx/5xx error bodies in send_response
+    let oversized_url = Url::parse(&server.url("/oversized-error")).unwrap();
+    assert!(matches!(
+        broker
+            .send_response(
+                &call,
+                &declared,
+                NetRequest::new(Method::GET, oversized_url),
+            )
+            .await,
+        Err(NetError::BodyTooLarge { cap: 5 })
+    ));
+    assert_eq!(oversized_error.calls(), 1);
+}
