@@ -1,7 +1,9 @@
 #![cfg(unix)]
 
 use ariadusage_macos::icon::IconInput;
-use ariadusage_macos::presentation::{IconPreferences, icon_input, icon_provider, provider_lines};
+use ariadusage_macos::presentation::{
+    IconPreferences, connection_status, icon_input, icon_provider,
+};
 use ariadusage_protocol::fixture::generate_scenario_snapshot;
 
 #[test]
@@ -63,26 +65,21 @@ fn stale_windows_keep_their_value_and_dim_the_icon() {
 }
 
 #[test]
-fn menu_lines_describe_each_enabled_provider() {
-    let snapshot = generate_scenario_snapshot(0);
-    let lines = provider_lines(Some(&snapshot), true, IconPreferences::default());
-    let texts: Vec<_> = lines.iter().map(|l| l.text.as_str()).collect();
+fn connection_status_reports_the_engine_state_without_data() {
     assert_eq!(
-        texts,
-        [
-            "Claude: 58% left",
-            "Codex: 58% left",
-            "Antigravity: 58% left"
-        ]
+        connection_status(None, false).as_deref(),
+        Some("Waiting for the AriadUsage engine…")
     );
-}
-
-#[test]
-fn menu_lines_report_the_connection_state_without_data() {
-    let waiting = provider_lines(None, false, IconPreferences::default());
-    assert_eq!(waiting[0].text, "Waiting for the AriadUsage engine…");
-    let refreshing = provider_lines(None, true, IconPreferences::default());
-    assert_eq!(refreshing[0].text, "Refreshing…");
+    assert_eq!(
+        connection_status(None, true).as_deref(),
+        Some("Refreshing…")
+    );
+    let snapshot = generate_scenario_snapshot(0);
+    assert_eq!(connection_status(Some(&snapshot), true), None);
+    assert_eq!(
+        connection_status(Some(&snapshot), false).as_deref(),
+        Some("Waiting for the AriadUsage engine…")
+    );
 }
 
 #[test]

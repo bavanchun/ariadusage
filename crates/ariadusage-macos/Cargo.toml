@@ -12,6 +12,12 @@ publish.workspace = true
 name = "ariadusage-macos"
 path = "src/main.rs"
 
+# Draws the card on the main thread, which AppKit views require.
+[[test]]
+name = "card_render"
+path = "tests/card_render.rs"
+harness = false
+
 [dependencies]
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol" }
 jiff = { workspace = true }
