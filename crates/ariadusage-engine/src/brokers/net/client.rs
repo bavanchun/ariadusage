@@ -207,6 +207,21 @@ impl NetBroker {
         declared_origins: &DeclaredOrigins,
         request: NetRequest,
     ) -> Result<NetResponse, NetError> {
+        let response = self.send_response(call, declared_origins, request).await?;
+        if response.status.is_client_error() || response.status.is_server_error() {
+            return Err(NetError::Http {
+                status: response.status.as_u16(),
+            });
+        }
+        Ok(response)
+    }
+
+    pub async fn send_response(
+        &self,
+        call: &BrokerCall,
+        declared_origins: &DeclaredOrigins,
+        request: NetRequest,
+    ) -> Result<NetResponse, NetError> {
         if call.cancel.is_cancelled() {
             return Err(NetError::Cancelled);
         }
@@ -218,7 +233,7 @@ impl NetBroker {
 
         let cap = request.body_cap.unwrap_or(self.config.body_cap);
         let response = send_request(&self.provider_client, call, request).await?;
-        collect_response(response, call, cap).await
+        collect_response_raw(response, call, cap).await
     }
 
     pub async fn send_loopback(
@@ -353,6 +368,20 @@ pub fn test_credential_header_value(secret: &SecretString) -> Result<HeaderValue
 }
 
 async fn collect_response(
+    response: Response,
+    call: &BrokerCall,
+    cap: usize,
+) -> Result<NetResponse, NetError> {
+    let collected = collect_response_raw(response, call, cap).await?;
+    if collected.status.is_client_error() || collected.status.is_server_error() {
+        return Err(NetError::Http {
+            status: collected.status.as_u16(),
+        });
+    }
+    Ok(collected)
+}
+
+async fn collect_response_raw(
     mut response: Response,
     call: &BrokerCall,
     cap: usize,
@@ -374,12 +403,6 @@ async fn collect_response(
             return Err(NetError::BodyTooLarge { cap });
         }
         body.extend_from_slice(&chunk);
-    }
-
-    if status.is_client_error() || status.is_server_error() {
-        return Err(NetError::Http {
-            status: status.as_u16(),
-        });
     }
 
     Ok(NetResponse {
