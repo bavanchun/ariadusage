@@ -92,7 +92,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | `serve` HTTP server | axum, tower, hyper-util | hyper-util supplies the header-read timeout that `axum::serve` lacks |
 | Grapheme segmentation | unicode-segmentation | Grapheme cluster boundary counting for detail strings, matching Swift `String.count` parity on multi-byte emoji and accents |
 | Cookie header normalization | regex | Nine case-insensitive patterns to extract and normalize cookie strings from curl commands or raw headers; 64 KiB input cap |
-| macOS UI | objc2 with the objc2-app-kit, objc2-foundation and objc2-core-graphics bindings | Native AppKit (NSStatusItem, NSMenu with custom views, NSWindow) from Rust; SwiftUI and Swift Charts are not reachable from Rust, so CodexBar's SwiftUI views are redrawn as AppKit views and Core Graphics drawing |
+| macOS UI | objc2 with the objc2-app-kit, objc2-foundation and objc2-core-graphics bindings, plus dispatch2 | Native AppKit (NSStatusItem, NSMenu with custom views, NSWindow) from Rust; SwiftUI and Swift Charts are not reachable from Rust, so CodexBar's SwiftUI views are redrawn as AppKit views and Core Graphics drawing |
 | Tests | insta, httpmock (HTTPS), assert_cmd, proptest, toml | Golden snapshots, HTTPS redirect-policy tests, CLI goldens with isolated homes, byte-split and browser crypto round-trip properties, fixture manifest parsing |
 
 Rejected alternatives are in the [Decision Log](#14-decision-log).
