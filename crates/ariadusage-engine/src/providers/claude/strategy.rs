@@ -3,6 +3,7 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -68,10 +69,22 @@ pub type ClaudeWebUsageLoader = Arc<
 >;
 
 /// Web enrichment cookie access resolved from `CookieSource`, manual cookie header, or `CookieCache`.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClaudeWebEnrichmentAccess {
     pub is_available: bool,
-    pub manual_cookie_header: Option<String>,
+    pub manual_cookie_header: Option<SecretString>,
+}
+
+impl fmt::Debug for ClaudeWebEnrichmentAccess {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ClaudeWebEnrichmentAccess")
+            .field("is_available", &self.is_available)
+            .field(
+                "has_manual_cookie_header",
+                &self.manual_cookie_header.is_some(),
+            )
+            .finish()
+    }
 }
 
 /// Shared runtime dependencies and configuration for the Claude strategies and provider plan.
@@ -297,12 +310,12 @@ impl ClaudeOAuthStrategyConfig {
         CookieSource::Auto
     }
 
-    pub fn effective_manual_cookie_header(&self) -> Option<String> {
+    pub fn effective_manual_cookie_header(&self) -> Option<SecretString> {
         if self.effective_cookie_source() != CookieSource::Manual {
             return None;
         }
         if let Some(header) = &self.manual_cookie_header {
-            return normalize(header.expose_secret());
+            return normalize(header.expose_secret()).map(SecretString::new);
         }
         if let ClaudeCredentialRoute::WebCookie { header } = ClaudeCredentialRouting::resolve(
             self.token_account_token
@@ -310,14 +323,16 @@ impl ClaudeOAuthStrategyConfig {
                 .map(SecretString::expose_secret),
             None,
         ) {
-            return Some(header.expose_secret().to_owned());
+            return Some(header);
         }
         None
     }
 
     pub fn has_manual_session_key(&self) -> bool {
         ClaudeWebAPIFetcher::has_session_key_in_header(
-            self.effective_manual_cookie_header().as_deref(),
+            self.effective_manual_cookie_header()
+                .as_ref()
+                .map(SecretString::expose_secret),
         )
     }
 
@@ -351,8 +366,9 @@ impl ClaudeOAuthStrategyConfig {
             },
             CookieSource::Manual => {
                 let header = self.effective_manual_cookie_header();
-                let is_available =
-                    ClaudeWebAPIFetcher::has_session_key_in_header(header.as_deref());
+                let is_available = ClaudeWebAPIFetcher::has_session_key_in_header(
+                    header.as_ref().map(SecretString::expose_secret),
+                );
                 ClaudeWebEnrichmentAccess {
                     is_available,
                     manual_cookie_header: header,
@@ -369,9 +385,10 @@ impl ClaudeOAuthStrategyConfig {
                 let header = self
                     .cookie_cache
                     .load(&provider_id, self.cache_scope.as_ref())
-                    .map(|entry| entry.header.expose_secret().to_owned());
-                let is_available =
-                    ClaudeWebAPIFetcher::has_session_key_in_header(header.as_deref());
+                    .map(|entry| entry.header.clone());
+                let is_available = ClaudeWebAPIFetcher::has_session_key_in_header(
+                    header.as_ref().map(SecretString::expose_secret),
+                );
                 ClaudeWebEnrichmentAccess {
                     is_available,
                     manual_cookie_header: header,
@@ -688,7 +705,10 @@ impl FetchStrategy for ClaudeOAuthFetchStrategy {
                     cookie_cache: &self.config.cookie_cache,
                     importer: &self.config.session_importer,
                     browser_gate: &self.config.browser_fetch_gate,
-                    manual_cookie_header: enrichment.manual_cookie_header.as_deref(),
+                    manual_cookie_header: enrichment
+                        .manual_cookie_header
+                        .as_ref()
+                        .map(SecretString::expose_secret),
                     oauth_access_token: Some(&record.credentials.access_token),
                     oauth_profile: account_identity.as_ref(),
                     use_web_extras,
@@ -710,19 +730,18 @@ impl FetchStrategy for ClaudeOAuthFetchStrategy {
             .await?;
 
             if enrichment.is_available
-                && let Some(cookie_hdr) = enrichment.manual_cookie_header.as_ref()
+                && let Some(cookie_secret) = enrichment.manual_cookie_header.as_ref()
             {
                 let expected_owner_id = snapshot
                     .identity
                     .as_ref()
                     .and_then(|i| i.account_id.clone());
-                let cookie_secret = SecretString::new(cookie_hdr.clone());
                 if let ClaudeSubscriptionFetchResult::Available(metadata) =
                     ClaudeSubscriptionMetadataFetcher::fetch(
                         &self.config.net,
                         &self.config.web_endpoint,
                         &self.config.endpoint,
-                        &cookie_secret,
+                        cookie_secret,
                         expected_owner_id.as_deref(),
                         Some(&record.credentials.access_token),
                         self.config.subscription_metadata_timeout,
@@ -926,7 +945,7 @@ impl ClaudeWebFetchStrategy {
                 ClaudeWebAPIFetcher::fetch_usage_with_cookie_header(
                     &self.config.net,
                     &self.config.web_endpoint,
-                    &manual_header,
+                    manual_header.expose_secret(),
                     &options,
                     &sub_call,
                 )
@@ -1043,13 +1062,12 @@ impl FetchStrategy for ClaudeWebFetchStrategy {
 
             let enrichment = self.config.web_enrichment_access();
             if enrichment.is_available
-                && let Some(cookie_hdr) = enrichment.manual_cookie_header.as_ref()
+                && let Some(cookie_secret) = enrichment.manual_cookie_header.as_ref()
             {
                 let expected_owner_id = snapshot
                     .identity
                     .as_ref()
                     .and_then(|i| i.account_id.clone());
-                let cookie_secret = SecretString::new(cookie_hdr.clone());
                 let call = BrokerCall {
                     interaction: cx.interaction,
                     cancel: cx.cancel.clone(),
@@ -1060,7 +1078,7 @@ impl FetchStrategy for ClaudeWebFetchStrategy {
                         &self.config.net,
                         &self.config.web_endpoint,
                         &self.config.endpoint,
-                        &cookie_secret,
+                        cookie_secret,
                         expected_owner_id.as_deref(),
                         None,
                         self.config.subscription_metadata_timeout,

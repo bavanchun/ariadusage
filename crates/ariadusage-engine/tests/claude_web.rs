@@ -35,10 +35,13 @@ use ariadusage_engine::providers::claude::{
     ClaudeAccountIdentity, ClaudeAccountProfile, ClaudeOAuthEndpointConfig,
     ClaudeOAuthFetchStrategy, ClaudeOAuthStrategyConfig, ClaudeOAuthUsageFetcher,
     ClaudeProviderPlan, ClaudeSubscriptionMetadata, ClaudeSubscriptionParseError,
-    ClaudeWebAPIFetcher, ClaudeWebBrowserFetchGate, ClaudeWebEndpointConfig, ClaudeWebFetchError,
-    ClaudeWebFetchOptions, ClaudeWebFetchStrategy, ClaudeWebFetchStrategyError,
-    ClaudeWebSessionImporter, ConfigOwnershipEvidence, SESSION_KEY_COOKIE_NAME, SessionKeyInfo,
-    WebUsageData, merge_extra_rate_windows, merge_provider_cost, web_extras_account_matches,
+    ClaudeWebAPIFetcher, ClaudeWebBrowserFetchGate, ClaudeWebEndpointConfig,
+    ClaudeWebEnrichmentAccess, ClaudeWebFetchError, ClaudeWebFetchOptions, ClaudeWebFetchStrategy,
+    ClaudeWebFetchStrategyError, ClaudeWebSessionImporter, ClaudeWebSessionKeyRenewalTracker,
+    ConfigOwnershipEvidence, DEFAULT_PREPAID_CREDITS_TIMEOUT, DEFAULT_WEB_REQUEST_TIMEOUT,
+    OrganizationInfo, SESSION_KEY_COOKIE_NAME, SessionKeyInfo, WebAccountInfo,
+    WebExtrasApplyParams, WebUsageData, apply_web_extras_if_needed, merge_extra_rate_windows,
+    merge_provider_cost, web_extras_account_matches,
 };
 use ariadusage_protocol::metric::SourceKind;
 use ariadusage_protocol::secret::SecretString;
@@ -136,6 +139,20 @@ fn account_uuid_and_config_ownership_evidence_from_config_json() {
     assert_eq!(
         ClaudeAccountProfile::config_ownership_evidence(&env, &work, &home, &call),
         ConfigOwnershipEvidence::Indeterminate
+    );
+
+    // 6. Large .claude.json (> 1 MiB) still resolves SignedIn via 64 MiB bounded plain reader
+    std::fs::remove_file(&config_file).unwrap();
+    let claude_json = home.join(".claude.json");
+    let padding = "x".repeat(1_200_000);
+    let large_payload =
+        format!(r#"{{"padding":"{padding}","oauthAccount":{{"accountUuid":"large-file-uuid"}}}}"#);
+    std::fs::write(&claude_json, large_payload.as_bytes()).unwrap();
+    assert_eq!(
+        ClaudeAccountProfile::config_ownership_evidence(&env, &work, &home, &call),
+        ConfigOwnershipEvidence::SignedIn {
+            account_uuid: "large-file-uuid".to_owned()
+        }
     );
 }
 
@@ -285,6 +302,11 @@ fn parses_overage_spend_limit_organizations_and_account_info() {
         missing_target,
         ClaudeWebFetchError::OrganizationNotFound("org-missing".to_owned())
     );
+    assert_eq!(
+        missing_target.to_string(),
+        "The configured Claude organization was not found for this session."
+    );
+    assert!(!format!("{missing_target:?}").contains("org-missing"));
 
     // Account info: seat tier & selected org
     let seats_json = br#"{
@@ -406,6 +428,16 @@ fn extra_windows_prepaid_credits_and_web_extras_account_matching() {
     let merged_eur =
         merge_provider_cost(Some(primary_cost.clone()), Some(web_eur), true).expect("merged eur");
     assert_eq!(merged_eur, primary_cost);
+
+    // Web response without extra_usage_cost preserves primary OAuth provider_cost
+    assert_eq!(
+        merge_provider_cost(Some(primary_cost.clone()), None, true),
+        Some(primary_cost.clone())
+    );
+    assert_eq!(
+        merge_provider_cost(Some(primary_cost.clone()), None, false),
+        Some(primary_cost.clone())
+    );
 
     // 4. replacing_web_extras preserves history_owner_id on ClaudeOAuthMappedUsage
     let mut mapped_with_owner = oauth_mapped;
@@ -547,6 +579,24 @@ fn extra_windows_prepaid_credits_and_web_extras_account_matching() {
         &no_email_web,
         Some(&ClaudeAccountIdentity::default())
     ));
+
+    // Unicode case-insensitive email/org comparison
+    let unicode_web = WebUsageData {
+        account_email: Some("üser@example.invalid".to_owned()),
+        account_organization: Some("Équipe Team".to_owned()),
+        account_organization_id: Some("org-123".to_owned()),
+        ..WebUsageData::default()
+    };
+    assert!(web_extras_account_matches(
+        &base_snap,
+        &unicode_web,
+        Some(&ClaudeAccountIdentity {
+            account_uuid: None,
+            email: Some("ÜSER@example.invalid".to_owned()),
+            organization_uuid: Some("org-123".to_owned()),
+            organization_name: Some("équipe team".to_owned()),
+        })
+    ));
 }
 
 #[test]
@@ -575,6 +625,43 @@ fn extra_rate_windows_parsing_ordering_and_merging() {
     }"#;
     let parsed_null = ClaudeWebAPIFetcher::parse_usage_response(null_cowork, now).unwrap();
     assert!(parsed_null.extra_rate_windows.is_empty());
+
+    // First routine object key stops iteration even if utilization is invalid/missing (no fallthrough to later alias)
+    let first_routine_invalid = br#"{
+      "five_hour": { "utilization": 9 },
+      "seven_day_cowork": { "utilization": "invalid" },
+      "daily_routines": { "utilization": 34 }
+    }"#;
+    let parsed_first_invalid =
+        ClaudeWebAPIFetcher::parse_usage_response(first_routine_invalid, now).unwrap();
+    assert!(parsed_first_invalid.extra_rate_windows.is_empty());
+
+    // Filters out Fable limits with non-weekly_scoped kinds (session, weekly_all)
+    let filtered_kinds_json = br#"{
+      "five_hour": { "utilization": 9 },
+      "limits": [
+        {
+          "kind": "session", "group": "weekly", "percent": 15,
+          "scope": { "model": { "display_name": "Fable" } }
+        },
+        {
+          "kind": "weekly_all", "group": "weekly", "percent": 25,
+          "scope": { "model": { "display_name": "Fable" } }
+        },
+        {
+          "kind": "weekly_scoped", "group": "weekly", "percent": 35,
+          "scope": { "model": { "display_name": "Fable" } }
+        }
+      ]
+    }"#;
+    let parsed_filtered =
+        ClaudeWebAPIFetcher::parse_usage_response(filtered_kinds_json, now).unwrap();
+    assert_eq!(parsed_filtered.extra_rate_windows.len(), 1);
+    assert_eq!(parsed_filtered.extra_rate_windows[0].title, "Fable only");
+    assert_eq!(
+        parsed_filtered.extra_rate_windows[0].window.used_percent,
+        35.0
+    );
 
     // Orders scoped weekly windows before daily routines
     let ordered_json = br#"{
@@ -780,6 +867,19 @@ async fn browser_importer_tries_browsers_in_default_order_and_falls_back() {
             Browser::Firefox,
         ]
     );
+
+    // Desktop cookie mode on PerBrowser immediately returns NoDesktopSessionKeyFound without probing browsers
+    attempts.lock().unwrap().clear();
+    let dsk_err = importer
+        .import_session_key(&https::call(), true)
+        .await
+        .unwrap_err();
+    assert_eq!(dsk_err, ClaudeWebFetchError::NoDesktopSessionKeyFound);
+    assert!(attempts.lock().unwrap().is_empty());
+    let cache = CookieCache::new();
+    assert!(
+        !ClaudeWebAPIFetcher::has_session_key(&cache, None, &importer, true, &https::call()).await
+    );
 }
 
 #[tokio::test]
@@ -928,6 +1028,27 @@ async fn prepaid_credits_merges_skips_when_disabled_and_tolerates_stalled_reques
     .expect("stalled prepaid still succeeds");
     assert_eq!(stalled_usage.session_percent_used, Some(11.0));
     assert_eq!(stalled_usage.extra_usage_cost, None);
+
+    // 5. Caller cancellation during prepaid credits surfaces Cancelled instead of Ok(None)
+    let cancel_token = CancellationToken::new();
+    let mut cancelled_call = https::call();
+    cancelled_call.cancel = cancel_token.clone();
+    let cancel_trigger = cancel_token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        cancel_trigger.cancel();
+    });
+    let cancel_err = ClaudeWebAPIFetcher::fetch_usage_with_cookie_header(
+        &net,
+        &endpoint,
+        &hdr,
+        &ClaudeWebFetchOptions::default(),
+        &cancelled_call,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(cancel_err, ClaudeWebFetchError::Cancelled);
+
     m_prepaid_stalled.delete();
     m_overage_404.delete();
     m_usage_simple.delete();
@@ -1126,6 +1247,25 @@ async fn renewal_can_return_to_initial_key_and_last_assignment_in_header_wins() 
     assert_eq!(m_overage.calls(), 1);
     let cached = cache.load(&provider_id, None).expect("cached");
     assert_eq!(cached.header.expose_secret(), session_hdr("sk-ant-init"));
+
+    // Cached fetch without renewal does not overwrite an intermediate cache update
+    let cache2 = CookieCache::new();
+    cache2.store(
+        &provider_id,
+        None,
+        &session_hdr("sk-ant-init"),
+        "Chrome",
+        now,
+    );
+    // Simulate a concurrent cache update after initial load by storing a newer entry before check:
+    // Because the roundtrip fetch returns renewed_cookie_header() == None and persist_initial_session_key == false,
+    // persist_session_key_if_needed is a no-op.
+    let tracker = ClaudeWebSessionKeyRenewalTracker::new(SecretString::new("sk-ant-init"));
+    assert!(tracker.renewed_cookie_header().is_none());
+    let extracted =
+        ClaudeWebSessionKeyRenewalTracker::extract_from_set_cookie_header(&combined_set_cookie)
+            .expect("extracted");
+    assert_eq!(extracted.expose_secret(), "sk-ant-mid1");
 }
 
 #[tokio::test]
@@ -1444,8 +1584,40 @@ async fn background_recovery_and_desktop_cookie_isolation_semantics() {
     .await
     .unwrap_err();
     m_org_503.delete();
-    m_stale_401.delete();
     assert_eq!(err_503, ClaudeWebFetchError::ServerError { status: 503 });
+
+    cache.store(
+        &provider_id,
+        None,
+        &session_hdr("sk-ant-stl1"),
+        "Chrome",
+        now,
+    );
+    let mut m_org_cf = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/organizations")
+            .header("cookie", session_hdr("sk-ant-imp1"));
+        then.status(403)
+            .header("cf-mitigated", "challenge")
+            .body("challenge");
+    });
+    let err_cf = ClaudeWebAPIFetcher::fetch_usage_serialized(
+        &net,
+        &endpoint,
+        &cache,
+        &importer,
+        &gate,
+        &ClaudeWebFetchOptions {
+            now,
+            ..ClaudeWebFetchOptions::default()
+        },
+        &https::call(),
+    )
+    .await
+    .unwrap_err();
+    m_org_cf.delete();
+    m_stale_401.delete();
+    assert_eq!(err_cf, ClaudeWebFetchError::CloudflareChallenge);
 
     // 5. Desktop cookie refresh follows account switches without borrowing or replacing browser cache,
     //    and missing desktop session cannot use cached browser account
@@ -1778,6 +1950,46 @@ async fn web_fetch_deadline_shared_budget_fallback_cancellation_and_unsafe_timeo
         cancel_outcome.attempts[0].strategy_id,
         CLAUDE_WEB_STRATEGY_ID
     );
+
+    // 5. Explicit Web and CLI Auto defer browser probe during is_available()
+    let probe_called = Arc::new(AtomicBool::new(false));
+    let probe_called_cl = probe_called.clone();
+    let defer_cfg = ClaudeOAuthStrategyConfig::new(net.clone(), temp.path(), temp.path())
+        .with_cookie_source(Some(CookieSource::Auto))
+        .with_web_availability_probe(move |_| {
+            let pc = probe_called_cl.clone();
+            Box::pin(async move {
+                pc.store(true, Ordering::SeqCst);
+                false
+            })
+        });
+    let defer_strategy = ClaudeWebFetchStrategy::new(defer_cfg);
+    let explicit_web_auto_cookie_cx = FetchContext {
+        provider: provider_id.clone(),
+        runtime: FetchRuntime::Daemon,
+        interaction: FetchInteraction::UserInitiated,
+        phase: FetchPhase::Regular,
+        request_id: "defer-explicit-web".to_owned(),
+        source_mode: SourceMode::Web,
+        env: BTreeMap::new(),
+        include_credits: false,
+        selected_token_account: None,
+        cancel: CancellationToken::new(),
+    };
+    assert!(
+        defer_strategy
+            .is_available(&explicit_web_auto_cookie_cx)
+            .await
+    );
+    assert!(!probe_called.load(Ordering::SeqCst));
+
+    let cli_auto_defer_cx = FetchContext {
+        runtime: FetchRuntime::Cli,
+        source_mode: SourceMode::Auto,
+        ..explicit_web_auto_cookie_cx
+    };
+    assert!(defer_strategy.is_available(&cli_auto_defer_cx).await);
+    assert!(!probe_called.load(Ordering::SeqCst));
 }
 
 #[test]
@@ -1816,7 +2028,7 @@ fn subscription_metadata_parses_dates_clears_when_empty_and_roundtrips_json() {
         assert!(meta.expires.is_none());
     }
 
-    // 2. Scheduled ending overrides renewal and preserves calendar precision
+    // 2. Scheduled ending overrides renewal and preserves calendar precision; plan_ending_at takes precedence with timestamp precision
     for status in ["active", "canceled"] {
         let meta = ClaudeSubscriptionMetadata::parse(&make_json(
             status,
@@ -1833,6 +2045,22 @@ fn subscription_metadata_parses_dates_clears_when_empty_and_roundtrips_json() {
             "2026-11-05T00:00:00Z".parse::<Timestamp>().unwrap()
         );
         assert!(exp.is_date_only);
+
+        let meta_at = ClaudeSubscriptionMetadata::parse(&make_json(
+            status,
+            serde_json::json!("2026-11-05T14:15:04Z"),
+            serde_json::json!("2026-11-05"),
+            serde_json::json!("2026-11-05T18:30:00Z"),
+            serde_json::json!("2026-11-05"),
+        ))
+        .unwrap();
+        assert!(meta_at.renews.is_none());
+        let exp_at = meta_at.expires.expect("expires at");
+        assert_eq!(
+            exp_at.date,
+            "2026-11-05T18:30:00Z".parse::<Timestamp>().unwrap()
+        );
+        assert!(!exp_at.is_date_only);
     }
 
     // 3. Canceled subscription never infers renewal from stale next_charge
@@ -1898,6 +2126,16 @@ fn subscription_metadata_parses_dates_clears_when_empty_and_roundtrips_json() {
             serde_json::Value::Null,
             serde_json::Value::Null,
             serde_json::Value::Null,
+        )),
+        Err(ClaudeSubscriptionParseError::Unrecognized)
+    );
+    assert_eq!(
+        ClaudeSubscriptionMetadata::parse(&make_json(
+            "active",
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::Value::Null,
+            serde_json::json!(12345),
         )),
         Err(ClaudeSubscriptionParseError::Unrecognized)
     );
@@ -2329,4 +2567,192 @@ async fn claude_provider_plan_web_auto_and_oauth_web_extras_end_to_end() {
         web_res.usage.primary.as_ref().map(|w| w.used_percent),
         Some(15.0)
     );
+}
+
+#[tokio::test]
+async fn web_extras_profile_strict_failure_email_override_and_redaction_invariants() {
+    assert_eq!(DEFAULT_WEB_REQUEST_TIMEOUT, Duration::from_secs(15));
+    assert_eq!(DEFAULT_PREPAID_CREDITS_TIMEOUT, Duration::from_secs(2));
+
+    // 1. Debug redaction on sensitive Claude web/account types
+    let access = ClaudeWebEnrichmentAccess {
+        is_available: true,
+        manual_cookie_header: Some(SecretString::new(session_hdr("sk-ant-secret1"))),
+    };
+    assert!(!format!("{access:?}").contains("sk-ant-secret1"));
+
+    let org_info = OrganizationInfo {
+        id: "org-secret-id".to_owned(),
+        name: Some("Secret Org Name".to_owned()),
+    };
+    assert!(!format!("{org_info:?}").contains("org-secret-id"));
+    assert!(!format!("{org_info:?}").contains("Secret Org Name"));
+
+    let acct_info = WebAccountInfo {
+        email: Some("secret@example.invalid".to_owned()),
+        login_method: Some("Claude Pro".to_owned()),
+    };
+    assert!(!format!("{acct_info:?}").contains("secret@example.invalid"));
+
+    let web_usage = WebUsageData {
+        account_organization: Some("Secret Org".to_owned()),
+        account_organization_id: Some("org-secret".to_owned()),
+        account_email: Some("secret@example.invalid".to_owned()),
+        ..WebUsageData::default()
+    };
+    let web_debug = format!("{web_usage:?}");
+    assert!(!web_debug.contains("Secret Org"));
+    assert!(!web_debug.contains("org-secret"));
+    assert!(!web_debug.contains("secret@example.invalid"));
+
+    let signed_in = ConfigOwnershipEvidence::SignedIn {
+        account_uuid: "uuid-secret-42".to_owned(),
+    };
+    assert!(!format!("{signed_in:?}").contains("uuid-secret-42"));
+
+    // 2. OAuth profile HTTP failure aborts web-extras enrichment and preserves primary snapshot
+    let server = https::start_server();
+    let base_url = Url::parse(&server.url("")).unwrap();
+    let oauth_ep = ClaudeOAuthEndpointConfig::with_base_url(base_url.clone()).unwrap();
+    let web_ep = ClaudeWebEndpointConfig::with_base_url(base_url.join("/api").unwrap()).unwrap();
+    let net = Arc::new(https::broker(NetConfig::default()));
+    let now = Timestamp::from_second(1_800_000_000).unwrap();
+
+    let mut primary_cost = ProviderCostSnapshot::new(5.0, 20.0, "USD", now);
+    primary_cost.period = Some("Monthly cap".to_owned());
+    let base_snap = UsageSnapshot::new(
+        RateWindow::new(15.0, Some(300), None, None, None, false).ok(),
+        None,
+        None,
+        None,
+        Some(primary_cost.clone()),
+        Vec::new(),
+        None,
+        None,
+        now,
+        Some(ProviderIdentitySnapshot {
+            provider_id: ProviderId::new("claude").ok(),
+            account_email: Some("stale@example.invalid".to_owned()),
+            account_organization: Some("Fixture Org".to_owned()),
+            login_method: Some("Claude Max".to_owned()),
+            account_id: Some("fixture-account".to_owned()),
+        }),
+        Confidence::Exact,
+    )
+    .unwrap();
+
+    let mut m_profile_fail = server.mock(|when, then| {
+        when.method(GET).path("/api/oauth/profile");
+        then.status(503).body("{}");
+    });
+    let mut m_web_orgs = server.mock(|when, then| {
+        when.method(GET).path("/api/organizations");
+        then.status(200)
+            .body(r#"[{"uuid":"org-123","name":"Fixture Org","capabilities":["chat"]}]"#);
+    });
+
+    let cookie_cache = CookieCache::new();
+    let gate = ClaudeWebBrowserFetchGate::new();
+    let token = SecretString::new("sk-ant-oat01-1");
+    let hdr = session_hdr("sk-ant-web1");
+    let call = https::call();
+
+    let preserved = apply_web_extras_if_needed(
+        base_snap.clone(),
+        WebExtrasApplyParams {
+            net: &net,
+            oauth_endpoint: &oauth_ep,
+            web_endpoint: &web_ep,
+            cookie_cache: &cookie_cache,
+            importer: &ClaudeWebSessionImporter::None,
+            browser_gate: &gate,
+            manual_cookie_header: Some(&hdr),
+            oauth_access_token: Some(&token),
+            oauth_profile: None,
+            use_web_extras: true,
+            include_prepaid_balance: true,
+            web_extras_timeout: Some(Duration::from_secs(5)),
+            options: ClaudeWebFetchOptions {
+                now,
+                ..ClaudeWebFetchOptions::default()
+            },
+            call: &call,
+        },
+    )
+    .await
+    .expect("strict profile failure preserves primary snapshot");
+    assert_eq!(m_web_orgs.calls(), 0);
+    assert_eq!(preserved.provider_cost, Some(primary_cost.clone()));
+    assert_eq!(
+        preserved
+            .identity
+            .as_ref()
+            .and_then(|i| i.account_email.as_deref()),
+        Some("stale@example.invalid")
+    );
+    m_profile_fail.delete();
+
+    // 3. When web response has no extra_usage_cost, primary OAuth provider_cost is preserved,
+    //    and OAuth profile email overrides existing snapshot email
+    let _m_profile_ok = server.mock(|when, then| {
+        when.method(GET).path("/api/oauth/profile");
+        then.status(200).body(
+            r#"{"account":{"uuid":"fixture-account","email_address":"fresh@example.invalid"},"organization":{"uuid":"org-123","name":"Fixture Org"}}"#,
+        );
+    });
+    let _m_web_usage = server.mock(|when, then| {
+        when.method(GET).path("/api/organizations/org-123/usage");
+        then.status(200)
+            .body(r#"{"five_hour":{"utilization":15},"seven_day_cowork":{"utilization":22}}"#);
+    });
+    let _m_overage = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/organizations/org-123/overage_spend_limit");
+        then.status(404).body("{}");
+    });
+    let _m_prepaid = server.mock(|when, then| {
+        when.method(GET)
+            .path("/api/organizations/org-123/prepaid/credits");
+        then.status(404).body("{}");
+    });
+    let _m_acc = server.mock(|when, then| {
+        when.method(GET).path("/api/account");
+        then.status(200).body(
+            r#"{"uuid":"fixture-account","email_address":"fresh@example.invalid","memberships":[{"organization":{"uuid":"org-123","name":"Fixture Org"}}]}"#,
+        );
+    });
+
+    let enriched = apply_web_extras_if_needed(
+        base_snap,
+        WebExtrasApplyParams {
+            net: &net,
+            oauth_endpoint: &oauth_ep,
+            web_endpoint: &web_ep,
+            cookie_cache: &cookie_cache,
+            importer: &ClaudeWebSessionImporter::None,
+            browser_gate: &gate,
+            manual_cookie_header: Some(&hdr),
+            oauth_access_token: Some(&token),
+            oauth_profile: None,
+            use_web_extras: true,
+            include_prepaid_balance: true,
+            web_extras_timeout: Some(Duration::from_secs(5)),
+            options: ClaudeWebFetchOptions {
+                now,
+                ..ClaudeWebFetchOptions::default()
+            },
+            call: &call,
+        },
+    )
+    .await
+    .expect("enrichment succeeds");
+    assert_eq!(enriched.provider_cost, Some(primary_cost));
+    assert_eq!(
+        enriched
+            .identity
+            .as_ref()
+            .and_then(|i| i.account_email.as_deref()),
+        Some("fresh@example.invalid")
+    );
+    m_web_orgs.delete();
 }

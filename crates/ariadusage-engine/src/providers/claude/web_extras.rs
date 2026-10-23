@@ -115,7 +115,9 @@ pub fn merge_provider_cost(
     web: Option<ProviderCostSnapshot>,
     include_usage_details: bool,
 ) -> Option<ProviderCostSnapshot> {
-    let web = web?;
+    let Some(web) = web else {
+        return primary;
+    };
     let Some(mut primary) = primary else {
         if include_usage_details {
             return Some(web);
@@ -236,14 +238,16 @@ pub async fn apply_web_extras_if_needed(
             Some(existing) => Some(existing.clone()),
             None => {
                 if let Some(token) = params.oauth_access_token {
-                    ClaudeOAuthUsageFetcher::fetch_profile_identity(
-                        params.net,
-                        params.oauth_endpoint,
-                        token,
-                        &sub_call,
+                    Some(
+                        ClaudeOAuthUsageFetcher::fetch_profile_identity_strict(
+                            params.net,
+                            params.oauth_endpoint,
+                            token,
+                            &sub_call,
+                        )
+                        .await
+                        .map_err(|e| e.into_fetch_error())?,
                     )
-                    .await
-                    .map_err(|e| e.into_fetch_error())?
                 } else {
                     None
                 }
@@ -285,7 +289,7 @@ pub async fn apply_web_extras_if_needed(
             if params.call.cancel.is_cancelled() {
                 return Err(FetchError::Cancelled);
             }
-            let snapshot = with_profile_email_if_missing(
+            let snapshot = with_profile_email(
                 snapshot,
                 resolved_profile.as_ref().and_then(|p| p.email.as_deref()),
             );
@@ -328,22 +332,14 @@ pub async fn apply_web_extras_if_needed(
     }
 }
 
-fn with_profile_email_if_missing(snapshot: UsageSnapshot, email: Option<&str>) -> UsageSnapshot {
+fn with_profile_email(snapshot: UsageSnapshot, email: Option<&str>) -> UsageSnapshot {
     let Some(email) = email.map(str::trim).filter(|s| !s.is_empty()) else {
         return snapshot;
     };
     let mut updated = snapshot;
     match &mut updated.identity {
         Some(identity) => {
-            if identity
-                .account_email
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .is_none()
-            {
-                identity.account_email = Some(email.to_owned());
-            }
+            identity.account_email = Some(email.to_owned());
         }
         None => {
             updated.identity = Some(ariadusage_core::model::ProviderIdentitySnapshot {
@@ -359,7 +355,7 @@ fn with_profile_email_if_missing(snapshot: UsageSnapshot, email: Option<&str>) -
 }
 
 fn normalized_account_field(value: Option<&str>) -> Option<String> {
-    let trimmed = value?.trim().to_ascii_lowercase();
+    let trimmed = value?.trim().to_lowercase();
     if trimmed.is_empty() {
         None
     } else {

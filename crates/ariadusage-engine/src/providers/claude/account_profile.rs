@@ -1,6 +1,8 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeAccountProfile.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::io::Read;
 use std::path::Path;
 
 use ariadusage_protocol::secret::SecretString;
@@ -8,17 +10,20 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::brokers::call::BrokerCall;
-use crate::brokers::credential_file::{self, CredentialDecl, CredentialFileError};
 
 use super::config_paths::ClaudeConfigPaths;
 
-#[derive(Debug, Deserialize)]
+/// Maximum byte size read from Claude's plaintext `.config.json` / `.claude.json` when
+/// inspecting `oauthAccount.accountUuid` (64 MiB, accommodating large project histories).
+pub const MAX_ACCOUNT_CONFIG_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Deserialize)]
 struct ClaudeConfigAccount {
     #[serde(rename = "oauthAccount")]
     oauth_account: Option<OAuthAccount>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 struct OAuthAccount {
     #[serde(rename = "accountUuid")]
     account_uuid: Option<String>,
@@ -29,11 +34,24 @@ struct OAuthAccount {
 /// `SignedOut` requires positive evidence (no config file, or a cleanly parsed config with no
 /// OAuth account); an unreadable, malformed, or unrecognized config is `Indeterminate` because
 /// it cannot establish that CLI storage is absent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ConfigOwnershipEvidence {
     SignedIn { account_uuid: String },
     SignedOut,
     Indeterminate,
+}
+
+impl fmt::Debug for ConfigOwnershipEvidence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SignedIn { .. } => f
+                .debug_struct("SignedIn")
+                .field("account_uuid", &"[redacted]")
+                .finish(),
+            Self::SignedOut => f.write_str("SignedOut"),
+            Self::Indeterminate => f.write_str("Indeterminate"),
+        }
+    }
 }
 
 /// Prompt-free Claude profile identity derived only from Claude-owned plain-text configuration.
@@ -73,20 +91,44 @@ impl ClaudeAccountProfile {
         account_config_path: &Path,
         call: &BrokerCall,
     ) -> ConfigOwnershipEvidence {
-        let decl = CredentialDecl::new(account_config_path);
-        let read_res = match credential_file::read(&decl, call) {
-            Ok(data) => data,
-            Err(CredentialFileError::NotFound) => {
+        if call.cancel.is_cancelled() {
+            return ConfigOwnershipEvidence::Indeterminate;
+        }
+        let meta = match std::fs::symlink_metadata(account_config_path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // A verifiably missing config is positive evidence that no signed-in CLI exists here.
                 return ConfigOwnershipEvidence::SignedOut;
             }
             Err(_) => {
-                // Present but unreadable (permissions, symlink, I/O): cannot prove CLI storage is absent.
+                // Present but unreadable (permissions, I/O): cannot prove CLI storage is absent.
                 return ConfigOwnershipEvidence::Indeterminate;
             }
         };
+        if !meta.file_type().is_file() || meta.len() > MAX_ACCOUNT_CONFIG_BYTES {
+            return ConfigOwnershipEvidence::Indeterminate;
+        }
 
-        let Ok(decoded) = serde_json::from_slice::<ClaudeConfigAccount>(&read_res.bytes) else {
+        let file = match std::fs::File::open(account_config_path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                return ConfigOwnershipEvidence::SignedOut;
+            }
+            Err(_) => {
+                return ConfigOwnershipEvidence::Indeterminate;
+            }
+        };
+        let mut bytes = Vec::new();
+        if file
+            .take(MAX_ACCOUNT_CONFIG_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .is_err()
+            || bytes.len() as u64 > MAX_ACCOUNT_CONFIG_BYTES
+        {
+            return ConfigOwnershipEvidence::Indeterminate;
+        }
+
+        let Ok(decoded) = serde_json::from_slice::<ClaudeConfigAccount>(&bytes) else {
             return ConfigOwnershipEvidence::Indeterminate;
         };
         let Some(oauth_account) = decoded.oauth_account else {
