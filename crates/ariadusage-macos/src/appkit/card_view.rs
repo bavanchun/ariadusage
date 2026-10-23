@@ -8,11 +8,12 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSFont, NSFontTextStyle,
+    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSFont, NSFontTextStyle,
     NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleFootnote, NSFontTextStyleHeadline,
     NSFontTextStyleSubheadline, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
     NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField, NSView,
@@ -40,12 +41,17 @@ const SELECTION_CORNER_RADIUS: f64 = 6.0;
 /// Large enough to never limit a measurement.
 const UNBOUNDED: f64 = 100_000.0;
 
+type ClickCallback = Rc<dyn Fn()>;
+
 /// What the card currently shows.
 #[derive(Default)]
 pub struct CardState {
     model: Option<CardModel>,
+    overview_mode: bool,
     layout: Option<CardLayout>,
     highlighted: bool,
+    pressed: bool,
+    on_click: Option<ClickCallback>,
     labels: Vec<(Retained<NSTextField>, TextColor)>,
     bars: Vec<Retained<ProgressBarView>>,
 }
@@ -66,6 +72,53 @@ define_class!(
         #[unsafe(method(isFlipped))]
         fn is_flipped(&self) -> bool {
             true
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _event: Option<&NSEvent>) -> bool {
+            self.ivars().borrow().on_click.is_some()
+        }
+
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: NSPoint) -> *mut NSView {
+            // SAFETY: `super(self)` is a valid NSView instance on the main thread.
+            let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
+            if hit.is_some() && self.ivars().borrow().on_click.is_some() {
+                std::ptr::from_ref::<Self>(self) as *mut NSView
+            } else {
+                hit.map_or(std::ptr::null_mut(), |v| Retained::as_ptr(&v) as *mut NSView)
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _event: &NSEvent) {
+            let mut state = self.ivars().borrow_mut();
+            if state.on_click.is_some() {
+                state.pressed = true;
+            }
+        }
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, event: &NSEvent) {
+            let loc = self.convertPoint_fromView(event.locationInWindow(), None);
+            let bounds = self.bounds();
+            let inside = loc.x >= 0.0
+                && loc.y >= 0.0
+                && loc.x <= bounds.size.width
+                && loc.y <= bounds.size.height;
+            let cb = {
+                let mut state = self.ivars().borrow_mut();
+                let pressed = state.pressed;
+                state.pressed = false;
+                if pressed && inside {
+                    state.on_click.clone()
+                } else {
+                    None
+                }
+            };
+            if let Some(cb) = cb {
+                cb();
+            }
         }
 
         #[unsafe(method(drawRect:))]
@@ -90,18 +143,60 @@ impl CardView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
-    /// Shows `model` at `width`. Returns false when nothing changed.
+    /// Registers a click callback (used on Overview rows to switch to the clicked provider tab).
+    pub fn set_on_click(&self, callback: impl Fn() + 'static) {
+        self.ivars().borrow_mut().on_click = Some(Rc::new(callback));
+    }
+
+    /// Shows `model` at `width` in the full provider card layout. Returns false when nothing changed.
     pub fn update(&self, model: &CardModel, width: f64) -> bool {
+        self.update_with_mode(model, width, false)
+    }
+
+    /// Shows `model` at `width` in the compact Overview row layout (`OverviewMenuCardRowView`).
+    pub fn update_overview(&self, model: &CardModel, width: f64) -> bool {
+        self.update_with_mode(model, width, true)
+    }
+
+    /// Whether `model` at `width` in `overview_mode` produces the same height as the
+    /// currently rendered layout (`MenuCardRefreshMonitor.hasCompatibleTrackedLayout`).
+    pub fn has_compatible_height(
+        &self,
+        model: &CardModel,
+        width: f64,
+        overview_mode: bool,
+    ) -> bool {
+        let Some(existing_h) = self.ivars().borrow().layout.as_ref().map(|l| l.size.h) else {
+            return false;
+        };
+        let mtm = self.mtm();
+        let measure = AppKitMeasure::new(mtm);
+        let next = if overview_mode {
+            card_layout::overview_layout(model, width, &measure)
+        } else {
+            card_layout::layout(model, width, &measure)
+        };
+        (existing_h - next.size.h).abs() <= 0.5
+    }
+
+    fn update_with_mode(&self, model: &CardModel, width: f64, overview_mode: bool) -> bool {
         {
             let state = self.ivars().borrow();
             let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width);
-            if same_width && state.model.as_ref() == Some(model) {
+            if same_width
+                && state.overview_mode == overview_mode
+                && state.model.as_ref() == Some(model)
+            {
                 return false;
             }
         }
         let mtm = self.mtm();
         let measure = AppKitMeasure::new(mtm);
-        let layout = card_layout::layout(model, width, &measure);
+        let layout = if overview_mode {
+            card_layout::overview_layout(model, width, &measure)
+        } else {
+            card_layout::layout(model, width, &measure)
+        };
         let highlighted = self.ivars().borrow().highlighted;
 
         for view in self.subviews().iter() {
@@ -139,6 +234,7 @@ impl CardView {
         {
             let mut state = self.ivars().borrow_mut();
             state.model = Some(model.clone());
+            state.overview_mode = overview_mode;
             state.layout = Some(layout);
             state.labels = labels;
             state.bars = bars;
