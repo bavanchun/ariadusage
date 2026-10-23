@@ -21,6 +21,7 @@ pub(super) struct ProcessTarget {
     pub uid: u32,
     pub pipes: Vec<PathBuf>,
     pipe_holds: Arc<Mutex<Vec<std::os::fd::OwnedFd>>>,
+    tty_hold: Arc<Mutex<Option<std::os::fd::OwnedFd>>>,
     descendants: Arc<Mutex<HashMap<i32, ProcessIdentity>>>,
 }
 
@@ -32,6 +33,7 @@ impl Clone for ProcessTarget {
             uid: self.uid,
             pipes: self.pipes.clone(),
             pipe_holds: Arc::clone(&self.pipe_holds),
+            tty_hold: Arc::clone(&self.tty_hold),
             descendants: Arc::clone(&self.descendants),
         }
     }
@@ -55,12 +57,27 @@ impl ProcessTarget {
             uid,
             pipes,
             pipe_holds: Arc::new(Mutex::new(pipe_holds)),
+            tty_hold: Arc::new(Mutex::new(None)),
             descendants: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     pub fn release_pipes(&self) {
         lock(&self.pipe_holds).clear();
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn set_tty_hold(&self, fd: std::os::fd::OwnedFd) {
+        *lock(&self.tty_hold) = Some(fd);
+    }
+
+    pub fn release_tty_hold(&self) {
+        let _ = lock(&self.tty_hold).take();
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn has_tty_hold(&self) -> bool {
+        lock(&self.tty_hold).is_some()
     }
 
     pub fn refresh_descendants(&self) {
@@ -81,6 +98,7 @@ impl ProcessTarget {
 }
 
 pub(super) async fn terminate(target: &ProcessTarget) {
+    target.release_tty_hold();
     let root = Path::new("/proc");
     target.refresh_descendants();
     let descendants = current_descendants(target);
@@ -113,6 +131,7 @@ pub(super) async fn terminate(target: &ProcessTarget) {
 }
 
 pub(super) fn terminate_sync(target: &ProcessTarget) {
+    target.release_tty_hold();
     let root = Path::new("/proc");
     target.refresh_descendants();
     let descendants = current_descendants(target);
