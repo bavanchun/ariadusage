@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{Mutex, broadcast, oneshot};
+use tokio::sync::{Mutex, broadcast, watch};
+use tokio::task::JoinSet;
 use tokio_util::bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -65,18 +66,16 @@ impl Default for FixtureConfig {
 /// Handle to a running in-process fixture server.
 pub struct FixtureServerHandle {
     pub socket_path: PathBuf,
-    shutdown_tx: Option<oneshot::Sender<()>>,
+    shutdown_tx: watch::Sender<bool>,
     join_handle: Option<tokio::task::JoinHandle<()>>,
     pub log_sink: Arc<Mutex<Vec<String>>>,
     pub step_counter: Arc<AtomicUsize>,
 }
 
 impl FixtureServerHandle {
-    /// Stop the fixture server and remove the socket file.
+    /// Stop the fixture server, close all active client sessions, and remove the socket file.
     pub async fn stop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        let _ = self.shutdown_tx.send(true);
         if let Some(handle) = self.join_handle.take() {
             let _ = handle.await;
         }
@@ -88,9 +87,7 @@ impl FixtureServerHandle {
 
 impl Drop for FixtureServerHandle {
     fn drop(&mut self) {
-        if let Some(tx) = self.shutdown_tx.take() {
-            let _ = tx.send(());
-        }
+        let _ = self.shutdown_tx.send(true);
         if self.socket_path.exists() {
             let _ = std::fs::remove_file(&self.socket_path);
         }
@@ -126,7 +123,7 @@ pub async fn start_fixture_server(
         .log_sink
         .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
     let (broadcast_tx, _) = broadcast::channel(32);
-    let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
+    let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let step_counter = Arc::new(AtomicUsize::new(0));
 
     let shared = Arc::new(ServerShared {
@@ -143,11 +140,15 @@ pub async fn start_fixture_server(
     // Background task: ticker advancing scenario step and pushing snapshots
     let ticker_shared = Arc::clone(&shared);
     let ticker_running = Arc::clone(&is_running);
+    let mut ticker_shutdown = shutdown_rx.clone();
     let step_duration = Duration::from_secs(config.step_seconds.max(1));
     tokio::spawn(async move {
         while ticker_running.load(Ordering::Relaxed) {
-            tokio::time::sleep(step_duration).await;
-            if !ticker_running.load(Ordering::Relaxed) {
+            tokio::select! {
+                _ = ticker_shutdown.changed() => break,
+                () = tokio::time::sleep(step_duration) => {}
+            }
+            if !ticker_running.load(Ordering::Relaxed) || *ticker_shutdown.borrow() {
                 break;
             }
             let step = ticker_shared.step_counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -164,9 +165,10 @@ pub async fn start_fixture_server(
     let accept_running = Arc::clone(&is_running);
 
     let join_handle = tokio::spawn(async move {
+        let mut clients = JoinSet::new();
         loop {
             tokio::select! {
-                _ = &mut shutdown_rx => {
+                _ = shutdown_rx.changed() => {
                     accept_running.store(false, Ordering::Relaxed);
                     break;
                 }
@@ -174,8 +176,9 @@ pub async fn start_fixture_server(
                     match accept_res {
                         Ok((stream, _)) => {
                             let client_shared = Arc::clone(&accept_shared);
-                            tokio::spawn(async move {
-                                handle_client(stream, client_shared, misbehave).await;
+                            let client_shutdown = shutdown_rx.clone();
+                            clients.spawn(async move {
+                                handle_client(stream, client_shared, misbehave, client_shutdown).await;
                             });
                         }
                         Err(_) => {
@@ -187,11 +190,12 @@ pub async fn start_fixture_server(
                 }
             }
         }
+        while clients.join_next().await.is_some() {}
     });
 
     Ok(FixtureServerHandle {
         socket_path: config.socket_path,
-        shutdown_tx: Some(shutdown_tx),
+        shutdown_tx,
         join_handle: Some(join_handle),
         log_sink,
         step_counter,
@@ -202,13 +206,22 @@ async fn handle_client(
     mut stream: UnixStream,
     shared: Arc<ServerShared>,
     misbehave: Option<MisbehaveMode>,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    if *shutdown_rx.borrow_and_update() {
+        return;
+    }
     if misbehave == Some(MisbehaveMode::OversizeFrame) {
         // Test mode: write 50 MiB unterminated line directly to stream
         let chunk = vec![b'A'; 1024 * 1024]; // 1 MiB chunk
         for _ in 0..50 {
-            if stream.write_all(&chunk).await.is_err() {
-                return;
+            tokio::select! {
+                _ = shutdown_rx.changed() => return,
+                res = stream.write_all(&chunk) => {
+                    if res.is_err() {
+                        return;
+                    }
+                }
             }
         }
         let _ = stream.flush().await;
@@ -228,6 +241,7 @@ async fn handle_client(
 
     loop {
         tokio::select! {
+            _ = shutdown_rx.changed() => break,
             read_res = reader.read(&mut raw_chunk) => {
                 match read_res {
                     Ok(0) => break, // EOF
