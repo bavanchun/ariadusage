@@ -5,6 +5,7 @@ pub mod hardening;
 pub mod paths;
 pub mod private_file;
 pub mod private_tempdir;
+pub mod providers;
 pub mod state_store;
 pub mod trust;
 

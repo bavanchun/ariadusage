@@ -902,3 +902,121 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-macos/tests/progress_bar.rs"
 sources = ["Tests/CodexBarTests/MenuCardQuotaWarningMarkerTests.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/config_paths.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudeConfigPaths.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/credential_routing.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudeCredentialRouting.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/plan.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudePlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/scoped_weekly.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeScopedWeeklyLimitMapper.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeWeb/ClaudeWebExtraRateWindowParser.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/reset_credits.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeRateLimitResetCredits.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/planner.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudeSourcePlanner.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/credentials.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentialModels.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/rate_limit_gate.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageRateLimitGate.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/identity.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeVerifiedAccountOwner.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/usage_fetcher.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/strategy.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSourcePlanner.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_config_paths.rs"
+sources = ["Tests/CodexBarTests/ClaudeConfigPathsTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_credential_routing.rs"
+sources = ["Tests/CodexBarTests/ClaudeCredentialRoutingTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_plan.rs"
+sources = ["Tests/CodexBarTests/ClaudePlanResolverTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_scoped_weekly.rs"
+sources = ["Tests/CodexBarTests/ClaudeScopedWeeklyLimitMapperTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_source_planner.rs"
+sources = ["Tests/CodexBarTests/ClaudeSourcePlannerTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_oauth_credentials.rs"
+sources = ["Tests/CodexBarTests/ClaudeOAuthTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_oauth_usage.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeOAuthTests.swift",
+    "Tests/CodexBarTests/ClaudeRateLimitResetCreditsTests.swift",
+    "TestsLinux/ClaudeOAuthDelegatedRefreshLinuxTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
