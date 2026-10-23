@@ -412,5 +412,55 @@ sources = ["Sources/Test.swift"]
         "Unexpected error: {err2}"
     );
 
+    // 3. Header uses b49d42eb5 while [[ported]] entry defaults to previous_baseline
+    let mismatched_header = format!(
+        "// {} Sources/Test.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt\npub fn hello() {{}}\n",
+        needle
+    );
+    fs::write(crates_dir.join("lib.rs"), mismatched_header).unwrap();
+    let err3 = check_provenance(&temp_dir).unwrap_err();
+    assert!(
+        err3.contains("malformed format"),
+        "Unexpected error: {err3}"
+    );
+
+    // 4. Unknown commit on a [[ported]] entry
+    fs::write(
+        crates_dir.join("lib.rs"),
+        format!("{valid_header}pub fn hello() {{}}\n"),
+    )
+    .unwrap();
+    let unknown_commit_manifest = r#"
+baseline = "b49d42eb53bbf79785b344492d594760dd163eac"
+previous_baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+
+[[ported]]
+path = "crates/test/src/lib.rs"
+sources = ["Sources/Test.swift"]
+commit = "0000000000000000000000000000000000000000"
+"#;
+    fs::write(fixtures_dir.join("manifest.toml"), unknown_commit_manifest).unwrap();
+    let err4 = check_provenance(&temp_dir).unwrap_err();
+    assert!(
+        err4.contains("matches neither baseline"),
+        "Unexpected error: {err4}"
+    );
+
+    // 5. Wrong previous_baseline in manifest
+    let wrong_previous_manifest = r#"
+baseline = "b49d42eb53bbf79785b344492d594760dd163eac"
+previous_baseline = "0000000000000000000000000000000000000000"
+
+[[ported]]
+path = "crates/test/src/lib.rs"
+sources = ["Sources/Test.swift"]
+"#;
+    fs::write(fixtures_dir.join("manifest.toml"), wrong_previous_manifest).unwrap();
+    let err5 = check_provenance(&temp_dir).unwrap_err();
+    assert!(
+        err5.contains("Manifest previous_baseline must be"),
+        "Unexpected error: {err5}"
+    );
+
     let _ = fs::remove_dir_all(&temp_dir);
 }
