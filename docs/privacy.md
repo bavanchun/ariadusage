@@ -94,13 +94,20 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 - Background refreshes never unlock the keyring or Keychain and never show a
   system prompt (`kSecUseAuthenticationUISkip` and
   `SecKeychainSetUserInteractionAllowed(false)` on macOS). A locked keyring or
-  Keychain item is reported as locked.
+  Keychain item is reported as locked. While a user-initiated Keychain prompt is
+  open on macOS, background Keychain reads skip reading item data and report
+  locked (`InteractionRequired`) rather than running with process-wide UI
+  enabled.
 - On macOS, reading Claude Code's `"Claude Code-credentials"` Keychain item is
   strictly read-only and off by default (`claudeOAuthDirectKeychainReadAllowed = false`)
   because Claude Code rewrites that item's ACL on token refresh. Even when you
   opt in, background refreshes never prompt, and canceling or denying a
   user-initiated Keychain prompt suppresses further prompts for that item for
-  six hours.
+  six hours. Blocking macOS Keychain calls run on a worker thread with a
+  120-second timeout for user-initiated prompts (`5s` for background queries);
+  if a prompt times out, the underlying blocking worker thread and its system
+  dialog stay alive holding the interactive prompt lock and the operation may
+  still finish once you respond to the dialog.
 - Secrets are entered with `ariadusage secret set`, through a no-echo terminal
   prompt or stdin. The Omarchy panel can open that terminal for you, but the
   value never passes through the panel. Secrets never appear on a command line,

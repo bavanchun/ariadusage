@@ -6,6 +6,9 @@ pub enum SecretStoreError {
     Unavailable,
     Locked,
     Dismissed,
+    /// Operation exceeded its timeout (`120s` for user-initiated prompts, `5s` for background
+    /// queries). On macOS, a timed-out blocking Keychain call and its system dialog stay alive on
+    /// the worker thread holding the prompt lock and may still finish after `Timeout` is returned.
     Timeout,
     Cancelled,
     Invalid,

@@ -3,10 +3,12 @@
 // Ported from CodexBar Sources/CodexBarCore/KeychainStringStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #[cfg(target_os = "macos")]
+use std::cell::Cell;
+#[cfg(target_os = "macos")]
 use std::collections::BTreeSet;
 use std::fmt;
 #[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 #[cfg(target_os = "macos")]
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -123,6 +125,21 @@ impl ServiceBackend {
         Self {
             disabled,
             macos_ops: Some(Arc::new(SecKeychainOperations::new(Some(keychain)))),
+        }
+    }
+
+    /// Creates a `ServiceBackend` backed by an isolated `SecKeychain` file where
+    /// `kSecUseAuthenticationUISkip` (`skip_authenticated_items`) simulates skipping an
+    /// authentication-protected item, exercising the unfiltered attribute probe and cache.
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain_simulating_authenticated_skip(
+        keychain: security_framework::os::macos::keychain::SecKeychain,
+    ) -> Self {
+        Self {
+            disabled: false,
+            macos_ops: Some(Arc::new(
+                SecKeychainOperations::new_simulating_authenticated_skip(Some(keychain)),
+            )),
         }
     }
 
@@ -364,6 +381,10 @@ impl SecretBackend for ServiceBackend {
 /// `timeout_duration` (`USER_UNLOCK_TIMEOUT` for interactive user operations,
 /// `KEYCHAIN_BACKGROUND_TIMEOUT` for non-interactive background queries), while observing
 /// `call.cancel` before, during, and after the blocking execution.
+///
+/// Note: if `timeout_duration` elapses before `f` returns, `run_macos_blocking` returns
+/// [`SecretStoreError::Timeout`] while the underlying blocking worker thread and any open OS
+/// Keychain dialog stay alive holding the prompt lock until the OS call finishes.
 #[cfg(target_os = "macos")]
 async fn run_macos_blocking<F, T>(
     call: &BrokerCall,
@@ -401,13 +422,73 @@ static USER_PROMPT_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(target_os = "macos")]
 static BACKGROUND_NO_UI_LOCK: Mutex<()> = Mutex::new(());
 #[cfg(target_os = "macos")]
+static USER_PROMPT_ACTIVE: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "macos")]
+static BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT: AtomicUsize = AtomicUsize::new(0);
+#[cfg(target_os = "macos")]
 static LABEL_UPDATE_WARNING_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Returns `true` if a user-initiated macOS Keychain operation is currently holding the
-/// interactive prompt lock.
 #[cfg(target_os = "macos")]
-pub(crate) fn is_macos_user_prompt_active() -> bool {
-    USER_PROMPT_LOCK.try_lock().is_err()
+thread_local! {
+    static CURRENT_THREAD_INTERACTION: Cell<Option<bool>> = const { Cell::new(None) };
+}
+
+#[cfg(target_os = "macos")]
+struct UserPromptActiveGuard;
+
+#[cfg(target_os = "macos")]
+impl UserPromptActiveGuard {
+    fn enter() -> Self {
+        USER_PROMPT_ACTIVE.store(true, Ordering::SeqCst);
+        Self
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for UserPromptActiveGuard {
+    fn drop(&mut self) {
+        USER_PROMPT_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct ThreadInteractionGuard {
+    previous: Option<bool>,
+}
+
+#[cfg(target_os = "macos")]
+impl ThreadInteractionGuard {
+    fn enter(allow_interaction: bool) -> Self {
+        let previous =
+            CURRENT_THREAD_INTERACTION.with(|cell| cell.replace(Some(allow_interaction)));
+        Self { previous }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for ThreadInteractionGuard {
+    fn drop(&mut self) {
+        let previous = self.previous;
+        CURRENT_THREAD_INTERACTION.with(|cell| cell.set(previous));
+    }
+}
+
+/// Returns `true` if a user-initiated macOS Keychain operation (`allow_interaction == true`) is
+/// currently active.
+///
+/// Unlike `USER_PROMPT_LOCK.try_lock().is_err()`, this flag is set only by the user-initiated
+/// prompt path and remains `false` when a background thread acquires `USER_PROMPT_LOCK` to hold
+/// `SecKeychainSetUserInteractionAllowed(false)`.
+#[cfg(target_os = "macos")]
+pub fn is_macos_user_prompt_active() -> bool {
+    USER_PROMPT_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// Returns the cumulative count of background no-UI Keychain calls that returned
+/// `ERR_SEC_INTERACTION_NOT_ALLOWED` early because a user-initiated prompt held `USER_PROMPT_LOCK`.
+#[cfg(target_os = "macos")]
+pub fn macos_background_no_ui_skipped_during_prompt_count() -> usize {
+    BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.load(Ordering::SeqCst)
 }
 
 /// Returns the cumulative count of non-fatal Keychain item label update failures on macOS.
@@ -416,43 +497,66 @@ pub fn macos_label_update_warning_count() -> usize {
     LABEL_UPDATE_WARNING_COUNT.load(Ordering::SeqCst)
 }
 
-/// Runs `f` while serializing `Security.framework` user-interaction state across threads.
+/// Runs `f` while enforcing per-call `Security.framework` user-interaction state across threads.
 ///
-/// User-initiated operations (`allow_interaction == true`) acquire `USER_PROMPT_LOCK` so at most
-/// one interactive prompt runs at a time, without blocking background queries.
-/// Background operations (`allow_interaction == false`) acquire `BACKGROUND_NO_UI_LOCK` so a
-/// waiting interactive prompt on another thread never stalls background refreshes; when no
-/// interactive prompt is active and user interaction is currently enabled, this helper also holds
-/// `SecKeychainSetUserInteractionAllowed(false)` for the duration of `f`.
-/// If interaction was already disabled by an outer scope (such as a test guard), this helper
-/// intentionally avoids creating and dropping a nested `KeychainUserInteractionLock` so UI
-/// remains disabled.
+/// - The `allow_interaction` flag is decided per call from that call's own interaction, never
+///   from shared state.
+/// - User-initiated operations (`allow_interaction == true`) acquire `USER_PROMPT_LOCK` and mark
+///   `USER_PROMPT_ACTIVE = true` for the duration of `f`.
+/// - Background operations (`allow_interaction == false`) acquire `BACKGROUND_NO_UI_LOCK` and then
+///   attempt `USER_PROMPT_LOCK.try_lock()`:
+///   - When a user-initiated prompt holds `USER_PROMPT_LOCK` (or `USER_PROMPT_ACTIVE` is `true`),
+///     process-wide Keychain UI (`SecKeychainSetUserInteractionAllowed`) cannot be disabled for
+///     this background call without interfering with the open user dialog, and running `f` with
+///     process-wide UI enabled could trigger a second password dialog. Therefore, this helper
+///     immediately returns `Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED)` **before** executing
+///     any data-read closure `f`.
+///   - Otherwise, this helper holds both `BACKGROUND_NO_UI_LOCK` and `USER_PROMPT_LOCK` with
+///     `SecKeychainSetUserInteractionAllowed(false)` for the entire duration of `f` (preserving an
+///     outer test guard if UI was already disabled).
 #[cfg(target_os = "macos")]
-pub(crate) fn with_macos_keychain_interaction<T>(
+pub fn with_macos_keychain_interaction<T>(
     allow_interaction: bool,
-    f: impl FnOnce() -> T,
-) -> T {
+    f: impl FnOnce() -> Result<T, i32>,
+) -> Result<T, i32> {
     use security_framework::os::macos::keychain::SecKeychain;
+
+    if let Some(current_mode) = CURRENT_THREAD_INTERACTION.with(Cell::get) {
+        if allow_interaction && !current_mode {
+            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+        }
+        return f();
+    }
 
     if allow_interaction {
         let _user_guard = USER_PROMPT_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _active_guard = UserPromptActiveGuard::enter();
+        let _thread_guard = ThreadInteractionGuard::enter(true);
         f()
     } else {
         let _bg_guard = BACKGROUND_NO_UI_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // If no user-initiated prompt is active, also hold `USER_PROMPT_LOCK` briefly and disable
-        // process-wide UI for defense-in-depth alongside per-query `kSecUseAuthenticationUISkip`.
-        let maybe_user_guard = USER_PROMPT_LOCK.try_lock().ok();
-        let _no_ui_guard = if maybe_user_guard.is_some()
-            && SecKeychain::user_interaction_allowed().unwrap_or(true)
-        {
-            SecKeychain::disable_user_interaction().ok()
+        if is_macos_user_prompt_active() {
+            BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
+            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+        }
+        let Ok(_user_guard) = USER_PROMPT_LOCK.try_lock() else {
+            BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
+            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+        };
+        if is_macos_user_prompt_active() {
+            BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
+            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+        }
+        let _no_ui_guard = if SecKeychain::user_interaction_allowed().unwrap_or(true) {
+            Some(SecKeychain::disable_user_interaction().map_err(|e| e.code())?)
         } else {
             None
         };
+        let _thread_guard = ThreadInteractionGuard::enter(false);
         f()
     }
 }
@@ -461,6 +565,7 @@ pub(crate) fn with_macos_keychain_interaction<T>(
 struct SecKeychainOperations {
     keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
     interaction_required_cache: Mutex<BTreeSet<(String, String)>>,
+    simulate_authenticated_skip: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -469,6 +574,17 @@ impl SecKeychainOperations {
         Self {
             keychain,
             interaction_required_cache: Mutex::new(BTreeSet::new()),
+            simulate_authenticated_skip: false,
+        }
+    }
+
+    fn new_simulating_authenticated_skip(
+        keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    ) -> Self {
+        Self {
+            keychain,
+            interaction_required_cache: Mutex::new(BTreeSet::new()),
+            simulate_authenticated_skip: true,
         }
     }
 }
@@ -506,25 +622,30 @@ impl MacosKeychainOperations for SecKeychainOperations {
                 // `find_generic_password` under `SecKeychainSetUserInteractionAllowed(0)`
                 // reads its bytes; if the keychain is locked or the item requires UI, it
                 // immediately fails with `errSecInteractionNotAllowed` (-25308) without prompting.
-                let mut skip_search = ItemSearchOptions::new();
-                skip_search
-                    .class(ItemClass::generic_password())
-                    .service(service)
-                    .account(account)
-                    .limit(Limit::Max(1))
-                    .load_attributes(true)
-                    .skip_authenticated_items(true);
-                if let Some(kc) = keychains {
-                    skip_search.keychains(kc);
-                }
-                match skip_search.search() {
+                let skip_outcome = if self.simulate_authenticated_skip {
+                    Err(os_status::ERR_SEC_ITEM_NOT_FOUND)
+                } else {
+                    let mut skip_search = ItemSearchOptions::new();
+                    skip_search
+                        .class(ItemClass::generic_password())
+                        .service(service)
+                        .account(account)
+                        .limit(Limit::Max(1))
+                        .load_attributes(true)
+                        .skip_authenticated_items(true);
+                    if let Some(kc) = keychains {
+                        skip_search.keychains(kc);
+                    }
+                    skip_search.search().map_err(|e| e.code())
+                };
+                match skip_outcome {
                     Ok(_) => {
                         self.interaction_required_cache
                             .lock()
                             .unwrap_or_else(|poisoned| poisoned.into_inner())
                             .remove(&cache_key);
                     }
-                    Err(err) if err.code() == os_status::ERR_SEC_ITEM_NOT_FOUND => {
+                    Err(code) if code == os_status::ERR_SEC_ITEM_NOT_FOUND => {
                         if self
                             .interaction_required_cache
                             .lock()
@@ -534,7 +655,7 @@ impl MacosKeychainOperations for SecKeychainOperations {
                             return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
                         }
                         if is_macos_user_prompt_active() {
-                            return Err(os_status::ERR_SEC_ITEM_NOT_FOUND);
+                            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
                         }
                         // Distinguish a truly missing item from an item skipped because it requires
                         // authentication by checking attributes without `skip_authenticated_items`
@@ -562,7 +683,7 @@ impl MacosKeychainOperations for SecKeychainOperations {
                             Err(probe_err) => Err(probe_err.code()),
                         };
                     }
-                    Err(err) => return Err(err.code()),
+                    Err(code) => return Err(code),
                 }
             }
 
@@ -662,7 +783,11 @@ fn lookup_secret_macos(
     let service = id.keychain_service();
     let account = id.keychain_account();
 
-    match ops.read_generic_password(service, &account, user_initiated) {
+    let result = with_macos_keychain_interaction(user_initiated, || {
+        ops.read_generic_password(service, &account, user_initiated)
+    });
+
+    match result {
         Ok(mut secret) => {
             if secret.is_empty() {
                 return Ok(SecretLookup::Invalid);
@@ -722,7 +847,11 @@ fn set_secret_macos(
     let account = id.keychain_account();
     let label = id.label();
 
-    match ops.write_generic_password(service, &account, &label, secret.expose_secret().as_bytes()) {
+    let result = with_macos_keychain_interaction(true, || {
+        ops.write_generic_password(service, &account, &label, secret.expose_secret().as_bytes())
+    });
+
+    match result {
         Ok(()) => Ok(()),
         Err(os_status::ERR_SEC_USER_CANCELED) => Err(SecretStoreError::Dismissed),
         Err(
@@ -774,7 +903,11 @@ fn chromium_key_macos(
 
     let ops = ops.unwrap_or_else(|| default_sec_keychain_operations());
 
-    match ops.read_generic_password(service, account, user_initiated) {
+    let result = with_macos_keychain_interaction(user_initiated, || {
+        ops.read_generic_password(service, account, user_initiated)
+    });
+
+    match result {
         Ok(key) => {
             if key.is_empty() {
                 return Err(SecretStoreError::Invalid);

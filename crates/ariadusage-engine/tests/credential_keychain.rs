@@ -478,19 +478,25 @@ fn candidate_sorting_orders_newest_first_matching_codexbar() {
 
 #[cfg(target_os = "macos")]
 mod macos_tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, OnceLock};
 
     use ariadusage_core::pipeline::FetchInteraction;
     use ariadusage_engine::brokers::credential_file::{
         CLAUDE_CODE_KEYCHAIN_SERVICE, DirectKeychainReadConsent, KeychainAccessGate,
-        KeychainCredentialDecl, KeychainCredentialError, KeychainCredentialSource,
+        KeychainCredentialDecl, KeychainCredentialError, KeychainCredentialRead,
+        KeychainCredentialReader, KeychainCredentialSource, KeychainItemFingerprint,
         KeychainPromptMode, sha256_prefix,
+    };
+    use ariadusage_engine::brokers::secret_store::service::{
+        is_macos_user_prompt_active, macos_background_no_ui_skipped_during_prompt_count,
     };
     use security_framework::os::macos::keychain::{
         CreateOptions, KeychainSettings, KeychainUserInteractionLock, SecKeychain,
     };
+    use zeroize::Zeroizing;
 
-    use super::call;
+    use super::{call, default_fake_fingerprint};
 
     fn ensure_no_keychain_ui() {
         static NO_UI_GUARD: OnceLock<Mutex<KeychainUserInteractionLock>> = OnceLock::new();
@@ -578,6 +584,211 @@ mod macos_tests {
         assert_ne!(
             read.fingerprint.persistent_ref_hash.as_deref(),
             Some(sha256_prefix(payload).as_str())
+        );
+    }
+
+    struct InFlightPromptCredentialReader {
+        prompt_started: std::sync::mpsc::SyncSender<()>,
+        release_prompt: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        interactive_reads: AtomicUsize,
+        non_interactive_reads: AtomicUsize,
+        fingerprint_probes: AtomicUsize,
+    }
+
+    impl KeychainCredentialReader for InFlightPromptCredentialReader {
+        fn read_item(
+            &self,
+            decl: &KeychainCredentialDecl,
+            allow_prompt: bool,
+        ) -> Result<KeychainCredentialRead, i32> {
+            if allow_prompt {
+                self.interactive_reads.fetch_add(1, Ordering::SeqCst);
+                assert!(is_macos_user_prompt_active());
+                let _ = self.prompt_started.send(());
+                let rx = self
+                    .release_prompt
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("single interactive prompt receiver");
+                rx.recv().expect("wait for prompt release");
+                Ok(KeychainCredentialRead {
+                    bytes: Zeroizing::new(
+                        b"{\"claudeAiOauth\":{\"accessToken\":\"invented-prompt\"}}".to_vec(),
+                    ),
+                    fingerprint: default_fake_fingerprint(decl),
+                })
+            } else {
+                self.non_interactive_reads.fetch_add(1, Ordering::SeqCst);
+                assert!(!is_macos_user_prompt_active());
+                Ok(KeychainCredentialRead {
+                    bytes: Zeroizing::new(
+                        b"{\"claudeAiOauth\":{\"accessToken\":\"invented-bg\"}}".to_vec(),
+                    ),
+                    fingerprint: default_fake_fingerprint(decl),
+                })
+            }
+        }
+
+        fn probe_fingerprint(
+            &self,
+            decl: &KeychainCredentialDecl,
+        ) -> Result<Option<KeychainItemFingerprint>, i32> {
+            self.fingerprint_probes.fetch_add(1, Ordering::SeqCst);
+            assert!(!is_macos_user_prompt_active());
+            Ok(Some(default_fake_fingerprint(decl)))
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_background_read_while_user_prompt_in_flight_uses_no_ui_and_skips_reader() {
+        ensure_no_keychain_ui();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+
+        let reader = Arc::new(InFlightPromptCredentialReader {
+            prompt_started: started_tx,
+            release_prompt: Mutex::new(Some(release_rx)),
+            interactive_reads: AtomicUsize::new(0),
+            non_interactive_reads: AtomicUsize::new(0),
+            fingerprint_probes: AtomicUsize::new(0),
+        });
+        let gate = Arc::new(KeychainAccessGate::new(false));
+        let decl = KeychainCredentialDecl::claude_code();
+        let source = KeychainCredentialSource::new_with_consent(
+            gate.clone(),
+            DirectKeychainReadConsent::Granted,
+        )
+        .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+        .with_reader(reader.clone());
+
+        let source_for_user = source.clone();
+        let decl_for_user = decl.clone();
+        let user_task = tokio::spawn(async move {
+            source_for_user
+                .read_at_async(
+                    &decl_for_user,
+                    &call(FetchInteraction::UserInitiated),
+                    1_000,
+                )
+                .await
+        });
+
+        tokio::task::spawn_blocking(move || {
+            started_rx.recv().expect("user prompt should start");
+        })
+        .await
+        .unwrap();
+
+        assert!(is_macos_user_prompt_active());
+        assert_eq!(reader.interactive_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.non_interactive_reads.load(Ordering::SeqCst), 0);
+
+        let skipped_before = macos_background_no_ui_skipped_during_prompt_count();
+
+        // While the simulated user prompt holds `USER_PROMPT_LOCK`, background `read_at_async` and
+        // `probe_fingerprint_async` take the no-UI path, immediately return `InteractionRequired`
+        // without calling the reader or poisoning the 6-hour denial cooldown.
+        assert_eq!(
+            source
+                .read_at_async(&decl, &call(FetchInteraction::Background), 1_001)
+                .await
+                .unwrap_err(),
+            KeychainCredentialError::InteractionRequired
+        );
+        assert_eq!(
+            source
+                .probe_fingerprint_async(&decl, &call(FetchInteraction::Background))
+                .await
+                .unwrap_err(),
+            KeychainCredentialError::InteractionRequired
+        );
+        assert_eq!(
+            macos_background_no_ui_skipped_during_prompt_count(),
+            skipped_before + 2
+        );
+        assert_eq!(reader.interactive_reads.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.non_interactive_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(reader.fingerprint_probes.load(Ordering::SeqCst), 0);
+        assert!(gate.should_allow_prompt(CLAUDE_CODE_KEYCHAIN_SERVICE, 1_001));
+
+        release_tx.send(()).unwrap();
+        let user_read = user_task.await.unwrap().unwrap();
+        assert_eq!(
+            &*user_read.bytes,
+            b"{\"claudeAiOauth\":{\"accessToken\":\"invented-prompt\"}}"
+        );
+        assert!(!is_macos_user_prompt_active());
+
+        // After the user prompt completes, background read and probe run on the no-UI path and
+        // invoke the reader with `allow_prompt == false`.
+        let bg_read = source
+            .read_at_async(&decl, &call(FetchInteraction::Background), 1_002)
+            .await
+            .unwrap();
+        assert_eq!(
+            &*bg_read.bytes,
+            b"{\"claudeAiOauth\":{\"accessToken\":\"invented-bg\"}}"
+        );
+        assert_eq!(reader.non_interactive_reads.load(Ordering::SeqCst), 1);
+        assert!(
+            source
+                .probe_fingerprint_async(&decl, &call(FetchInteraction::Background))
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(reader.fingerprint_probes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn macos_unfiltered_interaction_required_probe_and_cache_work_when_no_prompt_is_active() {
+        let temp_keychain = TempKeychain::create();
+        let keychain = temp_keychain.handle();
+        let decl = KeychainCredentialDecl::claude_code();
+        let gate = Arc::new(KeychainAccessGate::new(false));
+        let source =
+            KeychainCredentialSource::new_with_consent(gate, DirectKeychainReadConsent::Granted)
+                .with_prompt_mode(KeychainPromptMode::OnlyOnUserAction)
+                .with_keychain_simulating_authenticated_skip(keychain.clone());
+
+        // Before the item exists, unfiltered attribute probe also sees `ERR_SEC_ITEM_NOT_FOUND`.
+        assert_eq!(
+            source
+                .read_at(&decl, &call(FetchInteraction::Background), 1_000)
+                .unwrap_err(),
+            KeychainCredentialError::NotFound
+        );
+        assert_eq!(
+            source
+                .probe_fingerprint(&decl, &call(FetchInteraction::Background))
+                .unwrap(),
+            None
+        );
+
+        // Once the item exists in the isolated temporary keychain, `skip_authenticated_items(true)`
+        // simulates skipping it, `is_macos_user_prompt_active()` is `false` inside the background
+        // helper, and `probe_unfiltered_interaction_required` finds the item's attributes without
+        // UI, caches the key in `interaction_required_cache`, and reports `InteractionRequired`.
+        keychain
+            .set_generic_password(
+                CLAUDE_CODE_KEYCHAIN_SERVICE,
+                "claude-cli",
+                br#"{"claudeAiOauth":{"accessToken":"invented"}}"#,
+            )
+            .unwrap();
+
+        assert_eq!(
+            source
+                .read_at(&decl, &call(FetchInteraction::Background), 1_001)
+                .unwrap_err(),
+            KeychainCredentialError::InteractionRequired
+        );
+        assert_eq!(
+            source
+                .probe_fingerprint(&decl, &call(FetchInteraction::Background))
+                .unwrap_err(),
+            KeychainCredentialError::InteractionRequired
         );
     }
 }
