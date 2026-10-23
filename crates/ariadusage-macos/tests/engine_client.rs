@@ -87,9 +87,34 @@ async fn client_handshakes_and_receives_snapshots_from_the_engine() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn client_reconnects_after_the_engine_restarts() {
+async fn client_reconnects_and_resets_backoff_after_the_engine_restarts() {
+    // Second step is 60 s so a reconnect that failed to reset `attempt` back
+    // to 0 after receiving a snapshot would time out the 3 s receive window.
+    static BACKOFF: [Duration; 2] = [Duration::from_millis(500), Duration::from_secs(60)];
+
     let dir = tempfile::tempdir().unwrap();
     let socket_path = dir.path().join("engine.sock");
+
+    let (tx, rx) = mpsc::channel();
+    let client = EngineClient::spawn_with_backoff(socket_path.clone(), &BACKOFF, move |event| {
+        let _ = tx.send(event);
+    })
+    .unwrap();
+
+    // Let the first connect attempt fail before the server binds, advancing
+    // `attempt` to 1.
+    let rx = tokio::task::spawn_blocking(move || {
+        match rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("initial disconnect")
+        {
+            EngineEvent::Disconnected => rx,
+            other => panic!("expected Disconnected before server start, got {other:?}"),
+        }
+    })
+    .await
+    .unwrap();
+
     let mut server = start_fixture_server(FixtureConfig {
         socket_path: socket_path.clone(),
         ..FixtureConfig::default()
@@ -97,16 +122,10 @@ async fn client_reconnects_after_the_engine_restarts() {
     .await
     .unwrap();
 
-    let (tx, rx) = mpsc::channel();
-    let client = EngineClient::spawn(socket_path.clone(), move |event| {
-        let _ = tx.send(event);
-    })
-    .unwrap();
-
     let rx = tokio::task::spawn_blocking(move || {
         loop {
             if let EngineEvent::Snapshot(_) = rx
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(Duration::from_secs(3))
                 .expect("first snapshot")
             {
                 break;
@@ -117,15 +136,13 @@ async fn client_reconnects_after_the_engine_restarts() {
     .await
     .unwrap();
 
-    // Queue an unread refresh before stopping the server so closing the peer
-    // can surface ECONNRESET rather than a clean EOF, then restart the server.
     client.refresh(None);
     server.stop().await;
 
     let rx = tokio::task::spawn_blocking(move || {
         loop {
             if let EngineEvent::Disconnected = rx
-                .recv_timeout(Duration::from_secs(10))
+                .recv_timeout(Duration::from_secs(3))
                 .expect("disconnect event")
             {
                 break;
@@ -148,8 +165,8 @@ async fn client_reconnects_after_the_engine_restarts() {
         let mut snapshot = None;
         while snapshot.is_none() {
             match rx
-                .recv_timeout(Duration::from_secs(10))
-                .expect("reconnect event")
+                .recv_timeout(Duration::from_secs(3))
+                .expect("reconnect event within reset backoff")
             {
                 EngineEvent::Connected { .. } => connected = true,
                 EngineEvent::Snapshot(s) => snapshot = Some(s),
