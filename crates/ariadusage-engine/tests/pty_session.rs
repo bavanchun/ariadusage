@@ -456,14 +456,17 @@ async fn output_written_before_the_child_exits_survives_an_exit_seen_before_the_
     support::require_nextest();
     for _ in 0..10 {
         let mut session = spawn(&["pty-prompt", "clean-exit"], ProcessEnv::empty()).await;
-        // Let the child write, exit and be reaped before the session reads anything.
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        // Wait for the child to write, exit and be reaped before the session reads anything.
+        assert!(
+            session.wait_for_exit_for_test(Duration::from_secs(5)).await,
+            "child should exit before the first PTY read"
+        );
         let transcript = session
             .run_script(PtyScript::new(Vec::new(), Duration::from_secs(2)))
             .await
             .unwrap();
         assert_eq!(transcript.reason, PtyCompletionReason::ProcessExited);
-        assert_eq!(transcript.text.trim(), "buffered-before-exit");
+        assert_eq!(transcript.text.as_str(), "buffered-before-exit");
         session.close().await;
     }
 }
