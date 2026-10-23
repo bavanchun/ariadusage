@@ -979,6 +979,50 @@ path = "crates/ariadusage-engine/src/providers/claude/strategy.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeSourcePlanner.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/account_profile.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudeAccountProfile.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/subscription_metadata.rs"
+sources = ["Sources/CodexBarCore/Providers/Claude/ClaudeWeb/ClaudeSubscriptionMetadata.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/web_fetcher.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeWeb/ClaudeWebAPIFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeWeb/ClaudeWebExtraRateWindowParser.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/web_extras.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageSnapshot+WebExtras.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_web.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeWebAccountInfoTests.swift",
+    "Tests/CodexBarTests/ClaudeWebBrowserFallbackTests.swift",
+    "Tests/CodexBarTests/ClaudeWebCloudflareChallengeTests.swift",
+    "Tests/CodexBarTests/ClaudeWebCookieRenewalTests.swift",
+    "Tests/CodexBarTests/ClaudeWebEnterpriseUsageTests.swift",
+    "Tests/CodexBarTests/ClaudeWebFetchDeadlineTests.swift",
+    "Tests/CodexBarTests/ClaudeWebUsageExtraWindowTests.swift",
+    "Tests/CodexBarTests/ClaudeWebBackgroundRecoveryTests.swift",
+    "Tests/CodexBarTests/ClaudeSubscriptionMetadataTests.swift",
+    "Tests/CodexBarTests/ClaudeSubscriptionCLITests.swift",
+    "Tests/CodexBarTests/ClaudeUsageTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
