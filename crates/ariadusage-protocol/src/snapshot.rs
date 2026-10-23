@@ -8,8 +8,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::ids::ProviderId;
 use crate::metric::Metric;
 use crate::usage::{
-    Cost, Credits, DetailSection, Identity, NamedWindow, Pace, ProviderError, RateWindow,
-    StatusIndicator,
+    Cost, CostHistory, Credits, DetailSection, Identity, NamedWindow, Pace, PlanUtilizationSeries,
+    ProviderError, ProviderStatus, RateWindow, StatusIndicator,
 };
 
 /// Information about the running engine daemon.
@@ -43,17 +43,41 @@ pub struct AccountSnapshot {
     pub active: bool,
     #[serde(default)]
     pub windows: ProviderWindows,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Metric<Credits>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Metric<Cost>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_history: Option<Metric<CostHistory>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Metric<Identity>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Metric<StatusIndicator>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_page: Option<Metric<ProviderStatus>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<Metric<Pace>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub utilization: Vec<PlanUtilizationSeries>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub subscription_expires_at: Option<jiff::Timestamp>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub subscription_renews_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_expires_at_is_date_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_renews_at_is_date_only: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<ProviderError>,
     #[schemars(with = "Option<String>")]
     #[serde(
@@ -181,22 +205,46 @@ pub struct ProviderSnapshot {
     pub presentation: Option<ProviderPresentation>,
     #[serde(default)]
     pub windows: ProviderWindows,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credits: Option<Metric<Credits>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Metric<Cost>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_history: Option<Metric<CostHistory>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<Metric<Identity>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<Metric<StatusIndicator>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_page: Option<Metric<ProviderStatus>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pace: Option<Metric<Pace>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub utilization: Vec<PlanUtilizationSeries>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub subscription_expires_at: Option<jiff::Timestamp>,
+    #[schemars(with = "Option<String>")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::time::rfc3339_opt"
+    )]
+    pub subscription_renews_at: Option<jiff::Timestamp>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_expires_at_is_date_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription_renews_at_is_date_only: bool,
     #[schemars(length(max = 8))]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub details: Vec<DetailSection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountSnapshot>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<ProviderError>,
     #[schemars(with = "Option<String>")]
     #[serde(
@@ -223,9 +271,16 @@ impl ProviderSnapshot {
             windows: ProviderWindows::default(),
             credits: None,
             cost: None,
+            cost_history: None,
             identity: None,
             status: None,
+            status_page: None,
             pace: None,
+            utilization: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_expires_at_is_date_only: false,
+            subscription_renews_at_is_date_only: false,
             details: Vec::new(),
             accounts: Vec::new(),
             last_error: None,
@@ -250,11 +305,25 @@ struct ProviderSnapshotRaw {
     #[serde(default)]
     cost: Option<Metric<Cost>>,
     #[serde(default)]
+    cost_history: Option<Metric<CostHistory>>,
+    #[serde(default)]
     identity: Option<Metric<Identity>>,
     #[serde(default)]
     status: Option<Metric<StatusIndicator>>,
     #[serde(default)]
+    status_page: Option<Metric<ProviderStatus>>,
+    #[serde(default)]
     pace: Option<Metric<Pace>>,
+    #[serde(default)]
+    utilization: Vec<PlanUtilizationSeries>,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
+    subscription_expires_at: Option<jiff::Timestamp>,
+    #[serde(default, with = "crate::time::rfc3339_opt")]
+    subscription_renews_at: Option<jiff::Timestamp>,
+    #[serde(default)]
+    subscription_expires_at_is_date_only: bool,
+    #[serde(default)]
+    subscription_renews_at_is_date_only: bool,
     #[serde(default)]
     details: Vec<DetailSection>,
     #[serde(default)]
@@ -278,9 +347,16 @@ impl<'de> Deserialize<'de> for ProviderSnapshot {
             windows: raw.windows,
             credits: raw.credits,
             cost: raw.cost,
+            cost_history: raw.cost_history,
             identity: raw.identity,
             status: raw.status,
+            status_page: raw.status_page,
             pace: raw.pace,
+            utilization: raw.utilization,
+            subscription_expires_at: raw.subscription_expires_at,
+            subscription_renews_at: raw.subscription_renews_at,
+            subscription_expires_at_is_date_only: raw.subscription_expires_at_is_date_only,
+            subscription_renews_at_is_date_only: raw.subscription_renews_at_is_date_only,
             details: raw.details,
             accounts: raw.accounts,
             last_error: raw.last_error,

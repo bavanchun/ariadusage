@@ -2,15 +2,23 @@
 
 #![cfg(unix)]
 
+#[path = "support/mod.rs"]
+mod support;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use ariadusage_protocol::fixture::{
-    FixtureConfig, generate_scenario_snapshot, start_fixture_server,
+    FixtureConfig, generate_scenario_snapshot, generate_scenario_snapshot_with_extra,
+    start_fixture_server,
 };
 use ariadusage_protocol::ipc::{ErrorCode, ServerMessage};
 use ariadusage_protocol::metric::MetricState;
+use ariadusage_protocol::settings::{DescriptorKind, SettingsPage, SettingsScope};
+use ariadusage_protocol::snapshot::EngineSnapshot;
+use ariadusage_protocol::usage::{CostProvenance, StatusIndicator};
+use jsonschema::validator_for;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
@@ -415,4 +423,211 @@ fn fixture_providers_carry_presentation_and_claude_tertiary_window() {
             None => assert!(!has_data, "weekly missing at step {step}"),
         }
     }
+}
+
+#[test]
+fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
+    let schema_str =
+        std::fs::read_to_string(support::snapshot_schema_path()).expect("read snapshot schema");
+    let schema_val: serde_json::Value = serde_json::from_str(&schema_str).expect("parse schema");
+    let validator = validator_for(&schema_val).expect("compile snapshot validator");
+
+    for step in 0..5 {
+        let snapshot = generate_scenario_snapshot_with_extra(step, true);
+        let val = serde_json::to_value(&snapshot).expect("serialize snapshot");
+        if !validator.is_valid(&val) {
+            let errs: Vec<_> = validator.iter_errors(&val).collect();
+            panic!("fixture snapshot at step {step} failed schema validation: {errs:?}");
+        }
+        let round_trip: EngineSnapshot =
+            serde_json::from_value(val).expect("round-trip deserialize snapshot");
+        assert_eq!(snapshot, round_trip);
+    }
+
+    let step0 = generate_scenario_snapshot(0);
+    let claude = step0
+        .providers
+        .iter()
+        .find(|p| p.id.as_str() == "claude")
+        .expect("claude");
+    let codex = step0
+        .providers
+        .iter()
+        .find(|p| p.id.as_str() == "codex")
+        .expect("codex");
+    let agy = step0
+        .providers
+        .iter()
+        .find(|p| p.id.as_str() == "antigravity")
+        .expect("antigravity");
+
+    // 1. Header identity, updated_at, and subscription renewal/expiry dates
+    assert_eq!(
+        claude
+            .identity
+            .as_ref()
+            .and_then(|m| m.value.as_ref())
+            .and_then(|i| i.account_email.as_deref()),
+        Some("alex@example.com")
+    );
+    assert_eq!(
+        claude
+            .identity
+            .as_ref()
+            .and_then(|m| m.value.as_ref())
+            .and_then(|i| i.plan.as_deref()),
+        Some("Max")
+    );
+    assert!(claude.updated_at.is_some());
+    assert!(claude.subscription_renews_at.is_some());
+    assert!(claude.subscription_renews_at_is_date_only);
+    assert!(agy.subscription_expires_at.is_some());
+    assert!(agy.subscription_expires_at_is_date_only);
+
+    // 2. Rate windows + per-window pace + session-equivalent forecast
+    let claude_weekly = claude
+        .windows
+        .secondary
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("claude weekly window");
+    assert!(claude_weekly.pace.is_some());
+    assert_eq!(
+        claude_weekly
+            .session_equivalent
+            .map(|s| (s.whole_session_count, s.remainder_percent)),
+        Some((2, 40))
+    );
+    assert!(!agy.windows.extra.is_empty());
+
+    // 3. Credits, credit_limit, cost, and "Cloud credits" detail section
+    let codex_credits = codex
+        .credits
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("codex credits");
+    assert!(codex_credits.credit_limit.is_some());
+    assert_eq!(codex_credits.reset_credits_available_count, Some(2));
+    assert!(
+        claude
+            .details
+            .iter()
+            .any(|s| s.title.as_deref() == Some("Cloud credits"))
+    );
+
+    // 4. 30-day cost history with daily entries, model breakdowns, and comparison windows
+    let claude_cost_hist = claude
+        .cost_history
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("claude cost history");
+    assert_eq!(claude_cost_hist.daily.len(), 30);
+    assert_eq!(claude_cost_hist.comparison_windows.len(), 3);
+    assert_eq!(
+        claude_cost_hist.cost_provenance,
+        Some(CostProvenance::LocalPricingEstimate)
+    );
+    assert!(!claude_cost_hist.daily[0].model_breakdowns.is_empty());
+
+    let codex_cost_hist = codex
+        .cost_history
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("codex cost history");
+    assert!(
+        codex_cost_hist.daily[0].model_breakdowns[0]
+            .priority_cost_usd
+            .is_some()
+    );
+
+    // 5. Plan utilization history
+    assert_eq!(claude.utilization.len(), 3);
+    assert_eq!(codex.utilization.len(), 2);
+
+    // 6. Status indicator and status page component tree
+    let claude_status_page = claude
+        .status_page
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("claude status page");
+    assert_eq!(claude_status_page.indicator, StatusIndicator::Minor);
+    assert!(
+        claude_status_page
+            .components
+            .iter()
+            .any(|c| c.indicator != StatusIndicator::None && !c.children.is_empty())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_get_settings_provider_scope_returns_descriptors_without_secrets() {
+    let socket_path = unique_temp_socket_path("provider_settings");
+    let mut server = start_fixture_server(FixtureConfig {
+        socket_path: socket_path.clone(),
+        step_seconds: 10,
+        misbehave: None,
+        log_sink: None,
+        extra_windows: false,
+    })
+    .await
+    .unwrap();
+
+    let mut stream = UnixStream::connect(&socket_path).await.unwrap();
+    let (reader, mut writer) = stream.split();
+    let mut lines = BufReader::new(reader).lines();
+
+    writer
+        .write_all(
+            b"{\"type\":\"getSettings\",\"scope\":{\"provider\":\"claude\"},\"id\":\"req-prov-set\"}\n",
+        )
+        .await
+        .unwrap();
+
+    let resp_line = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .expect("timeout on provider getSettings")
+        .unwrap()
+        .unwrap();
+    let resp: ServerMessage = serde_json::from_str(&resp_line).unwrap();
+    match resp {
+        ServerMessage::Response {
+            id,
+            ok: Some(true),
+            payload: Some(payload),
+            ..
+        } => {
+            assert_eq!(id.as_deref(), Some("req-prov-set"));
+            let raw_json = serde_json::to_string(&payload).unwrap();
+            let page: SettingsPage = serde_json::from_value(payload).expect("valid SettingsPage");
+            assert!(matches!(page.scope, SettingsScope::Provider(ref p) if p.as_str() == "claude"));
+            assert!(
+                page.sections
+                    .iter()
+                    .any(|s| s.pane.as_deref() == Some("providers"))
+            );
+            assert!(page.sections.iter().any(|s| s.subtitle.is_some()));
+
+            let has_read_only = page
+                .sections
+                .iter()
+                .flat_map(|s| &s.descriptors)
+                .any(|d| d.read_only);
+            assert!(has_read_only, "expected at least one read-only descriptor");
+
+            let secret_desc = page
+                .sections
+                .iter()
+                .flat_map(|s| &s.descriptors)
+                .find(|d| matches!(d.kind, DescriptorKind::Secret { .. }))
+                .expect("secret descriptor");
+            if let DescriptorKind::Secret { is_set, source } = &secret_desc.kind {
+                assert!(!is_set);
+                assert_eq!(source.as_deref(), Some("Keychain"));
+            }
+            assert!(!raw_json.contains("sample-secret"));
+        }
+        other => panic!("expected ok response with SettingsPage payload, got {other:?}"),
+    }
+
+    server.stop().await;
 }
