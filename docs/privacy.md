@@ -111,6 +111,7 @@ secrets or private broker state are created with mode 0600 before any bytes are 
 - Off by default: an unset `cookieSource` resolves to a manual header only. You must explicitly opt in per provider by setting `cookieSource: auto`.
 - Manual cookie headers are stored securely in the keyring (default login collection) via SecretStore, never in plain configuration.
 - Only the cookie domains a provider declares (for example claude.ai for Claude and chatgpt.com for Codex) are read.
+- Browsers are read one at a time in the import order. Once a browser yields a usable session, later browsers, and their keyring entries, are not read.
 - Supported profile roots include Chrome (`~/.config/google-chrome`), Edge (`~/.config/microsoft-edge`), Brave (`~/.config/BraveSoftware/Brave-Browser`), Chromium (`~/.config/chromium`), Vivaldi (`~/.config/vivaldi`), Opera (`~/.config/opera`), and Firefox (`$XDG_CONFIG_HOME/mozilla/firefox` or `~/.mozilla/firefox`). Flatpak roots under `~/.var/app/<app-id>/config/` and the Chromium and Firefox Snap roots are included but remain unverified. The Edge, Vivaldi and Opera roots and safe-storage application names also remain unverified.
 - Profile labels use only a profile's `name` field. Account names and email fields are ignored.
 - SQLite is read from a temporary copy under a trusted, owner-only tmpfs `$XDG_RUNTIME_DIR`; only the database and its `-wal` file are copied, never `-journal`. Copies are limited to 64 MiB total and removed after each read.

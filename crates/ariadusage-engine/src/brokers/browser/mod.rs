@@ -294,7 +294,47 @@ impl BrowserBroker {
         }
     }
 
-    /// Reads candidates only when the core resolver supplied an import capability.
+    /// Opens browser sessions lazily, only when the core resolver supplied an import capability.
+    ///
+    /// Browsers are read in the query's order, or [`DEFAULT_IMPORT_ORDER`] when it names none.
+    /// The first browser that yields a candidate is read before this returns; a later browser
+    /// is read only when the caller asks for more candidates, so stopping at the first usable
+    /// session leaves later browsers and their keyring prompts untouched. Returns the most
+    /// relevant read error, or [`BrowserError::NoBrowserSession`], when no browser yields one.
+    ///
+    /// ```compile_fail
+    /// use ariadusage_engine::brokers::browser::{BrowserBroker, CookieQuery};
+    /// use ariadusage_engine::brokers::call::BrokerCall;
+    ///
+    /// async fn missing_authorization(
+    ///     broker: &BrowserBroker,
+    ///     call: &BrokerCall,
+    ///     query: CookieQuery<'_>,
+    /// ) {
+    ///     let _ = broker.sessions(call, query).await;
+    /// }
+    /// ```
+    pub async fn sessions<'a>(
+        &'a self,
+        call: &'a BrokerCall,
+        _authorization: cookie_core::ImportAuthorized,
+        query: CookieQuery<'a>,
+    ) -> Result<CookieSessions<'a>, BrowserError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner
+                .sessions(call, query)
+                .await
+                .map(|inner| CookieSessions { inner })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (call, query);
+            Err(BrowserError::Unsupported)
+        }
+    }
+
+    /// Reads every requested browser and returns all candidates in order.
     ///
     /// ```compile_fail
     /// use ariadusage_engine::brokers::browser::{BrowserBroker, CookieQuery};
@@ -311,17 +351,37 @@ impl BrowserBroker {
     pub async fn candidates(
         &self,
         call: &BrokerCall,
-        _authorization: cookie_core::ImportAuthorized,
+        authorization: cookie_core::ImportAuthorized,
         query: CookieQuery<'_>,
     ) -> Result<Vec<CookieCandidate>, BrowserError> {
+        let mut sessions = self.sessions(call, authorization, query).await?;
+        let mut candidates = Vec::new();
+        while let Some(candidate) = sessions.next().await {
+            candidates.push(candidate);
+        }
+        Ok(candidates)
+    }
+}
+
+/// Browser sessions read on demand, one browser at a time, within one import call.
+pub struct CookieSessions<'a> {
+    #[cfg(target_os = "linux")]
+    inner: discover::SessionCursor<'a>,
+    #[cfg(not(target_os = "linux"))]
+    _call: std::marker::PhantomData<&'a ()>,
+}
+
+impl CookieSessions<'_> {
+    /// Returns the next candidate, reading the next browser only when the earlier ones are
+    /// used up. A browser that fails to read is skipped.
+    pub async fn next(&mut self) -> Option<CookieCandidate> {
         #[cfg(target_os = "linux")]
         {
-            self.inner.candidates(call, query).await
+            self.inner.next().await
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (call, query);
-            Err(BrowserError::Unsupported)
+            None
         }
     }
 }

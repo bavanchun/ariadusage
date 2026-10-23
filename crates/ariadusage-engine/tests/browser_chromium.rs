@@ -1,10 +1,11 @@
-// Ported from CodexBar Tests/CodexBarTests/BrowserCookieImportSupportTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/BrowserCookieImportSupportTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/cookie_db.rs"]
 mod cookie_db;
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use ariadusage_core::cookie as cookie_core;
 use ariadusage_core::pipeline::FetchInteraction;
@@ -12,10 +13,13 @@ use ariadusage_engine::brokers::browser::{
     Browser, CookieQuery, SafeStorageKeyProvider, test_support,
 };
 use ariadusage_engine::brokers::browser::{BrowserError, CookieCandidate};
+use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageError;
 use ariadusage_protocol::ids::ProviderId;
 use sha2::{Digest, Sha256};
 
-use cookie_db::{ChromiumRow, StaticKeys, TestHome, authorization, call, insert_chromium};
+use cookie_db::{
+    ChromiumRow, StaticKeys, TestHome, authorization, call, insert_chromium, insert_firefox,
+};
 
 const CHROMIUM_EPOCH_MICROS: i64 = 11_644_473_600_000_000;
 type CandidatesResult = Result<Vec<CookieCandidate>, BrowserError>;
@@ -66,8 +70,219 @@ fn read_in_order(
         ))
 }
 
+const SYNTHETIC_PASSWORD: &[u8] = b"synthetic-password";
+
+/// Takes candidates in order until `accept` returns true, the way a provider stops at the
+/// first usable session.
+fn first_accepted(
+    home: &TestHome,
+    browsers: &[Browser],
+    names: Option<&[&str]>,
+    interaction: FetchInteraction,
+    keys: Arc<dyn SafeStorageKeyProvider>,
+    accept: impl Fn(&CookieCandidate) -> bool,
+) -> Result<Option<CookieCandidate>, BrowserError> {
+    let broker = home.broker(keys);
+    let domains = cookie_core::DeclaredDomains::new(["claude.ai"]).expect("declared host");
+    let query = CookieQuery {
+        provider: ProviderId::new("claude").expect("provider id"),
+        domains: &domains,
+        names,
+        browsers,
+        acknowledged_retry: false,
+    };
+    let call = call(interaction);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let mut sessions = broker.sessions(&call, authorization(), query).await?;
+            while let Some(candidate) = sessions.next().await {
+                if accept(&candidate) {
+                    return Ok(Some(candidate));
+                }
+            }
+            Ok(None)
+        })
+}
+
+fn add_plain_session(home: &TestHome, browser: Browser, names: &[&str], value: &str) {
+    let profile = home.chromium_profile(browser, browser.display_name());
+    for name in names {
+        insert_chromium(
+            &profile.join("Cookies"),
+            ChromiumRow {
+                host: ".claude.ai",
+                name,
+                expires_utc: 0,
+                value,
+                encrypted: b"",
+                partition_key: "",
+            },
+        );
+    }
+}
+
+/// A session that needs the browser's Secret Service key, so reading it counts a key call.
+fn add_keyed_session(home: &TestHome, browser: Browser) {
+    let profile = home.chromium_profile(browser, browser.display_name());
+    let value = encrypted_value(
+        ".claude.ai",
+        browser.display_name().as_bytes(),
+        SYNTHETIC_PASSWORD,
+        b"v11",
+    );
+    insert_chromium(
+        &profile.join("Cookies"),
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "sid",
+            expires_utc: 0,
+            value: "",
+            encrypted: &value,
+            partition_key: "",
+        },
+    );
+}
+
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:78
+// CodexBar: BrowserCookieImportSupportTests.swift:8
+fn provider_import_leaves_later_browsers_unread_after_a_usable_first_session() {
+    let home = TestHome::new();
+    let names = ["sid", "org"];
+    add_plain_session(&home, Browser::Chrome, &names, "chrome-session");
+    add_keyed_session(&home, Browser::Brave);
+    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    let first = first_accepted(
+        &home,
+        &[],
+        Some(&names[..]),
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+        |_| true,
+    )
+    .expect("usable session")
+    .expect("first candidate");
+    assert_eq!(first.browser, Browser::Chrome);
+    assert_eq!(first.records.len(), 2);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+// CodexBar: BrowserCookieImportSupportTests.swift:46
+fn usable_first_session_leaves_later_browsers_unread() {
+    let home = TestHome::new();
+    add_plain_session(&home, Browser::Brave, &["session"], "brave-session");
+    add_keyed_session(&home, Browser::Chrome);
+    add_keyed_session(&home, Browser::Edge);
+    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    let first = first_accepted(
+        &home,
+        &[Browser::Brave, Browser::Chrome, Browser::Edge],
+        None,
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+        |_| true,
+    )
+    .expect("usable session")
+    .expect("first candidate");
+    assert_eq!(first.browser, Browser::Brave);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+// CodexBar: BrowserCookieImportSupportTests.swift:61
+fn rejected_first_session_reads_only_the_next_browser() {
+    let home = TestHome::new();
+    add_plain_session(&home, Browser::Brave, &["session"], "brave-session");
+    add_keyed_session(&home, Browser::Chrome);
+    add_keyed_session(&home, Browser::Edge);
+    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    let accepted = first_accepted(
+        &home,
+        &[Browser::Brave, Browser::Chrome, Browser::Edge],
+        None,
+        FetchInteraction::UserInitiated,
+        keys.clone(),
+        |candidate| candidate.browser != Browser::Brave,
+    )
+    .expect("usable session")
+    .expect("accepted candidate");
+    assert_eq!(accepted.browser, Browser::Chrome);
+    assert_eq!(accepted.records[0].value.expose_secret(), "Chrome");
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+// CodexBar: BrowserCookieImportSupportTests.swift:76
+fn background_denied_chromium_is_skipped_before_a_usable_browser() {
+    let home = TestHome::new();
+    add_keyed_session(&home, Browser::Chrome);
+    let dismissed = read_in_order(
+        &home,
+        &[Browser::Chrome],
+        Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
+    );
+    assert_eq!(
+        dismissed.expect_err("dismissal surfaced"),
+        BrowserError::Dismissed
+    );
+    let firefox = home.firefox_profile("default-release", 17);
+    let expires = (jiff::Timestamp::now().as_second() + 3600) * 1000;
+    insert_firefox(
+        &firefox.join("cookies.sqlite"),
+        ".claude.ai",
+        "session",
+        expires,
+        "firefox-session",
+        "",
+    );
+    add_plain_session(&home, Browser::Brave, &["session"], "brave-session");
+
+    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    let first = first_accepted(
+        &home,
+        &[Browser::Chrome, Browser::Firefox, Browser::Brave],
+        None,
+        FetchInteraction::Background,
+        keys.clone(),
+        |_| true,
+    )
+    .expect("usable session")
+    .expect("first candidate");
+    assert_eq!(first.browser, Browser::Firefox);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+// CodexBar: BrowserCookieImportSupportTests.swift:140
+fn automatic_import_without_a_browser_list_covers_every_supported_browser() {
+    let home = TestHome::new();
+    add_plain_session(&home, Browser::Opera, &["session"], "opera-session");
+    let candidates = read_in_order(&home, &[], Arc::new(StaticKeys::without_key()))
+        .expect("default order reaches the last browser");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].browser, Browser::Opera);
+
+    let mut ordered = ariadusage_engine::brokers::browser::DEFAULT_IMPORT_ORDER.to_vec();
+    ordered.sort_unstable();
+    assert_eq!(
+        ordered,
+        [
+            Browser::Chrome,
+            Browser::Edge,
+            Browser::Brave,
+            Browser::Chromium,
+            Browser::Vivaldi,
+            Browser::Firefox,
+            Browser::Opera,
+        ]
+    );
+}
+
+#[test]
+// CodexBar: BrowserCookieImportSupportTests.swift:161
 fn imports_in_declared_browser_order_and_skips_unavailable_profiles() {
     let home = TestHome::new();
     let chrome = home.chromium_profile(Browser::Chrome, "Work");
@@ -112,8 +327,8 @@ fn imports_in_declared_browser_order_and_skips_unavailable_profiles() {
 }
 
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:97
-// CodexBar: BrowserDetectionTests.swift:218
+// CodexBar: BrowserCookieImportSupportTests.swift:180
+// CodexBar: BrowserDetectionTests.swift:241
 fn missing_browser_profiles_report_no_session() {
     let home = TestHome::new();
     let error = read_chrome(&home, Browser::Chrome, Arc::new(StaticKeys::without_key()))
@@ -122,8 +337,8 @@ fn missing_browser_profiles_report_no_session() {
 }
 
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:113
-// CodexBar: BrowserDetectionTests.swift:142
+// CodexBar: BrowserCookieImportSupportTests.swift:196
+// CodexBar: BrowserDetectionTests.swift:165
 fn browser_candidates_keep_profiles_separate() {
     let home = TestHome::new();
     let chrome = home.chromium_profile(Browser::Chrome, "Work");
@@ -168,7 +383,7 @@ fn browser_candidates_keep_profiles_separate() {
 }
 
 #[test]
-// CodexBar: BrowserDetectionTests.swift:167
+// CodexBar: BrowserDetectionTests.swift:190
 fn only_requested_browser_profiles_are_discovered() {
     let home = TestHome::new();
     let chrome = home.chromium_profile(Browser::Chrome, "Work");
