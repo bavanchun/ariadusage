@@ -1,5 +1,5 @@
-// Ported from CodexBar Sources/CodexBarCore/UsageFetcher.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/UsageSnapshot+AccountLabel.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/UsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/UsageSnapshot+AccountLabel.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_protocol::{Confidence, DetailRow, DetailSection, ProviderId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -20,6 +20,10 @@ pub struct UsageSnapshot {
     pub details: Vec<DetailSection>,
     pub subscription_expires_at: Option<jiff::Timestamp>,
     pub subscription_renews_at: Option<jiff::Timestamp>,
+    /// The renewal date is a calendar day; its time of day carries no meaning.
+    pub subscription_renews_at_is_date_only: bool,
+    /// The expiry date is a calendar day; its time of day carries no meaning.
+    pub subscription_expires_at_is_date_only: bool,
     pub updated_at: jiff::Timestamp,
     pub identity: Option<ProviderIdentitySnapshot>,
     pub data_confidence: Confidence,
@@ -52,6 +56,8 @@ impl UsageSnapshot {
             details,
             subscription_expires_at,
             subscription_renews_at,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
             updated_at,
             identity,
             data_confidence,
@@ -109,13 +115,19 @@ impl UsageSnapshot {
         Ok(self)
     }
 
+    /// Replaces both subscription dates and their date-only flags together, so a
+    /// flag never outlives the date it describes.
     pub fn with_subscription_metadata(
         mut self,
         expires_at: Option<jiff::Timestamp>,
         renews_at: Option<jiff::Timestamp>,
+        expires_at_is_date_only: bool,
+        renews_at_is_date_only: bool,
     ) -> Self {
         self.subscription_expires_at = expires_at;
         self.subscription_renews_at = renews_at;
+        self.subscription_expires_at_is_date_only = expires_at_is_date_only;
+        self.subscription_renews_at_is_date_only = renews_at_is_date_only;
         self
     }
 
@@ -172,6 +184,10 @@ impl UsageSnapshot {
     }
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 fn is_unknown_confidence(c: &Confidence) -> bool {
     matches!(c, Confidence::Unknown)
 }
@@ -198,6 +214,10 @@ struct UsageSnapshotSerialize<'a> {
         with = "ariadusage_protocol::time::rfc3339_opt"
     )]
     subscription_renews_at: &'a Option<jiff::Timestamp>,
+    #[serde(skip_serializing_if = "is_false")]
+    subscription_renews_at_is_date_only: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    subscription_expires_at_is_date_only: bool,
     #[serde(with = "ariadusage_protocol::time::rfc3339")]
     updated_at: &'a jiff::Timestamp,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -223,6 +243,8 @@ impl Serialize for UsageSnapshot {
             details: &self.details,
             subscription_expires_at: &self.subscription_expires_at,
             subscription_renews_at: &self.subscription_renews_at,
+            subscription_renews_at_is_date_only: self.subscription_renews_at_is_date_only,
+            subscription_expires_at_is_date_only: self.subscription_expires_at_is_date_only,
             updated_at: &self.updated_at,
             identity: &self.identity,
             data_confidence: self.data_confidence,
@@ -262,6 +284,10 @@ struct UsageSnapshotRaw {
     subscription_expires_at: Option<jiff::Timestamp>,
     #[serde(default, with = "ariadusage_protocol::time::rfc3339_opt")]
     subscription_renews_at: Option<jiff::Timestamp>,
+    #[serde(default)]
+    subscription_renews_at_is_date_only: Option<bool>,
+    #[serde(default)]
+    subscription_expires_at_is_date_only: Option<bool>,
     #[serde(with = "ariadusage_protocol::time::rfc3339")]
     updated_at: jiff::Timestamp,
     #[serde(default)]
@@ -307,6 +333,12 @@ impl<'de> Deserialize<'de> for UsageSnapshot {
             details: raw.details,
             subscription_expires_at: raw.subscription_expires_at,
             subscription_renews_at: raw.subscription_renews_at,
+            subscription_renews_at_is_date_only: raw
+                .subscription_renews_at_is_date_only
+                .unwrap_or(false),
+            subscription_expires_at_is_date_only: raw
+                .subscription_expires_at_is_date_only
+                .unwrap_or(false),
             updated_at: raw.updated_at,
             identity,
             data_confidence: raw.data_confidence.unwrap_or(Confidence::Unknown),

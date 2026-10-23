@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/ProviderCostSnapshot.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/ProviderCostSnapshot.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +40,9 @@ pub struct ProviderCostSnapshot {
 }
 
 impl ProviderCostSnapshot {
+    /// Currency code of credit-denominated amounts, such as Codex extra usage.
+    pub const CREDITS_CURRENCY_CODE: &'static str = "Credits";
+
     pub fn new(
         used: f64,
         limit: f64,
@@ -60,6 +63,11 @@ impl ProviderCostSnapshot {
             updated_at,
             balance_is_unavailable: None,
         }
+    }
+
+    /// False for credit-denominated amounts (Codex extra usage), which have no currency to format.
+    pub fn is_monetary(&self) -> bool {
+        self.currency_code != Self::CREDITS_CURRENCY_CODE
     }
 
     /// Projects a positive spend budget into a quota meter without assigning it a time-window cadence.

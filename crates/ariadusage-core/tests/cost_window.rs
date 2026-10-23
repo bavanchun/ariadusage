@@ -44,3 +44,21 @@ fn balance_only_or_invalid_limits_never_become_quota_meters() {
         );
     }
 }
+
+#[test]
+fn only_credit_denominated_costs_are_not_monetary() {
+    let updated_at = Timestamp::from_second(1_800_000_000).expect("timestamp");
+    let credits = ProviderCostSnapshot::new(
+        200.0,
+        1000.0,
+        ProviderCostSnapshot::CREDITS_CURRENCY_CODE,
+        updated_at,
+    );
+    assert!(!credits.is_monetary());
+    // The spend meter itself does not depend on the currency.
+    assert_eq!(credits.spend_limit_window().unwrap().used_percent, 20.0);
+
+    for code in ["USD", "EUR", "credits", ""] {
+        assert!(ProviderCostSnapshot::new(1.0, 10.0, code, updated_at).is_monetary());
+    }
+}
