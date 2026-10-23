@@ -83,7 +83,9 @@ fn test_warns_on_unsupported_token_accounts() {
             usage_scope: None,
             organization_id: None,
             workspace_id: None,
+            claude_config_directory: None,
             seat_credit_entitlement: None,
+            model_rate_limits: None,
             extra: Default::default(),
         }],
     });

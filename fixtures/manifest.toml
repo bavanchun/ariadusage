@@ -169,8 +169,10 @@ path = "crates/ariadusage-core/src/config/types.rs"
 sources = [
     "Sources/CodexBarCore/Config/CodexBarConfig.swift",
     "Sources/CodexBarCore/Config/ProviderConfigCoding.swift",
+    "Sources/CodexBarCore/Config/ProviderModelRateLimit.swift",
     "Sources/CodexBarCore/TokenAccounts.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/quota.rs"
@@ -182,11 +184,15 @@ path = "crates/ariadusage-core/src/config/codec.rs"
 sources = [
     "Sources/CodexBarCore/Config/CodexBarConfig.swift",
     "Sources/CodexBarCore/Config/OpaqueConfigJSON.swift",
+    "Sources/CodexBarCore/Config/ProviderConfigCoding.swift",
+    "Sources/CodexBarCore/TokenAccounts.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/normalize.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/validate.rs"
@@ -219,6 +225,14 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-core/tests/config_validation.rs"
 sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/tests/config_model_rate_limits.rs"
+sources = [
+    "Tests/CodexBarTests/ProviderConfigModelRateLimitsTests.swift",
+    "Tests/CodexBarTests/CodexBarConfigHooksTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]

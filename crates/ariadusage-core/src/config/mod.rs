@@ -12,6 +12,7 @@ pub use quota::{QuotaWarningWindow, QuotaWarningWindowConfig, QuotaWarnings};
 pub use redact::{REDACTED_PLACEHOLDER, sanitized_for_dump};
 pub use transform::set_provider_enabled;
 pub use types::{
-    Config, CookieSource, ProviderConfig, ProviderEntry, TokenAccountMeta, TokenAccountsMeta,
+    Config, CookieSource, ModelRateLimit, ProviderConfig, ProviderEntry, TokenAccountMeta,
+    TokenAccountsMeta,
 };
 pub use validate::{Issue, IssueSeverity, SecretPresence, validate};
