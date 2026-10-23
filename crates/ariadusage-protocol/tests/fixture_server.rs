@@ -468,7 +468,7 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
             .as_ref()
             .and_then(|m| m.value.as_ref())
             .and_then(|i| i.account_email.as_deref()),
-        Some("alex@example.com")
+        Some("alex@example.invalid")
     );
     assert_eq!(
         claude
@@ -479,10 +479,18 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
         Some("Max")
     );
     assert!(claude.updated_at.is_some());
-    assert!(claude.subscription_renews_at.is_some());
-    assert!(claude.subscription_renews_at_is_date_only);
-    assert!(agy.subscription_expires_at.is_some());
-    assert!(agy.subscription_expires_at_is_date_only);
+    let claude_sub = claude
+        .subscription
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("claude subscription");
+    assert!(claude_sub.renews.is_some_and(|d| d.date_only));
+    let agy_sub = agy
+        .subscription
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("antigravity subscription");
+    assert!(agy_sub.expires.is_some_and(|d| d.date_only));
 
     // 2. Rate windows + per-window pace + session-equivalent forecast
     let claude_weekly = claude
@@ -493,10 +501,12 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
         .expect("claude weekly window");
     assert!(claude_weekly.pace.is_some());
     assert_eq!(
-        claude_weekly
-            .session_equivalent
-            .map(|s| (s.whole_session_count, s.remainder_percent)),
-        Some((2, 40))
+        claude_weekly.session_equivalent.map(|s| (
+            s.estimated_sessions,
+            s.windows_until_reset,
+            s.sample_count
+        )),
+        Some((2.4, 16, Some(12)))
     );
     assert!(!agy.windows.extra.is_empty());
 
@@ -506,8 +516,20 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
         .as_ref()
         .and_then(|m| m.value.as_ref())
         .expect("codex credits");
-    assert!(codex_credits.credit_limit.is_some());
-    assert_eq!(codex_credits.reset_credits_available_count, Some(2));
+    assert_eq!(
+        codex_credits
+            .credit_limit
+            .as_ref()
+            .and_then(|l| l.title.as_deref()),
+        Some("Monthly credit allowance")
+    );
+    assert_eq!(
+        codex_credits
+            .reset_credits
+            .as_ref()
+            .map(|r| r.available_count),
+        Some(2)
+    );
     assert!(
         claude
             .details
@@ -525,7 +547,11 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
     assert_eq!(claude_cost_hist.comparison_windows.len(), 3);
     assert_eq!(
         claude_cost_hist.cost_provenance,
-        Some(CostProvenance::LocalPricingEstimate)
+        Some(CostProvenance::ListPriceEstimate)
+    );
+    assert_eq!(
+        claude_cost_hist.comparison_windows[0].provenance,
+        Some(CostProvenance::ListPriceEstimate)
     );
     assert!(!claude_cost_hist.daily[0].model_breakdowns.is_empty());
 
@@ -534,6 +560,7 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
         .as_ref()
         .and_then(|m| m.value.as_ref())
         .expect("codex cost history");
+    assert_eq!(codex_cost_hist.cost_provenance, Some(CostProvenance::Mixed));
     assert!(
         codex_cost_hist.daily[0].model_breakdowns[0]
             .priority_cost_usd
@@ -541,18 +568,28 @@ fn fixture_scenarios_populate_ui_surfaces_and_validate_against_schema() {
     );
 
     // 5. Plan utilization history
-    assert_eq!(claude.utilization.len(), 3);
-    assert_eq!(codex.utilization.len(), 2);
-
-    // 6. Status indicator and status page component tree
-    let claude_status_page = claude
-        .status_page
+    let claude_util = claude
+        .utilization
         .as_ref()
         .and_then(|m| m.value.as_ref())
-        .expect("claude status page");
-    assert_eq!(claude_status_page.indicator, StatusIndicator::Minor);
+        .expect("claude utilization");
+    let codex_util = codex
+        .utilization
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("codex utilization");
+    assert_eq!(claude_util.len(), 3);
+    assert_eq!(codex_util.len(), 2);
+
+    // 6. Status indicator and status page component tree
+    let claude_status = claude
+        .status
+        .as_ref()
+        .and_then(|m| m.value.as_ref())
+        .expect("claude status");
+    assert_eq!(claude_status.indicator, StatusIndicator::Minor);
     assert!(
-        claude_status_page
+        claude_status
             .components
             .iter()
             .any(|c| c.indicator != StatusIndicator::None && !c.children.is_empty())

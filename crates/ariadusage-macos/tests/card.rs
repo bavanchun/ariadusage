@@ -112,15 +112,18 @@ fn header_has_no_email_or_plan_without_identity() {
 #[test]
 fn weekly_row_carries_engine_pace_and_markers() {
     let mut p = provider("codex", "Codex");
-    p.windows.secondary = Some(value(window(50.0, 10080, 4 * 24 * 3600)));
-    p.pace = Some(value(Pace {
+    let mut weekly = window(50.0, 10080, 4 * 24 * 3600);
+    weekly.pace = Some(Pace {
         stage: PaceStage::Ahead,
         delta_percent: 7.0,
         expected_used_percent: 43.0,
         will_last_to_reset: false,
         eta_seconds: Some(3 * 24 * 3600),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
         summary: "ignored".to_string(),
-    }));
+    });
+    p.windows.secondary = Some(value(weekly));
     let prefs = CardPreferences {
         work_days_per_week: Some(5),
         weekly_warning_thresholds: vec![20],
@@ -145,15 +148,18 @@ fn weekly_row_carries_engine_pace_and_markers() {
 #[test]
 fn on_track_pace_has_text_but_no_tip_and_hidden_pace_clears_both() {
     let mut p = provider("claude", "Claude");
-    p.windows.secondary = Some(value(window(40.0, 10080, 4 * 24 * 3600)));
-    p.pace = Some(value(Pace {
+    let mut weekly = window(40.0, 10080, 4 * 24 * 3600);
+    weekly.pace = Some(Pace {
         stage: PaceStage::OnTrack,
         delta_percent: -1.0,
         expected_used_percent: 41.0,
         will_last_to_reset: true,
         eta_seconds: None,
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
         summary: String::new(),
-    }));
+    });
+    p.windows.secondary = Some(value(weekly));
     let card = build(&p, &CardPreferences::default());
     let row = &card.metrics[0];
     assert_eq!(
@@ -176,15 +182,18 @@ fn on_track_pace_has_text_but_no_tip_and_hidden_pace_clears_both() {
 #[test]
 fn exhausted_weekly_window_has_no_pace() {
     let mut p = provider("claude", "Claude");
-    p.windows.secondary = Some(value(window(100.0, 10080, 3600)));
-    p.pace = Some(value(Pace {
+    let mut weekly = window(100.0, 10080, 3600);
+    weekly.pace = Some(Pace {
         stage: PaceStage::FarAhead,
         delta_percent: 40.0,
         expected_used_percent: 60.0,
         will_last_to_reset: false,
         eta_seconds: Some(0),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
         summary: String::new(),
-    }));
+    });
+    p.windows.secondary = Some(value(weekly));
     let card = build(&p, &CardPreferences::default());
     assert_eq!(card.metrics[0].meta_text(), None);
     assert_eq!(card.metrics[0].title_text(), "Weekly 0% left");
@@ -493,12 +502,7 @@ fn stale_windows_still_render_their_values() {
 #[test]
 fn credits_show_balance_bar_and_scale() {
     let mut p = provider("codex", "Codex");
-    p.credits = Some(value(Credits {
-        remaining: 42.5,
-        unit: None,
-        balance_is_workspace: None,
-        updated_at: None,
-    }));
+    p.credits = Some(value(Credits::new(42.5)));
     let card = build(&p, &CardPreferences::default());
     assert!(card.uses_stacked_detail_layout());
     let credits = card.credits.expect("credits");
@@ -517,10 +521,8 @@ fn large_and_zero_credit_balances_scale_to_the_next_power_of_ten() {
         (1000.0, 10.0, "10K tokens"),
     ] {
         p.credits = Some(value(Credits {
-            remaining,
-            unit: None,
             balance_is_workspace: Some(false),
-            updated_at: None,
+            ..Credits::new(remaining)
         }));
         let credits = build(&p, &CardPreferences::default()).credits.unwrap();
         assert!((credits.progress_percent.unwrap() - percent).abs() < 1e-9);
@@ -532,10 +534,8 @@ fn large_and_zero_credit_balances_scale_to_the_next_power_of_ten() {
 fn workspace_credit_balances_have_no_bar() {
     let mut p = provider("codex", "Codex");
     p.credits = Some(value(Credits {
-        remaining: 1234.56,
-        unit: None,
         balance_is_workspace: Some(true),
-        updated_at: None,
+        ..Credits::new(1234.56)
     }));
     let credits = build(&p, &CardPreferences::default()).credits.unwrap();
     assert_eq!(credits.text, "1234.56 left");

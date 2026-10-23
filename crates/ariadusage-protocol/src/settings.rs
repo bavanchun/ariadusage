@@ -360,8 +360,8 @@ pub struct SettingsSection {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
-    /// Optional pane identifier for multi-tab settings windows (e.g. `"general"`, `"menuBar"`,
-    /// `"menu"`, `"notifications"`, `"advanced"`).
+    /// Optional pane identifier for multi-tab settings windows. Canonical values:
+    /// `"general"`, `"menuBar"`, `"menu"`, `"providers"`, `"notifications"`, `"advanced"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane: Option<String>,
     pub descriptors: Vec<SettingDescriptor>,

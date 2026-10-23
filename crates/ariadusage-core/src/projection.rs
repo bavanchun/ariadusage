@@ -5,9 +5,9 @@
 //! safe static error messages, and window-duration clamping.
 
 use ariadusage_protocol::{
-    Confidence, Cost, Identity, Metric, MetricSource, MetricState, NamedWindow, Pace, PaceStage,
-    ProviderError, ProviderErrorCategory, ProviderErrorKind, ProviderId, ProviderSnapshot,
-    ProviderWindows, RateWindow, SourceKind,
+    BillingDate, Confidence, Cost, Identity, Metric, MetricSource, MetricState, NamedWindow, Pace,
+    PaceStage, ProviderError, ProviderErrorCategory, ProviderErrorKind, ProviderId,
+    ProviderSnapshot, ProviderWindows, RateWindow, SourceKind, SubscriptionDates,
 };
 
 use crate::model::UsageSnapshot;
@@ -97,13 +97,18 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         &source,
         snapshot.data_confidence,
     );
-    let secondary = project_window_metric(
+    let mut secondary = project_window_metric(
         snapshot.secondary.as_ref(),
         data_state,
         as_of,
         &source,
         snapshot.data_confidence,
     );
+    if let (Some(p), Some(sec)) = (input.pace.as_ref(), secondary.as_mut())
+        && let Some(ref mut win) = sec.value
+    {
+        win.pace = Some(project_pace(p, &input.provider, input.as_of));
+    }
     let tertiary = project_window_metric(
         snapshot.tertiary.as_ref(),
         data_state,
@@ -173,7 +178,6 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
                 balance_updated_at: c.balance_updated_at,
                 balance_is_workspace: c.balance_is_workspace,
                 balance_is_unavailable: c.balance_is_unavailable,
-                updated_at: Some(c.updated_at),
             })
         } else {
             None
@@ -213,15 +217,24 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         .expect("metric honesty invariant holds")
     });
 
-    let pace = input.pace.as_ref().map(|p| {
-        let pace_val = if matches!(data_state, MetricState::Value | MetricState::Stale) {
-            Some(project_pace(p, &input.provider, input.as_of))
-        } else {
-            None
-        };
+    let has_subscription =
+        snapshot.subscription_renews_at.is_some() || snapshot.subscription_expires_at.is_some();
+    let subscription = has_subscription.then(|| {
+        let sub_val = matches!(data_state, MetricState::Value | MetricState::Stale).then(|| {
+            SubscriptionDates {
+                renews: snapshot.subscription_renews_at.map(|at| BillingDate {
+                    at,
+                    date_only: snapshot.subscription_renews_at_is_date_only,
+                }),
+                expires: snapshot.subscription_expires_at.map(|at| BillingDate {
+                    at,
+                    date_only: snapshot.subscription_expires_at_is_date_only,
+                }),
+            }
+        });
         Metric::new(
             data_state,
-            pace_val,
+            sub_val,
             as_of,
             Some(source.clone()),
             snapshot.data_confidence,
@@ -237,8 +250,6 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         retry_after_seconds: e.retry_after_seconds,
     });
 
-    let has_data = matches!(data_state, MetricState::Value | MetricState::Stale);
-
     ProviderSnapshot {
         id: input.provider.clone(),
         display_name: input.display_name.clone(),
@@ -252,19 +263,8 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         cost_history: None,
         identity,
         status: None,
-        status_page: None,
-        pace,
-        utilization: Vec::new(),
-        subscription_expires_at: has_data
-            .then_some(snapshot.subscription_expires_at)
-            .flatten(),
-        subscription_renews_at: has_data
-            .then_some(snapshot.subscription_renews_at)
-            .flatten(),
-        subscription_expires_at_is_date_only: has_data
-            && snapshot.subscription_expires_at_is_date_only,
-        subscription_renews_at_is_date_only: has_data
-            && snapshot.subscription_renews_at_is_date_only,
+        utilization: None,
+        subscription,
         details: snapshot.details.clone(),
         accounts: Vec::new(),
         last_error,

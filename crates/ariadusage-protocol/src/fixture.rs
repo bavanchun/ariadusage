@@ -30,11 +30,11 @@ use crate::snapshot::{
     ProviderWindows,
 };
 use crate::usage::{
-    Cost, CostDailyEntry, CostHistory, CostModelBreakdown, CostProvenance, CostWindowSummary,
-    CreditLimit, Credits, DetailRow, DetailSection, Identity, NamedWindow, Pace, PaceStage,
-    PlanUtilizationEntry, PlanUtilizationSeries, ProviderError, ProviderErrorCategory,
-    ProviderErrorKind, ProviderStatus, RateWindow, RowProgress, RowSeverity,
-    SessionEquivalentForecast, StatusComponent, StatusIndicator,
+    BillingDate, Cost, CostDailyEntry, CostHistory, CostModelBreakdown, CostProvenance,
+    CostWindowSummary, CreditLimit, Credits, DetailRow, DetailSection, Identity, NamedWindow, Pace,
+    PaceStage, PlanUtilizationEntry, PlanUtilizationSeries, ProviderError, ProviderErrorCategory,
+    ProviderErrorKind, ProviderStatus, RateWindow, ResetCredits, RowProgress, RowSeverity,
+    SessionEquivalentForecast, StatusComponent, StatusIndicator, SubscriptionDates,
 };
 
 /// Misbehavior modes for protocol conformance and stress testing.
@@ -512,7 +512,7 @@ fn make_provider_snapshot(
                 run_out_probability: Some(0.74),
                 summary: "9% in deficit | Expected 55% used | Runs out in 2d".to_string(),
             },
-            Some(SessionEquivalentForecast::new(2, 40)),
+            Some(SessionEquivalentForecast::new(2.4, 16, Some(12))),
         ),
         "codex" => (
             51.0,
@@ -527,7 +527,7 @@ fn make_provider_snapshot(
                 summary: "18% in reserve | Expected 69% used | Lasts until reset | 1.5× headroom"
                     .to_string(),
             },
-            Some(SessionEquivalentForecast::new(3, 25)),
+            Some(SessionEquivalentForecast::new(3.25, 20, Some(18))),
         ),
         _ => (
             28.0,
@@ -545,39 +545,25 @@ fn make_provider_snapshot(
         ),
     };
 
-    let secondary_value = has_data.then(|| RateWindow {
-        used_percent: secondary_used,
-        window_minutes: Some(10080),
-        resets_at: "2026-10-10T09:00:00Z".parse::<jiff::Timestamp>().ok(),
-        reset_description: Some("Resets Sat at 9:00 AM".to_string()),
-        next_regen_percent: None,
-        pace: Some(secondary_pace.clone()),
-        session_equivalent: secondary_session_equiv,
+    let secondary = has_data.then(|| {
+        Metric::new(
+            state,
+            Some(RateWindow {
+                used_percent: secondary_used,
+                window_minutes: Some(10080),
+                resets_at: "2026-10-10T09:00:00Z".parse::<jiff::Timestamp>().ok(),
+                reset_description: Some("Resets Sat at 9:00 AM".to_string()),
+                next_regen_percent: None,
+                pace: Some(secondary_pace),
+                session_equivalent: secondary_session_equiv,
+            }),
+            as_of,
+            Some(source.clone()),
+            Confidence::Exact,
+            None,
+        )
+        .unwrap()
     });
-
-    let secondary = Some(
-        Metric::new(
-            state,
-            secondary_value,
-            as_of,
-            Some(source.clone()),
-            Confidence::Exact,
-            None,
-        )
-        .unwrap(),
-    );
-
-    snap.pace = Some(
-        Metric::new(
-            state,
-            has_data.then_some(secondary_pace),
-            as_of,
-            Some(source.clone()),
-            Confidence::Exact,
-            None,
-        )
-        .unwrap(),
-    );
 
     let mut extra = Vec::new();
     if extra_windows {
@@ -675,7 +661,7 @@ fn make_provider_snapshot(
             state,
             has_data.then(|| Identity {
                 provider_id: pid.clone(),
-                account_email: Some("alex@example.com".to_string()),
+                account_email: Some("alex@example.invalid".to_string()),
                 account_organization: (id_str != "antigravity").then(|| "Acme Labs".to_string()),
                 login_method: Some(plan_name.to_string()),
                 account_id: Some(format!("acc-{id_str}-1")),
@@ -689,25 +675,40 @@ fn make_provider_snapshot(
         .unwrap(),
     );
 
-    if has_data {
-        match id_str {
-            "claude" => {
-                snap.subscription_renews_at =
-                    "2026-11-01T00:00:00Z".parse::<jiff::Timestamp>().ok();
-                snap.subscription_renews_at_is_date_only = true;
-            }
-            "codex" => {
-                snap.subscription_renews_at =
-                    "2026-11-15T00:00:00Z".parse::<jiff::Timestamp>().ok();
-                snap.subscription_renews_at_is_date_only = true;
-            }
-            _ => {
-                snap.subscription_expires_at =
-                    "2026-12-01T00:00:00Z".parse::<jiff::Timestamp>().ok();
-                snap.subscription_expires_at_is_date_only = true;
-            }
-        }
-    }
+    let subscription_dates = match id_str {
+        "claude" => SubscriptionDates {
+            renews: Some(BillingDate {
+                at: "2026-11-01T00:00:00Z".parse().unwrap(),
+                date_only: true,
+            }),
+            expires: None,
+        },
+        "codex" => SubscriptionDates {
+            renews: Some(BillingDate {
+                at: "2026-11-15T00:00:00Z".parse().unwrap(),
+                date_only: true,
+            }),
+            expires: None,
+        },
+        _ => SubscriptionDates {
+            renews: None,
+            expires: Some(BillingDate {
+                at: "2026-12-01T00:00:00Z".parse().unwrap(),
+                date_only: true,
+            }),
+        },
+    };
+    snap.subscription = Some(
+        Metric::new(
+            state,
+            has_data.then_some(subscription_dates),
+            as_of,
+            Some(source.clone()),
+            Confidence::Exact,
+            None,
+        )
+        .unwrap(),
+    );
 
     if matches!(id_str, "claude" | "codex") {
         let credits_val = has_data.then(|| {
@@ -720,6 +721,7 @@ fn make_provider_snapshot(
                     balance_read_succeeded: Some(true),
                     credits_available: Some(true),
                     credit_limit: Some(CreditLimit {
+                        title: Some("Monthly credit allowance".to_string()),
                         used: 65.5,
                         total: 250.0,
                         remaining: Some(184.5),
@@ -727,10 +729,10 @@ fn make_provider_snapshot(
                         resets_at: "2026-11-01T00:00:00Z".parse::<jiff::Timestamp>().ok(),
                         reset_description: Some("Resets Nov 1".to_string()),
                     }),
-                    reset_credits_available_count: Some(2),
-                    next_reset_credit_expires_at: "2026-10-20T00:00:00Z"
-                        .parse::<jiff::Timestamp>()
-                        .ok(),
+                    reset_credits: Some(ResetCredits {
+                        available_count: 2,
+                        next_expires_at: "2026-10-20T00:00:00Z".parse::<jiff::Timestamp>().ok(),
+                    }),
                 }
             } else {
                 Credits {
@@ -741,8 +743,7 @@ fn make_provider_snapshot(
                     balance_read_succeeded: Some(true),
                     credits_available: Some(true),
                     credit_limit: None,
-                    reset_credits_available_count: None,
-                    next_reset_credit_expires_at: None,
+                    reset_credits: None,
                 }
             }
         });
@@ -772,7 +773,6 @@ fn make_provider_snapshot(
                     balance_updated_at: as_of,
                     balance_is_workspace: Some(true),
                     balance_is_unavailable: Some(false),
-                    updated_at: as_of,
                 }
             } else {
                 Cost {
@@ -787,7 +787,6 @@ fn make_provider_snapshot(
                     balance_updated_at: as_of,
                     balance_is_workspace: Some(false),
                     balance_is_unavailable: Some(false),
-                    updated_at: as_of,
                 }
             }
         });
@@ -806,7 +805,7 @@ fn make_provider_snapshot(
         snap.cost_history = Some(
             Metric::new(
                 state,
-                has_data.then(|| fixture_cost_history(id_str, as_of)),
+                has_data.then(|| fixture_cost_history(id_str)),
                 as_of,
                 Some(source.clone()),
                 Confidence::Estimated,
@@ -815,27 +814,24 @@ fn make_provider_snapshot(
             .unwrap(),
         );
 
-        if has_data {
-            snap.utilization = fixture_utilization(id_str);
-        }
+        snap.utilization = Some(
+            Metric::new(
+                state,
+                has_data.then(|| fixture_utilization(id_str)),
+                as_of,
+                Some(source.clone()),
+                Confidence::Exact,
+                None,
+            )
+            .unwrap(),
+        );
     }
 
-    let (indicator, status_page_val) = fixture_status(id_str, as_of);
+    let status_val = fixture_status(id_str, as_of);
     snap.status = Some(
         Metric::new(
             state,
-            has_data.then_some(indicator),
-            as_of,
-            Some(source.clone()),
-            Confidence::Exact,
-            None,
-        )
-        .unwrap(),
-    );
-    snap.status_page = Some(
-        Metric::new(
-            state,
-            has_data.then_some(status_page_val),
+            has_data.then_some(status_val),
             as_of,
             Some(source.clone()),
             Confidence::Exact,
@@ -906,13 +902,8 @@ fn make_provider_snapshot(
                 cost_history: snap.cost_history.clone(),
                 identity: snap.identity.clone(),
                 status: snap.status.clone(),
-                status_page: snap.status_page.clone(),
-                pace: snap.pace.clone(),
                 utilization: snap.utilization.clone(),
-                subscription_expires_at: snap.subscription_expires_at,
-                subscription_renews_at: snap.subscription_renews_at,
-                subscription_expires_at_is_date_only: snap.subscription_expires_at_is_date_only,
-                subscription_renews_at_is_date_only: snap.subscription_renews_at_is_date_only,
+                subscription: snap.subscription.clone(),
                 last_error: None,
                 updated_at: as_of,
             },
@@ -941,13 +932,8 @@ fn make_provider_snapshot(
                 cost_history: None,
                 identity: None,
                 status: None,
-                status_page: None,
-                pace: None,
-                utilization: Vec::new(),
-                subscription_expires_at: None,
-                subscription_renews_at: None,
-                subscription_expires_at_is_date_only: false,
-                subscription_renews_at_is_date_only: false,
+                utilization: None,
+                subscription: None,
                 last_error: None,
                 updated_at: as_of,
             },
@@ -957,7 +943,7 @@ fn make_provider_snapshot(
     snap
 }
 
-fn fixture_cost_history(id_str: &str, as_of: Option<jiff::Timestamp>) -> CostHistory {
+fn fixture_cost_history(id_str: &str) -> CostHistory {
     let is_claude = id_str == "claude";
     let primary_model = if is_claude {
         "claude-sonnet-4-5"
@@ -1021,6 +1007,11 @@ fn fixture_cost_history(id_str: &str, as_of: Option<jiff::Timestamp>) -> CostHis
 
     let rounded_30d_cost = (total_cost_30d * 100.0).round() / 100.0;
     let last_entry = daily.last().unwrap();
+    let provenance = if is_claude {
+        CostProvenance::ListPriceEstimate
+    } else {
+        CostProvenance::Mixed
+    };
 
     CostHistory {
         session_tokens: last_entry.total_tokens,
@@ -1035,36 +1026,38 @@ fn fixture_cost_history(id_str: &str, as_of: Option<jiff::Timestamp>) -> CostHis
         history_scan_is_partial: false,
         metered_cost_usd: (!is_claude).then_some(42.50),
         currency_code: Some("USD".to_string()),
-        cost_provenance: Some(if is_claude {
-            CostProvenance::LocalPricingEstimate
-        } else {
-            CostProvenance::MixedProviderAndLocalEstimate
-        }),
+        cost_provenance: Some(provenance),
         daily,
         comparison_windows: vec![
             CostWindowSummary {
                 days: 7,
-                label: Some("7d".to_string()),
                 cost_usd: Some(((rounded_30d_cost * 0.24) * 100.0).round() / 100.0),
+                metered_cost_usd: (!is_claude).then_some(10.20),
                 total_tokens: Some(total_tokens_30d / 4),
                 total_requests: Some(total_requests_30d / 4),
-                is_partial: false,
+                incomplete_request_count: None,
+                entry_count: Some(7),
+                provenance: Some(provenance),
             },
             CostWindowSummary {
                 days: 14,
-                label: Some("14d".to_string()),
                 cost_usd: Some(((rounded_30d_cost * 0.48) * 100.0).round() / 100.0),
+                metered_cost_usd: (!is_claude).then_some(20.40),
                 total_tokens: Some(total_tokens_30d / 2),
                 total_requests: Some(total_requests_30d / 2),
-                is_partial: false,
+                incomplete_request_count: None,
+                entry_count: Some(14),
+                provenance: Some(provenance),
             },
             CostWindowSummary {
                 days: 30,
-                label: Some("30d".to_string()),
                 cost_usd: Some(rounded_30d_cost),
+                metered_cost_usd: (!is_claude).then_some(42.50),
                 total_tokens: Some(total_tokens_30d),
                 total_requests: Some(total_requests_30d),
-                is_partial: false,
+                incomplete_request_count: None,
+                entry_count: Some(30),
+                provenance: Some(provenance),
             },
         ],
         top_model: Some(CostModelBreakdown {
@@ -1081,7 +1074,6 @@ fn fixture_cost_history(id_str: &str, as_of: Option<jiff::Timestamp>) -> CostHis
         } else {
             "Combines provider metered spend with local token log estimates.".to_string()
         }],
-        updated_at: as_of,
     }
 }
 
@@ -1158,123 +1150,102 @@ fn fixture_utilization(id_str: &str) -> Vec<PlanUtilizationSeries> {
     series
 }
 
-fn fixture_status(
-    id_str: &str,
-    as_of: Option<jiff::Timestamp>,
-) -> (StatusIndicator, ProviderStatus) {
+fn fixture_status(id_str: &str, as_of: Option<jiff::Timestamp>) -> ProviderStatus {
     match id_str {
-        "claude" => (
-            StatusIndicator::Minor,
-            ProviderStatus {
-                indicator: StatusIndicator::Minor,
-                description: Some("Elevated latency on Claude API".to_string()),
-                updated_at: as_of,
-                page_url: Some("https://status.anthropic.com".to_string()),
-                components: vec![
-                    StatusComponent {
-                        id: "claude-api".to_string(),
-                        name: "Claude API".to_string(),
-                        status: "Degraded Performance".to_string(),
-                        raw_status: Some("degraded_performance".to_string()),
-                        indicator: StatusIndicator::Minor,
-                        updated_at: as_of,
-                        children: vec![
-                            StatusComponent {
-                                id: "messages-api".to_string(),
-                                name: "Messages API".to_string(),
-                                status: "Degraded Performance".to_string(),
-                                raw_status: Some("degraded_performance".to_string()),
-                                indicator: StatusIndicator::Minor,
-                                updated_at: as_of,
-                                children: Vec::new(),
-                            },
-                            StatusComponent {
-                                id: "batches-api".to_string(),
-                                name: "Message Batches".to_string(),
-                                status: "Operational".to_string(),
-                                raw_status: Some("operational".to_string()),
-                                indicator: StatusIndicator::None,
-                                updated_at: as_of,
-                                children: Vec::new(),
-                            },
-                        ],
-                    },
-                    StatusComponent {
-                        id: "claude-web".to_string(),
-                        name: "claude.ai".to_string(),
-                        status: "Operational".to_string(),
-                        raw_status: Some("operational".to_string()),
-                        indicator: StatusIndicator::None,
-                        updated_at: as_of,
-                        children: Vec::new(),
-                    },
-                    StatusComponent {
-                        id: "claude-console".to_string(),
-                        name: "Console".to_string(),
-                        status: "Operational".to_string(),
-                        raw_status: Some("operational".to_string()),
-                        indicator: StatusIndicator::None,
-                        updated_at: as_of,
-                        children: Vec::new(),
-                    },
-                ],
-            },
-        ),
-        "codex" => (
-            StatusIndicator::None,
-            ProviderStatus {
-                indicator: StatusIndicator::None,
-                description: Some("All Systems Operational".to_string()),
-                updated_at: as_of,
-                page_url: Some("https://status.openai.com".to_string()),
-                components: vec![
-                    StatusComponent {
-                        id: "codex-agent".to_string(),
-                        name: "Codex Cloud Agent".to_string(),
-                        status: "Operational".to_string(),
-                        raw_status: Some("operational".to_string()),
-                        indicator: StatusIndicator::None,
-                        updated_at: as_of,
-                        children: vec![StatusComponent {
-                            id: "sandbox-runtime".to_string(),
-                            name: "Container Sandbox".to_string(),
+        "claude" => ProviderStatus {
+            indicator: StatusIndicator::Minor,
+            description: Some("Elevated latency on Claude API".to_string()),
+            updated_at: as_of,
+            page_url: Some("https://status.anthropic.com".to_string()),
+            components: vec![
+                StatusComponent {
+                    id: "claude-api".to_string(),
+                    name: "Claude API".to_string(),
+                    status: "Degraded Performance".to_string(),
+                    indicator: StatusIndicator::Minor,
+                    updated_at: as_of,
+                    children: vec![
+                        StatusComponent {
+                            id: "messages-api".to_string(),
+                            name: "Messages API".to_string(),
                             status: "Degraded Performance".to_string(),
-                            raw_status: Some("degraded_performance".to_string()),
                             indicator: StatusIndicator::Minor,
                             updated_at: as_of,
                             children: Vec::new(),
-                        }],
-                    },
-                    StatusComponent {
-                        id: "responses-api".to_string(),
-                        name: "Responses API".to_string(),
-                        status: "Operational".to_string(),
-                        raw_status: Some("operational".to_string()),
-                        indicator: StatusIndicator::None,
-                        updated_at: as_of,
-                        children: Vec::new(),
-                    },
-                ],
-            },
-        ),
-        _ => (
-            StatusIndicator::None,
-            ProviderStatus {
-                indicator: StatusIndicator::None,
-                description: Some("All Systems Operational".to_string()),
-                updated_at: as_of,
-                page_url: Some("https://status.cloud.google.com".to_string()),
-                components: vec![StatusComponent {
-                    id: "gemini-models".to_string(),
-                    name: "Gemini Code Assist".to_string(),
+                        },
+                        StatusComponent {
+                            id: "batches-api".to_string(),
+                            name: "Message Batches".to_string(),
+                            status: "Operational".to_string(),
+                            indicator: StatusIndicator::None,
+                            updated_at: as_of,
+                            children: Vec::new(),
+                        },
+                    ],
+                },
+                StatusComponent {
+                    id: "claude-web".to_string(),
+                    name: "claude.ai".to_string(),
                     status: "Operational".to_string(),
-                    raw_status: Some("operational".to_string()),
                     indicator: StatusIndicator::None,
                     updated_at: as_of,
                     children: Vec::new(),
-                }],
-            },
-        ),
+                },
+                StatusComponent {
+                    id: "claude-console".to_string(),
+                    name: "Console".to_string(),
+                    status: "Operational".to_string(),
+                    indicator: StatusIndicator::None,
+                    updated_at: as_of,
+                    children: Vec::new(),
+                },
+            ],
+        },
+        "codex" => ProviderStatus {
+            indicator: StatusIndicator::None,
+            description: Some("All Systems Operational".to_string()),
+            updated_at: as_of,
+            page_url: Some("https://status.openai.com".to_string()),
+            components: vec![
+                StatusComponent {
+                    id: "codex-agent".to_string(),
+                    name: "Codex Cloud Agent".to_string(),
+                    status: "Operational".to_string(),
+                    indicator: StatusIndicator::None,
+                    updated_at: as_of,
+                    children: vec![StatusComponent {
+                        id: "sandbox-runtime".to_string(),
+                        name: "Container Sandbox".to_string(),
+                        status: "Degraded Performance".to_string(),
+                        indicator: StatusIndicator::Minor,
+                        updated_at: as_of,
+                        children: Vec::new(),
+                    }],
+                },
+                StatusComponent {
+                    id: "responses-api".to_string(),
+                    name: "Responses API".to_string(),
+                    status: "Operational".to_string(),
+                    indicator: StatusIndicator::None,
+                    updated_at: as_of,
+                    children: Vec::new(),
+                },
+            ],
+        },
+        _ => ProviderStatus {
+            indicator: StatusIndicator::None,
+            description: Some("All Systems Operational".to_string()),
+            updated_at: as_of,
+            page_url: Some("https://status.cloud.google.com".to_string()),
+            components: vec![StatusComponent {
+                id: "gemini-models".to_string(),
+                name: "Gemini Code Assist".to_string(),
+                status: "Operational".to_string(),
+                indicator: StatusIndicator::None,
+                updated_at: as_of,
+                children: Vec::new(),
+            }],
+        },
     }
 }
 

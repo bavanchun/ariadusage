@@ -247,32 +247,44 @@ Each row in a provider's `details` sections may carry an optional `severity`: `n
 
 #### 6.2.4 Per-Window Pace, Session-Equivalent Forecast, and Subscription Dates
 Each `RateWindow` (positional or named) may carry:
-- `pace` (optional `Pace`): Per-window pace comparing consumption to elapsed window progress (`stage`, `deltaPercent`, `expectedUsedPercent`, `willLastToReset`, optional `etaSeconds`, optional `speedMultiplierToReset`, optional `runOutProbability`, and pre-formatted `summary`).
-- `sessionEquivalent` (optional `SessionEquivalentForecast`): On weekly windows, estimates how many full primary sessions the remaining weekly headroom can cover at the current session pace (`wholeSessionCount` and `remainderPercent`).
+- `pace` (optional `Pace`): Per-window pace comparing consumption to elapsed window progress (`stage`, `deltaPercent`, `expectedUsedPercent`, `willLastToReset`, optional `etaSeconds`, optional `speedMultiplierToReset`, optional `runOutProbability`, and pre-formatted `summary`). Pace lives only on `RateWindow` (`windows.primary`, `windows.secondary`, `windows.tertiary`, or `windows.extra[].window`); there is no separate top-level `ProviderSnapshot.pace` or `AccountSnapshot.pace`.
+- `sessionEquivalent` (optional `SessionEquivalentForecast`): On weekly windows, estimates how many full primary sessions the remaining weekly headroom can cover at the current session pace (`estimatedSessions`, `windowsUntilReset`, and optional `sampleCount`).
 
-Both `ProviderSnapshot` and `AccountSnapshot` may also carry optional subscription renewal/expiry dates (`subscriptionExpiresAt`, `subscriptionRenewsAt`) paired with boolean flags (`subscriptionExpiresAtIsDateOnly`, `subscriptionRenewsAtIsDateOnly`) indicating when the timestamp represents a calendar date without a meaningful time-of-day.
+Both `ProviderSnapshot` and `AccountSnapshot` may also carry an optional `subscription` (`Metric<SubscriptionDates>`) envelope containing `renews` and `expires` (`BillingDate` with `at` RFC 3339 timestamp and optional `dateOnly: true`, omitted when `false`, indicating when the timestamp represents a calendar date without a meaningful time-of-day).
 
 #### 6.2.5 Credits, Credit Limit, and Cost (`Credits` / `Cost`)
-- `Credits` carries `remaining`, optional `unit`, `balanceIsWorkspace`, `updatedAt`, `balanceReadSucceeded`, `creditsAvailable`, optional `creditLimit` (`used`, `total`, `remaining`, `unit`, `resetsAt`, `resetDescription`), and optional instant-reset credit grant counters (`resetCreditsAvailableCount`, `nextResetCreditExpiresAt`).
-- `Cost` carries `used`, optional `limit`, `currencyCode`, optional `period`, `resetsAt`, `balance`, `nextRegenAmount`, `personalUsed`, `balanceUpdatedAt`, `balanceIsWorkspace`, `balanceIsUnavailable`, and `updatedAt`.
+- `Credits` carries `remaining`, optional `unit`, `balanceIsWorkspace`, `updatedAt`, `balanceReadSucceeded`, `creditsAvailable`, optional `creditLimit` (optional `title`, `used`, `total`, `remaining`, `unit`, `resetsAt`, `resetDescription`), and optional `resetCredits` (`availableCount`, optional `nextExpiresAt`).
+- `Cost` carries `used`, optional `limit`, `currencyCode`, optional `period`, `resetsAt`, `balance`, `nextRegenAmount`, `personalUsed`, `balanceUpdatedAt`, `balanceIsWorkspace`, and `balanceIsUnavailable`. Freshness is carried by the outer `Metric<Cost>.asOf` envelope.
 
 #### 6.2.6 Cost History and Usage Breakdown (`costHistory`)
-Both `ProviderSnapshot` and `AccountSnapshot` may carry an optional `costHistory` (`Metric<CostHistory>`) envelope backing the card's Cost section and the Usage Breakdown chart submenu:
-- Today / current session counters: `sessionTokens`, `sessionCostUsd`, `sessionRequests`.
+Both `ProviderSnapshot` and `AccountSnapshot` may carry an optional `costHistory` (`Metric<CostHistory>`) envelope (with freshness timestamp in `Metric.asOf`) backing the card's Cost section and the Usage Breakdown chart submenu:
+- Current local calendar day ("Today") counters: `sessionTokens`, `sessionCostUsd`, `sessionRequests`. These mirror upstream `CostUsageTokenSnapshot.sessionTokens` / `sessionCostUSD` / `sessionRequests` (`Sources/CodexBarCore/CostUsageModels.swift`), where `session*` denotes the current local calendar day ("Today") in the token cost scanner and is distinct from the 5-hour quota `primary` ("Session") window.
 - Rolling window totals: `last30DaysTokens`, `last30DaysCostUsd`, `last30DaysRequests`, `historyDays`, `historyLabel`, `historyCoverageIsEstablished`, `historyScanIsPartial`, `meteredCostUsd`.
-- Currency and provenance: `currencyCode` and `costProvenance` (`billedSpend`, `providerEstimate`, `localPricingEstimate`, `mixedProviderAndLocalEstimate`, `quotaOnly`, or `unknown`).
-- Daily ledger and breakdowns: `daily` (`CostDailyEntry` items with `date`, `totalTokens`, `costUsd`, `totalRequests`, `modelsUsed`, and `modelBreakdowns` including optional `standardCostUsd` / `priorityCostUsd` / `standardTokens` / `priorityTokens`), `comparisonWindows` (`CostWindowSummary` for e.g. 7d / 14d / 30d), `topModel`, and `hintLines`.
+- Currency and provenance: `currencyCode` and `costProvenance` (`listPriceEstimate`, `vendorMetered`, `mixed`, or `unknown`).
+- Daily ledger and breakdowns: `daily` (`CostDailyEntry` items with `date` matching `^\d{4}-\d{2}-\d{2}$`, `totalTokens`, `costUsd`, `totalRequests`, `modelsUsed`, and `modelBreakdowns` including optional `standardCostUsd` / `priorityCostUsd` / `standardTokens` / `priorityTokens`), `comparisonWindows` (`CostWindowSummary` for e.g. 7d / 14d / 30d with `days`, optional `costUsd`, `meteredCostUsd`, `totalTokens`, `totalRequests`, `incompleteRequestCount`, `entryCount`, `provenance`), `topModel`, and `hintLines`.
 
 #### 6.2.7 Plan Utilization History (`utilization`)
-Both `ProviderSnapshot` and `AccountSnapshot` carry an optional `utilization` list (`PlanUtilizationSeries`, omitted when empty) for the Plan Usage submenu and quota burndown charts. Each series contains `name` (e.g. `"session"`, `"weekly"`, `"opus"`), `windowMinutes`, optional `title`, and chronological `entries` (`capturedAt`, `usedPercent`, optional `resetsAt`).
+Both `ProviderSnapshot` and `AccountSnapshot` may carry an optional `utilization` (`Metric<Vec<PlanUtilizationSeries>>`) envelope for the Plan Usage submenu and quota burndown charts. Each series contains `name` (known series names: `"session"`, `"weekly"`, `"monthly"`, `"opus"`, `"antigravityGemini"`, `"antigravityClaudeGpt"`; open string for forward compatibility), `windowMinutes`, optional `title`, and chronological `entries` (`capturedAt`, `usedPercent`, optional `resetsAt`).
 
-#### 6.2.8 Provider Status and Status Page Submenu (`status` / `statusPage`)
-Alongside the top-level `status` (`Metric<StatusIndicator>`) used by status icons, `ProviderSnapshot` and `AccountSnapshot` may carry `statusPage` (`Metric<ProviderStatus>`) with `indicator`, optional `description`, `updatedAt`, `pageUrl`, and a tree of `components` (`StatusComponent` with `id`, `name`, `status`, optional `rawStatus`, `indicator`, `updatedAt`, and recursive `children`).
+#### 6.2.8 Provider Status and Status Page Submenu (`status`)
+Both `ProviderSnapshot` and `AccountSnapshot` may carry `status` (`Metric<ProviderStatus>`) with `indicator` (`StatusIndicator`, used by status icons and banners), optional `description`, `updatedAt`, `pageUrl`, and a tree of `components` (`StatusComponent` with `id`, `name`, `status`, `indicator`, optional `updatedAt`, and recursive `children`).
 
 #### 6.2.9 Settings Section Panes and Read-Only Descriptors
 In `SettingsPage` responses (`getSettings`):
-- `SettingsSection` may carry optional `subtitle` and `pane` (e.g. `"general"`, `"menuBar"`, `"menu"`, `"providers"`, `"notifications"`, `"advanced"`) so multi-tab settings windows can group sections by tab.
+- `SettingsSection` may carry optional `subtitle` and `pane` (canonical values: `"general"`, `"menuBar"`, `"menu"`, `"providers"`, `"notifications"`, `"advanced"`) so multi-tab settings windows can group sections by tab.
 - `SettingDescriptor` may carry `readOnly: true` (omitted when `false`) for informational fields such as detected CLI versions or configuration paths.
+
+#### 6.2.10 UI Surface Mapping (CodexBar `b49d42eb5`)
+| UI Surface | Upstream Source (`b49d42eb5`) | Protocol Field(s) |
+|---|---|---|
+| Card header & subscription dates | `Sources/CodexBar/MenuCardView.swift`, `Sources/CodexBarCore/UsageFetcher.swift:180-183` | `displayName`, `presentation`, `updatedAt`, `identity` (`Metric<Identity>`), `subscription` (`Metric<SubscriptionDates>`) |
+| Rate windows, pace & session-equivalent forecast | `Sources/CodexBarCore/UsagePace.swift`, `Sources/CodexBar/UsagePaceText.swift`, `Sources/CodexBar/SessionEquivalentForecast.swift:9-18` | `windows` (`primary`, `secondary`, `tertiary`, `extra`), `RateWindow.pace` (`Pace`), `RateWindow.sessionEquivalent` (`SessionEquivalentForecast`) |
+| Credits, credit limit & reset credits | `Sources/CodexBarCore/CreditsModels.swift:3-43`, `Sources/CodexBar/MenuCardView+Credits.swift` | `credits` (`Metric<Credits>` with `creditLimit: CreditLimit` and `resetCredits: ResetCredits`) |
+| Spend cap, cloud balance & detail sections | `Sources/CodexBarCore/ProviderCostSnapshot.swift`, `Sources/CodexBar/MenuCardView+ExtraUsage.swift`, `Sources/CodexBarCore/ProviderDetailSection.swift` | `cost` (`Metric<Cost>`), `details` (`Vec<DetailSection>`) |
+| Cost section & Usage Breakdown submenu | `Sources/CodexBarCore/CostUsageModels.swift:3-155`, `Sources/CodexBarCore/CostProvenance.swift:4-11`, `Sources/CodexBar/MenuCardView+Costs.swift`, `Sources/CodexBar/CostHistoryChartMenuView.swift` | `costHistory` (`Metric<CostHistory>` with `daily: Vec<CostDailyEntry>`, `comparisonWindows: Vec<CostWindowSummary>`, `topModel`, `costProvenance`, `hintLines`) |
+| Plan Usage submenu | `Sources/CodexBarCore/Vendored/CostUsage/CostUsageStorage.swift`, `Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift` | `utilization` (`Metric<Vec<PlanUtilizationSeries>>`) |
+| Status banner & Status Page submenu | `Sources/CodexBarCore/ProviderStatus.swift:3-85`, `Sources/CodexBar/StatusItemController+Menu.swift` | `status` (`Metric<ProviderStatus>` with `indicator`, `description`, `updatedAt`, `pageUrl`, `components: Vec<StatusComponent>`) |
+| Settings window tabs & descriptors | `Sources/CodexBar/PreferencesView.swift`, `Sources/CodexBar/PreferencesGeneralPane.swift`, `Sources/CodexBar/PreferencesProvidersPane.swift`, `Sources/CodexBar/PreferencesAdvancedPane.swift` | `SettingsPage`, `SettingsSection` (`subtitle`, `pane`), `SettingDescriptor` (`readOnly`, `visibleWhen`, `enabledWhen`, `DescriptorKind`) |
 
 ### 6.3 `settingsChanged`
 Pushed when configuration or secrets change, prompting clients to re-query `getSettings`.

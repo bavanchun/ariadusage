@@ -62,16 +62,6 @@
             }
           ]
         },
-        "pace": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Metric8"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "status": {
           "anyOf": [
             {
@@ -82,33 +72,15 @@
             }
           ]
         },
-        "statusPage": {
+        "subscription": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric7"
+              "$ref": "#/$defs/Metric8"
             },
             {
               "type": "null"
             }
           ]
-        },
-        "subscriptionExpiresAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "subscriptionExpiresAtIsDateOnly": {
-          "type": "boolean"
-        },
-        "subscriptionRenewsAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "subscriptionRenewsAtIsDateOnly": {
-          "type": "boolean"
         },
         "updatedAt": {
           "type": [
@@ -117,10 +89,14 @@
           ]
         },
         "utilization": {
-          "items": {
-            "$ref": "#/$defs/PlanUtilizationSeries"
-          },
-          "type": "array"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric7"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "windows": {
           "$ref": "#/$defs/ProviderWindows",
@@ -131,6 +107,21 @@
         "id",
         "label",
         "active"
+      ],
+      "type": "object"
+    },
+    "BillingDate": {
+      "description": "Subscription renewal or expiration timestamp paired with whether the timestamp\nrepresents a calendar date without a meaningful time-of-day.",
+      "properties": {
+        "at": {
+          "type": "string"
+        },
+        "dateOnly": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "at"
       ],
       "type": "object"
     },
@@ -265,12 +256,6 @@
             "null"
           ]
         },
-        "updatedAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "used": {
           "format": "double",
           "type": "number"
@@ -294,6 +279,7 @@
         },
         "date": {
           "description": "Calendar date in `YYYY-MM-DD` format.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
         "modelBreakdowns": {
@@ -449,12 +435,6 @@
               "type": "null"
             }
           ]
-        },
-        "updatedAt": {
-          "type": [
-            "string",
-            "null"
-          ]
         }
       },
       "type": "object"
@@ -519,11 +499,9 @@
     "CostProvenance": {
       "description": "Provenance of reported token cost figures.",
       "enum": [
-        "billedSpend",
-        "providerEstimate",
-        "localPricingEstimate",
-        "mixedProviderAndLocalEstimate",
-        "quotaOnly",
+        "listPriceEstimate",
+        "vendorMetered",
+        "mixed",
         "unknown"
       ],
       "type": "string"
@@ -543,13 +521,37 @@
           "minimum": 0,
           "type": "integer"
         },
-        "isPartial": {
-          "type": "boolean"
-        },
-        "label": {
+        "entryCount": {
+          "format": "uint32",
+          "minimum": 0,
           "type": [
-            "string",
+            "integer",
             "null"
+          ]
+        },
+        "incompleteRequestCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "meteredCostUsd": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostProvenance"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "totalRequests": {
@@ -591,6 +593,12 @@
           ]
         },
         "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
           "type": [
             "string",
             "null"
@@ -651,25 +659,20 @@
             "null"
           ]
         },
-        "nextResetCreditExpiresAt": {
-          "description": "Expiry timestamp of the next expiring reset credit grant.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "remaining": {
           "format": "double",
           "type": "number"
         },
-        "resetCreditsAvailableCount": {
-          "description": "Number of instant-reset credit grants available (e.g. Codex reset credits).",
-          "format": "uint32",
-          "minimum": 0,
-          "type": [
-            "integer",
-            "null"
-          ]
+        "resetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResetCredits"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Instant-reset credit grants available on this account, when applicable."
         },
         "unit": {
           "type": [
@@ -1277,7 +1280,7 @@
         "value": {
           "anyOf": [
             {
-              "$ref": "#/$defs/StatusIndicator"
+              "$ref": "#/$defs/ProviderStatus"
             },
             {
               "type": "null"
@@ -1352,13 +1355,12 @@
           "$ref": "#/$defs/MetricState"
         },
         "value": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProviderStatus"
-            },
-            {
-              "type": "null"
-            }
+          "items": {
+            "$ref": "#/$defs/PlanUtilizationSeries"
+          },
+          "type": [
+            "array",
+            "null"
           ]
         }
       },
@@ -1431,7 +1433,7 @@
         "value": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Pace"
+              "$ref": "#/$defs/SubscriptionDates"
             },
             {
               "type": "null"
@@ -1611,7 +1613,7 @@
       "type": "object"
     },
     "PlanUtilizationSeries": {
-      "description": "Historical utilization series for a plan rate window (e.g. `\"session\"`, `\"weekly\"`, `\"opus\"`),\nbacking the Plan Usage submenu and quota burndown chart.",
+      "description": "Historical utilization series for a plan rate window (known series names:\n`\"session\"`, `\"weekly\"`, `\"monthly\"`, `\"opus\"`, `\"antigravityGemini\"`,\n`\"antigravityClaudeGpt\"`), backing the Plan Usage submenu and quota burndown chart.",
       "properties": {
         "entries": {
           "items": {
@@ -1813,16 +1815,6 @@
             }
           ]
         },
-        "pace": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/Metric8"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "presentation": {
           "anyOf": [
             {
@@ -1847,33 +1839,15 @@
             }
           ]
         },
-        "statusPage": {
+        "subscription": {
           "anyOf": [
             {
-              "$ref": "#/$defs/Metric7"
+              "$ref": "#/$defs/Metric8"
             },
             {
               "type": "null"
             }
           ]
-        },
-        "subscriptionExpiresAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "subscriptionExpiresAtIsDateOnly": {
-          "type": "boolean"
-        },
-        "subscriptionRenewsAt": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "subscriptionRenewsAtIsDateOnly": {
-          "type": "boolean"
         },
         "updatedAt": {
           "type": [
@@ -1882,10 +1856,14 @@
           ]
         },
         "utilization": {
-          "items": {
-            "$ref": "#/$defs/PlanUtilizationSeries"
-          },
-          "type": "array"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Metric7"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "windows": {
           "$ref": "#/$defs/ProviderWindows",
@@ -2045,6 +2023,28 @@
       ],
       "type": "object"
     },
+    "ResetCredits": {
+      "description": "Instant-reset credit grants (e.g. Codex reset credits).",
+      "properties": {
+        "availableCount": {
+          "description": "Number of instant-reset credit grants available.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nextExpiresAt": {
+          "description": "Expiry timestamp of the next expiring reset credit grant.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "availableCount"
+      ],
+      "type": "object"
+    },
     "RowProgress": {
       "description": "Numeric ratio progress for a detail row.",
       "properties": {
@@ -2076,22 +2076,30 @@
     "SessionEquivalentForecast": {
       "description": "Session-equivalent forecast estimating how many full primary sessions the\nremaining weekly headroom can cover at the current session pace.",
       "properties": {
-        "remainderPercent": {
-          "description": "Remaining partial session percentage (`0..100`).",
+        "estimatedSessions": {
+          "description": "Estimated number of primary-session equivalents remaining before reset.",
+          "format": "double",
+          "type": "number"
+        },
+        "sampleCount": {
+          "description": "Number of historical session samples used to compute the forecast, when available.",
           "format": "uint32",
           "minimum": 0,
-          "type": "integer"
+          "type": [
+            "integer",
+            "null"
+          ]
         },
-        "wholeSessionCount": {
-          "description": "Whole primary-session equivalents remaining before the weekly window resets.",
+        "windowsUntilReset": {
+          "description": "Number of primary windows remaining before the weekly window resets.",
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
         }
       },
       "required": [
-        "wholeSessionCount",
-        "remainderPercent"
+        "estimatedSessions",
+        "windowsUntilReset"
       ],
       "type": "object"
     },
@@ -2126,12 +2134,6 @@
         "name": {
           "type": "string"
         },
-        "rawStatus": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "status": {
           "type": "string"
         },
@@ -2161,6 +2163,32 @@
         "unknown"
       ],
       "type": "string"
+    },
+    "SubscriptionDates": {
+      "description": "Subscription renewal and expiration dates for a provider or account.",
+      "properties": {
+        "expires": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BillingDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "renews": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BillingDate"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
     }
   },
   "$id": "https://github.com/bavanchun/ariadusage/schemas/snapshot.v1.json",
