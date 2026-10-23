@@ -1,8 +1,9 @@
-// Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Config/ProviderConfigCoding.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/TokenAccounts.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/ProviderConfigCoding.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/ProviderModelRateLimit.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/TokenAccounts.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 use ariadusage_protocol::ProviderId;
@@ -33,6 +34,57 @@ pub enum CookieSource {
     Off,
 }
 
+/// A manual per-model rate limit the user declares for a provider credential.
+///
+/// Fields serialize in sorted key order so the config stays byte-stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRateLimit {
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requests_per_minute: Option<i64>,
+    pub tokens_per_minute: i64,
+}
+
+impl ModelRateLimit {
+    pub fn new(
+        model: impl Into<String>,
+        tokens_per_minute: i64,
+        requests_per_minute: Option<i64>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            requests_per_minute,
+            tokens_per_minute,
+        }
+    }
+
+    /// Trims model names, drops rows with an empty model or a non-positive token
+    /// limit, clears non-positive request limits, and keeps the last row for each
+    /// model at that row's position.
+    pub fn validated(rows: Vec<Self>) -> Vec<Self> {
+        let mut seen = HashSet::new();
+        let mut kept: Vec<Self> = rows
+            .into_iter()
+            .rev()
+            .filter_map(|row| {
+                let model = row.model.trim();
+                if model.is_empty() || row.tokens_per_minute <= 0 || !seen.insert(model.to_string())
+                {
+                    return None;
+                }
+                Some(Self {
+                    model: model.to_string(),
+                    requests_per_minute: row.requests_per_minute.filter(|&rpm| rpm > 0),
+                    tokens_per_minute: row.tokens_per_minute,
+                })
+            })
+            .collect();
+        kept.reverse();
+        kept
+    }
+}
+
 /// Metadata and non-secret configuration for a stored token account.
 #[derive(Clone)]
 pub struct TokenAccountMeta {
@@ -44,7 +96,12 @@ pub struct TokenAccountMeta {
     pub usage_scope: Option<String>,
     pub organization_id: Option<String>,
     pub workspace_id: Option<String>,
+    /// User-declared Claude history ownership; never used to resolve credentials.
+    pub claude_config_directory: Option<String>,
     pub seat_credit_entitlement: Option<String>,
+    /// Manual limits for this credential, with no provider-level inheritance.
+    /// `None` means never set; `Some(vec![])` explicitly clears limits and is written.
+    pub model_rate_limits: Option<Vec<ModelRateLimit>>,
     pub extra: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -58,7 +115,9 @@ impl PartialEq for TokenAccountMeta {
             && self.usage_scope == other.usage_scope
             && self.organization_id == other.organization_id
             && self.workspace_id == other.workspace_id
+            && self.claude_config_directory == other.claude_config_directory
             && self.seat_credit_entitlement == other.seat_credit_entitlement
+            && self.model_rate_limits == other.model_rate_limits
             && raw_maps_equal(&self.extra, &other.extra)
     }
 }
@@ -94,7 +153,9 @@ impl fmt::Debug for TokenAccountMeta {
             .field("usage_scope", &self.usage_scope)
             .field("organization_id", &self.organization_id)
             .field("workspace_id", &self.workspace_id)
+            .field("claude_config_directory", &self.claude_config_directory)
             .field("seat_credit_entitlement", &self.seat_credit_entitlement)
+            .field("model_rate_limits", &self.model_rate_limits)
             .field("extra_keys", &self.extra.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -144,6 +205,8 @@ pub struct ProviderConfig {
     pub quota_warnings: Option<QuotaWarnings>,
     pub accent_color: Option<String>,
     pub hidden_usage_item_ids: Option<Vec<String>>,
+    /// Manual provider-level limits. An empty list is not written.
+    pub model_rate_limits: Option<Vec<ModelRateLimit>>,
     pub extra: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -161,6 +224,7 @@ impl PartialEq for ProviderConfig {
             && self.quota_warnings == other.quota_warnings
             && self.accent_color == other.accent_color
             && self.hidden_usage_item_ids == other.hidden_usage_item_ids
+            && self.model_rate_limits == other.model_rate_limits
             && raw_maps_equal(&self.extra, &other.extra)
     }
 }
@@ -182,6 +246,7 @@ impl ProviderConfig {
             quota_warnings: None,
             accent_color: None,
             hidden_usage_item_ids: None,
+            model_rate_limits: None,
             extra: BTreeMap::new(),
         }
     }
@@ -214,6 +279,7 @@ impl fmt::Debug for ProviderConfig {
             .field("quota_warnings", &self.quota_warnings)
             .field("accent_color", &self.accent_color)
             .field("hidden_usage_item_ids", &self.hidden_usage_item_ids)
+            .field("model_rate_limits", &self.model_rate_limits)
             .field("extra_keys", &self.extra.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -309,6 +375,8 @@ pub struct Config {
     pub hooks: Option<Box<RawValue>>,
     pub settings: Option<Box<RawValue>>,
     pub secret_file_fallback: Option<bool>,
+    /// Opt-in sharing of usage with the CLI. Written to the file only when true.
+    pub share_usage_with_cli: bool,
     pub extra_top: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -320,6 +388,7 @@ impl PartialEq for Config {
             && self.settings.as_deref().map(RawValue::get)
                 == other.settings.as_deref().map(RawValue::get)
             && self.secret_file_fallback == other.secret_file_fallback
+            && self.share_usage_with_cli == other.share_usage_with_cli
             && raw_maps_equal(&self.extra_top, &other.extra_top)
     }
 }
@@ -336,6 +405,7 @@ impl Config {
             hooks: None,
             settings: None,
             secret_file_fallback: None,
+            share_usage_with_cli: false,
             extra_top: BTreeMap::new(),
         }
     }
@@ -399,6 +469,7 @@ impl fmt::Debug for Config {
             .field("has_hooks", &self.hooks.is_some())
             .field("has_settings", &self.settings.is_some())
             .field("secret_file_fallback", &self.secret_file_fallback)
+            .field("share_usage_with_cli", &self.share_usage_with_cli)
             .field("extra_top_keys", &self.extra_top.keys().collect::<Vec<_>>())
             .finish()
     }

@@ -1,5 +1,7 @@
-// Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Config/OpaqueConfigJSON.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/OpaqueConfigJSON.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Config/ProviderConfigCoding.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/TokenAccounts.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -11,7 +13,8 @@ use serde_json::value::RawValue;
 
 use super::quota::QuotaWarnings;
 use super::types::{
-    Config, CookieSource, ProviderConfig, ProviderEntry, TokenAccountMeta, TokenAccountsMeta,
+    Config, CookieSource, ModelRateLimit, ProviderConfig, ProviderEntry, TokenAccountMeta,
+    TokenAccountsMeta,
 };
 use crate::providers::{self, SourceMode};
 
@@ -40,6 +43,7 @@ struct RawRoot {
     hooks: Option<Box<RawValue>>,
     settings: Option<Box<RawValue>>,
     secret_file_fallback: Option<bool>,
+    share_usage_with_cli: bool,
     extra_top: BTreeMap<String, Box<RawValue>>,
 }
 
@@ -62,6 +66,7 @@ impl<'de> Visitor<'de> for RawRootVisitor {
         let mut hooks = None;
         let mut settings = None;
         let mut secret_file_fallback = None;
+        let mut share_usage_with_cli = false;
         let mut extra_top = BTreeMap::new();
 
         while let Some(key) = access.next_key::<String>()? {
@@ -85,6 +90,9 @@ impl<'de> Visitor<'de> for RawRootVisitor {
                 }
                 "secretFileFallback" => {
                     secret_file_fallback = access.next_value::<Option<bool>>()?;
+                }
+                "shareUsageWithCLI" => {
+                    share_usage_with_cli = access.next_value::<Option<bool>>()?.unwrap_or(false);
                 }
                 _ => {
                     let val = access.next_value::<Box<RawValue>>()?;
@@ -110,6 +118,7 @@ impl<'de> Visitor<'de> for RawRootVisitor {
             hooks,
             settings,
             secret_file_fallback,
+            share_usage_with_cli,
             extra_top,
         })
     }
@@ -332,6 +341,11 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Config>, ConfigError> {
                 None
             };
 
+            let model_rate_limits = match map.remove("modelRateLimits") {
+                Some(raw) => decode_model_rate_limits(raw.get(), "Invalid modelRateLimits field")?,
+                None => None,
+            };
+
             // Null-valued extra keys are dropped per CodexBar parity, except secret keys
             // which must be retained so secret_in_config flags them and dump redacts them.
             let mut extra = BTreeMap::new();
@@ -358,6 +372,7 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Config>, ConfigError> {
                 quota_warnings,
                 accent_color,
                 hidden_usage_item_ids,
+                model_rate_limits,
                 extra,
             }));
         } else {
@@ -380,8 +395,24 @@ pub fn decode(bytes: &[u8]) -> Result<Option<Config>, ConfigError> {
         hooks: raw_root.hooks,
         settings: raw_root.settings,
         secret_file_fallback: raw_root.secret_file_fallback,
+        share_usage_with_cli: raw_root.share_usage_with_cli,
         extra_top: raw_root.extra_top,
     }))
+}
+
+/// Decodes a `modelRateLimits` list and validates its rows. `null` decodes as
+/// absent; a structurally invalid list fails the whole decode, as in CodexBar.
+fn decode_model_rate_limits(
+    json: &str,
+    message: &'static str,
+) -> Result<Option<Vec<ModelRateLimit>>, ConfigError> {
+    serde_json::from_str::<Option<Vec<ModelRateLimit>>>(json)
+        .map(|rows| rows.map(ModelRateLimit::validated))
+        .map_err(|e| ConfigError::Decode {
+            message,
+            line: e.line(),
+            column: e.column(),
+        })
 }
 
 fn decode_token_accounts(json: &str) -> Result<TokenAccountsMeta, ConfigError> {
@@ -440,10 +471,20 @@ fn decode_token_accounts(json: &str) -> Result<TokenAccountsMeta, ConfigError> {
             .remove("workspaceID")
             .and_then(|v| serde_json::from_str::<Option<String>>(v.get()).ok())
             .flatten();
+        let claude_config_directory = map
+            .remove("claudeConfigDirectory")
+            .and_then(|v| serde_json::from_str::<Option<String>>(v.get()).ok())
+            .flatten();
         let seat_credit_entitlement = map
             .remove("seatCreditEntitlement")
             .and_then(|v| serde_json::from_str::<Option<String>>(v.get()).ok())
             .flatten();
+        let model_rate_limits = match map.remove("modelRateLimits") {
+            Some(raw) => {
+                decode_model_rate_limits(raw.get(), "Invalid token account modelRateLimits field")?
+            }
+            None => None,
+        };
 
         let mut extra = BTreeMap::new();
         for (k, v) in map {
@@ -461,7 +502,9 @@ fn decode_token_accounts(json: &str) -> Result<TokenAccountsMeta, ConfigError> {
             usage_scope,
             organization_id,
             workspace_id,
+            claude_config_directory,
             seat_credit_entitlement,
+            model_rate_limits,
             extra,
         });
     }
@@ -544,6 +587,9 @@ pub fn encode(config: &Config) -> Vec<u8> {
                         Node::Value(serde_json::to_value(ids).unwrap_or(serde_json::Value::Null)),
                     );
                 }
+                if let Some(limits) = cfg.model_rate_limits.as_ref().filter(|l| !l.is_empty()) {
+                    p_map.insert("modelRateLimits", encode_model_rate_limits(limits));
+                }
                 if let Some(qw) = &cfg.quota_warnings {
                     p_map.insert(
                         "quotaWarnings",
@@ -589,6 +635,9 @@ pub fn encode(config: &Config) -> Vec<u8> {
     if let Some(consented) = config.secret_file_fallback {
         top_map.insert("secretFileFallback", Node::Value(consented.into()));
     }
+    if config.share_usage_with_cli {
+        top_map.insert("shareUsageWithCLI", Node::Value(true.into()));
+    }
 
     for (k, v) in &config.extra_top {
         if k != "secretFileFallback" {
@@ -626,8 +675,15 @@ fn encode_token_accounts<'a>(ta: &'a TokenAccountsMeta) -> Node<'a> {
         if let Some(ws) = &acc.workspace_id {
             a_map.insert("workspaceID", Node::Value(ws.as_str().into()));
         }
+        if let Some(dir) = &acc.claude_config_directory {
+            a_map.insert("claudeConfigDirectory", Node::Value(dir.as_str().into()));
+        }
         if let Some(seat) = &acc.seat_credit_entitlement {
             a_map.insert("seatCreditEntitlement", Node::Value(seat.as_str().into()));
+        }
+        // An empty account list is written: it records an explicit clear.
+        if let Some(limits) = &acc.model_rate_limits {
+            a_map.insert("modelRateLimits", encode_model_rate_limits(limits));
         }
 
         for (k, v) in &acc.extra {
@@ -639,4 +695,8 @@ fn encode_token_accounts<'a>(ta: &'a TokenAccountsMeta) -> Node<'a> {
 
     map.insert("accounts", Node::List(accounts));
     Node::Map(map)
+}
+
+fn encode_model_rate_limits<'a>(limits: &[ModelRateLimit]) -> Node<'a> {
+    Node::Value(serde_json::to_value(limits).unwrap_or(serde_json::Value::Null))
 }
