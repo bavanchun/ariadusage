@@ -1177,6 +1177,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-engine/src/providers/claude/cli_parser.rs"
 sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeCLISpendCapParser.swift",
 ]
@@ -1186,6 +1187,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-engine/src/providers/claude/cli_session.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeCLISession.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
@@ -1193,14 +1195,23 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-engine/tests/claude_cli.rs"
 sources = [
+    "Tests/CodexBarTests/StatusProbeTests.swift",
     "Tests/CodexBarTests/ClaudeCLIScreenTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIScreenProbeTests.swift",
+    "Tests/CodexBarTests/ClaudeCLISpendCapTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIScopedWeeklyUsageTests.swift",
+    "Tests/CodexBarTests/ClaudeAllModelsWeeklyDuplicateTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIWorkspaceTrustTests.swift",
     "Tests/CodexBarTests/ClaudeCLISessionTests.swift",
-    "Tests/CodexBarTests/ClaudeCLIRateLimitGateTests.swift",
-    "Tests/CodexBarTests/ClaudeCLIUsageSpawnThrottleTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIPanelTransitionTests.swift",
     "Tests/CodexBarTests/ClaudeCLIAuthStatusProbeTests.swift",
-    "Tests/CodexBarTests/ClaudeProbeSessionArtifactCleanerTests.swift",
-    "Tests/CodexBarTests/ClaudeProbeTests.swift",
-    "Tests/CodexBarTests/ClaudeProbeParsingTests.swift",
-    "Tests/CodexBarTests/ClaudeUsageTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIBackgroundAvailabilityTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIUsageSpawnThrottleTests.swift",
+    "Tests/CodexBarTests/ClaudeCLITimeoutRetryTests.swift",
+    "Tests/CodexBarTests/ClaudeDirectUsageFallbackTests.swift",
+    "Tests/CodexBarTests/ClaudeProbeWorkingDirectoryTests.swift",
+    "Tests/CodexBarTests/ClaudeResetJSONParserTests.swift",
+    "Tests/CodexBarTests/ClaudeResetOccurrenceTests.swift",
+    "Tests/CodexBarTests/ClaudeUsageInsightsTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
