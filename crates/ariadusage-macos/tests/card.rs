@@ -7,7 +7,7 @@ use ariadusage_macos::card::{
 use ariadusage_macos::progress_bar::WorkdayTickAppearance;
 use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::metric::{Confidence, Metric, MetricError};
-use ariadusage_protocol::snapshot::ProviderSnapshot;
+use ariadusage_protocol::snapshot::{ProviderPresentation, ProviderSnapshot};
 use ariadusage_protocol::usage::{
     Credits, Identity, NamedWindow, Pace, PaceStage, ProviderError, ProviderErrorCategory,
     ProviderErrorKind, RateWindow,
@@ -232,6 +232,72 @@ fn presentation_falls_back_to_session_weekly_and_system_accent() {
     assert_eq!(presentation.titles.weekly, "Weekly");
     assert_eq!(presentation.titles.tertiary, None);
     assert_eq!(presentation.accent, Accent::System);
+}
+
+fn presentation_block(tertiary: Option<&str>, accent: Option<&str>) -> ProviderPresentation {
+    ProviderPresentation::new(
+        "Anti",
+        "Gemini Models",
+        "Claude and GPT",
+        tertiary.map(str::to_string),
+        accent.map(str::to_string),
+    )
+    .unwrap()
+}
+
+#[test]
+fn presentation_block_supplies_titles_and_accent() {
+    let mut p = claude_with_session();
+    p.presentation = Some(presentation_block(Some("Sonnet"), Some("#CC7C5E")));
+    let presentation = card_presentation(&p);
+    assert_eq!(presentation.titles.session, "Gemini Models");
+    assert_eq!(presentation.titles.weekly, "Claude and GPT");
+    assert_eq!(presentation.titles.tertiary.as_deref(), Some("Sonnet"));
+    assert_eq!(
+        presentation.accent,
+        Accent::Brand(Rgb {
+            r: 204,
+            g: 124,
+            b: 94
+        })
+    );
+
+    let without_accent = Some(presentation_block(None, None));
+    p.presentation = without_accent;
+    let presentation = card_presentation(&p);
+    assert_eq!(presentation.titles.tertiary, None);
+    assert_eq!(presentation.accent, Accent::System);
+}
+
+#[test]
+fn claude_card_titles_rows_from_its_presentation_block() {
+    let mut p = claude_with_session();
+    p.windows.secondary = Some(value(window(30.0, 10080, 3 * 24 * 3600)));
+    p.windows.tertiary = Some(value(window(10.0, 10080, 3 * 24 * 3600)));
+    p.presentation = Some(
+        ProviderPresentation::new(
+            "Claude",
+            "Session",
+            "Weekly",
+            Some("Sonnet".to_string()),
+            Some("#CC7C5E".to_string()),
+        )
+        .unwrap(),
+    );
+    let card = build(&p, &CardPreferences::default());
+    let titles: Vec<String> = card.metrics.iter().map(|m| m.title_text()).collect();
+    assert_eq!(
+        titles,
+        ["Session 58% left", "Weekly 70% left", "Sonnet 90% left"]
+    );
+    assert_eq!(
+        card.accent,
+        Accent::Brand(Rgb {
+            r: 204,
+            g: 124,
+            b: 94
+        })
+    );
 }
 
 #[test]

@@ -7,7 +7,7 @@
 //! [`card_model`] follows `UsageMenuCardView.Model.make` for the parts the
 //! snapshot carries: the header, the subtitle, one row per rate window, and
 //! the credits section. Window titles and the accent color are inputs, so
-//! the engine's presentation block can supply them; [`card_presentation`]
+//! the engine's presentation block supplies them; [`card_presentation`]
 //! is the one place that maps a snapshot to them.
 
 use ariadusage_protocol::metric::{Metric, MetricState};
@@ -81,13 +81,27 @@ pub struct CardPresentation {
     pub accent: Accent,
 }
 
-/// Titles and accent for `provider`.
+/// Titles and accent for `provider` from the engine's presentation block.
 ///
-/// The snapshot does not carry presentation data yet, so every provider
-/// gets "Session", "Weekly", no tertiary row and the system accent. This is
-/// the single function to change when the engine sends a presentation block.
-pub fn card_presentation(_provider: &ProviderSnapshot) -> CardPresentation {
-    CardPresentation::default()
+/// Without a block the card falls back to "Session", "Weekly", no tertiary
+/// row and the system accent; a block without an accent color also uses
+/// the system accent.
+pub fn card_presentation(provider: &ProviderSnapshot) -> CardPresentation {
+    let Some(presentation) = &provider.presentation else {
+        return CardPresentation::default();
+    };
+    CardPresentation {
+        titles: CardTitles {
+            session: presentation.session_label.clone(),
+            weekly: presentation.weekly_label.clone(),
+            tertiary: presentation.tertiary_label.clone(),
+        },
+        accent: presentation
+            .accent_color
+            .as_deref()
+            .and_then(Rgb::from_hex)
+            .map_or(Accent::System, Accent::Brand),
+    }
 }
 
 /// Display preferences that shape the card, with CodexBar's defaults
