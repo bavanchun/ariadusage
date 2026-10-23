@@ -66,7 +66,7 @@ pub fn same_uid_processes(root: &Path, uid: u32) -> Vec<ProcessIdentity> {
             let Some(info) = darwin_bsd_info(pid) else {
                 continue;
             };
-            if info.pbi_ruid != uid && info.pbi_uid != uid {
+            if info.pbi_ruid != uid {
                 continue;
             }
             identities.push(darwin_identity_from_bsd(pid, &info));
@@ -150,8 +150,8 @@ pub fn process_state(root: &Path, pid: i32) -> Option<char> {
         if let Some(info) = darwin_bsd_info(pid) {
             return Some(darwin_status_char(info.pbi_status));
         }
-        if let Some(short) = darwin_bsd_short_info(pid) {
-            return Some(darwin_status_char(short.pbsi_status));
+        if darwin_bsd_short_info(pid).is_some() || darwin_is_zombie_child(pid) {
+            return Some('Z');
         }
         return None;
     }
@@ -482,6 +482,22 @@ fn darwin_bsd_short_info(pid: i32) -> Option<proc_pidinfo::ProcBSDShortInfo> {
 }
 
 #[cfg(target_os = "macos")]
+fn darwin_is_zombie_child(pid: i32) -> bool {
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+
+    let Some(pid) = Pid::from_raw(pid) else {
+        return false;
+    };
+    matches!(
+        waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ),
+        Ok(Some(_))
+    )
+}
+
+#[cfg(target_os = "macos")]
 fn darwin_identity_from_bsd(pid: i32, info: &proc_pidinfo::ProcBSDInfo) -> ProcessIdentity {
     let start_ticks = info
         .pbi_start_tvsec
@@ -511,6 +527,11 @@ static DARWIN_ENVIRON_SYSTEM: std::sync::LazyLock<std::sync::Mutex<sysinfo::Syst
     std::sync::LazyLock::new(|| std::sync::Mutex::new(sysinfo::System::new()));
 
 #[cfg(target_os = "macos")]
+const DARWIN_NO_MARKER_CACHE_MAX: usize = 1024;
+#[cfg(target_os = "macos")]
+const DARWIN_NO_MARKER_MIN_AGE_MICROS: u64 = 2_000_000;
+
+#[cfg(target_os = "macos")]
 static DARWIN_NO_MARKER_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<(ProcessIdentity, String)>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
@@ -528,8 +549,7 @@ fn darwin_same_uid_pids(uid: u32) -> Vec<i32> {
         .iter()
         .filter_map(|(pid, process)| {
             let pid = i32::try_from(pid.as_u32()).ok().filter(|&pid| pid > 0)?;
-            let matches_uid = process.user_id().is_none_or(|id| **id == uid)
-                || process.effective_user_id().is_none_or(|id| **id == uid);
+            let matches_uid = process.user_id().is_none_or(|id| **id == uid);
             matches_uid.then_some(pid)
         })
         .collect::<Vec<_>>();
@@ -637,31 +657,44 @@ fn darwin_read_marker_environment(pid: i32, key: &str) -> Option<Zeroizing<Vec<u
             true,
             ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
         );
-        let process = system.process(sys_pid)?;
-        let prefix = format!("{key}=");
-        let prefix_bytes = prefix.as_bytes();
-        let mut marker: Option<Zeroizing<Vec<u8>>> = None;
-        for entry in process.environ() {
-            let bytes = entry.as_bytes();
-            let Some(value) = bytes.strip_prefix(prefix_bytes) else {
-                continue;
-            };
-            if let Some(current) = marker.as_ref()
-                && current.as_slice() != value
-            {
-                return None;
+        let result = system.process(sys_pid).and_then(|process| {
+            let prefix = format!("{key}=");
+            let prefix_bytes = prefix.as_bytes();
+            let mut marker: Option<Zeroizing<Vec<u8>>> = None;
+            for entry in process.environ() {
+                let bytes = entry.as_bytes();
+                let Some(value) = bytes.strip_prefix(prefix_bytes) else {
+                    continue;
+                };
+                if let Some(current) = marker.as_ref()
+                    && current.as_slice() != value
+                {
+                    return None;
+                }
+                if marker.is_none() {
+                    marker = Some(Zeroizing::new(value.to_vec()));
+                }
             }
-            if marker.is_none() {
-                marker = Some(Zeroizing::new(value.to_vec()));
-            }
-        }
-        marker
+            marker
+        });
+        *system = sysinfo::System::new();
+        result
     };
     if marker.is_none() {
-        let mut cache = DARWIN_NO_MARKER_CACHE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        cache.insert((identity, key.to_owned()));
+        let now_micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|d| u64::try_from(d.as_micros()).ok())
+            .unwrap_or(0);
+        if now_micros.saturating_sub(identity.start_ticks) >= DARWIN_NO_MARKER_MIN_AGE_MICROS {
+            let mut cache = DARWIN_NO_MARKER_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if cache.len() >= DARWIN_NO_MARKER_CACHE_MAX {
+                cache.clear();
+            }
+            cache.insert((identity, key.to_owned()));
+        }
     }
     marker
 }

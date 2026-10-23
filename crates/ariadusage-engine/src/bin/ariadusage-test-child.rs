@@ -137,12 +137,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             time::sleep(Duration::from_secs(60)).await;
         }
         "ignore-term" | "ignore-term-ready" => {
+            let mut terminate = signal(SignalKind::terminate())?;
             if mode == "ignore-term-ready"
                 && let Some(path) = remaining.get(1)
             {
                 std::fs::write(path, std::process::id().to_string())?;
             }
-            let mut terminate = signal(SignalKind::terminate())?;
             let deadline = time::sleep(Duration::from_millis(bounded_millis(remaining.first())));
             tokio::pin!(deadline);
             loop {
@@ -160,6 +160,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "rpc-echo" => run_rpc_echo(remaining.first().and_then(|value| value.to_str()))?,
         "rpc-ignore-term" => {
             let mut terminate = signal(SignalKind::terminate())?;
+            if let Some(path) = remaining.first() {
+                std::fs::write(path, std::process::id().to_string())?;
+            }
             loop {
                 let _ = terminate.recv().await;
             }

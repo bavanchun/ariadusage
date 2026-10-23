@@ -6,7 +6,9 @@ pub mod proc_net;
 use std::fmt;
 #[cfg(target_os = "linux")]
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", feature = "test-hooks"))]
+use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::brokers::call::BrokerCall;

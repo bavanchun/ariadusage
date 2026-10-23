@@ -101,70 +101,47 @@ pub(super) async fn terminate(target: &ProcessTarget) {
     target.release_tty_hold();
     let root = Path::new("/proc");
     target.refresh_descendants();
-    let descendants = current_descendants(target);
-    let root_alive = identity_is_current(target.root, target.uid);
-    signal_identities(descendants.clone(), ProcessSignal::Term);
-    let group_signaled = signal_target_group(target, ProcessSignal::Term);
-    if root_alive {
-        let _ = signal(target.root, ProcessSignal::Term);
-    }
-    if !root_alive && descendants.is_empty() && !group_signaled {
-        return;
-    }
+    signal_identities(current_descendants(target, root), ProcessSignal::Term);
+    let _ = signal_target_group(target, ProcessSignal::Term);
+    let _ = signal(target.root, ProcessSignal::Term);
 
     let deadline = tokio::time::Instant::now() + TEARDOWN_GRACE;
-    let mut still_running = targets_running(target, root);
-    while still_running && tokio::time::Instant::now() < deadline {
+    while targets_running(target, root) && tokio::time::Instant::now() < deadline {
         target.refresh_descendants();
         tokio::time::sleep(TEARDOWN_POLL).await;
-        still_running = targets_running(target, root);
     }
 
-    if still_running {
-        target.refresh_descendants();
-        signal_identities(current_descendants(target), ProcessSignal::Kill);
-        let _ = signal_target_group(target, ProcessSignal::Kill);
-        if identity_is_current(target.root, target.uid) {
-            let _ = signal(target.root, ProcessSignal::Kill);
-        }
-    }
+    target.refresh_descendants();
+    signal_identities(current_descendants(target, root), ProcessSignal::Kill);
+    let _ = signal_target_group(target, ProcessSignal::Kill);
+    let _ = signal(target.root, ProcessSignal::Kill);
 }
 
 pub(super) fn terminate_sync(target: &ProcessTarget) {
     target.release_tty_hold();
     let root = Path::new("/proc");
     target.refresh_descendants();
-    let descendants = current_descendants(target);
-    let root_alive = identity_is_current(target.root, target.uid);
-    signal_identities(descendants.clone(), ProcessSignal::Term);
-    let group_signaled = signal_target_group(target, ProcessSignal::Term);
-    if root_alive {
-        let _ = signal(target.root, ProcessSignal::Term);
-    }
-    if !root_alive && descendants.is_empty() && !group_signaled {
-        return;
-    }
+    signal_identities(current_descendants(target, root), ProcessSignal::Term);
+    let _ = signal_target_group(target, ProcessSignal::Term);
+    let _ = signal(target.root, ProcessSignal::Term);
 
     let deadline = std::time::Instant::now() + TEARDOWN_GRACE;
-    let mut still_running = targets_running(target, root);
-    while still_running && std::time::Instant::now() < deadline {
+    while targets_running(target, root) && std::time::Instant::now() < deadline {
         target.refresh_descendants();
         std::thread::sleep(TEARDOWN_POLL);
-        still_running = targets_running(target, root);
     }
 
-    if still_running {
-        target.refresh_descendants();
-        signal_identities(current_descendants(target), ProcessSignal::Kill);
-        let _ = signal_target_group(target, ProcessSignal::Kill);
-        if identity_is_current(target.root, target.uid) {
-            let _ = signal(target.root, ProcessSignal::Kill);
-        }
-    }
+    target.refresh_descendants();
+    signal_identities(current_descendants(target, root), ProcessSignal::Kill);
+    let _ = signal_target_group(target, ProcessSignal::Kill);
+    let _ = signal(target.root, ProcessSignal::Kill);
 }
 
-fn current_descendants(target: &ProcessTarget) -> Vec<ProcessIdentity> {
-    let candidates = target.descendant_snapshot();
+fn current_descendants(target: &ProcessTarget, root: &Path) -> Vec<ProcessIdentity> {
+    let candidates = target
+        .descendant_snapshot()
+        .into_iter()
+        .chain(process_descendants(root, target.root, target.uid));
     let mut current = HashMap::new();
     for identity in candidates {
         if identity_is_current(identity, target.uid) {
@@ -186,17 +163,12 @@ fn group_members(target: &ProcessTarget, root: &Path) -> Vec<ProcessIdentity> {
 
 fn signal_target_group(target: &ProcessTarget, signal_kind: ProcessSignal) -> bool {
     let root = Path::new("/proc");
-    let is_witness = |identity: ProcessIdentity| {
-        identity_is_current(identity, target.uid)
-            && process_group(root, identity.pid) == Some(target.pgid)
-    };
     let witness = std::iter::once(target.root)
         .chain(target.descendant_snapshot())
-        .find(|&identity| is_witness(identity))
-        .or_else(|| {
-            group_members(target, root)
-                .into_iter()
-                .find(|&identity| is_witness(identity))
+        .chain(group_members(target, root))
+        .find(|identity| {
+            identity_is_current(*identity, target.uid)
+                && process_group(root, identity.pid) == Some(target.pgid)
         });
     if let Some(witness) = witness {
         let _ = signal_group(witness, target.pgid, signal_kind);
@@ -213,16 +185,14 @@ fn signal_identities(identities: Vec<ProcessIdentity>, signal_kind: ProcessSigna
 }
 
 fn targets_running(target: &ProcessTarget, root: &Path) -> bool {
-    let is_running = |identity: ProcessIdentity| {
-        identity_is_current(identity, target.uid)
-            && process_state(root, identity.pid).is_some_and(|state| state != 'Z')
-    };
-    if is_running(target.root) {
-        return true;
-    }
     target.refresh_descendants();
-    current_descendants(target).into_iter().any(is_running)
-        || group_members(target, root).into_iter().any(is_running)
+    std::iter::once(target.root)
+        .chain(current_descendants(target, root))
+        .chain(group_members(target, root))
+        .any(|identity| {
+            identity_is_current(identity, target.uid)
+                && process_state(root, identity.pid).is_some_and(|state| state != 'Z')
+        })
 }
 
 fn identity_is_current(identity: ProcessIdentity, uid: u32) -> bool {
