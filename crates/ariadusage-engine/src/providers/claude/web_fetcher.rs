@@ -46,6 +46,7 @@ pub const DEFAULT_WEB_BASE_URL: &str = "https://claude.ai/api";
 pub const CLAUDE_COOKIE_DOMAIN: &str = "claude.ai";
 pub const SESSION_KEY_COOKIE_NAME: &str = "sessionKey";
 pub const SESSION_KEY_PREFIX: &str = "sk-ant-";
+pub const DEFAULT_WEB_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 pub const DEFAULT_PREPAID_CREDITS_TIMEOUT: Duration = Duration::from_secs(2);
 pub const CLOUDFLARE_CHALLENGE_MESSAGE: &str = "claude.ai is behind a Cloudflare challenge, often caused by VPN or datacenter networks. Re-authenticating will not help. Switch Claude Usage source to OAuth in Settings (Usage credits balance will be unavailable), or try a different network.";
 
@@ -119,10 +120,19 @@ impl ClaudeWebEndpointConfig {
 }
 
 /// Selected organization from `GET /api/organizations`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct OrganizationInfo {
     pub id: String,
     pub name: Option<String>,
+}
+
+impl fmt::Debug for OrganizationInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OrganizationInfo")
+            .field("has_id", &(!self.id.is_empty()))
+            .field("has_name", &self.name.is_some())
+            .finish()
+    }
 }
 
 /// Extracted `sessionKey` cookie and provenance metadata.
@@ -158,10 +168,19 @@ impl fmt::Debug for SessionKeyInfo {
 }
 
 /// Account metadata resolved from `GET /api/account`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WebAccountInfo {
     pub email: Option<String>,
     pub login_method: Option<String>,
+}
+
+impl fmt::Debug for WebAccountInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebAccountInfo")
+            .field("has_email", &self.email.is_some())
+            .field("login_method", &self.login_method)
+            .finish()
+    }
 }
 
 /// Remaining prepaid Extra usage balance in major currency units.
@@ -172,7 +191,7 @@ pub struct PrepaidBalance {
 }
 
 /// Parsed usage data from the `claude.ai` web API.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq)]
 pub struct WebUsageData {
     pub session_percent_used: Option<f64>,
     pub session_resets_at: Option<Timestamp>,
@@ -187,6 +206,32 @@ pub struct WebUsageData {
     pub account_organization_id: Option<String>,
     pub account_email: Option<String>,
     pub login_method: Option<String>,
+}
+
+impl fmt::Debug for WebUsageData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("WebUsageData")
+            .field("session_percent_used", &self.session_percent_used)
+            .field("session_resets_at", &self.session_resets_at)
+            .field("weekly_percent_used", &self.weekly_percent_used)
+            .field("weekly_resets_at", &self.weekly_resets_at)
+            .field("opus_percent_used", &self.opus_percent_used)
+            .field("extra_rate_windows", &self.extra_rate_windows)
+            .field("extra_usage_cost", &self.extra_usage_cost)
+            .field("reset_credits", &self.reset_credits)
+            .field("cloud_credits", &self.cloud_credits)
+            .field(
+                "has_account_organization",
+                &self.account_organization.is_some(),
+            )
+            .field(
+                "has_account_organization_id",
+                &self.account_organization_id.is_some(),
+            )
+            .field("has_account_email", &self.account_email.is_some())
+            .field("login_method", &self.login_method)
+            .finish()
+    }
 }
 
 impl WebUsageData {
@@ -264,7 +309,7 @@ impl WebUsageData {
 }
 
 /// Errors produced by `ClaudeWebAPIFetcher`.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ClaudeWebFetchError {
     #[error("request cancelled")]
     Cancelled,
@@ -288,8 +333,34 @@ pub enum ClaudeWebFetchError {
     ServerError { status: u16 },
     #[error("No Claude organization found for this account.")]
     NoOrganization,
-    #[error("Claude organization '{0}' was not found for this session.")]
+    #[error("The configured Claude organization was not found for this session.")]
     OrganizationNotFound(String),
+}
+
+impl fmt::Debug for ClaudeWebFetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cancelled => f.write_str("Cancelled"),
+            Self::NoSessionKeyFound => f.write_str("NoSessionKeyFound"),
+            Self::NoDesktopSessionKeyFound => f.write_str("NoDesktopSessionKeyFound"),
+            Self::InvalidSessionKey => f.write_str("InvalidSessionKey"),
+            Self::NetworkError(transport) => {
+                f.debug_tuple("NetworkError").field(transport).finish()
+            }
+            Self::InvalidResponse => f.write_str("InvalidResponse"),
+            Self::Unauthorized => f.write_str("Unauthorized"),
+            Self::CloudflareChallenge => f.write_str("CloudflareChallenge"),
+            Self::ServerError { status } => f
+                .debug_struct("ServerError")
+                .field("status", status)
+                .finish(),
+            Self::NoOrganization => f.write_str("NoOrganization"),
+            Self::OrganizationNotFound(_) => f
+                .debug_tuple("OrganizationNotFound")
+                .field(&"[redacted]")
+                .finish(),
+        }
+    }
 }
 
 impl ClaudeWebFetchError {
@@ -403,6 +474,9 @@ impl ClaudeWebSessionImporter {
             Self::None => Err(not_found_err),
             Self::Custom(f) => f(call),
             Self::PerBrowser(f) => {
+                if use_desktop_cookies {
+                    return Err(ClaudeWebFetchError::NoDesktopSessionKeyFound);
+                }
                 for browser in DEFAULT_IMPORT_ORDER {
                     if call.cancel.is_cancelled() {
                         return Err(ClaudeWebFetchError::Cancelled);
@@ -415,6 +489,9 @@ impl ClaudeWebSessionImporter {
                 Err(not_found_err)
             }
             Self::BrowserBroker(broker) => {
+                if use_desktop_cookies {
+                    return Err(ClaudeWebFetchError::NoDesktopSessionKeyFound);
+                }
                 let CookieResolution::Import(auth) =
                     resolve_cookie_source(Some(CookieSource::Auto), false, None, false)
                 else {
@@ -501,7 +578,7 @@ impl ClaudeWebSessionKeyRenewalTracker {
             .clone()
     }
 
-    pub fn renewed_cookie_header(&self) -> Option<String> {
+    pub fn renewed_cookie_header(&self) -> Option<SecretString> {
         let current = self
             .current_session_key
             .lock()
@@ -509,11 +586,11 @@ impl ClaudeWebSessionKeyRenewalTracker {
         if current.expose_secret() == self.initial_session_key.expose_secret() {
             None
         } else {
-            Some(format!(
+            Some(SecretString::new(format!(
                 "{}={}",
                 SESSION_KEY_COOKIE_NAME,
                 current.expose_secret()
-            ))
+            )))
         }
     }
 
@@ -521,7 +598,7 @@ impl ClaudeWebSessionKeyRenewalTracker {
         if status != 200 {
             return;
         }
-        let mut latest: Option<String> = None;
+        let mut latest: Option<SecretString> = None;
         for (name, val) in headers.iter() {
             if name != SET_COOKIE {
                 continue;
@@ -538,11 +615,11 @@ impl ClaudeWebSessionKeyRenewalTracker {
                 .current_session_key
                 .lock()
                 .expect("renewal tracker lock not poisoned");
-            *guard = SecretString::new(new_key);
+            *guard = new_key;
         }
     }
 
-    pub fn extract_from_set_cookie_header(header: &str) -> Option<String> {
+    pub fn extract_from_set_cookie_header(header: &str) -> Option<SecretString> {
         let mut latest = None;
         let prefix_len = SESSION_KEY_COOKIE_NAME.len();
         for part in header.split([',', '\r', '\n']) {
@@ -555,7 +632,7 @@ impl ClaudeWebSessionKeyRenewalTracker {
                 let rest = &trimmed[prefix_len + 1..];
                 let raw_val = rest.split(';').next().unwrap_or(rest).trim();
                 if raw_val.starts_with(SESSION_KEY_PREFIX) {
-                    latest = Some(raw_val.to_owned());
+                    latest = Some(SecretString::new(raw_val.to_owned()));
                 }
             }
         }
@@ -576,22 +653,21 @@ impl ClaudeWebExtraRateWindowParser {
 
         for key in ROUTINE_KEYS {
             if let Some(raw_window) = obj.get(*key).and_then(Value::as_object) {
-                let Some(utilization) = strict_number_percent(raw_window.get("utilization")) else {
-                    continue;
-                };
-                let resets_at = raw_window
-                    .get("resets_at")
-                    .and_then(Value::as_str)
-                    .and_then(parse_iso8601_timestamp);
-                if let Ok(rate_window) =
-                    RateWindow::new(utilization, Some(10080), resets_at, None, None, false)
-                {
-                    windows.push(NamedRateWindow::new(
-                        "claude-routines",
-                        "Daily Routines",
-                        rate_window,
-                    ));
-                    source_keys.insert("claude-routines".to_owned(), (*key).to_owned());
+                if let Some(utilization) = strict_number_percent(raw_window.get("utilization")) {
+                    let resets_at = raw_window
+                        .get("resets_at")
+                        .and_then(Value::as_str)
+                        .and_then(parse_iso8601_timestamp);
+                    if let Ok(rate_window) =
+                        RateWindow::new(utilization, Some(10080), resets_at, None, None, false)
+                    {
+                        windows.push(NamedRateWindow::new(
+                            "claude-routines",
+                            "Daily Routines",
+                            rate_window,
+                        ));
+                        source_keys.insert("claude-routines".to_owned(), (*key).to_owned());
+                    }
                 }
                 break;
             }
@@ -908,15 +984,15 @@ impl ClaudeWebAPIFetcher {
         cookie_cache: &CookieCache,
         initial_session_key: &SecretString,
         persistence: &CachePersistence,
-        renewed_cookie_header: Option<String>,
+        renewed_cookie_header: Option<SecretString>,
         now: Timestamp,
     ) {
         let imported_cookie_header = persistence.persist_initial_session_key.then(|| {
-            format!(
+            SecretString::new(format!(
                 "{}={}",
                 SESSION_KEY_COOKIE_NAME,
                 initial_session_key.expose_secret()
-            )
+            ))
         });
         let Some(header_to_store) = renewed_cookie_header.or(imported_cookie_header) else {
             return;
@@ -926,7 +1002,7 @@ impl ClaudeWebAPIFetcher {
             &provider_id,
             persistence.scope.as_ref(),
             &persistence.expected_observation,
-            &header_to_store,
+            header_to_store.expose_secret(),
             &persistence.source_label,
             now,
         );
@@ -1528,6 +1604,7 @@ fn find_session_key_in_records(records: &[CookieRecord]) -> Option<SecretString>
 
 fn build_web_get_request(url: Url, session_key: &SecretString) -> NetRequest {
     let mut req = NetRequest::new(Method::GET, url);
+    req.timeout = Some(DEFAULT_WEB_REQUEST_TIMEOUT);
     req.headers
         .insert(ACCEPT, HeaderValue::from_static("application/json"));
     let hdr_val = format!(

@@ -535,6 +535,38 @@ impl ClaudeOAuthUsageFetcher {
         }
     }
 
+    /// Fetches account identity from `/api/oauth/profile`, failing when the request or JSON decoding
+    /// fails (used by `apply_web_extras_if_needed` where `fetchOAuthProfile` throws in upstream).
+    pub async fn fetch_profile_identity_strict(
+        net: &Arc<NetBroker>,
+        endpoint: &ClaudeOAuthEndpointConfig,
+        access_token: &SecretString,
+        call: &BrokerCall,
+    ) -> Result<ClaudeAccountIdentity, ClaudeOAuthFetchError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeOAuthFetchError::Cancelled);
+        }
+        let token_str = access_token.expose_secret().trim();
+        if token_str.is_empty() {
+            return Err(ClaudeOAuthFetchError::Unauthorized);
+        }
+        let url = endpoint.profile_url()?;
+        let req = build_oauth_profile_request(url, token_str);
+
+        let resp = net
+            .send_response(call, &endpoint.declared_origins, req)
+            .await
+            .map_err(map_net_error)?;
+        match resp.status.as_u16() {
+            200 => ClaudeAccountIdentity::decode_profile(resp.body())
+                .ok_or(ClaudeOAuthFetchError::InvalidResponse),
+            401 => Err(ClaudeOAuthFetchError::Unauthorized),
+            403 => Err(ClaudeOAuthFetchError::Forbidden),
+            status @ 500..=599 => Err(ClaudeOAuthFetchError::ServerError { status }),
+            status => Err(ClaudeOAuthFetchError::HttpError { status }),
+        }
+    }
+
     /// Fetches optional account identity from `/api/oauth/profile`.
     ///
     /// Non-cancellation failures return `Ok(None)` so quota reporting never fails because of
@@ -545,27 +577,9 @@ impl ClaudeOAuthUsageFetcher {
         access_token: &SecretString,
         call: &BrokerCall,
     ) -> Result<Option<ClaudeAccountIdentity>, ClaudeOAuthFetchError> {
-        if call.cancel.is_cancelled() {
-            return Err(ClaudeOAuthFetchError::Cancelled);
-        }
-        let token_str = access_token.expose_secret().trim();
-        if token_str.is_empty() {
-            return Ok(None);
-        }
-        let Ok(url) = endpoint.profile_url() else {
-            return Ok(None);
-        };
-        let req = build_oauth_profile_request(url, token_str);
-
-        match net
-            .send_response(call, &endpoint.declared_origins, req)
-            .await
-        {
-            Ok(resp) if resp.status.as_u16() == 200 => {
-                Ok(ClaudeAccountIdentity::decode_profile(resp.body()))
-            }
-            Ok(_) => Ok(None),
-            Err(NetError::Cancelled) => Err(ClaudeOAuthFetchError::Cancelled),
+        match Self::fetch_profile_identity_strict(net, endpoint, access_token, call).await {
+            Ok(identity) => Ok(Some(identity)),
+            Err(ClaudeOAuthFetchError::Cancelled) => Err(ClaudeOAuthFetchError::Cancelled),
             Err(_) => {
                 if call.cancel.is_cancelled() {
                     Err(ClaudeOAuthFetchError::Cancelled)

@@ -61,7 +61,7 @@ pub use web_fetcher::{
     CLOUDFLARE_CHALLENGE_MESSAGE, ClaudeWebAPIFetcher, ClaudeWebBrowserFetchGate,
     ClaudeWebEndpointConfig, ClaudeWebExtraRateWindowParser, ClaudeWebFetchError,
     ClaudeWebFetchOptions, ClaudeWebSessionImporter, ClaudeWebSessionKeyRenewalTracker,
-    DEFAULT_PREPAID_CREDITS_TIMEOUT, DEFAULT_WEB_BASE_URL, OrganizationInfo, PrepaidBalance,
-    SESSION_KEY_COOKIE_NAME, SESSION_KEY_PREFIX, SessionKeyInfo, WebAccountInfo, WebUsageData,
-    claude_declared_domains,
+    DEFAULT_PREPAID_CREDITS_TIMEOUT, DEFAULT_WEB_BASE_URL, DEFAULT_WEB_REQUEST_TIMEOUT,
+    OrganizationInfo, PrepaidBalance, SESSION_KEY_COOKIE_NAME, SESSION_KEY_PREFIX, SessionKeyInfo,
+    WebAccountInfo, WebUsageData, claude_declared_domains,
 };
