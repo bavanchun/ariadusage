@@ -1,4 +1,8 @@
 pub mod account_profile;
+pub mod cli_gates;
+pub mod cli_parser;
+pub mod cli_screen;
+pub mod cli_session;
 pub mod config_paths;
 pub mod credential_routing;
 pub mod credentials;
@@ -15,6 +19,25 @@ pub mod web_extras;
 pub mod web_fetcher;
 
 pub use account_profile::{ClaudeAccountProfile, ConfigOwnershipEvidence};
+pub use cli_gates::{
+    ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundAvailabilityStore,
+    ClaudeCLIBackgroundMarker, ClaudeCLIRateLimitGate, ClaudeCLISubprocessResult,
+    ClaudeCLIUsageSpawnThrottle, ClaudeCLIUsageSpawnThrottleKey, ClaudeKeychainPromptMode,
+    ClaudeProbeSessionArtifactCleaner,
+};
+pub use cli_parser::{
+    ClaudeCLIAccountIdentity, ClaudeStatusProbeError, ClaudeStatusProbeParser,
+    ClaudeStatusSnapshot, SESSION_WINDOW_MINUTES, SUBSCRIPTION_QUOTA_UNAVAILABLE_DESCRIPTION,
+    WEEKLY_WINDOW_MINUTES,
+};
+pub use cli_screen::{ClaudeCLIScreen, ClaudeCLISpendCapParser};
+pub use cli_session::{
+    ClaudeCLICaptureRequest, ClaudeCLIDelegatedRefresher, ClaudeCLISession, ClaudeCLISessionError,
+    ClaudeCLIUsageLoader, ClaudeStatusProbe, ClaudeStatusProbeFetchOverride,
+    default_dedicated_probe_working_directory, is_dedicated_probe_working_directory,
+    isolated_probe_working_directory, prepare_probe_working_directory,
+    prepared_probe_working_directory, probe_working_directory,
+};
 pub use config_paths::{
     CLAUDE_CONFIG_DIR_ENV_KEY, CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENV_KEY, ClaudeConfigPaths,
 };
@@ -38,10 +61,11 @@ pub use reset_credits::{
 pub use scoped_weekly::{ClaudeScopedWeeklyLimitMapper, OAuthScopedLimitEntry};
 pub use strategy::{
     CLAUDE_ADMIN_API_STRATEGY_ID, CLAUDE_CLI_STRATEGY_ID, CLAUDE_OAUTH_STRATEGY_ID,
-    CLAUDE_WEB_STRATEGY_ID, ClaudeOAuthFetchStrategy, ClaudeOAuthStrategyConfig,
-    ClaudeProviderPlan, ClaudeUnavailableFetchStrategy, ClaudeWebAvailabilityProbe,
-    ClaudeWebEnrichmentAccess, ClaudeWebFetchDeadlineState, ClaudeWebFetchStrategy,
-    ClaudeWebFetchStrategyError, ClaudeWebUsageLoader, DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS,
+    CLAUDE_WEB_STRATEGY_ID, ClaudeCLIFetchStrategy, ClaudeOAuthFetchStrategy,
+    ClaudeOAuthStrategyConfig, ClaudeProviderPlan, ClaudeUnavailableFetchStrategy,
+    ClaudeWebAvailabilityProbe, ClaudeWebEnrichmentAccess, ClaudeWebFetchDeadlineState,
+    ClaudeWebFetchStrategy, ClaudeWebFetchStrategyError, ClaudeWebUsageLoader,
+    DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS,
 };
 pub use subscription_metadata::{
     BillingDate, ClaudeSubscriptionFetchResult, ClaudeSubscriptionMetadata,

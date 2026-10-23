@@ -4,16 +4,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ariadusage_core::config::CookieSource;
 use ariadusage_core::cookie as cookie_core;
+use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_core::oauth::{ExpiredAction, TokenOwner, decide_on_expired};
 use ariadusage_core::pipeline::{
-    BoxFuture, ClassifiedError, FetchContext, FetchError, FetchResult, FetchRuntime, FetchStrategy,
-    ProviderPlan, TransportClass,
+    BoxFuture, ClassifiedError, FetchContext, FetchError, FetchInteraction, FetchResult,
+    FetchRuntime, FetchStrategy, ProviderPlan, TransportClass,
 };
 use ariadusage_core::providers::SourceMode;
 use ariadusage_protocol::ProviderId;
@@ -26,9 +27,21 @@ use jiff::Timestamp;
 use crate::brokers::call::BrokerCall;
 use crate::brokers::cookie_cache::{CacheScope, CookieCache};
 use crate::brokers::credential_file::CredentialDecl;
+use crate::brokers::exec_resolver::{RealResolverFs, ResolverFs};
 use crate::brokers::net::NetBroker;
 use crate::brokers::oauth::{DelegatedCoordinatorResult, DelegatedRefreshCoordinator};
+use crate::brokers::process::ProcessRegistry;
 
+use super::cli_gates::{
+    ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundAvailabilityStore,
+    ClaudeCLIRateLimitGate, ClaudeCLIUsageSpawnThrottle, ClaudeCLIUsageSpawnThrottleKey,
+    ClaudeKeychainPromptMode,
+};
+use super::cli_parser::ClaudeStatusProbeParser;
+use super::cli_session::{
+    ClaudeCLISession, ClaudeCLIUsageLoader, ClaudeStatusProbe, ClaudeStatusProbeFetchOverride,
+    default_dedicated_probe_working_directory,
+};
 use super::config_paths::ClaudeConfigPaths;
 use super::credential_routing::{ClaudeCredentialRoute, ClaudeCredentialRouting};
 use super::credentials::{
@@ -38,7 +51,7 @@ use super::credentials::{
 };
 use super::planner::{
     ClaudeFetchPlanStep, ClaudeSourcePlan, ClaudeSourcePlanner, ClaudeSourcePlanningInput,
-    ClaudeSourceSelectedStrategy, ClaudeUsageStrategy,
+    ClaudeSourceSelectedStrategy, ClaudeSourceSelectionReason, ClaudeUsageStrategy,
 };
 use super::rate_limit_gate::ClaudeOAuthUsageRateLimitGate;
 use super::subscription_metadata::{
@@ -66,6 +79,9 @@ pub type ClaudeWebUsageLoader = Arc<
     dyn Fn(&FetchContext) -> BoxFuture<'static, Result<WebUsageData, ClaudeWebFetchError>>
         + Send
         + Sync,
+>;
+pub type ClaudeCLIAuthStatusOverride = Arc<
+    dyn Fn(&Path, &FetchContext) -> BoxFuture<'static, ClaudeCLIAuthenticationStatus> + Send + Sync,
 >;
 
 /// Web enrichment cookie access resolved from `CookieSource`, manual cookie header, or `CookieCache`.
@@ -114,6 +130,19 @@ pub struct ClaudeOAuthStrategyConfig {
     pub has_web_session: bool,
     pub has_cli: bool,
     pub web_extras_enabled: bool,
+    pub cli_binary: String,
+    pub cli_probe_timeout: Duration,
+    pub keep_cli_sessions_alive: bool,
+    pub cli_keychain_disabled: bool,
+    pub cli_prompt_mode: ClaudeKeychainPromptMode,
+    pub process_registry: Arc<ProcessRegistry>,
+    pub launch_gate: Arc<LaunchGate>,
+    pub cli_session: Arc<ClaudeCLISession>,
+    pub cli_rate_limit_gate: Arc<ClaudeCLIRateLimitGate>,
+    pub cli_spawn_throttle: Arc<ClaudeCLIUsageSpawnThrottle>,
+    pub cli_background_availability: Arc<ClaudeCLIBackgroundAvailabilityStore>,
+    pub cli_status_probe_override: Option<ClaudeStatusProbeFetchOverride>,
+    pub cli_auth_status_override: Option<ClaudeCLIAuthStatusOverride>,
     pub clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     pub deadline_now: Arc<dyn Fn() -> Instant + Send + Sync>,
     pub web_availability_probe: Option<ClaudeWebAvailabilityProbe>,
@@ -126,6 +155,16 @@ impl ClaudeOAuthStrategyConfig {
         working_directory: impl Into<PathBuf>,
         home_directory: impl Into<PathBuf>,
     ) -> Self {
+        let working_directory = working_directory.into();
+        let home_directory = home_directory.into();
+        let process_registry = Arc::new(ProcessRegistry::new());
+        let launch_gate = Arc::new(LaunchGate::new(Instant::now));
+        let dedicated_probe_dir = default_dedicated_probe_working_directory(&home_directory);
+        let cli_session = Arc::new(ClaudeCLISession::new(
+            dedicated_probe_dir,
+            Arc::clone(&process_registry),
+            Arc::clone(&launch_gate),
+        ));
         Self {
             net,
             endpoint: ClaudeOAuthEndpointConfig::default(),
@@ -135,8 +174,8 @@ impl ClaudeOAuthStrategyConfig {
             cookie_cache: Arc::new(CookieCache::new()),
             session_importer: ClaudeWebSessionImporter::None,
             browser_fetch_gate: Arc::new(ClaudeWebBrowserFetchGate::new()),
-            working_directory: working_directory.into(),
-            home_directory: home_directory.into(),
+            working_directory,
+            home_directory,
             allow_background_delegated_refresh: false,
             include_account_identity: true,
             include_optional_usage: true,
@@ -151,6 +190,19 @@ impl ClaudeOAuthStrategyConfig {
             has_web_session: false,
             has_cli: false,
             web_extras_enabled: false,
+            cli_binary: "claude".to_owned(),
+            cli_probe_timeout: ClaudeCLIUsageLoader::CLI_PROBE_TIMEOUT,
+            keep_cli_sessions_alive: false,
+            cli_keychain_disabled: false,
+            cli_prompt_mode: ClaudeKeychainPromptMode::OnlyOnUserAction,
+            process_registry,
+            launch_gate,
+            cli_session,
+            cli_rate_limit_gate: Arc::new(ClaudeCLIRateLimitGate::new()),
+            cli_spawn_throttle: Arc::new(ClaudeCLIUsageSpawnThrottle::new()),
+            cli_background_availability: Arc::new(ClaudeCLIBackgroundAvailabilityStore::new()),
+            cli_status_probe_override: None,
+            cli_auth_status_override: None,
             clock: Arc::new(Timestamp::now),
             deadline_now: Arc::new(Instant::now),
             web_availability_probe: None,
@@ -276,6 +328,115 @@ impl ClaudeOAuthStrategyConfig {
     {
         self.web_usage_loader = Some(Arc::new(loader));
         self
+    }
+
+    pub fn with_has_cli(mut self, has_cli: bool) -> Self {
+        self.has_cli = has_cli;
+        self
+    }
+
+    pub fn with_cli_binary(mut self, binary: impl Into<String>) -> Self {
+        self.cli_binary = binary.into();
+        self
+    }
+
+    pub fn with_cli_probe_timeout(mut self, timeout: Duration) -> Self {
+        self.cli_probe_timeout = timeout;
+        self
+    }
+
+    pub fn with_keep_cli_sessions_alive(mut self, keep_alive: bool) -> Self {
+        self.keep_cli_sessions_alive = keep_alive;
+        self
+    }
+
+    pub fn with_cli_keychain_disabled(mut self, disabled: bool) -> Self {
+        self.cli_keychain_disabled = disabled;
+        self
+    }
+
+    pub fn with_cli_prompt_mode(mut self, mode: ClaudeKeychainPromptMode) -> Self {
+        self.cli_prompt_mode = mode;
+        self
+    }
+
+    pub fn with_cli_session(mut self, session: Arc<ClaudeCLISession>) -> Self {
+        self.cli_session = session;
+        self
+    }
+
+    pub fn with_cli_rate_limit_gate(mut self, gate: Arc<ClaudeCLIRateLimitGate>) -> Self {
+        self.cli_rate_limit_gate = gate;
+        self
+    }
+
+    pub fn with_cli_spawn_throttle(mut self, throttle: Arc<ClaudeCLIUsageSpawnThrottle>) -> Self {
+        self.cli_spawn_throttle = throttle;
+        self
+    }
+
+    pub fn with_cli_background_availability(
+        mut self,
+        store: Arc<ClaudeCLIBackgroundAvailabilityStore>,
+    ) -> Self {
+        self.cli_background_availability = store;
+        self
+    }
+
+    pub fn with_cli_status_probe_override(
+        mut self,
+        probe_override: ClaudeStatusProbeFetchOverride,
+    ) -> Self {
+        self.cli_status_probe_override = Some(probe_override);
+        self
+    }
+
+    pub fn with_cli_auth_status_override<F>(mut self, auth_override: F) -> Self
+    where
+        F: Fn(&Path, &FetchContext) -> BoxFuture<'static, ClaudeCLIAuthenticationStatus>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.cli_auth_status_override = Some(Arc::new(auth_override));
+        self
+    }
+
+    pub fn resolve_cli_binary(&self, cx: &FetchContext) -> Option<PathBuf> {
+        if self.cli_binary.contains('/') {
+            let path = PathBuf::from(&self.cli_binary);
+            return RealResolverFs.is_executable(&path).then_some(path);
+        }
+        if cx.env.contains_key("CLAUDE_CLI_PATH") || cx.env.contains_key("PATH") || self.has_cli {
+            if let Some(resolved) = ClaudeStatusProbe::resolve_binary_path(
+                &self.cli_binary,
+                &cx.env,
+                &self.home_directory,
+            ) {
+                return Some(resolved);
+            }
+            if self.has_cli && self.cli_status_probe_override.is_some() {
+                return Some(PathBuf::from(&self.cli_binary));
+            }
+            return None;
+        }
+        for rel in [
+            ".local/bin/claude",
+            ".claude/local/claude",
+            ".claude/bin/claude",
+            ".local/share/mise/shims/claude",
+            ".asdf/shims/claude",
+        ] {
+            let candidate = self.home_directory.join(rel);
+            if RealResolverFs.is_executable(&candidate) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    pub fn has_cli_in_context(&self, cx: &FetchContext) -> bool {
+        self.has_cli || self.resolve_cli_binary(cx).is_some()
     }
 
     pub fn credentials_path(&self, cx: &FetchContext) -> PathBuf {
@@ -453,6 +614,20 @@ impl ClaudeOAuthFetchStrategy {
 
         let cred_path = self.config.credentials_path(cx);
         load_from_credentials_file(&cred_path, call)
+    }
+
+    pub fn direct_credential_is_missing(&self, cx: &FetchContext) -> bool {
+        let call = BrokerCall {
+            interaction: cx.interaction,
+            cancel: cx.cancel.clone(),
+            request_id: cx.request_id.clone(),
+        };
+        matches!(
+            self.resolve_credential_record(cx, &call),
+            Err(ClaudeOAuthCredentialsError::NotFound
+                | ClaudeOAuthCredentialsError::MissingOAuth
+                | ClaudeOAuthCredentialsError::MissingAccessToken)
+        )
     }
 
     pub fn is_plausibly_available(&self, cx: &FetchContext) -> bool {
@@ -1121,7 +1296,355 @@ impl FetchStrategy for ClaudeWebFetchStrategy {
     }
 }
 
-/// Placeholder strategy for Claude sources pending implementation (`cli`, `admin-api`).
+/// Strategy executing Claude CLI usage fetching (`claude.cli`).
+pub struct ClaudeCLIFetchStrategy {
+    config: ClaudeOAuthStrategyConfig,
+    planned_step: Option<ClaudeFetchPlanStep>,
+    owner_cli_recovery_only: bool,
+}
+
+impl ClaudeCLIFetchStrategy {
+    pub fn new(config: ClaudeOAuthStrategyConfig) -> Self {
+        Self {
+            config,
+            planned_step: None,
+            owner_cli_recovery_only: false,
+        }
+    }
+
+    pub fn with_planned_step(mut self, step: ClaudeFetchPlanStep) -> Self {
+        if step.inclusion_reason == ClaudeSourceSelectionReason::ExplicitOAuthOwnerCliFallback {
+            self.owner_cli_recovery_only = true;
+        }
+        self.planned_step = Some(step);
+        self
+    }
+
+    pub fn with_owner_cli_recovery_only(mut self, owner_cli_recovery_only: bool) -> Self {
+        self.owner_cli_recovery_only = owner_cli_recovery_only;
+        self
+    }
+
+    fn effective_enrichment(&self, cx: &FetchContext) -> (bool, bool, Option<SecretString>) {
+        if self.owner_cli_recovery_only {
+            return (false, false, None);
+        }
+        let enrichment = self.config.web_enrichment_access();
+        let use_web_extras = cx.runtime == FetchRuntime::Daemon
+            && self.config.web_extras_enabled
+            && enrichment.is_available;
+        let include_prepaid_balance = cx.runtime == FetchRuntime::Daemon
+            && self.config.include_optional_usage
+            && enrichment.is_available;
+        (
+            use_web_extras,
+            include_prepaid_balance,
+            enrichment.manual_cookie_header,
+        )
+    }
+
+    fn throttle_key(
+        &self,
+        binary: &str,
+        cx: &FetchContext,
+        call: &BrokerCall,
+    ) -> Option<ClaudeCLIUsageSpawnThrottleKey> {
+        let (use_web_extras, include_prepaid_balance, _) = self.effective_enrichment(cx);
+        ClaudeCLIUsageSpawnThrottle::key(
+            binary,
+            &cx.env,
+            &self.config.working_directory,
+            &self.config.home_directory,
+            use_web_extras,
+            include_prepaid_balance,
+            call,
+        )
+    }
+
+    async fn authentication_status(
+        &self,
+        binary: &std::path::Path,
+        cx: &FetchContext,
+        call: &BrokerCall,
+    ) -> ClaudeCLIAuthenticationStatus {
+        if let Some(ref ov) = self.config.cli_auth_status_override {
+            return (ov)(binary, cx).await;
+        }
+        ClaudeCLIAuthStatusProbe::authentication_status(
+            call.clone(),
+            &self.config.process_registry,
+            &self.config.launch_gate,
+            binary,
+            &cx.env,
+            &self.config.working_directory,
+            ClaudeCLIAuthStatusProbe::PROBE_TIMEOUT,
+        )
+        .await
+    }
+}
+
+impl FetchStrategy for ClaudeCLIFetchStrategy {
+    fn id(&self) -> &'static str {
+        CLAUDE_CLI_STRATEGY_ID
+    }
+
+    fn kind(&self) -> SourceKind {
+        SourceKind::Cli
+    }
+
+    fn is_available<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            if cx.source_mode == SourceMode::Auto
+                && let Some(step) = &self.planned_step
+                && !step.is_plausibly_available
+            {
+                return false;
+            }
+
+            let Some(binary) = self.config.resolve_cli_binary(cx) else {
+                return false;
+            };
+            let binary_str = binary.to_string_lossy().into_owned();
+            let call = BrokerCall {
+                interaction: cx.interaction,
+                cancel: cx.cancel.clone(),
+                request_id: cx.request_id.clone(),
+            };
+
+            if cx.runtime == FetchRuntime::Cli {
+                return self.authentication_status(&binary, cx, &call).await
+                    != ClaudeCLIAuthenticationStatus::LoggedOut;
+            }
+
+            let is_background_app_refresh = cx.interaction == FetchInteraction::Background;
+            if is_background_app_refresh && cx.source_mode == SourceMode::Oauth {
+                return false;
+            }
+
+            let is_background_auto_refresh =
+                is_background_app_refresh && cx.source_mode == SourceMode::Auto;
+            if is_background_auto_refresh {
+                let now = (self.config.clock)();
+                if let Some(key) = self.throttle_key(&binary_str, cx, &call)
+                    && self
+                        .config
+                        .cli_spawn_throttle
+                        .cached_result(&key, now)
+                        .is_some()
+                {
+                    return true;
+                }
+                return self
+                    .config
+                    .cli_background_availability
+                    .allows_background_auto_usage_fetch(
+                        &binary_str,
+                        &cx.env,
+                        &self.config.working_directory,
+                        &self.config.home_directory,
+                        cx.interaction,
+                        self.config.cli_keychain_disabled,
+                        self.config.cli_prompt_mode,
+                        &call,
+                        || {
+                            ClaudeOAuthFetchStrategy::new(self.config.clone())
+                                .direct_credential_is_missing(cx)
+                        },
+                    );
+            }
+
+            true
+        })
+    }
+
+    fn fetch<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
+        Box::pin(async move {
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+
+            let call = BrokerCall {
+                interaction: cx.interaction,
+                cancel: cx.cancel.clone(),
+                request_id: cx.request_id.clone(),
+            };
+            let now = (self.config.clock)();
+            let binary = self.config.resolve_cli_binary(cx);
+            let binary_str = binary.as_ref().map(|p| p.to_string_lossy().into_owned());
+            let throttle_key = binary_str
+                .as_deref()
+                .and_then(|b| self.throttle_key(b, cx, &call));
+
+            if cx.runtime == FetchRuntime::Daemon
+                && cx.interaction == FetchInteraction::Background
+                && !self.owner_cli_recovery_only
+                && let Some(ref key) = throttle_key
+                && let Some(cached) = self.config.cli_spawn_throttle.cached_result(key, now)
+            {
+                return Ok(cached);
+            }
+
+            let background_availability_marker = binary_str.as_deref().and_then(|b| {
+                ClaudeCLIBackgroundAvailabilityStore::capture_marker(
+                    b,
+                    &cx.env,
+                    &self.config.working_directory,
+                    &self.config.home_directory,
+                    &call,
+                )
+            });
+
+            let initial_timeout = if cx.source_mode == SourceMode::Auto
+                && self.config.cli_probe_timeout == ClaudeCLIUsageLoader::CLI_PROBE_TIMEOUT
+            {
+                ClaudeCLIUsageLoader::CLI_AUTO_PROBE_TIMEOUT
+            } else {
+                self.config.cli_probe_timeout
+            };
+            let binary_arg = binary_str
+                .clone()
+                .unwrap_or_else(|| self.config.cli_binary.clone());
+            let mut probe = ClaudeStatusProbe::new(
+                cx.env.clone(),
+                self.config.home_directory.clone(),
+                Arc::clone(&self.config.cli_session),
+            )
+            .with_working_directory(self.config.working_directory.clone())
+            .with_binary(binary_arg)
+            .with_timeout(initial_timeout)
+            .with_keep_cli_sessions_alive(self.config.keep_cli_sessions_alive);
+            if let Some(ref ov) = self.config.cli_status_probe_override {
+                probe = probe.with_fetch_override(Arc::clone(ov));
+            }
+
+            let loader = ClaudeCLIUsageLoader {
+                probe,
+                rate_limit_gate: Arc::clone(&self.config.cli_rate_limit_gate),
+                registry: Arc::clone(&self.config.process_registry),
+                launch_gate: Arc::clone(&self.config.launch_gate),
+            };
+
+            let status_snapshot = match loader
+                .load_with_retry(call.clone(), initial_timeout, now)
+                .await
+            {
+                Ok(snap) => snap,
+                Err(err) => {
+                    if cx.cancel.is_cancelled() || call.cancel.is_cancelled() {
+                        return Err(FetchError::Cancelled);
+                    }
+                    if err.is_retryable()
+                        && self
+                            .config
+                            .cli_background_availability
+                            .is_established(background_availability_marker.as_ref())
+                    {
+                        return Err(FetchError::Classified(err.into_classified_error()));
+                    }
+                    if let Some(ref marker) = background_availability_marker {
+                        self.config.cli_background_availability.revoke(marker);
+                    }
+                    return Err(FetchError::Classified(err.into_classified_error()));
+                }
+            };
+
+            let fetch_now = (self.config.clock)();
+            let mut snapshot = match status_snapshot.to_usage_snapshot(fetch_now) {
+                Ok(snap) => snap,
+                Err(classified) => {
+                    if cx.cancel.is_cancelled() {
+                        return Err(FetchError::Cancelled);
+                    }
+                    if let Some(ref marker) = background_availability_marker {
+                        self.config.cli_background_availability.revoke(marker);
+                    }
+                    return Err(FetchError::Classified(classified));
+                }
+            };
+
+            let (use_web_extras, include_prepaid_balance, manual_cookie_header) =
+                self.effective_enrichment(cx);
+            snapshot = apply_web_extras_if_needed(
+                snapshot,
+                WebExtrasApplyParams {
+                    net: &self.config.net,
+                    oauth_endpoint: &self.config.endpoint,
+                    web_endpoint: &self.config.web_endpoint,
+                    cookie_cache: &self.config.cookie_cache,
+                    importer: &self.config.session_importer,
+                    browser_gate: &self.config.browser_fetch_gate,
+                    manual_cookie_header: manual_cookie_header
+                        .as_ref()
+                        .map(SecretString::expose_secret),
+                    oauth_access_token: None,
+                    oauth_profile: None,
+                    use_web_extras,
+                    include_prepaid_balance,
+                    web_extras_timeout: ClaudeWebFetchStrategy::timeout_duration(
+                        self.config.web_timeout_seconds,
+                    ),
+                    options: ClaudeWebFetchOptions {
+                        target_organization_id: self.config.web_organization_id.clone(),
+                        include_usage_details: use_web_extras,
+                        include_prepaid_balance,
+                        use_desktop_cookies: self.config.use_desktop_cookies,
+                        cache_scope: self.config.cache_scope.clone(),
+                        now: fetch_now,
+                    },
+                    call: &call,
+                },
+            )
+            .await?;
+
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+
+            if cx.runtime == FetchRuntime::Daemon
+                && cx.interaction == FetchInteraction::UserInitiated
+                && let Some(marker) = background_availability_marker
+            {
+                self.config.cli_background_availability.establish(marker);
+            }
+
+            let result =
+                FetchResult::new(snapshot, "claude", CLAUDE_CLI_STRATEGY_ID, SourceKind::Cli);
+            if let Some(key) = throttle_key {
+                self.config
+                    .cli_spawn_throttle
+                    .record(result.clone(), key, fetch_now);
+            }
+            Ok(result)
+        })
+    }
+
+    fn should_fallback(&self, error: &FetchError, cx: &FetchContext) -> bool {
+        if cx.cancel.is_cancelled() || matches!(error, FetchError::Cancelled) {
+            return false;
+        }
+        if let FetchError::Classified(c) = error
+            && c.transport == Some(TransportClass::Cancelled)
+        {
+            return false;
+        }
+        if cx.runtime != FetchRuntime::Daemon
+            || cx.source_mode != SourceMode::Auto
+            || self.owner_cli_recovery_only
+        {
+            return false;
+        }
+        if let FetchError::Classified(c) = error
+            && ClaudeStatusProbeParser::is_subscription_quota_unavailable_description(Some(
+                &c.message,
+            ))
+        {
+            return false;
+        }
+        self.config.has_plausible_web_session(cx)
+    }
+}
+
+/// Placeholder strategy for Claude sources pending implementation (`admin-api`).
 ///
 /// Reports `is_available = false` so `fetch_outcome` records `AttemptOutcome::Skipped` (`skipped: unavailable`),
 /// and returns a typed `ProviderUnavailable` error if invoked directly.
@@ -1211,7 +1734,7 @@ impl ClaudeProviderPlan {
             selected_data_source: cx.source_mode,
             web_extras_enabled: self.config.web_extras_enabled,
             has_web_session: self.config.has_plausible_web_session(cx),
-            has_cli: self.config.has_cli,
+            has_cli: self.config.has_cli_in_context(cx),
             has_oauth_credentials: should_attempt_oauth,
         };
         ClaudeSourcePlanner::resolve(input)
@@ -1323,9 +1846,10 @@ impl ProviderPlan for ClaudeProviderPlan {
                             ClaudeOAuthFetchStrategy::new(self.config.clone())
                                 .with_planned_step(step),
                         ),
-                        ClaudeSourceSelectedStrategy::Cli => {
-                            Box::new(ClaudeUnavailableFetchStrategy::cli())
-                        }
+                        ClaudeSourceSelectedStrategy::Cli => Box::new(
+                            ClaudeCLIFetchStrategy::new(self.config.clone())
+                                .with_planned_step(step),
+                        ),
                         ClaudeSourceSelectedStrategy::Web => Box::new(
                             ClaudeWebFetchStrategy::new(self.config.clone())
                                 .with_planned_step(step),

@@ -242,6 +242,33 @@ impl PtySession {
         self.inner.close().await;
     }
 
+    pub(crate) async fn read_once(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Duration,
+    ) -> Result<super::DrainClassification, PtyError> {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.read_once(buffer, timeout).await
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (buffer, timeout);
+            Err(PtyError::Unsupported)
+        }
+    }
+
+    pub(crate) fn has_exited(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.has_exited()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            true
+        }
+    }
+
     /// Waits up to `timeout` for the session's exit watcher to observe that the child exited.
     #[cfg(all(target_os = "linux", feature = "test-hooks"))]
     pub async fn wait_for_exit_for_test(&mut self, timeout: Duration) -> bool {
@@ -682,7 +709,7 @@ mod linux {
             Ok(transcript(output, reason))
         }
 
-        async fn read_once(
+        pub(super) async fn read_once(
             &mut self,
             buffer: &mut [u8],
             timeout: Duration,
@@ -697,7 +724,7 @@ mod linux {
             })
         }
 
-        fn has_exited(&self) -> bool {
+        pub(super) fn has_exited(&self) -> bool {
             *self.exit_rx.borrow()
         }
 

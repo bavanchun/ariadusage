@@ -196,7 +196,7 @@ impl ClaudeConfigPaths {
 }
 
 /// Lexically normalizes `.` and `..` components without touching the filesystem.
-fn normalize_lexical(path: &Path) -> PathBuf {
+pub(crate) fn normalize_lexical(path: &Path) -> PathBuf {
     let mut normalized = PathBuf::new();
     for component in path.components() {
         match component {
