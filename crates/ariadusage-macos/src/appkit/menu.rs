@@ -39,6 +39,7 @@ use crate::engine_client::EngineClient;
 use crate::menu_descriptor::{
     self, MenuAction, MenuEntry, MenuStructure, PrimaryContent, SubmenuEntry,
 };
+use crate::settings::SettingsPane;
 use crate::switcher::SwitcherSelection;
 
 /// `highlightMenuCardsOnHover`, default true.
@@ -61,6 +62,7 @@ pub struct TargetIvars {
     is_open: Cell<bool>,
     on_update: fn(),
     on_select: fn(SwitcherSelection),
+    on_open_settings: fn(Option<SettingsPane>),
     cards: RefCell<Vec<HighlightableCard>>,
     url_actions: RefCell<Vec<String>>,
     overview_providers: RefCell<Vec<String>>,
@@ -123,12 +125,17 @@ define_class!(
 
         #[unsafe(method(openSettings:))]
         fn open_settings(&self, _sender: Option<&AnyObject>) {
-            // Settings window lands in P5; documented in docs/porting.md.
+            (self.ivars().on_open_settings)(None);
+        }
+
+        #[unsafe(method(openAbout:))]
+        fn open_about(&self, _sender: Option<&AnyObject>) {
+            (self.ivars().on_open_settings)(Some(SettingsPane::About));
         }
 
         #[unsafe(method(accountAction:))]
         fn account_action(&self, _sender: Option<&AnyObject>) {
-            // Account switch/login flow lands with Settings in P5; documented in docs/porting.md.
+            // Account switch/login flow lands with provider settings panes; documented in docs/porting.md.
         }
 
         #[unsafe(method(shareUsageSnapshot:))]
@@ -203,12 +210,14 @@ pub struct MenuController {
 impl MenuController {
     /// Builds the menu. `on_update` runs when AppKit prepares, opens or closes
     /// the menu; `on_select` runs when the user selects a tab in the switcher
-    /// or clicks a provider card on the Overview tab.
+    /// or clicks a provider card on the Overview tab; `on_open_settings` opens
+    /// the Settings window (optionally selecting a specific pane).
     pub fn new(
         mtm: MainThreadMarker,
         client: EngineClient,
         on_update: fn(),
         on_select: fn(SwitcherSelection),
+        on_open_settings: fn(Option<SettingsPane>),
     ) -> Self {
         let menu = NSMenu::new(mtm);
         menu.setAutoenablesItems(false);
@@ -231,6 +240,7 @@ impl MenuController {
                 is_open: Cell::new(false),
                 on_update,
                 on_select,
+                on_open_settings,
                 cards: RefCell::new(Vec::new()),
                 url_actions: RefCell::new(Vec::new()),
                 overview_providers: RefCell::new(Vec::new()),
@@ -253,6 +263,10 @@ impl MenuController {
             last_structure: RefCell::new(None),
             retired_cards: RefCell::new(Vec::new()),
         }
+    }
+
+    pub fn set_prefs(&mut self, prefs: CardPreferences) {
+        self.prefs = prefs;
     }
 
     pub fn menu(&self) -> &NSMenu {
@@ -691,8 +705,10 @@ impl MenuController {
                 it
             }
             MenuAction::About => {
-                // A nil target sends these to NSApplication through the responder chain.
-                item(mtm, title, Some(sel!(orderFrontStandardAboutPanel:)), key)
+                let it = item(mtm, title, Some(sel!(openAbout:)), key);
+                // SAFETY: `self.target` lives as long as `MenuController`, which owns `self.menu`.
+                unsafe { it.setTarget(Some(&self.target)) };
+                it
             }
             MenuAction::Quit => item(mtm, title, Some(sel!(terminate:)), key),
         }

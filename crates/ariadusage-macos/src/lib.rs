@@ -16,6 +16,8 @@ pub mod menu_descriptor;
 pub mod pace_text;
 pub mod presentation;
 pub mod progress_bar;
+pub mod settings;
+pub mod settings_layout;
 pub mod switcher;
 
 #[cfg(target_os = "macos")]

@@ -1215,3 +1215,68 @@ sources = [
     "Tests/CodexBarTests/ClaudeUsageInsightsTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/settings.rs"
+sources = [
+    "Sources/CodexBar/PreferencesView.swift",
+    "Sources/CodexBar/PreferencesSidebar.swift",
+    "Sources/CodexBar/PreferencesSelection.swift",
+    "Sources/CodexBar/PreferencesComponents.swift",
+    "Sources/CodexBar/PreferencesGeneralPane.swift",
+    "Sources/CodexBar/PreferencesMenuBarPane.swift",
+    "Sources/CodexBar/PreferencesMenuPane.swift",
+    "Sources/CodexBar/PreferencesAboutPane.swift",
+    "Sources/CodexBar/PreferencesTransferSection.swift",
+    "Sources/CodexBar/MenuBarLayoutEditor.swift",
+    "Sources/CodexBar/SettingsWindowController.swift",
+    "Sources/CodexBar/DockIconController.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/settings_layout.rs"
+sources = [
+    "Sources/CodexBar/PreferencesView.swift",
+    "Sources/CodexBar/PreferencesSidebar.swift",
+    "Sources/CodexBar/PreferencesComponents.swift",
+    "Sources/CodexBar/MenuBarLayoutEditor.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/appkit/settings_view.rs"
+sources = [
+    "Sources/CodexBar/PreferencesView.swift",
+    "Sources/CodexBar/PreferencesSidebar.swift",
+    "Sources/CodexBar/PreferencesComponents.swift",
+    "Sources/CodexBar/PreferencesGeneralPane.swift",
+    "Sources/CodexBar/PreferencesMenuBarPane.swift",
+    "Sources/CodexBar/PreferencesMenuPane.swift",
+    "Sources/CodexBar/PreferencesAboutPane.swift",
+    "Sources/CodexBar/MenuBarLayoutEditor.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/appkit/settings_window.rs"
+sources = [
+    "Sources/CodexBar/SettingsWindowController.swift",
+    "Sources/CodexBar/DockIconController.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/settings.rs"
+sources = [
+    "Tests/CodexBarTests/PreferencesSelectionTests.swift",
+    "Tests/CodexBarTests/PreferencesNavigationTests.swift",
+    "Tests/CodexBarTests/SettingsSidebarAccessibilityTests.swift",
+    "Tests/CodexBarTests/SettingsWindowBehaviorTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/settings_render.rs"
+sources = ["Tests/CodexBarTests/SettingsWindowBehaviorTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
