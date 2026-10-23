@@ -357,7 +357,10 @@ pub enum KeychainCredentialError {
     #[error("keychain credential item is unreadable")]
     Unreadable,
 
-    #[error("keychain credential operation timed out")]
+    /// The blocking Keychain operation exceeded its timeout (`120s` for user-initiated prompts,
+    /// `5s` for background reads); an in-flight macOS system prompt dialog and its blocking worker
+    /// thread stay alive holding the prompt lock and may still finish after `Timeout` is returned.
+    #[error("keychain credential operation timed out (blocking OS dialog may still finish)")]
     Timeout,
 
     #[error("operation cancelled")]
@@ -703,6 +706,20 @@ impl KeychainCredentialSource {
         self
     }
 
+    /// Targets an isolated file-based `SecKeychain` where `kSecUseAuthenticationUISkip`
+    /// (`skip_authenticated_items`) simulates skipping an authentication-protected item,
+    /// exercising the unfiltered attribute probe and `interaction_required_cache`.
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain_simulating_authenticated_skip(
+        mut self,
+        keychain: security_framework::os::macos::keychain::SecKeychain,
+    ) -> Self {
+        self.reader = Arc::new(
+            MacosKeychainCredentialReader::new_simulating_authenticated_skip(Some(keychain)),
+        );
+        self
+    }
+
     /// Injects a custom `KeychainCredentialReader` implementation (for deterministic tests).
     pub fn with_reader(mut self, reader: impl KeychainCredentialReader + 'static) -> Self {
         self.reader = Arc::new(reader);
@@ -811,23 +828,50 @@ impl KeychainCredentialSource {
         }
 
         let result = match call.interaction {
-            FetchInteraction::Background => match self.reader.read_item(decl, false) {
-                Ok(read) => validate_keychain_read(read),
-                Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Err(KeychainCredentialError::NotFound),
-                Err(
-                    os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
-                    | os_status::ERR_SEC_AUTH_FAILED
-                    | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM
-                    | os_status::ERR_SEC_USER_CANCELED,
-                ) => Err(KeychainCredentialError::InteractionRequired),
-                Err(_) => Err(KeychainCredentialError::Unreadable),
-            },
+            FetchInteraction::Background => {
+                let outcome = {
+                    #[cfg(target_os = "macos")]
+                    {
+                        super::secret_store::service::with_macos_keychain_interaction(false, || {
+                            self.reader.read_item(decl, false)
+                        })
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        self.reader.read_item(decl, false)
+                    }
+                };
+                match outcome {
+                    Ok(read) => validate_keychain_read(read),
+                    Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
+                        Err(KeychainCredentialError::NotFound)
+                    }
+                    Err(
+                        os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+                        | os_status::ERR_SEC_AUTH_FAILED
+                        | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM
+                        | os_status::ERR_SEC_USER_CANCELED,
+                    ) => Err(KeychainCredentialError::InteractionRequired),
+                    Err(_) => Err(KeychainCredentialError::Unreadable),
+                }
+            }
             FetchInteraction::UserInitiated => {
                 if !self.gate.should_allow_prompt(decl.service(), now_seconds) {
                     return Err(KeychainCredentialError::CooldownActive);
                 }
 
-                let outcome = self.reader.read_item(decl, true);
+                let outcome = {
+                    #[cfg(target_os = "macos")]
+                    {
+                        super::secret_store::service::with_macos_keychain_interaction(true, || {
+                            self.reader.read_item(decl, true)
+                        })
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        self.reader.read_item(decl, true)
+                    }
+                };
                 let _ = self.gate.record_prompt_attempt_completed();
 
                 match outcome {
@@ -872,7 +916,20 @@ impl KeychainCredentialSource {
             return Ok(None);
         }
 
-        let result = match self.reader.probe_fingerprint(decl) {
+        let outcome = {
+            #[cfg(target_os = "macos")]
+            {
+                super::secret_store::service::with_macos_keychain_interaction(false, || {
+                    self.reader.probe_fingerprint(decl)
+                })
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                self.reader.probe_fingerprint(decl)
+            }
+        };
+
+        let result = match outcome {
             Ok(fp) => Ok(fp),
             Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Ok(None),
             Err(
@@ -976,6 +1033,7 @@ impl KeychainCredentialReader for UnsupportedKeychainCredentialReader {
 struct MacosKeychainCredentialReader {
     keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
     interaction_required_cache: Mutex<BTreeSet<(String, Option<String>)>>,
+    simulate_authenticated_skip: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -991,6 +1049,17 @@ impl MacosKeychainCredentialReader {
         Self {
             keychain,
             interaction_required_cache: Mutex::new(BTreeSet::new()),
+            simulate_authenticated_skip: false,
+        }
+    }
+
+    fn new_simulating_authenticated_skip(
+        keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
+    ) -> Self {
+        Self {
+            keychain,
+            interaction_required_cache: Mutex::new(BTreeSet::new()),
+            simulate_authenticated_skip: true,
         }
     }
 
@@ -1009,6 +1078,10 @@ impl MacosKeychainCredentialReader {
         skip_authenticated: bool,
     ) -> Result<Vec<DiscoveredAttrCandidate>, i32> {
         use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
+
+        if skip_authenticated && self.simulate_authenticated_skip {
+            return Err(os_status::ERR_SEC_ITEM_NOT_FOUND);
+        }
 
         let mut search = ItemSearchOptions::new();
         search
@@ -1167,16 +1240,14 @@ impl KeychainCredentialReader for MacosKeychainCredentialReader {
         let cache_key = Self::cache_key(decl);
         super::secret_store::service::with_macos_keychain_interaction(false, || {
             match self.discover_candidates(decl, true) {
-                Ok(candidates) => {
-                    if !candidates.is_empty() {
-                        self.interaction_required_cache
-                            .lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .remove(&cache_key);
-                    }
+                Ok(candidates) if !candidates.is_empty() => {
+                    self.interaction_required_cache
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .remove(&cache_key);
                     Ok(candidates.into_iter().next().map(|c| c.fingerprint))
                 }
-                Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
+                Ok(_) | Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
                     if self.probe_unfiltered_interaction_required(decl) {
                         return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
                     }

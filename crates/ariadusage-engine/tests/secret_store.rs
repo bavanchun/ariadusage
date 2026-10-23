@@ -349,7 +349,9 @@ mod macos_tests {
         SafeStorageError, SafeStorageKeySource,
     };
     use ariadusage_engine::brokers::secret_store::service::{
-        MacosKeychainOperations, ServiceBackend, os_status, read_keychain_item_attributes,
+        MacosKeychainOperations, ServiceBackend, is_macos_user_prompt_active,
+        macos_background_no_ui_skipped_during_prompt_count, os_status,
+        read_keychain_item_attributes, with_macos_keychain_interaction,
     };
     use ariadusage_engine::brokers::secret_store::{SecretLookup, SecretStore, SecretStoreError};
     use ariadusage_protocol::ProviderId;
@@ -723,6 +725,210 @@ mod macos_tests {
                 .await
                 .unwrap_err(),
             SecretStoreError::Cancelled
+        );
+    }
+
+    struct InFlightPromptOps {
+        prompt_started: std::sync::mpsc::SyncSender<()>,
+        release_prompt: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        interactive_calls: AtomicUsize,
+        non_interactive_calls: AtomicUsize,
+        saw_active_prompt_on_background: AtomicUsize,
+    }
+
+    impl MacosKeychainOperations for InFlightPromptOps {
+        fn read_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+            allow_interaction: bool,
+        ) -> Result<Zeroizing<Vec<u8>>, i32> {
+            if allow_interaction {
+                self.interactive_calls.fetch_add(1, Ordering::SeqCst);
+                assert!(is_macos_user_prompt_active());
+                let _ = self.prompt_started.send(());
+                let rx = self
+                    .release_prompt
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("single interactive prompt receiver");
+                rx.recv().expect("wait for prompt release");
+                Ok(Zeroizing::new(b"invented-secret-after-prompt".to_vec()))
+            } else {
+                self.non_interactive_calls.fetch_add(1, Ordering::SeqCst);
+                if is_macos_user_prompt_active() {
+                    self.saw_active_prompt_on_background
+                        .fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(Zeroizing::new(b"invented-background-secret".to_vec()))
+            }
+        }
+
+        fn write_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+            _label: &str,
+            _password: &[u8],
+        ) -> Result<(), i32> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn macos_background_read_while_user_prompt_in_flight_uses_no_ui_and_skips_data_read() {
+        ensure_no_keychain_ui();
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+
+        let ops = Arc::new(InFlightPromptOps {
+            prompt_started: started_tx,
+            release_prompt: Mutex::new(Some(release_rx)),
+            interactive_calls: AtomicUsize::new(0),
+            non_interactive_calls: AtomicUsize::new(0),
+            saw_active_prompt_on_background: AtomicUsize::new(0),
+        });
+        let store = Arc::new(SecretStore::new(ServiceBackend::with_operations(
+            ops.clone(),
+        )));
+        let safe_source = SafeStorageKeySource::new(ServiceBackend::with_operations(ops.clone()));
+        let id = secret_id("providers.claude.apiKey");
+
+        let store_for_user = store.clone();
+        let id_for_user = id.clone();
+        let user_task = tokio::spawn(async move {
+            store_for_user
+                .user(call(FetchInteraction::UserInitiated))
+                .lookup(&id_for_user)
+                .await
+        });
+
+        tokio::task::spawn_blocking(move || {
+            started_rx.recv().expect("user prompt should start");
+        })
+        .await
+        .unwrap();
+
+        assert!(is_macos_user_prompt_active());
+        assert_eq!(ops.interactive_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ops.non_interactive_calls.load(Ordering::SeqCst), 0);
+
+        let skipped_before = macos_background_no_ui_skipped_during_prompt_count();
+
+        // Background secret lookup and Chromium Safe Storage lookup run while the simulated
+        // user prompt holds `USER_PROMPT_LOCK`: each decides `allow_interaction == false` from its
+        // own `BrokerCall`, takes the no-UI path, and returns `Locked` before calling the
+        // data-read operation (`ops.read_generic_password`).
+        assert_eq!(
+            store
+                .background(call(FetchInteraction::Background))
+                .lookup(&id)
+                .await,
+            SecretLookup::Locked
+        );
+        assert_eq!(
+            store
+                .user(call(FetchInteraction::Background))
+                .lookup(&id)
+                .await,
+            SecretLookup::Locked
+        );
+        assert_eq!(
+            safe_source
+                .chromium_safe_storage("Google Chrome", &call(FetchInteraction::Background))
+                .await
+                .unwrap_err(),
+            SafeStorageError::Locked
+        );
+
+        assert_eq!(
+            macos_background_no_ui_skipped_during_prompt_count(),
+            skipped_before + 3
+        );
+        assert_eq!(ops.interactive_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(ops.non_interactive_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            ops.saw_active_prompt_on_background.load(Ordering::SeqCst),
+            0
+        );
+
+        release_tx.send(()).unwrap();
+        let user_lookup = user_task.await.unwrap();
+        assert!(matches!(
+            user_lookup,
+            SecretLookup::Found(found) if found.expose_secret() == "invented-secret-after-prompt"
+        ));
+        assert!(!is_macos_user_prompt_active());
+
+        // Once the user prompt finishes and releases `USER_PROMPT_LOCK`, background reads run
+        // with `allow_interaction == false` and `is_macos_user_prompt_active() == false`.
+        let bg_lookup = store
+            .background(call(FetchInteraction::Background))
+            .lookup(&id)
+            .await;
+        assert!(matches!(
+            bg_lookup,
+            SecretLookup::Found(found) if found.expose_secret() == "invented-background-secret"
+        ));
+        assert_eq!(ops.non_interactive_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            ops.saw_active_prompt_on_background.load(Ordering::SeqCst),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn macos_unfiltered_attribute_probe_runs_when_no_prompt_is_active_and_caches_locked() {
+        let temp_keychain = TempKeychain::create();
+        let keychain = temp_keychain.handle();
+        let store = SecretStore::new(ServiceBackend::with_keychain_simulating_authenticated_skip(
+            keychain.clone(),
+        ));
+        let api_id = secret_id("providers.claude.apiKey");
+
+        // Inside `with_macos_keychain_interaction(false, ...)`, `is_macos_user_prompt_active()`
+        // must be `false` so the unfiltered attribute probe is not dead code.
+        let active_inside_bg =
+            with_macos_keychain_interaction(false, || Ok(is_macos_user_prompt_active())).unwrap();
+        assert!(!active_inside_bg);
+
+        // When the item does not exist, the unfiltered attribute probe also sees `ERR_SEC_ITEM_NOT_FOUND`
+        // and reports `SecretLookup::Missing`.
+        assert_eq!(
+            store
+                .background(call(FetchInteraction::Background))
+                .lookup(&api_id)
+                .await,
+            SecretLookup::Missing
+        );
+
+        // Write the item into the isolated temporary keychain. With `simulate_authenticated_skip`,
+        // the `skip_authenticated_items(true)` query returns `ERR_SEC_ITEM_NOT_FOUND`, and the
+        // unfiltered attribute probe finds the item's attributes without UI, caches the key in
+        // `interaction_required_cache`, and returns `SecretLookup::Locked`.
+        keychain
+            .set_generic_password(
+                api_id.keychain_service(),
+                &api_id.keychain_account(),
+                b"invented-authenticated-secret",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .background(call(FetchInteraction::Background))
+                .lookup(&api_id)
+                .await,
+            SecretLookup::Locked
+        );
+
+        // A second background lookup hits `interaction_required_cache` and still returns `Locked`.
+        assert_eq!(
+            store
+                .background(call(FetchInteraction::Background))
+                .lookup(&api_id)
+                .await,
+            SecretLookup::Locked
         );
     }
 }
