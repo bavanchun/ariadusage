@@ -87,6 +87,9 @@ impl BrowserBrokerInner {
             last_error: None,
         };
         while cursor.pending.is_empty() && cursor.read_next_browser().await {}
+        if call.cancel.is_cancelled() {
+            return Err(BrowserError::NoBrowserSession);
+        }
         if cursor.pending.is_empty() {
             return Err(cursor.last_error.unwrap_or(BrowserError::NoBrowserSession));
         }

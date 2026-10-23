@@ -219,15 +219,7 @@ fn rejected_first_session_reads_only_the_next_browser() {
 fn background_denied_chromium_is_skipped_before_a_usable_browser() {
     let home = TestHome::new();
     add_keyed_session(&home, Browser::Chrome);
-    let dismissed = read_in_order(
-        &home,
-        &[Browser::Chrome],
-        Arc::new(StaticKeys::failing(SafeStorageError::Dismissed)),
-    );
-    assert_eq!(
-        dismissed.expect_err("dismissal surfaced"),
-        BrowserError::Dismissed
-    );
+    add_keyed_session(&home, Browser::Brave);
     let firefox = home.firefox_profile("default-release", 17);
     let expires = (jiff::Timestamp::now().as_second() + 3600) * 1000;
     insert_firefox(
@@ -238,9 +230,8 @@ fn background_denied_chromium_is_skipped_before_a_usable_browser() {
         "firefox-session",
         "",
     );
-    add_plain_session(&home, Browser::Brave, &["session"], "brave-session");
 
-    let keys = Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec()));
+    let keys = Arc::new(StaticKeys::failing(SafeStorageError::Locked));
     let first = first_accepted(
         &home,
         &[Browser::Chrome, Browser::Firefox, Browser::Brave],
@@ -252,7 +243,7 @@ fn background_denied_chromium_is_skipped_before_a_usable_browser() {
     .expect("usable session")
     .expect("first candidate");
     assert_eq!(first.browser, Browser::Firefox);
-    assert_eq!(keys.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -282,7 +273,7 @@ fn automatic_import_without_a_browser_list_covers_every_supported_browser() {
 }
 
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:161
+// CodexBar: BrowserCookieImportSupportTests.swift:162
 fn imports_in_declared_browser_order_and_skips_unavailable_profiles() {
     let home = TestHome::new();
     let chrome = home.chromium_profile(Browser::Chrome, "Work");
@@ -327,7 +318,7 @@ fn imports_in_declared_browser_order_and_skips_unavailable_profiles() {
 }
 
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:180
+// CodexBar: BrowserCookieImportSupportTests.swift:181
 // CodexBar: BrowserDetectionTests.swift:241
 fn missing_browser_profiles_report_no_session() {
     let home = TestHome::new();
@@ -337,7 +328,7 @@ fn missing_browser_profiles_report_no_session() {
 }
 
 #[test]
-// CodexBar: BrowserCookieImportSupportTests.swift:196
+// CodexBar: BrowserCookieImportSupportTests.swift:197
 // CodexBar: BrowserDetectionTests.swift:165
 fn browser_candidates_keep_profiles_separate() {
     let home = TestHome::new();
