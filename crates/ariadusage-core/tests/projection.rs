@@ -602,9 +602,13 @@ fn test_pace_projection_and_summary_formatting() {
     input.pace = Some(pace_on_track);
 
     let proj = provider_snapshot(&snap, &input);
-    let pace_metric = proj.pace.expect("pace projected");
-    assert_eq!(pace_metric.state, MetricState::Value);
-    let p = pace_metric.value.expect("pace value");
+    let sec_metric = proj.windows.secondary.expect("secondary projected");
+    assert_eq!(sec_metric.state, MetricState::Value);
+    let p = sec_metric
+        .value
+        .expect("secondary value")
+        .pace
+        .expect("pace value");
     assert_eq!(p.stage, PaceStage::OnTrack);
     assert_eq!(p.delta_percent, 1.0);
     assert_eq!(p.expected_used_percent, 25.0);
@@ -625,7 +629,15 @@ fn test_pace_projection_and_summary_formatting() {
     input_codex.pace = Some(pace_headroom.clone());
     let proj_codex = provider_snapshot(&snap, &input_codex);
     assert_eq!(
-        proj_codex.pace.unwrap().value.unwrap().summary,
+        proj_codex
+            .windows
+            .secondary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .unwrap()
+            .summary,
         "20% in reserve | Expected 40% used | Lasts until reset | 1.5× headroom"
     );
 
@@ -634,7 +646,15 @@ fn test_pace_projection_and_summary_formatting() {
     input_claude.pace = Some(pace_headroom);
     let proj_claude = provider_snapshot(&snap, &input_claude);
     assert_eq!(
-        proj_claude.pace.unwrap().value.unwrap().summary,
+        proj_claude
+            .windows
+            .secondary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .unwrap()
+            .summary,
         "20% in reserve | Expected 40% used | Lasts until reset"
     );
 
@@ -652,7 +672,14 @@ fn test_pace_projection_and_summary_formatting() {
     let mut input_deficit = sample_projection_input("claude", RefreshState::Fresh);
     input_deficit.pace = Some(pace_deficit);
     let proj_deficit = provider_snapshot(&snap, &input_deficit);
-    let p_def = proj_deficit.pace.unwrap().value.unwrap();
+    let p_def = proj_deficit
+        .windows
+        .secondary
+        .unwrap()
+        .value
+        .unwrap()
+        .pace
+        .unwrap();
     assert_eq!(p_def.eta_seconds, Some(7200));
     assert_eq!(
         p_def.summary,
@@ -674,7 +701,15 @@ fn test_pace_projection_and_summary_formatting() {
     input_now.pace = Some(pace_now);
     let proj_now = provider_snapshot(&snap, &input_now);
     assert_eq!(
-        proj_now.pace.unwrap().value.unwrap().summary,
+        proj_now
+            .windows
+            .secondary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .unwrap()
+            .summary,
         "30% in deficit | Expected 50% used | Runs out now"
     );
 }

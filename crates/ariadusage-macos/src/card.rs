@@ -346,8 +346,7 @@ pub fn card_model(
         metrics.push(builder.primary(primary, titles.session.clone()));
     }
     if let Some(weekly) = windows.secondary.as_ref().and_then(displayable_value) {
-        let pace = provider.pace.as_ref().and_then(displayable_value);
-        metrics.push(builder.secondary(weekly, titles.weekly.clone(), pace));
+        metrics.push(builder.secondary(weekly, titles.weekly.clone()));
     }
     if let (Some(title), Some(tertiary)) = (
         titles.tertiary.as_ref(),
@@ -432,9 +431,9 @@ impl RowBuilder<'_> {
     }
 
     /// The weekly row, with the engine's pace.
-    fn secondary(&self, window: &RateWindow, title: String, pace: Option<&Pace>) -> MetricRow {
+    fn secondary(&self, window: &RateWindow, title: String) -> MetricRow {
         let mut row = self.row("secondary", title, window);
-        if let Some(pace) = pace {
+        if let Some(pace) = window.pace.as_ref() {
             self.apply_weekly_pace(&mut row, window, pace);
         }
         row.warning_marker_percents = progress_bar::warning_marker_percents(
@@ -507,9 +506,8 @@ impl RowBuilder<'_> {
             expected_used_percent: pace.expected_used_percent,
             will_last_to_reset: pace.will_last_to_reset,
             eta_seconds: pace.eta_seconds.map(|s| s as f64),
-            // The snapshot does not carry these yet.
-            run_out_probability: None,
-            speed_multiplier_to_reset: None,
+            run_out_probability: pace.run_out_probability,
+            speed_multiplier_to_reset: pace.speed_multiplier_to_reset,
         };
         let detail = pace_text::detail(
             &facts,

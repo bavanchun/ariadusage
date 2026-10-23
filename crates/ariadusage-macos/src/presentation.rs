@@ -49,7 +49,7 @@ pub fn icon_input(provider: &ProviderSnapshot, prefs: IconPreferences) -> IconIn
             .status
             .as_ref()
             .and_then(displayable_value)
-            .map(status_level)
+            .map(|s| status_level(&s.indicator))
             .unwrap_or_default(),
         reserves_missing_secondary_lane: reserves_missing_secondary_lane(provider.id.as_str()),
     }

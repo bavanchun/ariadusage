@@ -63,26 +63,19 @@ mod macos {
             300,
             SignedDuration::from_mins(133),
         )));
-        p.windows.secondary = Some(value(window(
-            now,
-            50.0,
-            10080,
-            SignedDuration::from_hours(96),
-        )));
-        p.pace = Some(value(Pace {
+        let mut weekly = window(now, 50.0, 10080, SignedDuration::from_hours(96));
+        weekly.pace = Some(Pace {
             stage: PaceStage::Ahead,
             delta_percent: 7.0,
             expected_used_percent: 43.0,
             will_last_to_reset: false,
             eta_seconds: Some(3 * 24 * 3600),
+            speed_multiplier_to_reset: None,
+            run_out_probability: None,
             summary: String::new(),
-        }));
-        p.credits = Some(value(Credits {
-            remaining: 42.5,
-            unit: None,
-            balance_is_workspace: None,
-            updated_at: None,
-        }));
+        });
+        p.windows.secondary = Some(value(weekly));
+        p.credits = Some(value(Credits::new(42.5)));
         p.identity = Some(value(Identity {
             provider_id: ProviderId::new("codex").unwrap(),
             account_email: None,
