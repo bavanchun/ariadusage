@@ -1,3 +1,7 @@
+// Ported from CodexBar Sources/CodexBarCore/DarwinProcessEnumerator.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/PiProcessEnvironment.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::{collections::BTreeMap, collections::BTreeSet, fs};
@@ -5,13 +9,18 @@ use std::{collections::BTreeMap, collections::BTreeSet, fs};
 use zeroize::Zeroizing;
 
 pub const MAX_ENVIRONMENT_BYTES: usize = 1024 * 1024;
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub const PROCESS_MARKER_ENV: &str = "ARIADUSAGE_PROCESS_MARKER";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ProcessIdentity {
     pub pid: i32,
     pub start_ticks: u64,
+}
+
+#[cfg(target_os = "macos")]
+fn is_live_proc_root(root: &Path) -> bool {
+    root == Path::new("/proc")
 }
 
 pub fn same_uid_processes(root: &Path, uid: u32) -> Vec<ProcessIdentity> {
@@ -41,17 +50,65 @@ pub fn same_uid_processes(root: &Path, uid: u32) -> Vec<ProcessIdentity> {
         identities.sort_by_key(|identity| identity.pid);
         identities
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
-        let _ = (root, uid);
-        Vec::new()
+        if !is_live_proc_root(root) {
+            return same_uid_processes_from_proc_fs(root, uid);
+        }
+        let pids = darwin_same_uid_pids(uid);
+        let current_pid = std::process::id() as i32;
+        let mut seen = BTreeSet::new();
+        let mut identities = Vec::new();
+        for pid in pids {
+            if pid <= 0 || pid == current_pid || !seen.insert(pid) {
+                continue;
+            }
+            let Some(info) = darwin_bsd_info(pid) else {
+                continue;
+            };
+            if info.pbi_ruid != uid && info.pbi_uid != uid {
+                continue;
+            }
+            identities.push(darwin_identity_from_bsd(pid, &info));
+        }
+        identities.sort_by_key(|identity| identity.pid);
+        identities
     }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        same_uid_processes_from_proc_fs(root, uid)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn same_uid_processes_from_proc_fs(root: &Path, uid: u32) -> Vec<ProcessIdentity> {
+    let Ok(entries) = fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let current_pid = std::process::id() as i32;
+    let mut identities = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().to_string_lossy().parse::<i32>().ok())
+        .filter(|&pid| pid > 0 && pid != current_pid)
+        .filter(|&pid| process_uid_from_proc_fs(root, pid) == Some(uid))
+        .filter_map(|pid| process_identity_from_proc_fs(root, pid))
+        .collect::<Vec<_>>();
+    identities.sort_by_key(|identity| identity.pid);
+    identities
 }
 
 pub fn fd_targets(root: &Path, pid: i32) -> Vec<PathBuf> {
     if pid <= 0 {
         return Vec::new();
     }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_fd_targets(pid);
+    }
+    fd_targets_from_proc_fs(root, pid)
+}
+
+fn fd_targets_from_proc_fs(root: &Path, pid: i32) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root.join(pid.to_string()).join("fd")) else {
         return Vec::new();
     };
@@ -67,6 +124,15 @@ pub fn process_identity(root: &Path, pid: i32) -> Option<ProcessIdentity> {
     if pid <= 0 {
         return None;
     }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        let info = darwin_bsd_info(pid)?;
+        return Some(darwin_identity_from_bsd(pid, &info));
+    }
+    process_identity_from_proc_fs(root, pid)
+}
+
+fn process_identity_from_proc_fs(root: &Path, pid: i32) -> Option<ProcessIdentity> {
     let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
     let fields = stat
         .get(stat.rfind(')')?.checked_add(1)?..)?
@@ -79,6 +145,16 @@ pub fn process_state(root: &Path, pid: i32) -> Option<char> {
     if pid <= 0 {
         return None;
     }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        if let Some(info) = darwin_bsd_info(pid) {
+            return Some(darwin_status_char(info.pbi_status));
+        }
+        if let Some(short) = darwin_bsd_short_info(pid) {
+            return Some(darwin_status_char(short.pbsi_status));
+        }
+        return None;
+    }
     let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
     stat.get(stat.rfind(')')?.checked_add(1)?..)?
         .split_whitespace()
@@ -89,6 +165,16 @@ pub fn process_state(root: &Path, pid: i32) -> Option<char> {
 
 pub fn process_group(root: &Path, pid: i32) -> Option<i32> {
     if pid <= 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        if let Some(info) = darwin_bsd_info(pid) {
+            return i32::try_from(info.pbi_pgid).ok();
+        }
+        if let Some(short) = darwin_bsd_short_info(pid) {
+            return i32::try_from(short.pbsi_pgid).ok();
+        }
         return None;
     }
     let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
@@ -120,6 +206,10 @@ pub fn process_net_ns(root: &Path, pid: i32) -> Option<String> {
 pub fn process_children(root: &Path, pid: i32) -> Vec<i32> {
     if pid <= 0 {
         return Vec::new();
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_process_children(pid);
     }
     let task_root = root.join(pid.to_string()).join("task");
     let Ok(tasks) = fs::read_dir(task_root) else {
@@ -205,6 +295,20 @@ pub fn process_uid(root: &Path, pid: i32) -> Option<u32> {
     if pid <= 0 {
         return None;
     }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        if let Some(info) = darwin_bsd_info(pid) {
+            return Some(info.pbi_ruid);
+        }
+        if let Some(short) = darwin_bsd_short_info(pid) {
+            return Some(short.pbsi_ruid);
+        }
+        return None;
+    }
+    process_uid_from_proc_fs(root, pid)
+}
+
+fn process_uid_from_proc_fs(root: &Path, pid: i32) -> Option<u32> {
     let status = std::fs::read_to_string(root.join(pid.to_string()).join("status")).ok()?;
     status.lines().find_map(|line| {
         let mut values = line.strip_prefix("Uid:")?.split_whitespace();
@@ -215,6 +319,10 @@ pub fn process_uid(root: &Path, pid: i32) -> Option<u32> {
 pub fn read_marker_environment(root: &Path, pid: i32, key: &str) -> Option<Zeroizing<Vec<u8>>> {
     if pid <= 0 {
         return None;
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_read_marker_environment(pid, key);
     }
     let path = root.join(pid.to_string()).join("environ");
     let file = std::fs::File::open(path).ok()?;
@@ -255,7 +363,310 @@ pub fn parse_marker_environment(bytes: &[u8], key: &str) -> Option<Zeroizing<Vec
     marker
 }
 
-#[cfg(all(test, target_os = "linux"))]
+/// Parses the `argv` slice from a Darwin `KERN_PROCARGS2` buffer.
+pub fn parse_procargs2_arguments(bytes: &[u8]) -> Option<Vec<String>> {
+    parse_procargs2_layout(bytes).map(|(arguments, _)| arguments)
+}
+
+/// Parses selected environment keys from a Darwin `KERN_PROCARGS2` buffer,
+/// stopping before trailing Apple vector strings.
+pub fn parse_procargs2_environment(
+    bytes: &[u8],
+    names: &[&str],
+) -> Option<BTreeMap<String, String>> {
+    let suffix = procargs2_environment_slice(bytes)?;
+    parse_nul_environment(suffix, names)
+}
+
+/// Extracts the ownership marker value from a Darwin `KERN_PROCARGS2` buffer.
+pub fn parse_procargs2_marker(bytes: &[u8], key: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let suffix = procargs2_environment_slice(bytes)?;
+    parse_marker_environment(suffix, key)
+}
+
+fn parse_procargs2_layout(bytes: &[u8]) -> Option<(Vec<String>, usize)> {
+    if bytes.len() < 4 || bytes.len() > MAX_ENVIRONMENT_BYTES {
+        return None;
+    }
+    let argc = i32::from_le_bytes(bytes[..4].try_into().ok()?);
+    if argc < 0 || (argc as usize) > bytes.len() {
+        return None;
+    }
+    let argc = argc as usize;
+    let mut offset = 4;
+    let exec_rel_end = bytes[offset..].iter().position(|&b| b == 0)?;
+    offset += exec_rel_end + 1;
+    while offset < bytes.len() && bytes[offset] == 0 {
+        offset += 1;
+    }
+
+    let mut arguments = Vec::with_capacity(argc);
+    for _ in 0..argc {
+        if offset >= bytes.len() {
+            return None;
+        }
+        let rel_end = bytes[offset..].iter().position(|&b| b == 0)?;
+        let end = offset + rel_end;
+        let argument = std::str::from_utf8(&bytes[offset..end]).ok()?.to_owned();
+        arguments.push(argument);
+        offset = end + 1;
+    }
+    Some((arguments, offset))
+}
+
+fn procargs2_environment_slice(bytes: &[u8]) -> Option<&[u8]> {
+    let (_, env_offset) = parse_procargs2_layout(bytes)?;
+    let suffix = bytes.get(env_offset..)?;
+    if suffix.first().copied().unwrap_or(0) == 0 {
+        return None;
+    }
+    let mut offset = 0;
+    while offset < suffix.len() {
+        let rel_term = suffix[offset..].iter().position(|&b| b == 0)?;
+        let term = offset + rel_term;
+        if term == offset {
+            return Some(&suffix[..offset]);
+        }
+        offset = term + 1;
+    }
+    Some(suffix)
+}
+
+fn parse_nul_environment(bytes: &[u8], names: &[&str]) -> Option<BTreeMap<String, String>> {
+    if bytes.len() > MAX_ENVIRONMENT_BYTES || (!bytes.is_empty() && bytes.last() != Some(&0)) {
+        return None;
+    }
+    let mut selected = BTreeMap::new();
+    let mut remainder = bytes;
+    while let Some(first_non_nul) = remainder.iter().position(|&b| b != 0) {
+        remainder = &remainder[first_non_nul..];
+        let end = remainder.iter().position(|&b| b == 0)?;
+        let record = &remainder[..end];
+        remainder = &remainder[end + 1..];
+        let separator = record.iter().position(|&b| b == b'=')?;
+        let name = std::str::from_utf8(&record[..separator]).ok()?;
+        if !names.contains(&name) {
+            continue;
+        }
+        let value = std::str::from_utf8(&record[separator + 1..]).ok()?;
+        if let Some(previous) = selected.get(name)
+            && previous != value
+        {
+            return None;
+        }
+        selected.insert(name.to_owned(), value.to_owned());
+    }
+    Some(selected)
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_bsd_info(pid: i32) -> Option<proc_pidinfo::ProcBSDInfo> {
+    let pid = u32::try_from(pid).ok()?;
+    if pid == 0 {
+        return None;
+    }
+    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDInfo>(proc_pidinfo::Pid(pid))
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_bsd_short_info(pid: i32) -> Option<proc_pidinfo::ProcBSDShortInfo> {
+    let pid = u32::try_from(pid).ok()?;
+    if pid == 0 {
+        return None;
+    }
+    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDShortInfo>(proc_pidinfo::Pid(pid))
+        .ok()
+        .flatten()
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_identity_from_bsd(pid: i32, info: &proc_pidinfo::ProcBSDInfo) -> ProcessIdentity {
+    let start_ticks = info
+        .pbi_start_tvsec
+        .saturating_mul(1_000_000)
+        .saturating_add(info.pbi_start_tvusec);
+    ProcessIdentity { pid, start_ticks }
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_status_char(status: u32) -> char {
+    match status {
+        1 => 'I',
+        2 => 'R',
+        3 => 'S',
+        4 => 'T',
+        5 => 'Z',
+        _ => 'S',
+    }
+}
+
+#[cfg(target_os = "macos")]
+static DARWIN_SYSTEM: std::sync::LazyLock<std::sync::Mutex<sysinfo::System>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(sysinfo::System::new()));
+
+#[cfg(target_os = "macos")]
+static DARWIN_ENVIRON_SYSTEM: std::sync::LazyLock<std::sync::Mutex<sysinfo::System>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(sysinfo::System::new()));
+
+#[cfg(target_os = "macos")]
+static DARWIN_NO_MARKER_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(ProcessIdentity, String)>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+#[cfg(target_os = "macos")]
+fn darwin_same_uid_pids(uid: u32) -> Vec<i32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+
+    let mut system = DARWIN_SYSTEM
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    system.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut pids = system
+        .processes()
+        .iter()
+        .filter_map(|(pid, process)| {
+            let pid = i32::try_from(pid.as_u32()).ok().filter(|&pid| pid > 0)?;
+            let matches_uid = process.user_id().is_none_or(|id| **id == uid)
+                || process.effective_user_id().is_none_or(|id| **id == uid);
+            matches_uid.then_some(pid)
+        })
+        .collect::<Vec<_>>();
+    pids.sort_unstable();
+    pids.dedup();
+    pids
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_process_children(pid: i32) -> Vec<i32> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+
+    let candidates = {
+        let mut system = DARWIN_SYSTEM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::All,
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        system
+            .processes()
+            .iter()
+            .filter_map(|(candidate_pid, process)| {
+                let candidate = i32::try_from(candidate_pid.as_u32())
+                    .ok()
+                    .filter(|&candidate| candidate > 0 && candidate != pid)?;
+                let maybe_child = process
+                    .parent()
+                    .is_none_or(|parent| i32::try_from(parent.as_u32()).ok() == Some(pid));
+                maybe_child.then_some(candidate)
+            })
+            .collect::<Vec<_>>()
+    };
+    let mut children = BTreeSet::new();
+    for candidate in candidates {
+        let is_child = darwin_bsd_info(candidate)
+            .map(|info| info.pbi_ppid.0 as i32 == pid)
+            .or_else(|| darwin_bsd_short_info(candidate).map(|info| info.pbsi_ppid.0 as i32 == pid))
+            .unwrap_or(false);
+        if is_child {
+            children.insert(candidate);
+        }
+    }
+    children.into_iter().collect()
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_fd_targets(pid: i32) -> Vec<PathBuf> {
+    use proc_pidinfo::{
+        Pid, PipeFdInfo, ProcFDInfo, ProcFDType, proc_pidfdinfo, proc_pidinfo_list,
+    };
+
+    let Ok(pid_u32) = u32::try_from(pid) else {
+        return Vec::new();
+    };
+    let target_pid = Pid(pid_u32);
+    let Ok(fds) = proc_pidinfo_list::<ProcFDInfo>(target_pid) else {
+        return Vec::new();
+    };
+    let mut targets = Vec::new();
+    for fd in fds {
+        if fd.fd_type() == Ok(ProcFDType::PIPE)
+            && let Ok(Some(pipe)) = proc_pidfdinfo::<PipeFdInfo>(target_pid, fd.proc_fd)
+        {
+            for handle in [pipe.pipe_info.pipe_handle, pipe.pipe_info.pipe_peerhandle] {
+                if handle != 0 {
+                    targets.push(PathBuf::from(format!("pipe:[{handle:x}]")));
+                }
+            }
+        }
+    }
+    targets.sort();
+    targets.dedup();
+    targets
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_read_marker_environment(pid: i32, key: &str) -> Option<Zeroizing<Vec<u8>>> {
+    use std::os::unix::ffi::OsStrExt;
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+
+    let pid_u32 = u32::try_from(pid).ok()?;
+    if pid_u32 == 0 {
+        return None;
+    }
+    let info = darwin_bsd_info(pid)?;
+    let identity = darwin_identity_from_bsd(pid, &info);
+    {
+        let cache = DARWIN_NO_MARKER_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if cache.contains(&(identity, key.to_owned())) {
+            return None;
+        }
+    }
+    let sys_pid = Pid::from_u32(pid_u32);
+    let marker = {
+        let mut system = DARWIN_ENVIRON_SYSTEM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+        );
+        let process = system.process(sys_pid)?;
+        let prefix = format!("{key}=");
+        let prefix_bytes = prefix.as_bytes();
+        let mut marker: Option<Zeroizing<Vec<u8>>> = None;
+        for entry in process.environ() {
+            let bytes = entry.as_bytes();
+            let Some(value) = bytes.strip_prefix(prefix_bytes) else {
+                continue;
+            };
+            if let Some(current) = marker.as_ref()
+                && current.as_slice() != value
+            {
+                return None;
+            }
+            if marker.is_none() {
+                marker = Some(Zeroizing::new(value.to_vec()));
+            }
+        }
+        marker
+    };
+    if marker.is_none() {
+        let mut cache = DARWIN_NO_MARKER_CACHE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        cache.insert((identity, key.to_owned()));
+    }
+    marker
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::{ProcessIdentity, process_descendants_with_hook};
 

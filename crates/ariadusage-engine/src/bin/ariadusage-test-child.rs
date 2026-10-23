@@ -1,4 +1,4 @@
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn main() {
     if install_watchdog().is_err() {
         std::process::exit(2);
@@ -19,7 +19,7 @@ fn main() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn install_watchdog() -> Result<(), std::io::Error> {
     use std::time::Duration;
 
@@ -36,10 +36,10 @@ fn install_watchdog() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn main() {}
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
     use std::process::{Command, Stdio};
@@ -55,18 +55,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.into_string().ok())
         .unwrap_or_default();
     let remaining = args.collect::<Vec<_>>();
-    let inherited = matches!(
-        mode.as_str(),
-        "grandchild"
-            | "grandchild-no-session"
-            | "hold-pipe"
-            | "hold-pipe-stream"
-            | "hold-detached-pipe"
-            | "term-spawn-grandchild"
-    );
-    if !inherited {
-        let _ =
-            rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM));
+    #[cfg(target_os = "linux")]
+    {
+        let inherited = matches!(
+            mode.as_str(),
+            "grandchild"
+                | "grandchild-no-session"
+                | "hold-pipe"
+                | "hold-pipe-stream"
+                | "hold-detached-pipe"
+                | "term-spawn-grandchild"
+        );
+        if !inherited {
+            let _ = rustix::process::set_parent_process_death_signal(Some(
+                rustix::process::Signal::TERM,
+            ));
+        }
     }
 
     match mode.as_str() {
@@ -387,7 +391,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn run_rpc_echo(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead, Write};
 
@@ -454,7 +458,7 @@ fn run_rpc_echo(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn run_pty_prompt(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{BufRead, Write};
     use std::time::Duration;
@@ -555,29 +559,69 @@ fn run_pty_prompt(mode: Option<&str>) -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn list_fds() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
+    #[cfg(target_os = "linux")]
     rustix::process::set_parent_process_death_signal(Some(rustix::process::Signal::TERM))?;
     let mut stdout = std::io::stdout();
     writeln!(stdout, "PID {}", std::process::id())?;
     stdout.flush()?;
-    for entry in std::fs::read_dir("/proc/self/fd")? {
-        let entry = entry?;
-        if let Ok(target) = std::fs::read_link(entry.path()) {
-            writeln!(
-                stdout,
-                "{} {}",
-                entry.file_name().to_string_lossy(),
-                target.display()
-            )?;
+    #[cfg(target_os = "linux")]
+    {
+        for entry in std::fs::read_dir("/proc/self/fd")? {
+            let entry = entry?;
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                writeln!(
+                    stdout,
+                    "{} {}",
+                    entry.file_name().to_string_lossy(),
+                    target.display()
+                )?;
+            }
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use proc_pidinfo::{
+            PipeFdInfo, ProcFDInfo, ProcFDType, VnodeFdInfo, VnodeFdInfoWithPath,
+            proc_pidfdinfo_self, proc_pidinfo_list_self,
+        };
+
+        for fd in proc_pidinfo_list_self::<ProcFDInfo>()? {
+            let target = match fd.fd_type() {
+                Ok(ProcFDType::VNODE) => {
+                    if let Ok(Some(vnode)) = proc_pidfdinfo_self::<VnodeFdInfoWithPath>(fd.proc_fd)
+                        && let Ok(path) = vnode.path()
+                        && !path.as_os_str().is_empty()
+                    {
+                        path.display().to_string()
+                    } else if let Ok(Some(vnode)) = proc_pidfdinfo_self::<VnodeFdInfo>(fd.proc_fd) {
+                        format!(
+                            "vnode:[{:x}:{:x}]",
+                            vnode.pvi.vi_stat.vst_dev, vnode.pvi.vi_stat.vst_ino
+                        )
+                    } else {
+                        "vnode:unknown".to_owned()
+                    }
+                }
+                Ok(ProcFDType::PIPE) => {
+                    if let Ok(Some(pipe)) = proc_pidfdinfo_self::<PipeFdInfo>(fd.proc_fd) {
+                        format!("pipe:[{:x}]", pipe.pipe_info.pipe_handle)
+                    } else {
+                        "pipe:unknown".to_owned()
+                    }
+                }
+                _ => format!("fdtype:{}", fd.proc_fdtype),
+            };
+            writeln!(stdout, "{} {}", fd.proc_fd.0, target)?;
         }
     }
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn read_stdin_bounded() -> Result<zeroize::Zeroizing<Vec<u8>>, std::io::Error> {
     use std::io::{self, Read};
     use std::os::fd::AsFd;
@@ -616,7 +660,7 @@ async fn read_stdin_bounded() -> Result<zeroize::Zeroizing<Vec<u8>>, std::io::Er
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn write_pattern(destination: &str, count: usize) -> Result<(), std::io::Error> {
     use std::io::Write;
 
@@ -641,7 +685,7 @@ fn write_pattern(destination: &str, count: usize) -> Result<(), std::io::Error> 
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn bounded_millis(value: Option<&std::ffi::OsString>) -> u64 {
     value
         .and_then(|value| value.to_str())
@@ -650,7 +694,7 @@ fn bounded_millis(value: Option<&std::ffi::OsString>) -> u64 {
         .min(60_000)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn bounded_count(value: Option<&std::ffi::OsString>) -> usize {
     value
         .and_then(|value| value.to_str())
@@ -659,7 +703,7 @@ fn bounded_count(value: Option<&std::ffi::OsString>) -> usize {
         .min(16 * 1024 * 1024)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 async fn run_fake_shell(
     mode: &str,
     remaining: Vec<std::ffi::OsString>,

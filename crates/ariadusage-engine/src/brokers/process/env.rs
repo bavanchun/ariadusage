@@ -96,7 +96,7 @@ impl ProcessEnv {
         self
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn with_internal<K, V>(mut self, name: K, value: V) -> Self
     where
         K: Into<OsString>,
@@ -132,7 +132,7 @@ impl ProcessEnv {
         self.values.is_empty()
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&OsString, &OsString)> {
         self.values.iter()
     }

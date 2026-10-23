@@ -54,13 +54,13 @@ impl fmt::Debug for AbsolutePath {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn is_executable(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(unix))]
 fn is_executable(metadata: &std::fs::Metadata) -> bool {
     metadata.is_file()
 }
@@ -84,12 +84,12 @@ pub enum StdinSpec {
 }
 
 impl StdinSpec {
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     pub(crate) fn into_bytes(self) -> Option<Zeroizing<Vec<u8>>> {
         match self {
             Self::Null => None,
