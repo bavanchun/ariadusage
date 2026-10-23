@@ -241,6 +241,12 @@ impl PtySession {
         #[cfg(target_os = "linux")]
         self.inner.close().await;
     }
+
+    /// Waits up to `timeout` for the session's exit watcher to observe that the child exited.
+    #[cfg(all(target_os = "linux", feature = "test-hooks"))]
+    pub async fn wait_for_exit_for_test(&mut self, timeout: Duration) -> bool {
+        self.inner.wait_for_exit(timeout).await
+    }
 }
 
 impl fmt::Debug for PtySession {
@@ -695,7 +701,7 @@ mod linux {
             *self.exit_rx.borrow()
         }
 
-        async fn wait_for_exit(&mut self, timeout: Duration) -> bool {
+        pub(super) async fn wait_for_exit(&mut self, timeout: Duration) -> bool {
             if self.has_exited() {
                 return true;
             }
