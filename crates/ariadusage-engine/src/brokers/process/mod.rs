@@ -118,8 +118,16 @@ fn session_target(
         },
         None => return Err(ProcessError::LaunchFailed),
     };
-    let pgid = process_group(proc_root, pid).ok_or(ProcessError::LaunchFailed)?;
-    let uid = process_uid(proc_root, pid).ok_or(ProcessError::LaunchFailed)?;
+    let pgid = match process_group(proc_root, pid) {
+        Some(pgid) => pgid,
+        None if process_state(proc_root, pid) == Some('Z') => pid,
+        None => return Err(ProcessError::LaunchFailed),
+    };
+    let uid = match process_uid(proc_root, pid) {
+        Some(uid) => uid,
+        None if process_state(proc_root, pid) == Some('Z') => getuid().as_raw(),
+        None => return Err(ProcessError::LaunchFailed),
+    };
     if pgid <= 1 || pgid != pid || pgid == getpgrp().as_raw_pid() || uid != getuid().as_raw() {
         return Err(ProcessError::LaunchFailed);
     }

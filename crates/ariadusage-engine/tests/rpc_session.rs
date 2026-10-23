@@ -171,8 +171,11 @@ async fn closing_stdin_turns_a_pending_request_into_a_normal_closed_error() {
 // CodexBar: RPCChildProcessTeardownTests.swift:110
 async fn shutdown_escalates_against_a_term_ignoring_child() {
     support::require_nextest();
+    let dir = tempfile::tempdir().unwrap();
+    let ready = dir.path().join("ready.pid");
     let registry = ProcessRegistry::new();
-    let session = spawn(&["rpc-ignore-term"], &registry).await;
+    let session = spawn(&["rpc-ignore-term", ready.to_str().unwrap()], &registry).await;
+    support::wait_for_pid(&ready).await;
     let started = Instant::now();
     session.shutdown().await;
     assert!(started.elapsed() >= Duration::from_millis(350));

@@ -338,6 +338,25 @@ fn darwin_live_procscan_inspects_current_and_child_processes() {
 
     let _ = child.kill();
     let _ = child.wait();
+
+    let mut short_lived = Command::new(env!("CARGO_BIN_EXE_ariadusage-test-child"))
+        .args(["print", "stdout", "8"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn short-lived test child");
+    let mut short_stdout = short_lived.stdout.take().expect("short-lived stdout");
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut short_stdout, &mut bytes).expect("drain short-lived stdout");
+    assert_eq!(bytes, b"xxxxxxxx");
+    let short_pid = short_lived.id() as i32;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while process_state(proc_root, short_pid) != Some('Z') && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert_eq!(process_state(proc_root, short_pid), Some('Z'));
+    let status = short_lived.wait().expect("reap short-lived child");
+    assert!(status.success());
 }
 
 fn proc_args_data(arguments: &[&str], environment: &[&str]) -> Vec<u8> {

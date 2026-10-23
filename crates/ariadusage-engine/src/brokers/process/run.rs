@@ -188,8 +188,19 @@ async fn run_unix_inner(
             return Err(ProcessError::LaunchFailed);
         }
     };
-    let (Some(pgid), Some(uid)) = (process_group(proc_root, pid), process_uid(proc_root, pid))
-    else {
+    let pgid = match process_group(proc_root, pid) {
+        Some(pgid) => Some(pgid),
+        None if process_state(proc_root, pid) == Some('Z') => Some(pid),
+        None => None,
+    };
+    let uid = match process_uid(proc_root, pid) {
+        Some(uid) => Some(uid),
+        None if process_state(proc_root, pid) == Some('Z') => {
+            Some(rustix::process::getuid().as_raw())
+        }
+        None => None,
+    };
+    let (Some(pgid), Some(uid)) = (pgid, uid) else {
         let _ = signal(identity, ProcessSignal::Kill);
         let _ = child.inner_mut().wait().await;
         return Err(ProcessError::LaunchFailed);

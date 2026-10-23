@@ -1023,8 +1023,9 @@ fn session_scope_probe_session_id_workspace_trust_and_artifact_cleaner() {
     );
 
     // Probe session artifact cleaner
+    let canonical_probe_dir = fs::canonicalize(&probe_dir).unwrap();
     let project_dir_name = ClaudeProbeSessionArtifactCleaner::sanitized_project_directory_name(
-        &probe_dir.to_string_lossy(),
+        &canonical_probe_dir.to_string_lossy(),
     );
     let project_dir = first_root.join("projects").join(&project_dir_name);
     fs::create_dir_all(&project_dir).unwrap();
