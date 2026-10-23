@@ -1,3 +1,4 @@
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeCLISpendCapParser.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
@@ -16,7 +17,8 @@ use jiff::civil::{Date, DateTime};
 use jiff::tz::{AmbiguousOffset, TimeZone};
 use serde_json::Value;
 
-use super::cli_screen::{ClaudeCLIScreen, ClaudeCLISpendCapParser};
+use super::cli_gates::ClaudeCLIRateLimitGate;
+use super::cli_screen::{ClaudeCLIScreen, ClaudeCLISpendCapParser, split_newline_components};
 use super::identity::ClaudeAccountIdentity;
 use super::plan::ClaudePlan;
 use super::scoped_weekly::ClaudeScopedWeeklyLimitMapper;
@@ -209,19 +211,19 @@ pub enum ClaudeStatusProbeError {
     ParseFailed(String),
     #[error("Claude usage probe timed out.")]
     TimedOut,
+    #[error("Claude usage probe cancelled.")]
+    Cancelled,
 }
 
 impl ClaudeStatusProbeError {
     /// Matches `ClaudeUsageFetcher.isRetryableCLIProbeError`.
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::AuthenticationFailed(_) | Self::ClaudeNotInstalled => false,
+            Self::AuthenticationFailed(_) | Self::ClaudeNotInstalled | Self::Cancelled => false,
             Self::TimedOut => true,
             Self::ParseFailed(message) => {
                 let lower = message.to_ascii_lowercase();
                 lower.contains("still loading usage")
-                    || lower.contains("timed out")
-                    || lower.contains("timeout")
             }
         }
     }
@@ -241,13 +243,15 @@ impl ClaudeStatusProbeError {
     /// Matches `ClaudeCLIRateLimitGate.isRateLimitError`.
     pub fn is_rate_limit_error(&self) -> bool {
         match self {
-            Self::ParseFailed(message) | Self::AuthenticationFailed(message) => {
-                let lower = message.to_ascii_lowercase();
-                lower.contains("rate_limit_error")
-                    || lower.contains("rate limited")
-                    || lower.contains("usage endpoint is rate limited")
+            Self::ParseFailed(message) => {
+                ClaudeCLIRateLimitGate::is_rate_limit_message(message, true)
             }
-            Self::ClaudeNotInstalled | Self::TimedOut => false,
+            Self::AuthenticationFailed(_)
+            | Self::ClaudeNotInstalled
+            | Self::TimedOut
+            | Self::Cancelled => {
+                ClaudeCLIRateLimitGate::is_rate_limit_message(&self.to_string(), false)
+            }
         }
     }
 
@@ -262,6 +266,8 @@ impl ClaudeStatusProbeError {
             }
             Self::TimedOut => ClassifiedError::new(ProviderErrorKind::NetworkFailure, msg)
                 .with_transport(TransportClass::Timeout),
+            Self::Cancelled => ClassifiedError::new(ProviderErrorKind::NetworkFailure, msg)
+                .with_transport(TransportClass::Cancelled),
             Self::ParseFailed(_) => {
                 if self.is_rate_limit_error() {
                     ClassifiedError::new(ProviderErrorKind::RateLimited, msg)
@@ -280,7 +286,10 @@ struct LabelSearchContext {
 
 impl LabelSearchContext {
     fn new(text: &str) -> Self {
-        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let lines: Vec<String> = split_newline_components(text)
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
         let normalized_lines = lines
             .iter()
             .map(|l| ClaudeStatusProbeParser::normalized_for_label_search(l))
@@ -794,7 +803,8 @@ impl ClaudeStatusProbeParser {
         if !(has_usage_windows || has_loading) || loading_only || !has_usage_percent_keywords {
             return Vec::new();
         }
-        text.lines()
+        split_newline_components(text)
+            .into_iter()
             .filter_map(|line| Self::percent_from_line(line, false))
             .collect()
     }
@@ -1008,7 +1018,7 @@ impl ClaudeStatusProbeParser {
 
     fn usage_failure_line(text: &str) -> Option<String> {
         let mut last_match = None;
-        for line in text.lines() {
+        for line in split_newline_components(text) {
             if let Some(pos) = find_failed_to_load_usage_data(line) {
                 last_match = Some(line[pos..].to_owned());
             }
@@ -1563,8 +1573,9 @@ fn repair_garbled_at_in_reset(input: &str) -> String {
 }
 
 fn extract_labeled_email(text: &str) -> Option<String> {
+    let lines = split_newline_components(text);
     for label in ["Account:", "Email:"] {
-        for line in text.lines() {
+        for &line in &lines {
             if let Some((_, end)) = find_ascii_case_insensitive(line, label) {
                 let rest = line[end..].trim_start();
                 let token = rest.split_whitespace().next().unwrap_or("");
@@ -1582,8 +1593,9 @@ fn extract_labeled_email(text: &str) -> Option<String> {
 }
 
 fn extract_labeled_token(text: &str, labels: &[&str]) -> Option<String> {
+    let lines = split_newline_components(text);
     for &label in labels {
-        for line in text.lines() {
+        for &line in &lines {
             if let Some((_, end)) = find_ascii_case_insensitive(line, label) {
                 let rest = line[end..].trim_start();
                 let token = rest.split_whitespace().next().unwrap_or("");
@@ -1597,8 +1609,9 @@ fn extract_labeled_token(text: &str, labels: &[&str]) -> Option<String> {
 }
 
 fn extract_labeled_line(text: &str, labels: &[&str]) -> Option<String> {
+    let lines = split_newline_components(text);
     for &label in labels {
-        for line in text.lines() {
+        for &line in &lines {
             if let Some((_, end)) = find_ascii_case_insensitive(line, label) {
                 let val = line[end..].trim();
                 if !val.is_empty() {
@@ -1646,7 +1659,7 @@ fn extract_standalone_email(text: &str) -> Option<String> {
 }
 
 fn extract_login_method_label(text: &str) -> Option<String> {
-    for line in text.lines() {
+    for line in split_newline_components(text) {
         let lower = line.to_ascii_lowercase();
         if let Some(pos) = lower.find("login") {
             let after_login = line[(pos + "login".len())..].trim_start();
@@ -1666,7 +1679,7 @@ fn extract_login_method_label(text: &str) -> Option<String> {
 /// Finds all matches of `(?i)(claude[ \t]+[a-z0-9][a-z0-9 \t._-]{0,24})` in `text`.
 fn find_claude_plan_phrases(text: &str) -> Vec<String> {
     let mut results = Vec::new();
-    for line in text.lines() {
+    for line in split_newline_components(text) {
         let bytes = line.as_bytes();
         let mut i = 0;
         while i + 7 <= bytes.len() {
@@ -1756,7 +1769,11 @@ fn collapse_whitespace(text: &str) -> String {
 fn extract_folder_after_trust_prompt(text: &str) -> Option<String> {
     let (_, end) = find_ascii_case_insensitive(text, "Do you trust the files in this folder?")?;
     let after = &text[end..];
-    for line in after.lines() {
+    let lines = split_newline_components(after);
+    if lines.len() < 2 || !lines[0].trim().is_empty() {
+        return None;
+    }
+    for &line in &lines[1..] {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
             return Some(trimmed.to_owned());
@@ -1767,19 +1784,26 @@ fn extract_folder_after_trust_prompt(text: &str) -> Option<String> {
 
 /// Finds the start index of `(?i)failed\s*to\s*load\s*usage\s*data` in `text`.
 fn find_failed_to_load_usage_data(text: &str) -> Option<usize> {
-    find_failed_to_load_usage_data_span(text).map(|(s, _)| s)
+    find_failed_to_load_usage_data_span(text, true).map(|(s, _)| s)
 }
 
-/// Finds the end index of `(?i)failed\s*to\s*load\s*usage\s*data:` in `text`.
+/// Finds the end index of `Failed\s*to\s*load\s*usage\s*data:` (case-sensitive) in `text`.
 fn find_failed_to_load_usage_data_end(text: &str) -> Option<usize> {
-    let (_, end) = find_failed_to_load_usage_data_span(text)?;
+    let (_, end) = find_failed_to_load_usage_data_span(text, false)?;
     let rem = text[end..].trim_start();
     let after_colon = rem.strip_prefix(':')?;
     Some(text.len() - after_colon.len())
 }
 
-fn find_failed_to_load_usage_data_span(text: &str) -> Option<(usize, usize)> {
-    let words = ["failed", "to", "load", "usage", "data"];
+fn find_failed_to_load_usage_data_span(
+    text: &str,
+    case_insensitive: bool,
+) -> Option<(usize, usize)> {
+    let words = if case_insensitive {
+        ["failed", "to", "load", "usage", "data"]
+    } else {
+        ["Failed", "to", "load", "usage", "data"]
+    };
     let bytes = text.as_bytes();
     for start in 0..bytes.len() {
         let mut cursor = start;
@@ -1790,9 +1814,17 @@ fn find_failed_to_load_usage_data_span(text: &str) -> Option<(usize, usize)> {
                     cursor += 1;
                 }
             }
-            if cursor + word.len() > bytes.len()
-                || !bytes[cursor..(cursor + word.len())].eq_ignore_ascii_case(word.as_bytes())
-            {
+            if cursor + word.len() > bytes.len() {
+                matched = false;
+                break;
+            }
+            let slice = &bytes[cursor..(cursor + word.len())];
+            let word_matches = if case_insensitive {
+                slice.eq_ignore_ascii_case(word.as_bytes())
+            } else {
+                slice == word.as_bytes()
+            };
+            if !word_matches {
                 matched = false;
                 break;
             }
@@ -1817,15 +1849,7 @@ fn strip_leading_resets_prefix(raw: &str) -> String {
             return raw.to_owned();
         };
     let after_colon = after_word.strip_prefix(':').unwrap_or(after_word);
-    if after_colon.len() < trimmed.len()
-        && (after_word.starts_with(':')
-            || after_word.starts_with(char::is_whitespace)
-            || after_word.is_empty())
-    {
-        after_colon.trim_start().to_owned()
-    } else {
-        raw.to_owned()
-    }
+    after_colon.trim_start().to_owned()
 }
 
 fn replace_case_insensitive_at(raw: &str) -> String {

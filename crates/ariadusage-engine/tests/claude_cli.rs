@@ -1,12 +1,21 @@
+// Ported from CodexBar Tests/CodexBarTests/StatusProbeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeCLIScreenTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIScreenProbeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLISpendCapTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIScopedWeeklyUsageTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeAllModelsWeeklyDuplicateTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIWorkspaceTrustTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeCLISessionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIRateLimitGateTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIUsageSpawnThrottleTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIPanelTransitionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeCLIAuthStatusProbeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeProbeSessionArtifactCleanerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeProbeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeProbeParsingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeUsageTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIBackgroundAvailabilityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLIUsageSpawnThrottleTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeCLITimeoutRetryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeDirectUsageFallbackTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeProbeWorkingDirectoryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeResetJSONParserTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeResetOccurrenceTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeUsageInsightsTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #[path = "support/https.rs"]
 mod https;
@@ -23,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use ariadusage_core::config::CookieSource;
 use ariadusage_core::gates::launch::LaunchGate;
-use ariadusage_core::model::{RateWindow, UsageSnapshot};
+use ariadusage_core::model::{NamedRateWindow, RateWindow, UsageSnapshot};
 use ariadusage_core::pipeline::{
     AttemptOutcome, BoxFuture, FetchContext, FetchError, FetchInteraction, FetchPhase, FetchResult,
     FetchRuntime, FetchStrategy, Sleeper, fetch_outcome,
@@ -32,18 +41,21 @@ use ariadusage_core::providers::SourceMode;
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::net::NetConfig;
 use ariadusage_engine::brokers::process::ProcessRegistry;
+#[cfg(unix)]
+use ariadusage_engine::providers::claude::prepared_probe_working_directory;
 use ariadusage_engine::providers::claude::{
     CLAUDE_CLI_STRATEGY_ID, CLAUDE_CONFIG_DIR_ENV_KEY, CLAUDE_OAUTH_STRATEGY_ID,
     CLAUDE_SECURE_STORAGE_CONFIG_DIR_ENV_KEY, CLAUDE_WEB_STRATEGY_ID, ClaudeAccountProfile,
-    ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIFetchStrategy,
-    ClaudeCLIRateLimitGate, ClaudeCLIScreen, ClaudeCLISession, ClaudeCLISpendCapParser,
-    ClaudeCLISubprocessResult, ClaudeCLIUsageLoader, ClaudeCLIUsageSpawnThrottle,
-    ClaudeCLIUsageSpawnThrottleKey, ClaudeOAuthEndpointConfig, ClaudeOAuthStrategyConfig,
-    ClaudeProbeSessionArtifactCleaner, ClaudeProviderPlan, ClaudeStatusProbe,
-    ClaudeStatusProbeError, ClaudeStatusProbeParser, ClaudeStatusSnapshot, ClaudeWebEndpointConfig,
+    ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundMarker,
+    ClaudeCLIFetchStrategy, ClaudeCLIRateLimitGate, ClaudeCLIScreen, ClaudeCLISession,
+    ClaudeCLISpendCapParser, ClaudeCLISubprocessResult, ClaudeCLIUsageLoader,
+    ClaudeCLIUsageSpawnThrottle, ClaudeCLIUsageSpawnThrottleKey, ClaudeOAuthEndpointConfig,
+    ClaudeOAuthStrategyConfig, ClaudeProbeSessionArtifactCleaner, ClaudeProviderPlan,
+    ClaudeScopedWeeklyLimitMapper, ClaudeStatusProbe, ClaudeStatusProbeError,
+    ClaudeStatusProbeParser, ClaudeStatusSnapshot, ClaudeWebEndpointConfig, OAuthScopedLimitEntry,
     SESSION_KEY_COOKIE_NAME, SUBSCRIPTION_QUOTA_UNAVAILABLE_DESCRIPTION,
     is_dedicated_probe_working_directory, isolated_probe_working_directory,
-    prepared_probe_working_directory, probe_working_directory,
+    merge_extra_rate_windows, probe_working_directory,
 };
 #[cfg(target_os = "linux")]
 use ariadusage_engine::providers::claude::{ClaudeCLICaptureRequest, ClaudeCLISessionError};
@@ -361,12 +373,62 @@ fn spend_cap_parser_extracts_usage_credits_and_handles_commas() {
     assert_eq!(cost.limit, 50.0);
     assert_eq!(cost.currency_code, "USD");
     assert_eq!(cost.period.as_deref(), Some("Monthly cap"));
+    assert_eq!(cost.resets_at, None);
+
+    // Single-line header + spend cap
+    let single_line = "Current session\n10% used\nUsage credits 25% used $12.50 / $50.00 spent";
+    let single_cost =
+        ClaudeCLISpendCapParser::parse(single_line, now).expect("should parse single-line cap");
+    assert_eq!(single_cost.used, 12.5);
+    assert_eq!(single_cost.limit, 50.0);
+
+    // CR-delimited spend cap capture
+    let cr_panel = "Current session\r10% used\rUsage credits\r████████░░ 25% used\r$12.50 / $50.00 spent\rResets Jan 1";
+    let cr_cost = ClaudeCLISpendCapParser::parse(cr_panel, now).expect("should parse CR spend cap");
+    assert_eq!(cr_cost.used, 12.5);
+    assert_eq!(cr_cost.limit, 50.0);
 
     let comma_panel = concat!("Usage credits\n", "$1,250.50 / $5,000.00 spent\n");
     let comma_cost =
         ClaudeCLISpendCapParser::parse(comma_panel, now).expect("should parse comma spend cap");
     assert_eq!(comma_cost.used, 1250.5);
     assert_eq!(comma_cost.limit, 5000.0);
+
+    // Non-USD, prefixed, malformed, zero, or out-of-range amounts are ignored
+    let rejected_lines = [
+        "€40.00 / €100.00 spent",
+        "CA$40.00 / CA$100.00 spent",
+        "-$40.00 / $100.00 spent",
+        "$12,34 / $100.00 spent",
+        "$1.23456 / $100.00 spent",
+        "$0.00 / $0.00 spent",
+        "$10.00 / $1,000,000,000,000.01 spent",
+    ];
+    for amount_line in rejected_lines {
+        assert!(
+            ClaudeCLISpendCapParser::parse(&format!("Usage credits\n{amount_line}"), now).is_none(),
+            "should reject spend line: {amount_line}"
+        );
+    }
+
+    // Exactly at 1e12 bound is accepted
+    let max_bound =
+        ClaudeCLISpendCapParser::parse("Usage credits\n$10.00 / $1,000,000,000,000.00 spent", now)
+            .expect("should accept 1e12 limit");
+    assert_eq!(max_bound.used, 10.0);
+    assert_eq!(max_bound.limit, 1_000_000_000_000.0);
+
+    // Distance bound: 5 filler lines after header (line offset 6) succeeds; 6 filler lines (offset 7) fails
+    let within_window = format!(
+        "Usage credits\n{}\n$12.50 / $50.00 spent",
+        ["line"; 5].join("\n")
+    );
+    assert!(ClaudeCLISpendCapParser::parse(&within_window, now).is_some());
+    let past_window = format!(
+        "Usage credits\n{}\n$12.50 / $50.00 spent",
+        ["line"; 6].join("\n")
+    );
+    assert!(ClaudeCLISpendCapParser::parse(&past_window, now).is_none());
 
     let old = "Usage credits\n$25.00 / $100.00 spent\n";
     assert!(
@@ -392,47 +454,147 @@ fn spend_cap_parser_extracts_usage_credits_and_handles_commas() {
 
 #[test]
 fn parser_reset_dates_subscription_notice_json_and_debug_redaction() {
-    let now = Timestamp::from_second(1_763_636_400).unwrap(); // 2025-11-20T11:00:00Z
+    // 1. Exact Timestamp assertions from ClaudeResetOccurrenceTests
+    let now_vienna = "2026-04-06T09:00:00Z".parse::<Timestamp>().unwrap();
     let vienna = TimeZone::get("Europe/Vienna").unwrap();
     let reset_time = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
         Some("Resets 11am (Europe/Vienna)"),
-        now,
+        now_vienna,
         Some(Duration::from_secs(5 * 3600)),
         &vienna,
     );
-    assert!(reset_time.is_some());
+    assert_eq!(
+        reset_time,
+        Some("2026-04-06T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
 
-    let month_day_reset = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
-        Some("Resets Nov 21 at 5am (Europe/Vienna)"),
-        now,
-        Some(Duration::from_secs(7 * 24 * 3600)),
+    // Time-only 5 minutes past today stays today when within 5h session window (StatusProbeTests.swift:668-670),
+    // rolls to tomorrow when > 5h past or when no expected_window is provided (StatusProbeTests.swift:758-760)
+    let now_late = "2026-04-06T09:05:00Z".parse::<Timestamp>().unwrap();
+    let stale_same_day = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets 11am (Europe/Vienna)"),
+        now_late,
+        Some(Duration::from_secs(5 * 3600)),
         &vienna,
     );
-    assert!(month_day_reset.is_some());
+    assert_eq!(
+        stale_same_day,
+        Some("2026-04-06T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
+    let rolled_tomorrow_forward = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets 11am (Europe/Vienna)"),
+        now_late,
+        None,
+        &vienna,
+    );
+    assert_eq!(
+        rolled_tomorrow_forward,
+        Some("2026-04-07T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
+    let now_beyond_5h = "2026-04-06T15:00:00Z".parse::<Timestamp>().unwrap();
+    let rolled_tomorrow_beyond_window = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets 11am (Europe/Vienna)"),
+        now_beyond_5h,
+        Some(Duration::from_secs(5 * 3600)),
+        &vienna,
+    );
+    assert_eq!(
+        rolled_tomorrow_beyond_window,
+        Some("2026-04-07T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
+
+    // Month-day near year boundary keeps current year when in future, rolls to next year when in past
+    let dec_now = "2026-12-30T12:00:00Z".parse::<Timestamp>().unwrap();
+    let dec_future = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets Dec 31 at 6pm (UTC)"),
+        dec_now,
+        Some(Duration::from_secs(7 * 24 * 3600)),
+        &TimeZone::UTC,
+    );
+    assert_eq!(
+        dec_future,
+        Some("2026-12-31T18:00:00Z".parse::<Timestamp>().unwrap())
+    );
+
+    let jan_rollover = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets Jan 2 at 5am (UTC)"),
+        dec_now,
+        Some(Duration::from_secs(7 * 24 * 3600)),
+        &TimeZone::UTC,
+    );
+    assert_eq!(
+        jan_rollover,
+        Some("2027-01-02T05:00:00Z".parse::<Timestamp>().unwrap())
+    );
 
     let explicit_year_reset = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
         Some("Resets Oct 14, 2026 at 10:30pm (UTC)"),
-        now,
+        now_vienna,
         Some(Duration::from_secs(7 * 24 * 3600)),
         &TimeZone::UTC,
     );
-    assert!(explicit_year_reset.is_some());
+    assert_eq!(
+        explicit_year_reset,
+        Some("2026-10-14T22:30:00Z".parse::<Timestamp>().unwrap())
+    );
 
     let dot_minute_reset = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
         Some("Resets 14.30 (UTC)"),
-        now,
+        now_vienna,
         Some(Duration::from_secs(5 * 3600)),
         &TimeZone::UTC,
     );
-    assert!(dot_minute_reset.is_some());
+    assert_eq!(
+        dot_minute_reset,
+        Some("2026-04-06T14:30:00Z".parse::<Timestamp>().unwrap())
+    );
 
+    // Feb 29 leap year search from non-leap year 2026 -> 2028-02-29T09:00:00Z
     let leap_day_reset = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
         Some("Resets Feb 29 at 9am (UTC)"),
-        now,
+        now_vienna,
         None,
         &TimeZone::UTC,
     );
-    assert!(leap_day_reset.is_some());
+    assert_eq!(
+        leap_day_reset,
+        Some("2028-02-29T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
+
+    // Compact resets without space after `Resets` (`Resets4:29am(Asia/Calcutta)` and `ResetsMar13at12:30pm(Asia/Calcutta)`)
+    // At 2026-03-10T00:00:00Z (05:30 Asia/Calcutta), 04:29 Asia/Calcutta is 1h01m ago (2026-03-09T22:59:00Z), within the 5h window;
+    // without expected_window, it rolls forward to tomorrow (2026-03-10T22:59:00Z).
+    let compact_now = "2026-03-10T00:00:00Z".parse::<Timestamp>().unwrap();
+    let compact_time = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets4:29am(Asia/Calcutta)"),
+        compact_now,
+        Some(Duration::from_secs(5 * 3600)),
+        &TimeZone::UTC,
+    );
+    assert_eq!(
+        compact_time,
+        Some("2026-03-09T22:59:00Z".parse::<Timestamp>().unwrap())
+    );
+    let compact_time_forward = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("Resets4:29am(Asia/Calcutta)"),
+        compact_now,
+        None,
+        &TimeZone::UTC,
+    );
+    assert_eq!(
+        compact_time_forward,
+        Some("2026-03-10T22:59:00Z".parse::<Timestamp>().unwrap())
+    );
+    let compact_date = ClaudeStatusProbeParser::parse_reset_date_with_default_tz(
+        Some("ResetsMar13at12:30pm(Asia/Calcutta)"),
+        compact_now,
+        Some(Duration::from_secs(7 * 24 * 3600)),
+        &TimeZone::UTC,
+    );
+    assert_eq!(
+        compact_date,
+        Some("2026-03-13T07:00:00Z".parse::<Timestamp>().unwrap())
+    );
 
     // Subscription notice without session quota data
     let notice_text = "You are currently using your subscription to power your Claude Code usage.";
@@ -447,7 +609,7 @@ fn parser_reset_dates_subscription_notice_json_and_debug_redaction() {
         ))
     );
 
-    // Legacy JSON CLI payload parsing
+    // Legacy JSON CLI payload parsing (ClaudeResetJSONParserTests)
     let json = br#"{
         "ok": true,
         "session_5h": { "pct_used": 1, "resets": "11am (Europe/Vienna)" },
@@ -457,21 +619,29 @@ fn parser_reset_dates_subscription_notice_json_and_debug_redaction() {
         "account_org": "Secret Org",
         "login_method": "Claude Max"
     }"#;
-    let parsed_json = ClaudeStatusProbeParser::parse_json(json, now)
+    let parsed_json = ClaudeStatusProbeParser::parse_json(json, now_vienna)
         .expect("should parse legacy JSON CLI output");
     assert_eq!(parsed_json.primary.as_ref().unwrap().used_percent, 1.0);
     assert_eq!(
         parsed_json.primary.as_ref().unwrap().window_minutes,
         Some(300)
     );
+    assert_eq!(
+        parsed_json.primary.as_ref().unwrap().resets_at,
+        Some("2026-04-06T09:00:00Z".parse::<Timestamp>().unwrap())
+    );
     assert_eq!(parsed_json.secondary.as_ref().unwrap().used_percent, 8.0);
     assert_eq!(
         parsed_json.secondary.as_ref().unwrap().window_minutes,
         Some(10080)
     );
+    assert_eq!(
+        parsed_json.secondary.as_ref().unwrap().resets_at,
+        Some("2026-11-21T04:00:00Z".parse::<Timestamp>().unwrap())
+    );
     assert_eq!(parsed_json.tertiary.as_ref().unwrap().used_percent, 0.0);
 
-    // Debug redaction check
+    // Debug redaction check across ClaudeStatusSnapshot, ClaudeCLIUsageSpawnThrottleKey, and ClaudeCLIBackgroundMarker
     let snap = ClaudeStatusSnapshot {
         session_percent_left: Some(80),
         weekly_percent_left: Some(60),
@@ -490,6 +660,19 @@ fn parser_reset_dates_subscription_notice_json_and_debug_redaction() {
     assert!(!debug_str.contains("sensitive-email@example.com"));
     assert!(!debug_str.contains("Sensitive Organization"));
     assert!(!debug_str.contains("sensitive raw text"));
+
+    let key = ClaudeCLIUsageSpawnThrottleKey {
+        binary: "/usr/bin/claude".to_owned(),
+        account_scope: "sensitive-account-scope".to_owned(),
+        use_web_extras: false,
+        include_prepaid_balance: false,
+    };
+    assert!(!format!("{key:?}").contains("sensitive-account-scope"));
+    let marker = ClaudeCLIBackgroundMarker {
+        binary: "/usr/bin/claude".to_owned(),
+        account_scope: "sensitive-account-scope".to_owned(),
+    };
+    assert!(!format!("{marker:?}").contains("sensitive-account-scope"));
 }
 
 #[test]
@@ -628,9 +811,19 @@ fn session_scope_probe_session_id_workspace_trust_and_artifact_cleaner() {
     let project_dir = first_root.join("projects").join(&project_dir_name);
     fs::create_dir_all(&project_dir).unwrap();
     let stale_jsonl = project_dir.join("stale.jsonl");
+    let hidden_jsonl = project_dir.join(".hidden.jsonl");
     let keep_txt = project_dir.join("notes.txt");
     fs::write(&stale_jsonl, "{}\n").unwrap();
+    fs::write(&hidden_jsonl, "{}\n").unwrap();
     fs::write(&keep_txt, "keep").unwrap();
+    #[cfg(unix)]
+    let symlink_jsonl = {
+        let target = temp.path().join("outside-target.jsonl");
+        fs::write(&target, "{}\n").unwrap();
+        let link = project_dir.join("symlink.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        link
+    };
 
     let cleaned = ClaudeProbeSessionArtifactCleaner::cleanup_probe_session_artifacts(
         &probe_dir,
@@ -641,7 +834,13 @@ fn session_scope_probe_session_id_workspace_trust_and_artifact_cleaner() {
     );
     assert_eq!(cleaned, vec![stale_jsonl.clone()]);
     assert!(!stale_jsonl.exists());
+    assert!(hidden_jsonl.exists(), "dotfiles must not be removed");
     assert!(keep_txt.exists());
+    #[cfg(unix)]
+    assert!(
+        symlink_jsonl.symlink_metadata().is_ok(),
+        "symlinks must not be removed"
+    );
 
     // Refuse cleanup when probe_dir is outside dedicated_probe_root
     let other_dir = temp.path().join("outside-probe");
@@ -841,16 +1040,21 @@ async fn pty_session_reuses_account_scope_restarts_on_profile_change_and_cleans_
 #[tokio::test]
 async fn direct_cli_fallback_recovers_after_pty_timeout_and_records_rate_limits() {
     let temp = tempfile::tempdir().unwrap();
+    let marker_file = temp.path().join("unexpected-spawn.log");
     let cli_path = temp.path().join("claude");
-    let script = concat!(
-        "#!/bin/sh\n",
-        "for arg in \"$@\"; do\n",
-        "  if [ \"$arg\" = \"/usage\" ]; then\n",
-        "    printf 'Current session\\n85%% left\\nResets in 2h\\nCurrent week (all models)\\n70%% left\\n'\n",
-        "    exit 0\n",
-        "  fi\n",
-        "done\n",
-        "exit 1\n"
+    let script = format!(
+        concat!(
+            "#!/bin/sh\n",
+            "printf 'spawned\\n' >> '{}'\n",
+            "for arg in \"$@\"; do\n",
+            "  if [ \"$arg\" = \"/usage\" ]; then\n",
+            "    printf 'Current session\\n85%% left\\nResets in 2h\\nCurrent week (all models)\\n70%% left\\n'\n",
+            "    exit 0\n",
+            "  fi\n",
+            "done\n",
+            "exit 1\n"
+        ),
+        marker_file.display()
     );
     fs::write(&cli_path, script).unwrap();
     #[cfg(unix)]
@@ -865,24 +1069,86 @@ async fn direct_cli_fallback_recovers_after_pty_timeout_and_records_rate_limits(
         Arc::clone(&launch_gate),
     ));
 
+    // 1. When `fetch_override` is set and `direct_fetch_override` is NOT set, `load_once` and
+    // `load_with_retry` must NEVER resolve or spawn the `claude` binary even if it is executable!
+    let pty_only_attempts = Arc::new(AtomicUsize::new(0));
+    let pty_only_attempts_clone = Arc::clone(&pty_only_attempts);
+    let probe_no_direct = ClaudeStatusProbe::new(
+        BTreeMap::new(),
+        temp.path().to_path_buf(),
+        Arc::clone(&session),
+    )
+    .with_binary(cli_path.to_string_lossy().into_owned())
+    .with_fetch_override(Arc::new(move |_, _, _| {
+        pty_only_attempts_clone.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(ClaudeStatusProbeError::TimedOut) })
+    }));
+    let loader_no_direct = ClaudeCLIUsageLoader {
+        probe: probe_no_direct,
+        rate_limit_gate: Arc::new(ClaudeCLIRateLimitGate::new()),
+        registry: Arc::clone(&registry),
+        launch_gate: Arc::clone(&launch_gate),
+    };
+    let now = Timestamp::from_second(1_766_500_000).unwrap();
+    let err = loader_no_direct
+        .load_with_retry(
+            make_call(FetchInteraction::UserInitiated),
+            Duration::from_secs(12),
+            now,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, ClaudeStatusProbeError::TimedOut);
+    assert_eq!(pty_only_attempts.load(Ordering::SeqCst), 2);
+    assert!(
+        !marker_file.exists(),
+        "fetch_override without direct_fetch_override must never spawn a subprocess"
+    );
+
+    // 2. When `direct_fetch_override` is configured, `load_once` falls back on TimedOut and
+    // "could not load usage data", skips fallback on non-fallback parse errors, and records rate limits.
     let pty_attempts = Arc::new(AtomicUsize::new(0));
     let pty_attempts_clone = Arc::clone(&pty_attempts);
-    let probe = ClaudeStatusProbe::new(BTreeMap::new(), temp.path().to_path_buf(), session)
-        .with_binary(cli_path.to_string_lossy().into_owned())
-        .with_fetch_override(Arc::new(move |_, _, _| {
-            pty_attempts_clone.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async { Err(ClaudeStatusProbeError::TimedOut) })
-        }));
+    let direct_attempts = Arc::new(AtomicUsize::new(0));
+    let direct_attempts_clone = Arc::clone(&direct_attempts);
+    let probe_with_direct = ClaudeStatusProbe::new(
+        BTreeMap::new(),
+        temp.path().to_path_buf(),
+        Arc::clone(&session),
+    )
+    .with_binary("/nonexistent/claude")
+    .with_fetch_override(Arc::new(move |_, _, _| {
+        pty_attempts_clone.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(ClaudeStatusProbeError::TimedOut) })
+    }))
+    .with_direct_fetch_override(Arc::new(move |_, _, _| {
+        direct_attempts_clone.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Ok(ClaudeStatusSnapshot {
+                session_percent_left: Some(85),
+                weekly_percent_left: Some(70),
+                opus_percent_left: None,
+                extra_rate_windows: Vec::new(),
+                provider_cost: None,
+                account_email: None,
+                account_organization: None,
+                login_method: None,
+                primary_reset_description: Some("Resets in 2h".to_owned()),
+                secondary_reset_description: None,
+                opus_reset_description: None,
+                raw_text: "direct fallback".to_owned(),
+            })
+        })
+    }));
 
     let rate_limit_gate = Arc::new(ClaudeCLIRateLimitGate::new());
     let loader = ClaudeCLIUsageLoader {
-        probe,
+        probe: probe_with_direct,
         rate_limit_gate: Arc::clone(&rate_limit_gate),
-        registry,
-        launch_gate,
+        registry: Arc::clone(&registry),
+        launch_gate: Arc::clone(&launch_gate),
     };
 
-    let now = Timestamp::from_second(1_766_500_000).unwrap();
     let snap = loader
         .load_once(
             make_call(FetchInteraction::UserInitiated),
@@ -890,10 +1156,78 @@ async fn direct_cli_fallback_recovers_after_pty_timeout_and_records_rate_limits(
             now,
         )
         .await
-        .expect("direct CLI fallback should succeed");
+        .expect("direct CLI fallback should succeed via direct_fetch_override");
     assert_eq!(pty_attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(direct_attempts.load(Ordering::SeqCst), 1);
     assert_eq!(snap.session_percent_left, Some(85));
     assert_eq!(snap.weekly_percent_left, Some(70));
+    assert!(!marker_file.exists());
+
+    // Direct CLI rate-limit error records cooldown in `rate_limit_gate`
+    let probe_direct_rl = ClaudeStatusProbe::new(
+        BTreeMap::new(),
+        temp.path().to_path_buf(),
+        Arc::clone(&session),
+    )
+    .with_binary("/nonexistent/claude")
+    .with_fetch_override(Arc::new(|_, _, _| {
+        Box::pin(async {
+            Err(ClaudeStatusProbeError::ParseFailed(
+                "Claude CLI could not load usage data. Open the CLI and retry `/usage`.".to_owned(),
+            ))
+        })
+    }))
+    .with_direct_fetch_override(Arc::new(|_, _, _| {
+        Box::pin(async {
+            Err(ClaudeStatusProbeError::ParseFailed(
+                ClaudeCLIRateLimitGate::MESSAGE.to_owned(),
+            ))
+        })
+    }));
+    let loader_rl = ClaudeCLIUsageLoader {
+        probe: probe_direct_rl,
+        rate_limit_gate: Arc::clone(&rate_limit_gate),
+        registry: Arc::clone(&registry),
+        launch_gate: Arc::clone(&launch_gate),
+    };
+    let rl_err = loader_rl
+        .load_once(
+            make_call(FetchInteraction::Background),
+            Duration::from_secs(12),
+            now,
+        )
+        .await
+        .unwrap_err();
+    assert!(rl_err.is_rate_limit_error());
+    assert!(
+        rate_limit_gate
+            .blocked_until(FetchInteraction::Background, now)
+            .is_some()
+    );
+
+    // 3. `fetch_direct_usage_snapshot` executes the synthetic `cli_path` script when invoked directly on Unix
+    #[cfg(unix)]
+    {
+        let probe_subproc =
+            ClaudeStatusProbe::new(BTreeMap::new(), temp.path().to_path_buf(), session)
+                .with_binary(cli_path.to_string_lossy().into_owned());
+        let loader_subproc = ClaudeCLIUsageLoader {
+            probe: probe_subproc,
+            rate_limit_gate: Arc::new(ClaudeCLIRateLimitGate::new()),
+            registry,
+            launch_gate,
+        };
+        let subproc_snap = loader_subproc
+            .fetch_direct_usage_snapshot(
+                make_call(FetchInteraction::UserInitiated),
+                Duration::from_secs(5),
+            )
+            .await
+            .expect("synthetic script should parse via fetch_direct_usage_snapshot");
+        assert_eq!(subproc_snap.session_percent_left, Some(85));
+        assert_eq!(subproc_snap.weekly_percent_left, Some(70));
+        assert!(marker_file.exists());
+    }
 }
 
 #[tokio::test]
@@ -1498,10 +1832,6 @@ done
         "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_owned(),
         SecretString::new(panel_dir.to_string_lossy().into_owned()),
     );
-    env.insert(
-        "ARIADUSAGE_DISABLE_CLAUDE_WATCHDOG".to_owned(),
-        SecretString::new("1".to_owned()),
-    );
 
     let capture_cmd = |cmd: &str| {
         let req = ClaudeCLICaptureRequest {
@@ -1607,10 +1937,6 @@ done
         "CLAUDE_SECURESTORAGE_CONFIG_DIR".to_owned(),
         SecretString::new(trust_dir.to_string_lossy().into_owned()),
     );
-    trust_env.insert(
-        "ARIADUSAGE_DISABLE_CLAUDE_WATCHDOG".to_owned(),
-        SecretString::new("1".to_owned()),
-    );
 
     let dedicated_probe = trust_dir.join("ariadusage").join("ClaudeProbe");
     let trusted_session = ClaudeCLISession::new(
@@ -1683,6 +2009,7 @@ async fn cli_timeout_retry_and_rate_limit_cooldown_semantics() {
     let timeouts_cli_clone = Arc::clone(&timeouts_cli);
     let cfg_retry = ClaudeOAuthStrategyConfig::new(Arc::clone(&net), temp.path(), temp.path())
         .with_has_cli(true)
+        .with_cli_binary("/nonexistent/claude")
         .with_cli_status_probe_override(Arc::new(move |_, timeout, _| {
             let attempt = {
                 let mut guard = timeouts_cli_clone.lock().unwrap();
@@ -1727,6 +2054,7 @@ async fn cli_timeout_retry_and_rate_limit_cooldown_semantics() {
     let timeouts_parse_clone = Arc::clone(&timeouts_parse);
     let cfg_parse = ClaudeOAuthStrategyConfig::new(Arc::clone(&net), temp.path(), temp.path())
         .with_has_cli(true)
+        .with_cli_binary("/nonexistent/claude")
         .with_cookie_source(Some(CookieSource::Off))
         .with_cli_status_probe_override(Arc::new(move |_, timeout, _| {
             timeouts_parse_clone.lock().unwrap().push(timeout.as_secs());
@@ -1751,6 +2079,7 @@ async fn cli_timeout_retry_and_rate_limit_cooldown_semantics() {
     let timeouts_loading_clone = Arc::clone(&timeouts_loading);
     let cfg_loading = ClaudeOAuthStrategyConfig::new(net, temp.path(), temp.path())
         .with_has_cli(true)
+        .with_cli_binary("/nonexistent/claude")
         .with_cookie_source(Some(CookieSource::Manual))
         .with_manual_cookie_header(Some(SecretString::new(format!(
             "{SESSION_KEY_COOKIE_NAME}=sk-ant-web-loading"
@@ -1791,4 +2120,468 @@ async fn cli_timeout_retry_and_rate_limit_cooldown_semantics() {
         res_loading.usage.primary.as_ref().unwrap().used_percent,
         5.0
     );
+}
+
+#[test]
+fn upstream_status_probe_parser_parity_suite() {
+    // 1. Live Claude PTY sample with ANSI redraw, Sonnet, Account, Org, Login method
+    let live_sample = concat!(
+        "\u{1b}[?2026h\u{1b}[?25l\n",
+        " \u{1b}[0mSettings:  Status   Config   \u{1b}[1;36mUsage\u{1b}[0m  (tab to cycle)\n\n",
+        " \u{1b}[1mCurrent session\u{1b}[22m\n",
+        " \u{1b}[48;5;24m \u{1b}[49m                                                  4% used\n",
+        " Resets 12:59pm (Europe/Vienna)\n\n",
+        " \u{1b}[1mCurrent week (all models)\u{1b}[22m\n",
+        " \u{1b}[48;5;24m██████████████\u{1b}[49m                                     29% used\n",
+        " Resets Nov 21 at 4:59am (Europe/Vienna)\n\n",
+        " \u{1b}[1mCurrent week (Sonnet)\u{1b}[22m\n",
+        " \u{1b}[48;5;24m\u{1b}[49m                                                   0% used\n\n",
+        " Account: user@example.com\n",
+        " Org: Example Org\n",
+        " Login method: Claude Max Account\n"
+    );
+    let snap = ClaudeStatusProbeParser::parse(live_sample, None).unwrap();
+    assert_eq!(snap.session_percent_left, Some(96));
+    assert_eq!(snap.weekly_percent_left, Some(71));
+    assert_eq!(snap.opus_percent_left, Some(100));
+    assert_eq!(snap.account_email.as_deref(), Some("user@example.com"));
+    assert_eq!(snap.account_organization.as_deref(), Some("Example Org"));
+    assert_eq!(snap.login_method.as_deref(), Some("Max"));
+    assert_eq!(
+        snap.primary_reset_description.as_deref(),
+        Some("Resets 12:59pm (Europe/Vienna)")
+    );
+    assert_eq!(
+        snap.secondary_reset_description.as_deref(),
+        Some("Resets Nov 21 at 4:59am (Europe/Vienna)")
+    );
+
+    // 2. Enterprise usage without weekly or opus limits (0% used -> 100% left)
+    let enterprise = concat!(
+        "Settings: Status Config Usage (tab to cycle)\n\n",
+        "Current session\n",
+        "0% used\n",
+        "Resets 3am (Europe/London)\n\n",
+        "Esc to exit\n"
+    );
+    let snap_ent = ClaudeStatusProbeParser::parse(enterprise, None).unwrap();
+    assert_eq!(snap_ent.session_percent_left, Some(100));
+    assert_eq!(snap_ent.weekly_percent_left, None);
+    assert_eq!(snap_ent.opus_percent_left, None);
+    assert_eq!(
+        snap_ent.primary_reset_description.as_deref(),
+        Some("Resets 3am (Europe/London)")
+    );
+
+    // 3. Fuzzy all-models weekly usage (`all modls`) + garbled `t` reset
+    let team_weekly = concat!(
+        "Settings: Status Config Usage (tab to cycle)\n\n",
+        "Current session\n",
+        "13% used\n",
+        "Resets 1:59pm (Europe/Brussels)\n\n",
+        "Current week (all modls)\n",
+        "7% used\n",
+        "Resets Jan 24 t 10:59am (Europe/Brussels)\n"
+    );
+    let snap_team = ClaudeStatusProbeParser::parse(team_weekly, None).unwrap();
+    assert_eq!(snap_team.session_percent_left, Some(87));
+    assert_eq!(snap_team.weekly_percent_left, Some(93));
+    assert_eq!(snap_team.opus_percent_left, None);
+    assert_eq!(
+        snap_team.secondary_reset_description.as_deref(),
+        Some("Resets Jan 24 at 10:59am (Europe/Brussels)")
+    );
+
+    // 4. Compact resets without spaces after `Resets`
+    let compact = concat!(
+        "Settings: Status Config Usage (tab to cycle)\n\n",
+        "Current session\n",
+        "6% used\n",
+        "Resets4:29am(Asia/Calcutta)\n\n",
+        "Current week (all models)\n",
+        "44% used\n",
+        "ResetsMar13at12:30pm(Asia/Calcutta)\n\n",
+        "Current week (Sonnet only)\n",
+        "5% used\n",
+        "ResetsMar13at8:30pm(Asia/Calcutta)\n"
+    );
+    let snap_compact = ClaudeStatusProbeParser::parse(compact, None).unwrap();
+    assert_eq!(snap_compact.session_percent_left, Some(94));
+    assert_eq!(snap_compact.weekly_percent_left, Some(56));
+    assert_eq!(snap_compact.opus_percent_left, Some(95));
+    assert_eq!(
+        snap_compact.primary_reset_description.as_deref(),
+        Some("Resets4:29am(Asia/Calcutta)")
+    );
+    assert_eq!(
+        snap_compact.secondary_reset_description.as_deref(),
+        Some("ResetsMar13at12:30pm(Asia/Calcutta)")
+    );
+    assert_eq!(
+        snap_compact.opus_reset_description.as_deref(),
+        Some("ResetsMar13at8:30pm(Asia/Calcutta)")
+    );
+
+    // 5. CR-delimited captures (`\r` without `\n`)
+    let cr_capture = concat!(
+        "Current session\r",
+        "████████████ 30% left\r",
+        "Resets 11am (UTC)\r",
+        "Current week (all models)\r",
+        "████████ 45% left\r",
+        "Resets Nov 21 at 5am (UTC)\r",
+        "Current week (Fable)\r",
+        "██ 15% used\r",
+        "Resets Nov 21 at 5am (UTC)\r",
+        "Account: cr-user@example.com\r",
+        "Org: CR Org\r",
+        "Login method: Claude Pro\r"
+    );
+    let snap_cr = ClaudeStatusProbeParser::parse(cr_capture, None).unwrap();
+    assert_eq!(snap_cr.session_percent_left, Some(30));
+    assert_eq!(snap_cr.weekly_percent_left, Some(45));
+    assert_eq!(
+        snap_cr.primary_reset_description.as_deref(),
+        Some("Resets 11am (UTC)")
+    );
+    assert_eq!(
+        snap_cr.secondary_reset_description.as_deref(),
+        Some("Resets Nov 21 at 5am (UTC)")
+    );
+    assert_eq!(
+        snap_cr.account_email.as_deref(),
+        Some("cr-user@example.com")
+    );
+    assert_eq!(snap_cr.account_organization.as_deref(), Some("CR Org"));
+    assert_eq!(snap_cr.login_method.as_deref(), Some("Pro"));
+    assert_eq!(snap_cr.extra_rate_windows.len(), 1);
+    assert_eq!(snap_cr.extra_rate_windows[0].title, "Fable only");
+    assert_eq!(snap_cr.extra_rate_windows[0].window.used_percent, 15.0);
+
+    // 6. Trimming to latest Settings: ... Usage panel ignores earlier scrollback numbers
+    let scrollback = concat!(
+        "Fixed 100% of lint issues in build log\n",
+        "Settings: Status Config Usage\n",
+        "Current session\n",
+        "12% used\n",
+        "Current week (all models)\n",
+        "20% used\n"
+    );
+    let snap_scroll = ClaudeStatusProbeParser::parse(scrollback, None).unwrap();
+    assert_eq!(snap_scroll.session_percent_left, Some(88));
+    assert_eq!(snap_scroll.weekly_percent_left, Some(80));
+
+    // 7. Usage errors: token expired, authentication_error, rate_limit_error JSON, generic failure, folder trust
+    let expired_err = ClaudeStatusProbeParser::parse(
+        "Failed to load usage data: {\"error\":{\"message\":\"OAuth token has expired.\",\"details\":{\"error_code\":\"token_expired\"}}}",
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        expired_err,
+        ClaudeStatusProbeError::AuthenticationFailed(
+            "OAuth token has expired. (token_expired). Run `claude login` to refresh.".to_owned()
+        )
+    );
+
+    let auth_err = ClaudeStatusProbeParser::parse(
+        "Failed to load usage data: {\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"Invalid bearer\"}}",
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        auth_err,
+        ClaudeStatusProbeError::AuthenticationFailed(
+            "Claude CLI authentication error: Invalid bearer. Run `claude login`.".to_owned()
+        )
+    );
+
+    // StatusProbeTests.swift:483-506 & 870-887: login failures vs hook noise outside usage error
+    for (err_type, msg) in [
+        ("error", "OAuth account information not found in config"),
+        (
+            "error",
+            "Your account does not have access to Claude Code. Please run /login",
+        ),
+        ("error", "API Error: 401"),
+        ("permission_error", "API Error: 403"),
+        (
+            "error",
+            "Claude CLI token expired. Run `claude login` to refresh.",
+        ),
+    ] {
+        let sample = format!(
+            "Error: Failed to load usage data: {{\"error\":{{\"type\":\"{err_type}\",\"message\":\"{msg}\"}}}}"
+        );
+        assert!(matches!(
+            ClaudeStatusProbeParser::parse(&sample, None),
+            Err(ClaudeStatusProbeError::AuthenticationFailed(_))
+        ));
+    }
+    let hook_warning = concat!(
+        "Hook warning: forbidden command skipped\n",
+        "Error: Failed to load usage data: Session quota fields were unavailable\n"
+    );
+    assert!(matches!(
+        ClaudeStatusProbeParser::parse(hook_warning, None),
+        Err(ClaudeStatusProbeError::ParseFailed(_))
+    ));
+
+    let rate_limit_json_err = ClaudeStatusProbeParser::parse(
+        "Failed to load usage data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"}}",
+        None,
+    )
+    .unwrap_err();
+    assert!(rate_limit_json_err.is_rate_limit_error());
+
+    // Case-sensitivity of `extract_usage_error_json`: lowercase `failed to load usage data:` falls back to line scanner
+    let lowercase_failed = ClaudeStatusProbeParser::parse(
+        "failed to load usage data: {\"error\":{\"message\":\"Custom message\"}}",
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        lowercase_failed,
+        ClaudeStatusProbeError::ParseFailed(
+            "Claude CLI could not load usage data. Open the CLI and retry `/usage`.".to_owned()
+        )
+    );
+
+    // Trust prompt with folder on next line vs same-line text
+    let trust_with_folder = ClaudeStatusProbeParser::parse(
+        "Do you trust the files in this folder?\n/Users/example/project\n",
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        trust_with_folder
+            .to_string()
+            .contains("folder trust prompt (/Users/example/project)")
+    );
+
+    let trust_same_line_noise = ClaudeStatusProbeParser::parse(
+        "Do you trust the files in this folder? extra text on same line\n/Users/example/project\n",
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        !trust_same_line_noise
+            .to_string()
+            .contains("/Users/example/project"),
+        "same-line text after trust prompt must prevent capturing the following line as folder hint"
+    );
+
+    // 8. `is_retryable` and `is_rate_limit_error` exact semantics
+    assert!(ClaudeStatusProbeError::TimedOut.is_retryable());
+    assert!(
+        ClaudeStatusProbeError::ParseFailed(
+            "Claude CLI /usage is still loading usage data.".to_owned()
+        )
+        .is_retryable()
+    );
+    assert!(
+        !ClaudeStatusProbeError::ParseFailed("request timed out in output".to_owned())
+            .is_retryable(),
+        "ParseFailed is only retryable when 'still loading usage' is present"
+    );
+    assert!(
+        !ClaudeStatusProbeError::ParseFailed("rate limited".to_owned()).is_rate_limit_error(),
+        "bare 'rate limited' without 'claude cli' and 'usage' must not trigger CLI rate-limit gate"
+    );
+    assert!(
+        ClaudeStatusProbeError::ParseFailed("Claude CLI usage endpoint is rate limited".to_owned())
+            .is_rate_limit_error()
+    );
+    assert!(
+        ClaudeStatusProbeError::ParseFailed("error: rate_limit_error".to_owned())
+            .is_rate_limit_error()
+    );
+
+    // 9. `clean_plan_name` and login method extraction
+    assert_eq!(
+        ClaudeStatusProbeParser::clean_plan_name("\u{1b}[32mClaude Max Account\u{1b}[0m"),
+        "Max"
+    );
+    assert_eq!(ClaudeStatusProbeParser::clean_plan_name("oauth"), "Ollama");
+    let d_today_bridge = "Use Claude\nd → today\nCurrent session\n10% used";
+    let snap_bridge = ClaudeStatusProbeParser::parse(d_today_bridge, None).unwrap();
+    assert_eq!(snap_bridge.login_method, None);
+
+    // 10. ESC followed by newline does not swallow the newline
+    assert_eq!(
+        ClaudeCLIScreen::render("line1\u{1b}\nline2"),
+        "line1\nline2"
+    );
+    // Unqualified U+26A0 (`⚠`) is 1 cell wide, while `⚠️` (`U+26A0 U+FE0F`) is 2 cells wide
+    assert_eq!(ClaudeCLIScreen::render("⚠ ok\u{1b}[3GX"), "⚠ Xk");
+    assert_eq!(ClaudeCLIScreen::render("⚠️ ok\u{1b}[4GX"), "⚠️ Xk");
+}
+
+#[test]
+fn scoped_weekly_usage_and_usage_insights_parity() {
+    let now = "2026-04-06T09:00:00Z".parse::<Timestamp>().unwrap();
+
+    // 1. Later complete scoped panel replaces earlier complete value (`ClaudeCLIScopedWeeklyUsageTests.swift:228-248`)
+    let multi_panel = concat!(
+        "Current session\n",
+        "10% used\n",
+        "Current week (all models)\n",
+        "25% used\n",
+        "Current week (Fable)\n",
+        "20% used\n",
+        "Current week (Fable)\n",
+        "40% used\n",
+        "Resets Apr 10 at 5pm (UTC)\n",
+        "Current week (Opus 4.6)\n",
+        "60% used\n",
+        "Current week (Sonnet)\n",
+        "15% used\n"
+    );
+    let snap = ClaudeStatusProbeParser::parse_at(multi_panel, None, now, &TimeZone::UTC).unwrap();
+    assert_eq!(snap.session_percent_left, Some(90));
+    assert_eq!(snap.weekly_percent_left, Some(75));
+    assert_eq!(snap.opus_percent_left, Some(85));
+    let ids: Vec<&str> = snap
+        .extra_rate_windows
+        .iter()
+        .map(|w| w.id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        vec![
+            "claude-weekly-scoped-fable",
+            "claude-weekly-scoped-opus-4-6"
+        ]
+    );
+    assert_eq!(snap.extra_rate_windows[0].title, "Fable only");
+    assert_eq!(snap.extra_rate_windows[0].window.used_percent, 40.0);
+    assert_eq!(
+        snap.extra_rate_windows[0].window.resets_at,
+        Some("2026-04-10T17:00:00Z".parse::<Timestamp>().unwrap())
+    );
+    assert_eq!(snap.extra_rate_windows[1].title, "Opus 4.6 only");
+    assert_eq!(snap.extra_rate_windows[1].window.used_percent, 60.0);
+
+    // Model name in CLI panel already ending with "only" is not doubled to "only only"
+    let cli_only_panel = concat!(
+        "Current session\n",
+        "10% used\n",
+        "Current week (Fable only)\n",
+        "35% used\n"
+    );
+    let snap_only =
+        ClaudeStatusProbeParser::parse_at(cli_only_panel, None, now, &TimeZone::UTC).unwrap();
+    assert_eq!(snap_only.extra_rate_windows.len(), 1);
+    assert_eq!(
+        snap_only.extra_rate_windows[0].id,
+        "claude-weekly-scoped-fable-only"
+    );
+    assert_eq!(snap_only.extra_rate_windows[0].title, "Fable only");
+    assert_eq!(snap_only.extra_rate_windows[0].window.used_percent, 35.0);
+
+    // Model name already ending with "only" is not doubled to "only only"
+    let already_only =
+        ClaudeScopedWeeklyLimitMapper::extra_rate_window("Fable only", 35.0, None, None).unwrap();
+    assert_eq!(already_only.id, "claude-weekly-scoped-fable-only");
+    assert_eq!(already_only.title, "Fable only");
+
+    // 2. Web extras merge deduplicates unambiguous scoped weekly windows and preserves ambiguous ones
+    let cli_extra = vec![NamedRateWindow::new(
+        "claude-weekly-scoped-fable",
+        "Fable only",
+        RateWindow::new(40.0, Some(10080), None, None, None, false).unwrap(),
+    )];
+    let web_unambiguous = ClaudeScopedWeeklyLimitMapper::named_windows(&[OAuthScopedLimitEntry {
+        kind: Some("weekly_scoped".to_owned()),
+        group: Some("weekly".to_owned()),
+        percent: Some(42.0),
+        resets_at: None,
+        model_id: Some("claude-fable-5-1".to_owned()),
+        model_name: Some("Fable".to_owned()),
+    }]);
+    let merged_unambiguous = merge_extra_rate_windows(&cli_extra, &web_unambiguous);
+    assert_eq!(
+        merged_unambiguous.len(),
+        1,
+        "unambiguous web scoped window for the same model must be deduplicated"
+    );
+
+    let web_ambiguous = ClaudeScopedWeeklyLimitMapper::named_windows(&[
+        OAuthScopedLimitEntry {
+            kind: Some("weekly_scoped".to_owned()),
+            group: Some("weekly".to_owned()),
+            percent: Some(42.0),
+            resets_at: None,
+            model_id: Some("claude-fable-5-0".to_owned()),
+            model_name: Some("Fable".to_owned()),
+        },
+        OAuthScopedLimitEntry {
+            kind: Some("weekly_scoped".to_owned()),
+            group: Some("weekly".to_owned()),
+            percent: Some(55.0),
+            resets_at: None,
+            model_id: Some("claude-fable-5-1".to_owned()),
+            model_name: Some("Fable".to_owned()),
+        },
+    ]);
+    let merged_ambiguous = merge_extra_rate_windows(&cli_extra, &web_ambiguous);
+    assert_eq!(
+        merged_ambiguous.len(),
+        3,
+        "ambiguous multiple web windows sharing a model title must be preserved"
+    );
+
+    // 3. ClaudeUsageInsightsTests: subscription notice + insights marker returns insights message,
+    // while valid quota rows + insights marker succeeds without treating insight percentages as session quota.
+    let insights_only = concat!(
+        "You are currently using your subscription to power your Claude Code usage.\n",
+        "What's contributing to your limits usage?\n",
+        "  • 45% CLAUDE.md and project context\n",
+        "  • 30% MCP server tool definitions\n"
+    );
+    let insights_err = ClaudeStatusProbeParser::parse(insights_only, None).unwrap_err();
+    assert_eq!(
+        insights_err,
+        ClaudeStatusProbeError::ParseFailed(
+            "Claude CLI /usage returned usage insights without quota data.".to_owned()
+        )
+    );
+
+    let insights_with_quota = concat!(
+        "Current session\n",
+        "12% used\n",
+        "Current week (all models)\n",
+        "34% used\n",
+        "What's contributing to your limits usage?\n",
+        "  • 45% CLAUDE.md and project context\n",
+        "  • 30% MCP server tool definitions\n"
+    );
+    let snap_insights = ClaudeStatusProbeParser::parse(insights_with_quota, None).unwrap();
+    assert_eq!(snap_insights.session_percent_left, Some(88));
+    assert_eq!(snap_insights.weekly_percent_left, Some(66));
+}
+
+#[tokio::test]
+async fn cancellation_propagates_without_retry_or_fallback() {
+    let temp = tempfile::tempdir().unwrap();
+    let net = Arc::new(https::broker(NetConfig::default()));
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+    let cfg = ClaudeOAuthStrategyConfig::new(net, temp.path(), temp.path())
+        .with_has_cli(true)
+        .with_cli_binary("/nonexistent/claude")
+        .with_cli_status_probe_override(Arc::new(move |_, _, _| {
+            attempts_clone.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ClaudeStatusProbeError::Cancelled) })
+        }));
+    let strategy = ClaudeCLIFetchStrategy::new(cfg);
+    let cx = make_context(
+        FetchRuntime::Daemon,
+        SourceMode::Cli,
+        FetchInteraction::UserInitiated,
+        BTreeMap::new(),
+    );
+    let res = strategy.fetch(&cx).await;
+    assert!(matches!(res, Err(FetchError::Cancelled)));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
 }

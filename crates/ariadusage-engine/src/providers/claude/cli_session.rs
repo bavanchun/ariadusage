@@ -1,4 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeCLISession.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeStatusProbe.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Interactive PTY session (`ClaudeCLISession`), status probe (`ClaudeStatusProbe`),
@@ -329,11 +330,20 @@ impl ClaudeCLICaptureRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct SessionIdentity {
     binary_path: PathBuf,
     account_scope: Option<String>,
-    environment: BTreeMap<String, String>,
+    environment_digest: String,
+}
+
+fn compute_environment_digest(env: &BTreeMap<String, SecretString>) -> String {
+    let mut parts: Vec<&[u8]> = Vec::with_capacity(env.len() * 2);
+    for (k, v) in env {
+        parts.push(k.as_bytes());
+        parts.push(v.expose_secret().as_bytes());
+    }
+    ariadusage_core::digest::sha256_hex("ariadusage:claude-cli-session-env:v1", &parts)
 }
 
 struct SessionState {
@@ -370,6 +380,7 @@ impl SessionState {
 pub struct ClaudeCLISession {
     state: Mutex<SessionState>,
     working_directory_override: Option<PathBuf>,
+    home_dir: PathBuf,
     dedicated_probe_dir: PathBuf,
     registry: Arc<ProcessRegistry>,
     gate: Arc<LaunchGate>,
@@ -386,14 +397,25 @@ impl ClaudeCLISession {
         registry: Arc<ProcessRegistry>,
         gate: Arc<LaunchGate>,
     ) -> Self {
+        let home_dir = std::env::var_os("HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/"));
         Self {
             state: Mutex::new(SessionState::new()),
             working_directory_override: None,
+            home_dir,
             dedicated_probe_dir,
             registry,
             gate,
             startup_ready_delay: Duration::from_secs(2),
         }
+    }
+
+    #[must_use]
+    pub fn with_home_directory(mut self, home_dir: PathBuf) -> Self {
+        self.home_dir = home_dir;
+        self
     }
 
     #[must_use]
@@ -515,7 +537,6 @@ impl ClaudeCLISession {
                 "CLAUDE_CONFIG_DIR"
                     | "CLAUDE_SECURESTORAGE_CONFIG_DIR"
                     | "CLAUDE_CLI_PATH"
-                    | "ARIADUSAGE_DISABLE_CLAUDE_WATCHDOG"
                     | "DISABLE_AUTOUPDATER"
                     | "TZ"
             ) {
@@ -626,14 +647,10 @@ impl ClaudeCLISession {
         request: &ClaudeCLICaptureRequest,
     ) -> Result<bool, ClaudeCLISessionError> {
         let cleaned_env = Self::launch_environment(&request.environment);
-        let plain_env: BTreeMap<String, String> = cleaned_env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.expose_secret().to_owned()))
-            .collect();
         let identity = SessionIdentity {
             binary_path: request.binary.clone(),
             account_scope: request.account_scope.clone(),
-            environment: plain_env,
+            environment_digest: compute_environment_digest(&cleaned_env),
         };
 
         if let Some(pty) = state.pty.as_ref()
@@ -652,7 +669,7 @@ impl ClaudeCLISession {
         let home_dir = cleaned_env
             .get("HOME")
             .map(|h| PathBuf::from(h.expose_secret()))
-            .unwrap_or_else(|| PathBuf::from("/"));
+            .unwrap_or_else(|| self.home_dir.clone());
         let _ = ClaudeProbeSessionArtifactCleaner::cleanup_probe_session_artifacts(
             &working_directory,
             &self.dedicated_probe_dir,
@@ -948,6 +965,7 @@ pub struct ClaudeStatusProbe {
     pub home_dir: PathBuf,
     pub session: Arc<ClaudeCLISession>,
     pub fetch_override: Option<ClaudeStatusProbeFetchOverride>,
+    pub direct_fetch_override: Option<ClaudeStatusProbeFetchOverride>,
 }
 
 impl ClaudeStatusProbe {
@@ -969,6 +987,7 @@ impl ClaudeStatusProbe {
             home_dir,
             session,
             fetch_override: None,
+            direct_fetch_override: None,
         }
     }
 
@@ -999,6 +1018,15 @@ impl ClaudeStatusProbe {
     #[must_use]
     pub fn with_fetch_override(mut self, fetch_override: ClaudeStatusProbeFetchOverride) -> Self {
         self.fetch_override = Some(fetch_override);
+        self
+    }
+
+    #[must_use]
+    pub fn with_direct_fetch_override(
+        mut self,
+        direct_fetch_override: ClaudeStatusProbeFetchOverride,
+    ) -> Self {
+        self.direct_fetch_override = Some(direct_fetch_override);
         self
     }
 
@@ -1039,19 +1067,17 @@ impl ClaudeStatusProbe {
         &self,
         call: BrokerCall,
     ) -> Result<ClaudeStatusSnapshot, ClaudeStatusProbeError> {
-        let resolved =
-            Self::resolve_binary_path(&self.claude_binary, &self.environment, &self.home_dir)
-                .or_else(|| {
-                    self.fetch_override
-                        .is_some()
-                        .then(|| PathBuf::from(&self.claude_binary))
-                })
-                .ok_or(ClaudeStatusProbeError::ClaudeNotInstalled)?;
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
         let timeout = self.timeout;
         let keep_alive = Self::should_keep_cli_session_alive(self.keep_cli_sessions_alive);
         if let Some(ref fetch_override) = self.fetch_override {
-            return (fetch_override)(resolved, timeout, keep_alive).await;
+            return (fetch_override)(PathBuf::from(&self.claude_binary), timeout, keep_alive).await;
         }
+        let resolved =
+            Self::resolve_binary_path(&self.claude_binary, &self.environment, &self.home_dir)
+                .ok_or(ClaudeStatusProbeError::ClaudeNotInstalled)?;
 
         let account_scope = ClaudeAccountProfile::session_scope(
             &self.environment,
@@ -1179,7 +1205,7 @@ impl ClaudeStatusProbe {
             }
             Err(ClaudeCLISessionError::Cancelled) => {
                 self.session.reset().await;
-                Err(ClaudeStatusProbeError::TimedOut)
+                Err(ClaudeStatusProbeError::Cancelled)
             }
             Err(other) => {
                 self.session.reset().await;
@@ -1253,6 +1279,7 @@ impl ClaudeStatusProbe {
         self.session.reset().await;
         match res {
             Ok(_) => Ok(()),
+            Err(ClaudeCLISessionError::Cancelled) => Err(ClaudeStatusProbeError::Cancelled),
             Err(ClaudeCLISessionError::TimedOut | ClaudeCLISessionError::ProcessExited) => {
                 Err(ClaudeStatusProbeError::TimedOut)
             }
@@ -1349,6 +1376,9 @@ impl ClaudeCLIUsageLoader {
         timeout: Duration,
         now: jiff::Timestamp,
     ) -> Result<ClaudeStatusSnapshot, ClaudeStatusProbeError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
         if self
             .rate_limit_gate
             .blocked_until(call.interaction, now)
@@ -1362,8 +1392,10 @@ impl ClaudeCLIUsageLoader {
         let snapshot = match self.load_via_pty(call.clone(), timeout).await {
             Ok(snap) => snap,
             Err(pty_err) => {
-                if call.cancel.is_cancelled() {
-                    return Err(pty_err);
+                if call.cancel.is_cancelled()
+                    || matches!(pty_err, ClaudeStatusProbeError::Cancelled)
+                {
+                    return Err(ClaudeStatusProbeError::Cancelled);
                 }
                 if pty_err.is_rate_limit_error()
                     || ClaudeCLIRateLimitGate::is_rate_limit_error(&pty_err.to_string())
@@ -1378,8 +1410,10 @@ impl ClaudeCLIUsageLoader {
                 match self.load_via_direct_cli(call.clone(), direct_timeout).await {
                     Ok(snap) => snap,
                     Err(direct_err) => {
-                        if call.cancel.is_cancelled() {
-                            return Err(direct_err);
+                        if call.cancel.is_cancelled()
+                            || matches!(direct_err, ClaudeStatusProbeError::Cancelled)
+                        {
+                            return Err(ClaudeStatusProbeError::Cancelled);
                         }
                         if direct_err.is_rate_limit_error()
                             || ClaudeCLIRateLimitGate::is_rate_limit_error(&direct_err.to_string())
@@ -1416,6 +1450,7 @@ impl ClaudeCLIUsageLoader {
             home_dir: self.probe.home_dir.clone(),
             session: Arc::clone(&self.probe.session),
             fetch_override: self.probe.fetch_override.clone(),
+            direct_fetch_override: self.probe.direct_fetch_override.clone(),
         };
         probe.timeout = timeout;
         probe.fetch(call).await
@@ -1426,6 +1461,29 @@ impl ClaudeCLIUsageLoader {
         call: BrokerCall,
         timeout: Duration,
     ) -> Result<ClaudeStatusSnapshot, ClaudeStatusProbeError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
+        if let Some(ref direct_override) = self.probe.direct_fetch_override {
+            return (direct_override)(PathBuf::from(&self.probe.claude_binary), timeout, false)
+                .await;
+        }
+        if self.probe.fetch_override.is_some() {
+            // When the PTY probe is stubbed via `fetch_override` and no `direct_fetch_override`
+            // is supplied, never fall through to resolving or spawning a real `claude` binary.
+            return Err(ClaudeStatusProbeError::ClaudeNotInstalled);
+        }
+        self.fetch_direct_usage_snapshot(call, timeout).await
+    }
+
+    pub async fn fetch_direct_usage_snapshot(
+        &self,
+        call: BrokerCall,
+        timeout: Duration,
+    ) -> Result<ClaudeStatusSnapshot, ClaudeStatusProbeError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
         let resolved = ClaudeStatusProbe::resolve_binary_path(
             &self.probe.claude_binary,
             &self.probe.environment,
@@ -1453,6 +1511,7 @@ impl ClaudeCLIUsageLoader {
         command.set_stdin(StdinSpec::Null);
         command.set_reap_marker(true);
 
+        let cancel = call.cancel.clone();
         let run_res = run(call, command, &self.registry, &self.launch_gate).await;
 
         let _ = ClaudeProbeSessionArtifactCleaner::cleanup_probe_session_artifacts(
@@ -1465,11 +1524,19 @@ impl ClaudeCLIUsageLoader {
 
         match run_res {
             Ok(output) => {
+                if cancel.is_cancelled() {
+                    return Err(ClaudeStatusProbeError::Cancelled);
+                }
                 let stdout_str = String::from_utf8_lossy(&output.stdout);
                 ClaudeStatusProbeParser::parse(&stdout_str, None)
             }
-            Err(ProcessError::TimedOut | ProcessError::Cancelled) => {
-                Err(ClaudeStatusProbeError::TimedOut)
+            Err(ProcessError::Cancelled) => Err(ClaudeStatusProbeError::Cancelled),
+            Err(ProcessError::TimedOut) => {
+                if cancel.is_cancelled() {
+                    Err(ClaudeStatusProbeError::Cancelled)
+                } else {
+                    Err(ClaudeStatusProbeError::TimedOut)
+                }
             }
             Err(ProcessError::LaunchFailed) => Err(ClaudeStatusProbeError::ClaudeNotInstalled),
             Err(other) => Err(ClaudeStatusProbeError::ParseFailed(other.to_string())),

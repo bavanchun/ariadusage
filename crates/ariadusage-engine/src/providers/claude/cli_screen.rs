@@ -48,7 +48,16 @@ impl ClaudeCLIScreen {
                     index = Self::consume_osc_token(&scalars, index + 2);
                     continue;
                 }
-                index = (index + 2).min(scalars.len());
+                if index + 1 < scalars.len()
+                    && !matches!(
+                        scalars[index + 1],
+                        '\n' | '\r' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+                    )
+                {
+                    index += 2;
+                } else {
+                    index += 1;
+                }
                 continue;
             }
 
@@ -406,7 +415,8 @@ fn is_combining(scalar: char) -> bool {
     let value = scalar as u32;
     matches!(
         value,
-        0x0300..=0x036F
+        0x00AD
+            | 0x0300..=0x036F
             | 0x0483..=0x0489
             | 0x0591..=0x05BD
             | 0x05BF
@@ -432,6 +442,7 @@ fn is_combining(scalar: char) -> bool {
             | 0x0825..=0x0827
             | 0x0829..=0x082D
             | 0x0859..=0x085B
+            | 0x0890..=0x0891
             | 0x08D3..=0x0902
             | 0x093A
             | 0x093C
@@ -442,6 +453,7 @@ fn is_combining(scalar: char) -> bool {
             | 0x0E31
             | 0x0E34..=0x0E3A
             | 0x0E47..=0x0E4E
+            | 0x180E
             | 0x1AB0..=0x1AFF
             | 0x1DC0..=0x1DFF
             | 0x200B..=0x200F
@@ -450,10 +462,15 @@ fn is_combining(scalar: char) -> bool {
             | 0x20D0..=0x20F0
             | 0x302A..=0x302D
             | 0x3099..=0x309A
+            | 0xA670..=0xA672
             | 0xFE00..=0xFE0F
             | 0xFE20..=0xFE2F
             | 0xFEFF
             | 0xFFF9..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
             | 0x1D167..=0x1D169
             | 0x1D173..=0x1D182
             | 0x1D185..=0x1D18B
@@ -463,132 +480,170 @@ fn is_combining(scalar: char) -> bool {
     )
 }
 
-fn is_emoji_presentation(value: u32) -> bool {
-    matches!(
-        value,
-        0x231A..=0x231B
-            | 0x23E9..=0x23EC
-            | 0x23F0
-            | 0x23F3
-            | 0x25FD..=0x25FE
-            | 0x2614..=0x2615
-            | 0x2648..=0x2653
-            | 0x267F
-            | 0x2693
-            | 0x26A1
-            | 0x26AA..=0x26AB
-            | 0x26BD..=0x26BE
-            | 0x26C4..=0x26C5
-            | 0x26CE
-            | 0x26D4
-            | 0x26EA
-            | 0x26F2..=0x26F3
-            | 0x26F5
-            | 0x26FA
-            | 0x26FD
-            | 0x2705
-            | 0x270A..=0x270B
-            | 0x2728
-            | 0x274C
-            | 0x274E
-            | 0x2753..=0x2755
-            | 0x2757
-            | 0x2795..=0x2797
-            | 0x27B0
-            | 0x27BF
-            | 0x2B1B..=0x2B1C
-            | 0x2B50
-            | 0x2B55
-            | 0x1F004
-            | 0x1F0CF
-            | 0x1F18E
-            | 0x1F191..=0x1F19A
-            | 0x1F1E6..=0x1F1FF
-            | 0x1F201..=0x1F202
-            | 0x1F21A
-            | 0x1F22F
-            | 0x1F232..=0x1F23A
-            | 0x1F250..=0x1F251
-            | 0x1F300..=0x1FAFF
-    )
-}
-
 fn display_width(scalar: char) -> usize {
     if is_combining(scalar) {
         return 0;
     }
     let value = scalar as u32;
-    if is_emoji_presentation(value) {
-        return 2;
-    }
     match value {
         0x1100..=0x115F
+        | 0x231A..=0x231B
         | 0x2329..=0x232A
-        | 0x2E80..=0x303E
-        | 0x3040..=0x3247
-        | 0x3250..=0x4DBF
-        | 0x4E00..=0xA4C6
-        | 0xA960..=0xA97C
+        | 0x23E9..=0x23EC
+        | 0x23F0
+        | 0x23F3
+        | 0x25FD..=0x25FE
+        | 0x2614..=0x2615
+        | 0x2648..=0x2653
+        | 0x267F
+        | 0x2693
+        | 0x26A1
+        | 0x26AA..=0x26AB
+        | 0x26BD..=0x26BE
+        | 0x26C4..=0x26C5
+        | 0x26CE
+        | 0x26D4
+        | 0x26EA
+        | 0x26F2..=0x26F3
+        | 0x26F5
+        | 0x26FA
+        | 0x26FD
+        | 0x2705
+        | 0x270A..=0x270B
+        | 0x2728
+        | 0x274C
+        | 0x274E
+        | 0x2753..=0x2755
+        | 0x2757
+        | 0x2795..=0x2797
+        | 0x27B0
+        | 0x27BF
+        | 0x2B1B..=0x2B1C
+        | 0x2B50
+        | 0x2B55
+        | 0x2E80..=0xA4CF
         | 0xAC00..=0xD7A3
         | 0xF900..=0xFAFF
         | 0xFE10..=0xFE19
-        | 0xFE30..=0xFE6B
-        | 0xFF01..=0xFF60
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
         | 0xFFE0..=0xFFE6
-        | 0x1F300..=0x1FAFF
+        | 0x1F000..=0x1FAFF
         | 0x20000..=0x3FFFD => 2,
         _ => 1,
     }
+}
+
+/// Splits text on Unicode newline characters (`\r\n`, `\n`, `\r`, `\u{000B}`, `\u{000C}`,
+/// `\u{0085}`, `\u{2028}`, `\u{2029}`), matching Foundation's `CharacterSet.newlines` while
+/// treating `\r\n` as a single line break.
+pub(crate) fn split_newline_components(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((idx, ch)) = chars.next() {
+        let is_nl = matches!(
+            ch,
+            '\r' | '\n' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+        );
+        if is_nl {
+            out.push(&text[start..idx]);
+            if ch == '\r' && chars.peek().is_some_and(|&(_, next_ch)| next_ch == '\n') {
+                let (next_idx, next_ch) = chars.next().expect("peeked");
+                start = next_idx + next_ch.len_utf8();
+            } else {
+                start = idx + ch.len_utf8();
+            }
+        }
+    }
+    out.push(&text[start..]);
+    out
 }
 
 /// Parses the Claude CLI `Usage credits` spend-cap section (`$X / $Y spent`) into a [`ProviderCostSnapshot`].
 pub struct ClaudeCLISpendCapParser;
 
 impl ClaudeCLISpendCapParser {
-    pub fn parse(clean_text: &str, now: Timestamp) -> Option<ProviderCostSnapshot> {
-        let lines: Vec<&str> = clean_text.lines().collect();
-        let header_index = lines
-            .iter()
-            .rposition(|line| line.trim().eq_ignore_ascii_case("usage credits"))?;
+    const MAX_LINES_AFTER_HEADER: usize = 6;
+    const MAX_HEADER_KEY_LENGTH: usize = 60;
+    const MAX_AMOUNT: f64 = 1_000_000_000_000.0;
 
-        let end = (header_index + 5).min(lines.len());
-        for line in &lines[(header_index + 1)..end] {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+    pub fn parse(text: &str, now: Timestamp) -> Option<ProviderCostSnapshot> {
+        let clean = ClaudeCLIScreen::render_with_options(text, true);
+        let lines = split_newline_components(&clean);
+        for (header_index, raw_line) in lines.iter().enumerate().rev() {
+            let line = raw_line.trim();
+            if !Self::is_header(line) {
                 continue;
             }
-            if let Some((used_raw, limit_raw)) = Self::match_spend_cap_line(trimmed) {
-                let Some(used) = Self::parse_amount(used_raw) else {
-                    continue;
-                };
-                let Some(limit) = Self::parse_amount(limit_raw) else {
-                    continue;
-                };
-                let mut snapshot = ProviderCostSnapshot::new(used, limit, "USD", now);
-                snapshot.period = Some("Monthly cap".to_owned());
-                return Some(snapshot);
+            let end = (header_index + 1 + Self::MAX_LINES_AFTER_HEADER).min(lines.len());
+            for candidate in &lines[header_index..end] {
+                if let Some((used, limit)) = Self::spend_cap_in_line(candidate) {
+                    let mut snapshot = ProviderCostSnapshot::new(used, limit, "USD", now);
+                    snapshot.period = Some("Monthly cap".to_owned());
+                    return Some(snapshot);
+                }
             }
+            return None;
         }
         None
     }
 
-    fn match_spend_cap_line(line: &str) -> Option<(&str, &str)> {
-        let rest = line.strip_prefix('$')?;
-        let (used_raw, rest) = Self::take_currency_token(rest)?;
-        let rest = rest.trim_start().strip_prefix('/')?.trim_start();
-        let rest = rest.strip_prefix('$')?;
-        let (limit_raw, rest) = Self::take_currency_token(rest)?;
-        let rest = rest.trim_start();
-        if rest.len() < 5 || !rest.as_bytes()[..5].eq_ignore_ascii_case(b"spent") {
-            return None;
+    fn is_header(line: &str) -> bool {
+        let key: String = line
+            .chars()
+            .filter(|c| c.is_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect();
+        key.starts_with("usagecredits") && key.chars().count() <= Self::MAX_HEADER_KEY_LENGTH
+    }
+
+    fn spend_cap_in_line(line: &str) -> Option<(f64, f64)> {
+        for (pos, ch) in line.char_indices() {
+            if ch != '$' {
+                continue;
+            }
+            if let Some(prev) = line[..pos].chars().next_back()
+                && (prev.is_alphanumeric() || matches!(prev, '-' | '+' | '\u{2212}' | '.' | ','))
+            {
+                continue;
+            }
+            let after_first_dollar = line[(pos + 1)..].trim_start();
+            let Some((used_raw, after_used)) = Self::take_currency_token(after_first_dollar) else {
+                continue;
+            };
+            let Some(after_slash) = after_used.trim_start().strip_prefix('/') else {
+                continue;
+            };
+            let Some(after_second_dollar) = after_slash.trim_start().strip_prefix('$') else {
+                continue;
+            };
+            let after_second_dollar = after_second_dollar.trim_start();
+            let Some((limit_raw, after_limit)) = Self::take_currency_token(after_second_dollar)
+            else {
+                continue;
+            };
+            let rest = after_limit.trim_start();
+            if rest.len() < 5 || !rest.as_bytes()[..5].eq_ignore_ascii_case(b"spent") {
+                continue;
+            }
+            let after_spent = &rest[5..];
+            if let Some(next_ch) = after_spent.chars().next()
+                && (next_ch.is_alphanumeric() || next_ch == '_')
+            {
+                continue;
+            }
+            let Some(used) = Self::parse_amount(used_raw) else {
+                continue;
+            };
+            let Some(limit) = Self::parse_amount(limit_raw) else {
+                continue;
+            };
+            if limit > 0.0 {
+                return Some((used, limit));
+            }
         }
-        let after_spent = &rest[5..];
-        if let Some(next_ch) = after_spent.chars().next()
-            && (next_ch.is_ascii_alphanumeric() || next_ch == '_')
-        {
-            return None;
-        }
-        Some((used_raw, limit_raw))
+        None
     }
 
     fn take_currency_token(input: &str) -> Option<(&str, &str)> {
@@ -596,10 +651,15 @@ impl ClaudeCLISpendCapParser {
         if bytes.is_empty() || !bytes[0].is_ascii_digit() {
             return None;
         }
-        let mut idx = 1;
-        while idx < bytes.len() && (bytes[idx].is_ascii_digit() || bytes[idx] == b',') {
-            idx += 1;
+        let mut int_end = 1;
+        while int_end < bytes.len() && (bytes[int_end].is_ascii_digit() || bytes[int_end] == b',') {
+            int_end += 1;
         }
+        let int_part = &input[..int_end];
+        if !Self::is_valid_integer_part(int_part) {
+            return None;
+        }
+        let mut idx = int_end;
         if idx < bytes.len() && bytes[idx] == b'.' {
             let frac_start = idx + 1;
             let mut frac_len = 0;
@@ -608,7 +668,7 @@ impl ClaudeCLISpendCapParser {
             {
                 frac_len += 1;
             }
-            if !(1..=2).contains(&frac_len) {
+            if !(1..=4).contains(&frac_len) {
                 return None;
             }
             idx = frac_start + frac_len;
@@ -616,9 +676,30 @@ impl ClaudeCLISpendCapParser {
         Some((&input[..idx], &input[idx..]))
     }
 
+    fn is_valid_integer_part(int_part: &str) -> bool {
+        if !int_part.contains(',') {
+            return !int_part.is_empty() && int_part.bytes().all(|b| b.is_ascii_digit());
+        }
+        let mut groups = int_part.split(',');
+        let Some(first) = groups.next() else {
+            return false;
+        };
+        if !(1..=3).contains(&first.len()) || !first.bytes().all(|b| b.is_ascii_digit()) {
+            return false;
+        }
+        let mut count = 0;
+        for group in groups {
+            count += 1;
+            if group.len() != 3 || !group.bytes().all(|b| b.is_ascii_digit()) {
+                return false;
+            }
+        }
+        count >= 1
+    }
+
     fn parse_amount(raw: &str) -> Option<f64> {
         let normalized = raw.replace(',', "");
         let value = normalized.parse::<f64>().ok()?;
-        (value.is_finite() && value >= 0.0).then_some(value)
+        (value.is_finite() && (0.0..=Self::MAX_AMOUNT).contains(&value)).then_some(value)
     }
 }
