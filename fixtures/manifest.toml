@@ -27,6 +27,46 @@ origin = "ariadusage"
 license = "MIT"
 changes = "Public test CA certificate from httpmock 0.8.3; contains no private key."
 
+[[fixture]]
+path = "codexbar/providers/claude/status-pty-differential-redraw.ansi"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/Providers/Claude/status-pty-differential-redraw.ansi"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/providers/claude/usage-pty-2.1.294-tall-panel.ansi"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/Providers/Claude/usage-pty-2.1.294-tall-panel.ansi"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/providers/claude/usage-pty-differential-redraw.ansi"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/Providers/Claude/usage-pty-differential-redraw.ansi"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/providers/claude/workspace-trust-dialog.ansi"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/Providers/Claude/workspace-trust-dialog.ansi"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/providers/claude/workspace-trust-select-down.ansi"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/Providers/Claude/workspace-trust-select-down.ansi"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
 [[ported]]
 path = "crates/ariadusage-protocol/src/usage.rs"
 sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
@@ -1113,4 +1153,54 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-macos/tests/menu_descriptor.rs"
 sources = ["Tests/CodexBarTests/MenuDescriptorTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/cli_screen.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLIScreen.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLISpendCapParser.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/cli_gates.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLIUsageSpawnThrottle.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLIRateLimitGate.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLIAuthStatusProbe.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeProbeSessionArtifactCleaner.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/cli_parser.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLISpendCapParser.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/claude/cli_session.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Claude/ClaudeCLISession.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/claude_cli.rs"
+sources = [
+    "Tests/CodexBarTests/ClaudeCLIScreenTests.swift",
+    "Tests/CodexBarTests/ClaudeCLISessionTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIRateLimitGateTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIUsageSpawnThrottleTests.swift",
+    "Tests/CodexBarTests/ClaudeCLIAuthStatusProbeTests.swift",
+    "Tests/CodexBarTests/ClaudeProbeSessionArtifactCleanerTests.swift",
+    "Tests/CodexBarTests/ClaudeProbeTests.swift",
+    "Tests/CodexBarTests/ClaudeProbeParsingTests.swift",
+    "Tests/CodexBarTests/ClaudeUsageTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

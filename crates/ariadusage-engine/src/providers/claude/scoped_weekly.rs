@@ -146,6 +146,38 @@ impl ClaudeScopedWeeklyLimitMapper {
         windows
     }
 
+    /// Maps a single CLI scoped weekly model window (`Current week (<Model>)`) into a `NamedRateWindow`.
+    pub fn extra_rate_window(
+        model_name: &str,
+        used_percent: f64,
+        resets_at: Option<Timestamp>,
+        reset_description: Option<String>,
+    ) -> Option<NamedRateWindow> {
+        let clean_name = Self::non_empty(Some(model_name))?;
+        if Self::is_all_models_scope(None, clean_name) {
+            return None;
+        }
+        let slug = Self::slug(clean_name);
+        if slug.is_empty() {
+            return None;
+        }
+        let id = format!("claude-weekly-scoped-{slug}");
+        let window = RateWindow::new(
+            used_percent,
+            Some(Self::WEEKLY_WINDOW_MINUTES),
+            resets_at,
+            reset_description,
+            None,
+            false,
+        )
+        .ok()?;
+        Some(NamedRateWindow::new(
+            id,
+            format!("{clean_name} only"),
+            window,
+        ))
+    }
+
     fn non_empty(raw: Option<&str>) -> Option<&str> {
         let trimmed = raw?.trim();
         if trimmed.is_empty() {
