@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/CredentialFileWriterTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/CredentialFileWriterTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CredentialFileWriterTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/CredentialFileWriterTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #![cfg(unix)]
 

@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshCoordinatorTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshUnreadableResultTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshCoordinatorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshUnreadableResultTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

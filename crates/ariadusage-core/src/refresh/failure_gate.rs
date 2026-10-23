@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBar/UsageStoreSupport.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStoreSupport.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 /// Tracks consecutive failures to hide single transient flakes when fresh data was present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

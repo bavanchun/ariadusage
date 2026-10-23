@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexCLILaunchGate.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexCLILaunchGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};

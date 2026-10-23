@@ -1,4 +1,4 @@
-// Ported from CodexBar Sources/CodexBarCore/ProviderIdentitySnapshot.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/ProviderIdentitySnapshot.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_protocol::ProviderId;
 use serde::{Deserialize, Serialize};

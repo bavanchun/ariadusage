@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/BrowserDetectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/cookie_db.rs"]
@@ -79,7 +79,7 @@ fn catalog_keeps_the_approved_linux_import_order() {
 }
 
 #[test]
-// CodexBar: BrowserDetectionTests.swift:44
+// CodexBar: BrowserDetectionTests.swift:57
 fn test_hooks_suppress_a_real_home_symlink_alias_before_discovery() {
     let isolated = TestHome::new();
     let home_alias = isolated.home.join("real-home-alias");
@@ -117,7 +117,7 @@ fn test_hooks_suppress_a_real_home_symlink_alias_before_discovery() {
 }
 
 #[test]
-// CodexBar: BrowserDetectionTests.swift:66
+// CodexBar: BrowserDetectionTests.swift:79
 fn test_hooks_report_typed_suppression_for_the_injected_process_home() {
     let isolated = TestHome::new();
     let broker = BrowserBroker::with_paths(
@@ -167,7 +167,7 @@ fn firefox_profile_labels_use_names_and_never_email_or_account_fields() {
 }
 
 #[test]
-// CodexBar: BrowserDetectionTests.swift:80
+// CodexBar: BrowserDetectionTests.swift:93
 fn browser_import_requires_explicit_auto_source() {
     let unset = cookie_core::resolve_cookie_source(None, false, None, false);
     assert_eq!(unset, cookie_core::CookieResolution::None);

@@ -5,7 +5,7 @@ previous_baseline = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
 path = "codexbar/usage-snapshot-current.json"
 origin = "codexbar"
 source = "Tests/CodexBarTests/Fixtures/usage-snapshot-current.json"
-commit = "6a26b2e9b1b60471970deb6fe663f9e5f284e2ce"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 license = "MIT"
 changes = "Copied byte-for-byte from the baseline."
 
@@ -34,14 +34,17 @@ sources = ["Sources/CodexBarCore/ProviderDetailSection.swift"]
 [[ported]]
 path = "crates/ariadusage-protocol/tests/detail_sections.rs"
 sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-protocol/tests/ids.rs"
 sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/settings_value.rs"
 sources = ["Sources/CodexBarCore/Config/SettingsValue.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/providers.rs"
@@ -56,14 +59,17 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-core/src/model/percent.rs"
 sources = ["Sources/CodexBarCore/UsagePercent.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/model/window.rs"
 sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/model/identity.rs"
 sources = ["Sources/CodexBarCore/ProviderIdentitySnapshot.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/model/cost.rs"
@@ -79,54 +85,67 @@ sources = [
 [[ported]]
 path = "crates/ariadusage-core/src/model/backfill.rs"
 sources = ["Sources/CodexBarCore/UsageFetcher.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/settings_value.rs"
 sources = ["TestsLinux/SettingsValueTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/rate_window_synthetic.rs"
 sources = ["Tests/CodexBarTests/RateWindowSyntheticPlaceholderTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/detail_sections_snapshot.rs"
 sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/provider_id.rs"
 sources = ["Tests/CodexBarTests/ProviderInstanceIDTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/reset_backfill.rs"
 sources = ["Tests/CodexBarTests/ResetTimeBackfillTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/confidence.rs"
 sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/antigravity_named_windows.rs"
 sources = ["Tests/CodexBarTests/AntigravityStatusProbeTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/snapshot_copy.rs"
 sources = ["Tests/CodexBarTests/CodexbarTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/usage_percent.rs"
 sources = ["Tests/CodexBarTests/UsagePercentTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/cost_window.rs"
 sources = ["Tests/CodexBarTests/ProviderCostWindowTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/identity_silo.rs"
 sources = ["TestsLinux/UsageSnapshotAccountLabelTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/snapshot_fixture.rs"
 sources = ["Tests/CodexBarTests/ProviderDetailSectionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pace.rs"
@@ -134,6 +153,7 @@ sources = [
     "Sources/CodexBarCore/UsagePace.swift",
     "Sources/CodexBarCore/Providers/ProviderDescriptor.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/pace.rs"
@@ -154,6 +174,7 @@ sources = [
 [[ported]]
 path = "crates/ariadusage-core/src/config/quota.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/codec.rs"
@@ -169,6 +190,7 @@ sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
 [[ported]]
 path = "crates/ariadusage-core/src/config/validate.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfigValidation.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/redact.rs"
@@ -176,50 +198,62 @@ sources = [
     "Sources/CodexBarCore/Config/CodexBarConfig.swift",
     "Sources/CodexBarCore/TokenAccounts.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/config/transform.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfig.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_unknown_providers.rs"
 sources = ["Tests/CodexBarTests/CodexBarConfigUnknownProviderTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_byte_stability.rs"
 sources = ["Tests/CodexBarTests/ProviderConfigByteStabilityTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_validation.rs"
 sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_active_source.rs"
 sources = ["Tests/CodexBarTests/CodexActiveSourceConfigTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_identity.rs"
 sources = ["Tests/CodexBarTests/ProviderInstanceIdentityCharacterizationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/config_plugin_preservation.rs"
 sources = ["TestsLinux/PluginConfigPreservationLinuxTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/paths.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/private_file.rs"
 sources = ["Sources/CodexBarCore/CredentialFileWriter.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/config_store.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/paths.rs"
 sources = ["Tests/CodexBarTests/ConfigValidationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/private_file.rs"
@@ -227,27 +261,33 @@ sources = [
     "Tests/CodexBarTests/CredentialFileWriterTests.swift",
     "TestsLinux/CredentialFileWriterTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/config_store.rs"
 sources = ["TestsLinux/CodexBarConfigStoreEmptyTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/context.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/strategy.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/error.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/retry.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/candidate.rs"
@@ -256,18 +296,22 @@ sources = ["Sources/CodexBarCore/Providers/ProviderCandidateRetryRunner.swift"]
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/outcome.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderFetchPlan.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/diagnostics.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderDiagnosticExport.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/pipeline/env.rs"
 sources = ["Sources/CodexBarCore/Providers/ProviderEnvironmentResolver.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_fetch_error.rs"
 sources = ["Tests/CodexBarTests/ProviderFetchErrorTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_candidate_retry.rs"
@@ -276,14 +320,17 @@ sources = ["Tests/CodexBarTests/ProviderCandidateRetryRunnerTests.swift"]
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_diagnostics.rs"
 sources = ["Tests/CodexBarTests/ProviderDiagnosticExportTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/pipeline_env_resolver.rs"
 sources = ["Tests/CodexBarTests/ProviderEnvironmentResolverTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/refresh/failure_gate.rs"
 sources = ["Sources/CodexBar/UsageStoreSupport.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/refresh/decision.rs"
@@ -291,10 +338,12 @@ sources = [
     "Sources/CodexBar/UsageStore+Refresh.swift",
     "Sources/CodexBar/Providers/Shared/UsageStore+BrowserSession.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/refresh/transport.rs"
 sources = ["Sources/CodexBar/UsageStore+ClaudeHistoryFallback.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/refresh_gate.rs"
@@ -302,38 +351,47 @@ sources = [
     "Tests/CodexBarTests/ClaudeResilienceTests.swift",
     "Tests/CodexBarTests/UsageStoreCoverageTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/refresh_decision.rs"
 sources = ["Tests/CodexBarTests/ClaudeResilienceTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/refresh_transport.rs"
 sources = ["Tests/CodexBarTests/UsageStoreCoverageTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/net/client.rs"
 sources = ["Sources/CodexBarCore/ProviderHTTPClient.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/net/redirect.rs"
 sources = ["Sources/CodexBarCore/ProviderHTTPClient.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/net/override_validator.rs"
 sources = ["Sources/CodexBarCore/ProviderEndpointOverrideValidator.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/net/classify.rs"
 sources = ["Sources/CodexBarCore/ProviderTransportError.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/net_client.rs"
 sources = ["Tests/CodexBarTests/ProviderHTTPClientTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/net_redirect.rs"
 sources = ["Tests/CodexBarTests/ProviderHTTPClientTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/net_override.rs"
@@ -342,6 +400,7 @@ sources = [
     "TestsLinux/ProviderEndpointOverrideSecurityLinuxTests.swift",
     "TestsLinux/AzureEndpointOverrideSecurityTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/net_classify.rs"
@@ -349,14 +408,17 @@ sources = [
     "Tests/CodexBarTests/ClaudeOAuthTransportIdentityTests.swift",
     "Tests/CodexBarTests/CodexTransportIdentityTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_env.rs"
 sources = ["Tests/CodexBarTests/ProcessEnvironmentTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_buffers.rs"
 sources = ["Tests/CodexBarTests/BoundedOutputBufferTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_procscan.rs"
@@ -364,6 +426,7 @@ sources = [
     "Tests/CodexBarTests/PiProcessEnvironmentTests.swift",
     "TestsLinux/ProcessOwnershipReaperTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_run.rs"
@@ -374,14 +437,17 @@ sources = [
     "TestsLinux/ShellCommandSessionLinuxTests.swift",
     "TestsLinux/ShellCommandOutputLimitTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/gates/launch.rs"
 sources = ["Sources/CodexBarCore/Providers/Codex/CodexCLILaunchGate.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/gates_launch.rs"
 sources = ["Tests/CodexBarTests/CodexCLILaunchGateTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/teardown.rs"
@@ -389,10 +455,12 @@ sources = [
     "Sources/CodexBarCore/Host/Process/SpawnedProcessGroup.swift",
     "Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/holders.rs"
 sources = ["Sources/CodexBarCore/Host/Process/SpawnedProcessGroup.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/reaper.rs"
@@ -400,10 +468,12 @@ sources = [
     "Sources/CodexBarCore/Host/Process/ProcessOwnershipReaper.swift",
     "TestsLinux/ProcessOwnershipReaperTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/registry.rs"
 sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_teardown.rs"
@@ -412,6 +482,7 @@ sources = [
     "Tests/CodexBarTests/SubprocessRunnerTests.swift",
     "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_holders.rs"
@@ -419,6 +490,7 @@ sources = [
     "Tests/CodexBarTests/SubprocessRunnerTests.swift",
     "Tests/CodexBarTests/SpawnedProcessGroupTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_reaper.rs"
@@ -426,6 +498,7 @@ sources = [
     "TestsLinux/ProcessOwnershipReaperTests.swift",
     "Tests/CodexBarTests/SubprocessRunnerTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_registry.rs"
@@ -433,10 +506,12 @@ sources = [
     "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
     "Tests/CodexBarTests/CodexCLILaunchGateTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/process_signal.rs"
 sources = ["Tests/CodexBarTests/TTYCommandRunnerTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/rpc.rs"
@@ -445,6 +520,7 @@ sources = [
     "Sources/CodexBarCore/Host/Process/RPCRequestTimeout.swift",
     "Sources/CodexBarCore/Host/Process/RPCChildProcessTeardown.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/pty.rs"
@@ -453,10 +529,12 @@ sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/scan.rs"
 sources = ["Sources/CodexBarCore/Host/PTY/StreamScanBuffer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/process/drain.rs"
 sources = ["Sources/CodexBarCore/Host/PTY/TTYCommandRunner.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/rpc_session.rs"
@@ -465,6 +543,7 @@ sources = [
     "Tests/CodexBarTests/RPCChildProcessTeardownTests.swift",
     "Tests/CodexBarTests/BoundedChildProcessProofTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/pty_session.rs"
@@ -482,6 +561,7 @@ sources = [
     "Tests/CodexBarTests/StreamScanBufferTests.swift",
     "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/exec_resolver.rs"
@@ -489,10 +569,12 @@ sources = [
     "Sources/CodexBarCore/PathEnvironment.swift",
     "Sources/CodexBarCore/CodexExecutableResolver.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/login_shell.rs"
 sources = ["Sources/CodexBarCore/PathEnvironment.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/resolver_order.rs"
@@ -501,10 +583,12 @@ sources = [
     "Tests/CodexBarTests/AntigravityBinaryLocatorTests.swift",
     "Tests/CodexBarTests/CodexExecutableResolverTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/resolver_security.rs"
 sources = ["Tests/CodexBarTests/ExecutableSearchSecurityTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/resolver_shell.rs"
@@ -514,10 +598,12 @@ sources = [
     "TestsLinux/ShellCommandOutputLimitTests.swift",
     "Tests/CodexBarTests/ShellCommandForegroundTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/jwt_exp.rs"
 sources = ["TestsLinux/CodexNativeJWTExpiryTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/oauth_policy_expired.rs"
@@ -526,10 +612,12 @@ sources = [
     "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
     "TestsLinux/ClaudeOAuthDelegatedRefreshLinuxTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/oauth_policy_evidence.rs"
 sources = ["Tests/CodexBarTests/ClaudeOAuthRefreshChainOwnershipTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/oauth_policy_disposition.rs"
@@ -537,14 +625,17 @@ sources = [
     "Tests/CodexBarTests/ClaudeOAuthRefreshDispositionTests.swift",
     "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/trust.rs"
 sources = ["Sources/CodexBarCore/Config/CodexBarConfigStore.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/paths_xdg.rs"
 sources = ["Tests/CodexBarTests/ProviderSessionStoreFileTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/credential_read.rs"
@@ -553,6 +644,7 @@ sources = [
     "Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift",
     "Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/credential_fingerprint.rs"
@@ -560,10 +652,12 @@ sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
     "Sources/CodexBarCore/CodexManagedAccounts.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/state_store.rs"
 sources = ["Sources/CodexBarCore/ProviderSessionStoreFile.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/oauth_coordinator.rs"
@@ -571,6 +665,7 @@ sources = [
     "Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshCoordinatorTests.swift",
     "Tests/CodexBarTests/ClaudeOAuthDelegatedRefreshUnreadableResultTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/credential_file.rs"
@@ -579,6 +674,7 @@ sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/oauth.rs"
@@ -587,14 +683,17 @@ sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentials.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeOAuth/ClaudeOAuthCredentialModels.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/state_store.rs"
 sources = ["Sources/CodexBarCore/ProviderSessionStoreFile.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/cookie/normalize.rs"
 sources = ["Sources/CodexBarCore/CookieHeaderNormalizer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/cookie/resolve.rs"
@@ -602,22 +701,27 @@ sources = [
     "Sources/CodexBarCore/Providers/ProviderCookieSettingsResolver.swift",
     "Sources/CodexBarCore/TokenAccountSupport.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/src/cookie/merge.rs"
 sources = ["Sources/CodexBarCore/BrowserCookieProfiles.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/cookie_normalize.rs"
 sources = ["Tests/CodexBarTests/CookieHeaderNormalizerTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/cookie_resolve.rs"
 sources = ["Tests/CodexBarTests/ProviderCookieSettingsResolverTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-core/tests/cookie_merge.rs"
 sources = ["Tests/CodexBarTests/BrowserCookieProfilesTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/cookie_cache.rs"
@@ -625,6 +729,7 @@ sources = [
     "Sources/CodexBarCore/CookieHeaderCache.swift",
     "Sources/CodexBarCore/CookieHeaderCache+Fingerprint.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/cookie_cache.rs"
@@ -632,6 +737,7 @@ sources = [
     "Tests/CodexBarTests/CookieHeaderCacheTests.swift",
     "Tests/CodexBarTests/CookieHeaderCacheConditionalMutationTests.swift",
 ]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/browser_chromium.rs"
@@ -646,10 +752,12 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-engine/tests/browser_firefox.rs"
 sources = ["Tests/CodexBarTests/BrowserDetectionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/browser_discover.rs"
 sources = ["Tests/CodexBarTests/BrowserDetectionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/browser_gate.rs"
@@ -672,14 +780,17 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-engine/src/brokers/local_probe/proc_net.rs"
 sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/probe_proc_net.rs"
 sources = ["TestsLinux/ProcNetTCPListeningPortParserLinuxTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/probe_processes.rs"
 sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/icon.rs"

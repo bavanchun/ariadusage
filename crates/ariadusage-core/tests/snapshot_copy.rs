@@ -1,4 +1,4 @@
-// Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use ariadusage_core::model::{ProviderIdentitySnapshot, RateWindow, UsageSnapshot};
 use ariadusage_protocol::{Confidence, DetailRow, DetailSection, ProviderId};

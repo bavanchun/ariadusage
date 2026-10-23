@@ -1,5 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/CodexCLILaunchGateTests.swift at 6a26b2e9b; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/TTYCommandRunnerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexCLILaunchGateTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(target_os = "linux")]
 
 #[path = "support/process.rs"]
@@ -15,7 +15,7 @@ use ariadusage_engine::brokers::process::{
 use tempfile::tempdir;
 
 #[tokio::test]
-// CodexBar: TTYCommandRunnerTests.swift:74, :89
+// CodexBar: TTYCommandRunnerTests.swift:79, :94
 async fn shutdown_fence_rejects_new_launches() {
     support::require_nextest();
     let registry = ProcessRegistry::new();
@@ -36,7 +36,7 @@ async fn shutdown_fence_rejects_new_launches() {
 }
 
 #[tokio::test]
-// CodexBar: TTYCommandRunnerTests.swift:32, :48, :63, :114
+// CodexBar: TTYCommandRunnerTests.swift:37, :53, :68, :119
 async fn shutdown_terms_then_kills_registered_processes_and_drains() {
     support::require_nextest();
     let registry = ProcessRegistry::new();
@@ -187,7 +187,7 @@ async fn drain_waits_for_registered_launches_to_finish() {
 }
 
 #[test]
-// CodexBar: TTYCommandRunnerTests.swift:136, :151
+// CodexBar: TTYCommandRunnerTests.swift:141, :156
 fn descendant_resolver_walks_thread_children_and_returns_unique_identities() {
     use std::path::Path;
 
