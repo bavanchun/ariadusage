@@ -114,6 +114,10 @@ pub struct CardPreferences {
     pub reset_times_show_absolute: bool,
     /// `paceVisible`, default true.
     pub pace_visible: bool,
+    /// `showOptionalCreditsAndExtraUsage`, default true.
+    pub show_optional_credits_and_extra_usage: bool,
+    /// `claudeDailyRoutinesUsageVisible`, default true.
+    pub claude_daily_routines_usage_visible: bool,
     /// `weeklyProgressWorkDays`, unset by default.
     pub work_days_per_week: Option<i32>,
     /// `workdayTickAppearance`, default subtle.
@@ -131,6 +135,8 @@ impl Default for CardPreferences {
             show_used: false,
             reset_times_show_absolute: false,
             pace_visible: true,
+            show_optional_credits_and_extra_usage: true,
+            claude_daily_routines_usage_visible: true,
             work_days_per_week: None,
             workday_tick_appearance: WorkdayTickAppearance::Subtle,
             session_warning_thresholds: Vec::new(),
@@ -377,7 +383,10 @@ pub fn card_model(
         metrics,
         placeholder: (!has_snapshot && !refreshing && last_error.is_none())
             .then(|| "No usage yet".to_string()),
-        credits: provider.credits.as_ref().and_then(credits_section),
+        credits: prefs
+            .show_optional_credits_and_extra_usage
+            .then(|| provider.credits.as_ref().and_then(credits_section))
+            .flatten(),
         accent: presentation.accent,
     }
 }
@@ -451,15 +460,34 @@ impl RowBuilder<'_> {
         row
     }
 
-    /// A named extra window. Unknown or failed usage shows `Unavailable`;
+    /// A named extra window. Unknown or failed usage shows `Unavailable`
+    /// (with `- <reset>` when the metric carries a window with a reset);
     /// a window still loading has no row yet.
     fn extra(&self, id: &str, title: &str, metric: &Metric<RateWindow>) -> Option<MetricRow> {
-        match (metric.state, displayable_value(metric)) {
-            (_, Some(window)) => Some(self.row(id, title.to_string(), window)),
+        if self.provider_id == "codex" && !self.prefs.show_optional_credits_and_extra_usage {
+            return None;
+        }
+        if self.provider_id == "claude"
+            && id == "claude-routines"
+            && (!self.prefs.show_optional_credits_and_extra_usage
+                || !self.prefs.claude_daily_routines_usage_visible)
+        {
+            return None;
+        }
+        let title = extra_title(self.provider_id, id, title);
+        match (
+            metric.state,
+            displayable_value(metric).filter(|w| w.used_percent.is_finite()),
+        ) {
+            (_, Some(window)) => Some(self.row(id, title, window)),
             (MetricState::Loading, None) => None,
             (_, None) => {
-                let mut row = MetricRow::new(id, title.to_string(), 0.0, self.percent_style);
-                row.status_text = Some("Unavailable".to_string());
+                let mut row = MetricRow::new(id, title, 0.0, self.percent_style);
+                let status = match metric.value.as_ref().and_then(|w| self.reset_text(w)) {
+                    Some(reset) => format!("Unavailable - {reset}"),
+                    None => "Unavailable".to_string(),
+                };
+                row.status_text = Some(status);
                 Some(row)
             }
         }
@@ -502,6 +530,33 @@ impl RowBuilder<'_> {
         row.pace_on_top = window.used_percent <= pace.expected_used_percent;
         row.detail_is_pace_derived = true;
     }
+}
+
+/// Claude's model-scoped weekly carve-out carries a canonical `<Model> only`
+/// title outside the menu and renders as `<Model> weekly` inside the card
+/// (`MenuCardView+ModelHelpers.swift:1009-1012`).
+fn extra_title(provider_id: &str, id: &str, title: &str) -> String {
+    if provider_id == "claude" && id.starts_with("claude-weekly-scoped-") {
+        format!("{} weekly", strip_trailing_only(title))
+    } else {
+        title.to_string()
+    }
+}
+
+/// Strips a trailing case-insensitive `\s+only\s*$`.
+fn strip_trailing_only(title: &str) -> &str {
+    let trimmed = title.trim_end();
+    if trimmed.len() >= 4 {
+        let split_at = trimmed.len() - 4;
+        if trimmed.is_char_boundary(split_at) && trimmed[split_at..].eq_ignore_ascii_case("only") {
+            let before = &trimmed[..split_at];
+            let stripped = before.trim_end();
+            if stripped.len() < before.len() {
+                return stripped;
+            }
+        }
+    }
+    title
 }
 
 /// Codex is the only v1 provider whose pace shows the headroom hint
