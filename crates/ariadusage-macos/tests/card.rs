@@ -567,6 +567,7 @@ fn session_warning_markers_flip_in_used_mode() {
     assert_eq!(card.metrics[0].warning_marker_percents, [50.0, 80.0]);
 }
 
+#[cfg(unix)]
 #[test]
 fn fixture_cards_populate_session_equivalent_renewal_reset_credits_dashboard_and_costs() {
     let snap = ariadusage_protocol::fixture::generate_scenario_snapshot(0);

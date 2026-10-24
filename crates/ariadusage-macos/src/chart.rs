@@ -1183,10 +1183,14 @@ fn proportional_axis_labels(bars: &[PlanUtilizationBarPoint]) -> Vec<(usize, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use ariadusage_protocol::fixture::generate_scenario_snapshot;
+    #[cfg(unix)]
     use jiff::tz::TimeZone;
 
+    #[cfg(unix)]
     struct FixedDates;
+    #[cfg(unix)]
     impl DateTexts for FixedDates {
         fn time_zone(&self) -> TimeZone {
             TimeZone::UTC
@@ -1236,6 +1240,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn cost_history_chart_model_defaults_and_peak_cap() {
         let snap = generate_scenario_snapshot(0);
@@ -1276,6 +1281,7 @@ mod tests {
         assert_eq!(claude_model.default_metric, ChartMetric::Cost);
     }
 
+    #[cfg(unix)]
     #[test]
     fn quota_burndown_and_plan_utilization_models_build_from_fixture() {
         let snap = generate_scenario_snapshot(0);
