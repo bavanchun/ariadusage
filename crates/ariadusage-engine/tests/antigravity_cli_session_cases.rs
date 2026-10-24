@@ -11,8 +11,11 @@ use tokio::sync::Notify;
 #[path = "support/process.rs"]
 mod process_support;
 
+#[cfg(unix)]
 use ariadusage_core::gates::launch::LaunchGate;
+#[cfg(unix)]
 use ariadusage_core::pipeline::FetchInteraction;
+#[cfg(unix)]
 use ariadusage_engine::brokers::process::{ProcessEnv, ProcessRegistry, PtySession, PtySize};
 use ariadusage_engine::providers::antigravity::{
     AntigravityCLISession, AuthenticationPrompt, Dependencies, FileSessionLaunchLock,
@@ -1416,7 +1419,7 @@ async fn broker_pty_applies_environment_and_closes_cleanly() {
 #[cfg(unix)]
 async fn assert_pty_home_and_environment() {
     let home_dir = tempfile::tempdir().unwrap();
-    let home = home_dir.path();
+    let home = home_dir.path().canonicalize().unwrap();
     let mut command = process_support::command(&["pty-prompt", "env"]).env(
         ProcessEnv::empty()
             .with("HOME", home.as_os_str())
