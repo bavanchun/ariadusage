@@ -1,7 +1,6 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/Providers/Codex/UsageStore+CodexPATRefresh.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -26,7 +25,7 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::brokers::call::BrokerCall;
-use crate::brokers::net::NetBroker;
+use crate::brokers::net::{NetBroker, NetConfig};
 
 use super::cli_rpc::{CodexCLIFetchError, CodexCLIUsageFetcher, UsageError};
 use super::credentials::{
@@ -34,7 +33,6 @@ use super::credentials::{
     CodexOAuthCredentialsStore, CodexRefreshError, CredentialReadFn,
 };
 use super::credits::{CodexExtraUsageCost, CodexRateLimitResetCreditsSnapshot, CreditsSnapshot};
-use super::identity::{CodexIdentity, CodexIdentityResolver};
 use super::pat::CodexPATUsageFetcher;
 use super::plan::CodexPlanFormatting;
 use super::reconciled::{CodexPATWhoami, CodexReconciledState};
@@ -394,6 +392,11 @@ impl CodexStrategyConfig {
             clock: Arc::new(Timestamp::now),
             cli_fetcher,
         }
+    }
+
+    pub fn with_resolved_cli_version(mut self, version: Option<String>) -> Self {
+        self.resolved_cli_version = version;
+        self
     }
 }
 
@@ -1524,6 +1527,16 @@ impl CodexPATFetchStrategy {
             .and_then(Self::resolved_cli_version_for_testing)
     }
 
+    pub async fn resolve_cli_version_with_call(&self, call: Option<&BrokerCall>) -> Option<String> {
+        if let Some(version) = self.resolved_cli_version() {
+            return Some(version);
+        }
+        if let Some(config) = &self.config {
+            return config.cli_fetcher.detect_cli_version(call).await;
+        }
+        None
+    }
+
     pub fn resolved_cli_version_for_testing(config: &CodexStrategyConfig) -> Option<String> {
         config
             .resolved_cli_version
@@ -1667,11 +1680,6 @@ impl CodexPATFetchStrategy {
         &self,
         ctx: &FetchContext,
     ) -> Result<CodexFetchOutcome, CodexOAuthError> {
-        let Some(config) = &self.config else {
-            return Err(CodexOAuthError::Credentials(
-                CodexOAuthCredentialsError::NotFound,
-            ));
-        };
         let call = BrokerCall {
             interaction: ctx.interaction,
             cancel: ctx.cancel.clone(),
@@ -1680,23 +1688,36 @@ impl CodexPATFetchStrategy {
         let base_env = self.base_environment();
         let credential_env =
             Self::credential_environment_with_reader_and_call(&base_env, None, Some(&call));
+        let home_dir = self.config.as_ref().map(|c| c.home_directory.as_path());
         let credentials = CodexOAuthCredentialsStore::load_pat_with_reader_and_call(
             &credential_env,
-            Some(&config.home_directory),
+            home_dir,
             None,
             Some(&call),
         )?;
-        let cli_version = self.resolved_cli_version();
+        let cli_version = self.resolve_cli_version_with_call(Some(&call)).await;
+        let fallback_net;
+        let net: &NetBroker = if let Some(config) = &self.config {
+            &config.net
+        } else {
+            fallback_net = NetBroker::new(NetConfig::default()).map_err(|_| {
+                CodexOAuthError::Fetch(CodexOAuthFetchError::NetworkError("transport".to_owned()))
+            })?;
+            &fallback_net
+        };
         let fetched = CodexPATUsageFetcher::fetch_usage_with_call(
-            &config.net,
+            net,
             &credentials,
             cli_version.as_deref(),
             &credential_env,
-            Some(&config.home_directory),
+            home_dir,
             Some(&call),
         )
         .await?;
-        let now = (config.clock)();
+        let now = self
+            .config
+            .as_ref()
+            .map_or_else(Timestamp::now, |c| (c.clock)());
         Self::make_result(&fetched.usage, fetched.whoami.as_ref(), now)
     }
 
@@ -1790,77 +1811,6 @@ impl FetchStrategy for CodexPATFetchStrategy {
             || classified.message == CodexOAuthCredentialsError::NotFound.to_string()
             || classified.message == CodexOAuthCredentialsError::Unreadable.to_string()
             || classified.message == CodexOAuthCredentialsError::MissingTokens.to_string())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CodexActiveSource {
-    LiveSystem,
-    ManagedAccount { id: String },
-    ProfileHome { path: PathBuf },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodexAccountScopedRefreshGuard {
-    pub source: CodexActiveSource,
-    pub identity: CodexIdentity,
-    pub account_key: Option<String>,
-    pub auth_fingerprint: Option<String>,
-}
-
-pub fn should_use_ambient_codex_pat_for_usage(
-    data_source: CodexUsageDataSource,
-    env: &BTreeMap<String, String>,
-    home_dir: Option<&Path>,
-) -> bool {
-    match data_source {
-        CodexUsageDataSource::Pat => true,
-        CodexUsageDataSource::Auto => {
-            CodexOAuthCredentialsStore::load_pat_resolving_scoped_home(env, home_dir).is_ok()
-        }
-        CodexUsageDataSource::OAuth | CodexUsageDataSource::Cli => false,
-    }
-}
-
-pub fn should_fetch_all_codex_visible_accounts(
-    data_source: CodexUsageDataSource,
-    env: &BTreeMap<String, String>,
-    home_dir: Option<&Path>,
-    stacked_or_widgets_enabled: bool,
-    visible_account_count: usize,
-) -> bool {
-    if should_use_ambient_codex_pat_for_usage(data_source, env, home_dir) {
-        return false;
-    }
-    stacked_or_widgets_enabled && visible_account_count > 1
-}
-
-pub fn is_codex_pat_result(strategy_id: &str, source_label: &str) -> bool {
-    strategy_id == CODEX_PAT_STRATEGY_ID || source_label == CodexUsageDataSource::Pat.source_label()
-}
-
-pub fn resolve_codex_refresh_publication_guard(
-    active_source: CodexActiveSource,
-    strategy_id: &str,
-    source_label: &str,
-    usage: &UsageSnapshot,
-) -> CodexAccountScopedRefreshGuard {
-    let source = if is_codex_pat_result(strategy_id, source_label) {
-        CodexActiveSource::LiveSystem
-    } else {
-        active_source
-    };
-    let email = usage
-        .identity
-        .as_ref()
-        .and_then(|id| id.account_email.as_deref());
-    let account_key = CodexIdentityResolver::normalize_email(email);
-    let identity = CodexIdentityResolver::resolve(None, account_key.as_deref());
-    CodexAccountScopedRefreshGuard {
-        source,
-        identity,
-        account_key,
-        auth_fingerprint: None,
     }
 }
 

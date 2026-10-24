@@ -562,6 +562,54 @@ impl CodexCLIUsageFetcher {
             .map(|r| r.executable)
     }
 
+    pub async fn detect_cli_version(&self, call: Option<&BrokerCall>) -> Option<String> {
+        let executable = match &self.resolved_executable {
+            Some(exec) => exec.clone(),
+            None => Self::resolve_binary(&self.environment, self.home_dir.as_deref())?,
+        };
+        let proc_env = ProcessEnv::from_allowlist(
+            self.environment.iter().map(|(k, v)| (k.clone(), v.clone())),
+        );
+        let candidates: &[&[&str]] = &[&["--version"], &["version"], &["-v"]];
+        for candidate in candidates {
+            let call = call.cloned().unwrap_or_else(|| BrokerCall {
+                interaction: self.interaction,
+                cancel: self.cancel.clone(),
+                request_id: "codex.version".to_owned(),
+            });
+            if call.cancel.is_cancelled() {
+                return None;
+            }
+            let args: Vec<OsString> = candidate.iter().map(OsString::from).collect();
+            let mut cmd = Command::new(executable.clone(), args)
+                .with_env(proc_env.clone())
+                .timeout(Duration::from_secs(2));
+            cmd.set_cwd(Some(self.working_directory.clone()));
+            let Ok(output) = crate::brokers::process::run(
+                call,
+                cmd,
+                &self.process_registry,
+                &self.core_launch_gate,
+            )
+            .await
+            else {
+                continue;
+            };
+            if !output.status.success() {
+                continue;
+            }
+            if let Some(first_line) = String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                return Some(first_line.to_owned());
+            }
+        }
+        None
+    }
+
     pub async fn load_latest_usage(
         &self,
         now: Timestamp,

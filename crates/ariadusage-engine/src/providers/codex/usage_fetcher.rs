@@ -1154,14 +1154,12 @@ impl CodexOAuthUsageFetcher {
         headers: HeaderMap,
         timeout: Duration,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
-        HeaderValue::from_str(&format!("Bearer {access_token}"))
+        let bearer = SecretString::new(format!("Bearer {access_token}"));
+        HeaderValue::from_str(bearer.expose_secret())
             .map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
         let mut req = NetRequest::new(Method::GET, url);
         req.headers = headers;
-        req.credentials.push((
-            AUTHORIZATION,
-            SecretString::new(format!("Bearer {access_token}")),
-        ));
+        req.credentials.push((AUTHORIZATION, bearer));
         req.timeout = Some(timeout);
         Ok(req)
     }
@@ -1342,7 +1340,6 @@ impl CodexOAuthUsageFetcher {
             Url::parse("https://chatgpt.com").expect("valid static origin"),
             Url::parse("https://chat.openai.com").expect("valid static origin"),
             Url::parse("https://api.openai.com").expect("valid static origin"),
-            Url::parse("https://auth.openai.com").expect("valid static origin"),
         ];
         if let Some(override_url) = validated_override {
             urls.push(override_url.clone());
@@ -1356,12 +1353,21 @@ impl CodexOAuthUsageFetcher {
         req: NetRequest,
         call: Option<&BrokerCall>,
     ) -> Result<Vec<u8>, CodexOAuthFetchError> {
+        let origins = Self::declared_origins(validated_override)?;
+        Self::perform_request_with_origins(net, &origins, req, call).await
+    }
+
+    pub(super) async fn perform_request_with_origins(
+        net: &NetBroker,
+        origins: &DeclaredOrigins,
+        req: NetRequest,
+        call: Option<&BrokerCall>,
+    ) -> Result<Vec<u8>, CodexOAuthFetchError> {
         if let Some(call) = call
             && call.cancel.is_cancelled()
         {
             return Err(CodexOAuthFetchError::Cancelled);
         }
-        let origins = Self::declared_origins(validated_override)?;
         let default_call;
         let effective_call = if let Some(call) = call {
             call
@@ -1374,7 +1380,7 @@ impl CodexOAuthUsageFetcher {
             &default_call
         };
         let resp = net
-            .send_response(effective_call, &origins, req)
+            .send_response(effective_call, origins, req)
             .await
             .map_err(|err| match err {
                 NetError::Cancelled => CodexOAuthFetchError::Cancelled,
