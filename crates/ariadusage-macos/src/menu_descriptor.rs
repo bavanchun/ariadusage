@@ -32,6 +32,7 @@ use crate::card::{self, CardModel, CardPreferences, PercentStyle};
 use crate::card_layout::CardSectionMode;
 use crate::chart::{CostHistoryChartModel, PlanUtilizationChartModel, QuotaBurndownChartModel};
 use crate::format::{self, DateTexts};
+use crate::menu_session::MenuCardRefreshMonitor;
 use crate::presentation;
 use crate::switcher::{self, SwitcherSegment, SwitcherSelection};
 
@@ -225,13 +226,36 @@ pub fn build(
     now: Timestamp,
     dates: &dyn DateTexts,
 ) -> MenuStructure {
+    build_with_refresh(
+        snapshot,
+        connected,
+        current_selection,
+        prefs,
+        now,
+        dates,
+        None,
+    )
+}
+
+/// Builds the full menu structure for `snapshot` and `current_selection`,
+/// applying `refresh_monitor`'s frozen card models, loading subtitles and
+/// per-tab `"Refresh"` action availability (`StatusItemController+Menu.swift`).
+pub fn build_with_refresh(
+    snapshot: Option<&EngineSnapshot>,
+    connected: bool,
+    current_selection: Option<&SwitcherSelection>,
+    prefs: &CardPreferences,
+    now: Timestamp,
+    dates: &dyn DateTexts,
+    refresh_monitor: Option<&MenuCardRefreshMonitor>,
+) -> MenuStructure {
     let version = snapshot
         .map(|s| s.engine.version.as_str())
         .filter(|v| !v.is_empty())
         .unwrap_or(APP_VERSION);
-    let meta = build_meta_section(connected, version);
 
     let Some(snapshot) = snapshot.filter(|_| connected) else {
+        let meta = build_meta_section(false, version);
         let message = presentation::connection_status(snapshot, connected)
             .unwrap_or_else(|| "Connecting to engine…".to_string());
         return MenuStructure {
@@ -246,6 +270,7 @@ pub fn build(
 
     let enabled: Vec<&ProviderSnapshot> = snapshot.providers.iter().filter(|p| p.enabled).collect();
     let Some(selection) = switcher::resolve_selection(snapshot, current_selection) else {
+        let meta = build_meta_section(connected, version);
         let message = presentation::connection_status(Some(snapshot), connected)
             .unwrap_or_else(|| "No providers enabled".to_string());
         return MenuStructure {
@@ -258,6 +283,9 @@ pub fn build(
         };
     };
 
+    let refresh_in_flight = refresh_monitor
+        .is_some_and(|m| m.is_refresh_action_in_flight(Some(&selection), Some(snapshot)));
+    let meta = build_meta_section(connected && !refresh_in_flight, version);
     let switcher = switcher::segments(snapshot, prefs.show_used);
     match &selection {
         SwitcherSelection::Overview => {
@@ -272,7 +300,19 @@ pub fn build(
             let cards = enabled
                 .iter()
                 .map(|provider| {
-                    let mut model = card::provider_card(provider, prefs, now, dates);
+                    let candidate = card::provider_card(provider, prefs, now, dates);
+                    let mut model = match refresh_monitor {
+                        Some(monitor) => {
+                            let is_refreshing = monitor
+                                .is_provider_refreshing(provider.id.as_str(), Some(snapshot));
+                            monitor.effective_card_model(
+                                provider.id.as_str(),
+                                candidate,
+                                is_refreshing,
+                            )
+                        }
+                        None => candidate,
+                    };
                     let (submenu_title, submenu) = overview_row_submenu(provider, now, dates);
                     model.shows_submenu_indicator = !submenu.is_empty();
                     OverviewCard {
@@ -304,7 +344,15 @@ pub fn build(
                 .copied()
                 .find(|p| p.id.as_str() == id.as_str())
                 .unwrap_or(enabled[0]);
-            let card_model = card::provider_card(provider, prefs, now, dates);
+            let candidate = card::provider_card(provider, prefs, now, dates);
+            let card_model = match refresh_monitor {
+                Some(monitor) => {
+                    let is_refreshing =
+                        monitor.is_provider_refreshing(provider.id.as_str(), Some(snapshot));
+                    monitor.effective_card_model(provider.id.as_str(), candidate, is_refreshing)
+                }
+                None => candidate,
+            };
             let sections = provider_card_sections(provider, &card_model);
             let cost_submenu = cost_chart_submenu_items(provider, dates);
             let buy_credits = buy_credits_entry(provider, prefs);

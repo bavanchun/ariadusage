@@ -1,3 +1,4 @@
+// Ported from CodexBar Sources/CodexBar/TrackingRunLoopGate.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+SwitcherViews.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/ProviderSwitcherButtons.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
@@ -28,6 +29,7 @@ use objc2_foundation::{NSArray, NSObject, NSObjectProtocol, NSPoint, NSRect, NSS
 use super::color::ns_color;
 use crate::geometry::{Point, Rect, Size};
 use crate::highlight_style::{Color, ColorRole};
+use crate::menu_session::{SwitcherPointerTracker, TrackingRunLoopGate};
 use crate::switcher::{
     self, PathCmd, SwitcherIcon, SwitcherLayout, SwitcherSegment, SwitcherSegmentLayout,
     SwitcherSelection, SwitcherTextMeasure,
@@ -38,6 +40,7 @@ const LABEL_INSET: f64 = 2.0;
 const UNBOUNDED: f64 = 100_000.0;
 
 type SelectCallback = Rc<dyn Fn(SwitcherSelection)>;
+type PointerInteractionCallback = Rc<dyn Fn(bool)>;
 
 #[derive(Default)]
 pub struct SwitcherState {
@@ -45,11 +48,17 @@ pub struct SwitcherState {
     selected: Option<SwitcherSelection>,
     hovered_index: Option<usize>,
     pressed_index: Option<usize>,
+    pointer_tracker: SwitcherPointerTracker,
     layout: Option<SwitcherLayout>,
     buttons: Vec<Retained<NSButton>>,
     labels: Vec<(Retained<NSTextField>, usize)>,
     tracking_area: Option<Retained<NSTrackingArea>>,
     on_select: Option<SelectCallback>,
+    on_pointer_interaction: Option<PointerInteractionCallback>,
+    last_quota_ratios: Vec<Option<f64>>,
+    quota_update_count: usize,
+    subview_rebuilds: usize,
+    in_place_updates: usize,
 }
 
 define_class!(
@@ -91,30 +100,31 @@ define_class!(
         #[unsafe(method(mouseDown:))]
         fn mouse_down(&self, event: &NSEvent) {
             let pt = self.event_point(event);
-            let mut state = self.ivars().borrow_mut();
-            state.pressed_index = state
-                .layout
-                .as_ref()
-                .and_then(|l| switcher::hit_test(l, pt))
-                .map(|s| s.index);
+            let hit_index = {
+                let state = self.ivars().borrow();
+                state
+                    .layout
+                    .as_ref()
+                    .and_then(|l| switcher::hit_test(l, pt))
+                    .map(|s| s.index)
+            };
+            if let Some(index) = hit_index {
+                self.begin_pointer_interaction(index);
+            }
         }
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, event: &NSEvent) {
             let pt = self.event_point(event);
-            let pressed = {
-                let mut state = self.ivars().borrow_mut();
-                let pressed = state.pressed_index.take();
-                let released = state
+            let released = {
+                let state = self.ivars().borrow();
+                state
                     .layout
                     .as_ref()
                     .and_then(|l| switcher::hit_test(l, pt))
-                    .map(|s| s.index);
-                pressed.filter(|&p| Some(p) == released)
+                    .map(|s| s.index)
             };
-            if let Some(index) = pressed {
-                self.select_index(index);
-            }
+            self.end_pointer_interaction(released);
         }
 
         #[unsafe(method(mouseMoved:))]
@@ -212,6 +222,151 @@ impl SwitcherView {
         self.ivars().borrow_mut().on_select = Some(Rc::new(callback));
     }
 
+    /// Registers a callback invoked when a pointer press interaction starts (`true`)
+    /// or finishes (`false`) on a switcher segment (`StatusItemController+ProviderSwitcher.swift`).
+    pub fn set_on_pointer_interaction(&self, callback: impl Fn(bool) + 'static) {
+        self.ivars().borrow_mut().on_pointer_interaction = Some(Rc::new(callback));
+    }
+
+    /// Starts a pointer press on segment `index`, deferring background menu rebuilds
+    /// until [`Self::end_pointer_interaction`] completes (`StatusMenuSwitcherTrackingTests`).
+    pub fn begin_pointer_interaction(&self, index: usize) {
+        let cb = {
+            let mut state = self.ivars().borrow_mut();
+            state.pressed_index = Some(index);
+            state.pointer_tracker.begin_press(Some(index));
+            state.on_pointer_interaction.clone()
+        };
+        if let Some(cb) = cb {
+            cb(true);
+        }
+    }
+
+    /// Ends a pointer press on `released_index`. Commits the selection only if
+    /// `released_index` matches the segment where the press began.
+    pub fn end_pointer_interaction(
+        &self,
+        released_index: Option<usize>,
+    ) -> Option<SwitcherSelection> {
+        let (matched_index, cb) = {
+            let mut state = self.ivars().borrow_mut();
+            if !state.pointer_tracker.is_pressing() {
+                return None;
+            }
+            state.pressed_index = None;
+            let (matched, _deferred) = state.pointer_tracker.end_press(released_index);
+            (matched, state.on_pointer_interaction.clone())
+        };
+        let gate = TrackingRunLoopGate::new();
+        let mut selection = None;
+        gate.run_once(|| {
+            selection = matched_index.and_then(|idx| self.select_index(idx));
+            if let Some(cb) = cb {
+                cb(false);
+            }
+        });
+        selection
+    }
+
+    /// Simulates a native `NSButton` toggle action (`_test_simulateNativeAction`,
+    /// `StatusMenuSwitcherRefreshTests.swift:35-67`).
+    pub fn simulate_native_action(&self, button_tag: usize, state_val: isize) -> bool {
+        let button = {
+            let state = self.ivars().borrow();
+            state.buttons.get(button_tag).cloned()
+        };
+        let Some(button) = button else {
+            return false;
+        };
+        button.setState(state_val);
+        // SAFETY: `self` is a valid `SwitcherView` and `button` is a valid `NSButton` subview.
+        let _: () = unsafe { msg_send![self, buttonPressed: &*button] };
+        true
+    }
+
+    /// Simulates a runtime pointer click (`mouseDown:` + `mouseUp:`) on segment `button_tag`
+    /// (`_test_simulateRuntimeClick`, `StatusMenuSwitcherRefreshTests.swift:123`).
+    pub fn simulate_runtime_click(&self, button_tag: usize) -> bool {
+        let has_segment = self.ivars().borrow().segments.get(button_tag).is_some();
+        if !has_segment {
+            return false;
+        }
+        self.begin_pointer_interaction(button_tag);
+        self.end_pointer_interaction(Some(button_tag));
+        true
+    }
+
+    /// Returns the `NSControlStateValue` (`NSControlStateValueOn` / `NSControlStateValueOff`)
+    /// of the child `NSButton` at `button_tag`.
+    pub fn button_state(&self, button_tag: usize) -> Option<isize> {
+        let state = self.ivars().borrow();
+        state.buttons.get(button_tag).map(|b| b.state())
+    }
+
+    /// Whether a pointer press on a switcher segment is currently active.
+    pub fn is_pointer_interaction_active(&self) -> bool {
+        self.ivars().borrow().pointer_tracker.is_pressing()
+    }
+
+    /// Updates only the weekly quota remaining percents on the current segments.
+    /// Returns `false` without mutating or redrawing when percents are unchanged
+    /// (`StatusMenuSwitcherTrackingTests`).
+    pub fn update_weekly_remaining_ratios(&self, ratios: &[Option<f64>]) -> bool {
+        let (segments, selected, width) = {
+            let state = self.ivars().borrow();
+            if state.last_quota_ratios == ratios {
+                return false;
+            }
+            let Some(selected) = state.selected.clone() else {
+                return false;
+            };
+            let width = state
+                .layout
+                .as_ref()
+                .map_or(self.bounds().size.width, |l| l.size.w);
+            let mut next_segments = state.segments.clone();
+            for (seg, ratio) in next_segments.iter_mut().zip(ratios.iter()) {
+                seg.weekly_percent = *ratio;
+            }
+            (next_segments, selected, width)
+        };
+        self.update(&segments, &selected, width)
+    }
+
+    /// Number of times weekly quota indicator ratios actually changed across updates.
+    pub fn quota_update_count(&self) -> usize {
+        self.ivars().borrow().quota_update_count
+    }
+
+    /// Returns per-provider quota indicator constraint tokens `(segment_index, generation, fill_width_bits)`
+    /// (`_test_quotaIndicatorConstraintIdentifiers`, `StatusMenuSwitcherRefreshTests.swift:705-746`).
+    pub fn quota_indicator_constraint_identifiers(&self) -> Vec<(usize, usize, u64)> {
+        let state = self.ivars().borrow();
+        let generation = state.quota_update_count;
+        let Some(layout) = &state.layout else {
+            return Vec::new();
+        };
+        layout
+            .segments
+            .iter()
+            .filter_map(|seg| {
+                let bar = seg.quota_bar.as_ref()?;
+                let fill_bits = bar.fill.map_or(0, |r| r.w.to_bits());
+                Some((seg.index, generation, fill_bits))
+            })
+            .collect()
+    }
+
+    /// Number of full subview rebuilds performed on this switcher view.
+    pub fn subview_rebuilds(&self) -> usize {
+        self.ivars().borrow().subview_rebuilds
+    }
+
+    /// Number of in-place subview updates performed on this switcher view.
+    pub fn in_place_updates(&self) -> usize {
+        self.ivars().borrow().in_place_updates
+    }
+
     /// Updates the switcher segments, selected tab and width. Returns `true` when the
     /// frame size or content changed.
     pub fn update(
@@ -222,7 +377,8 @@ impl SwitcherView {
     ) -> bool {
         {
             let state = self.ivars().borrow();
-            let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width);
+            let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width)
+                && (self.frame().size.width - width).abs() <= 0.5;
             if same_width && state.segments == segments && state.selected.as_ref() == Some(selected)
             {
                 return false;
@@ -233,11 +389,19 @@ impl SwitcherView {
         let measure = AppKitSwitcherMeasure { mtm };
         let hovered = self.ivars().borrow().hovered_index;
         let layout = switcher::layout(segments, selected, hovered, width, &measure);
-        self.setFrameSize(NSSize::new(layout.size.w, layout.size.h));
-        self.rebuild_subviews(mtm, &layout);
+        let next_size = NSSize::new(layout.size.w, layout.size.h);
+        if self.frame().size != next_size {
+            self.setFrameSize(next_size);
+        }
+        self.apply_subviews(mtm, &layout);
 
         {
             let mut state = self.ivars().borrow_mut();
+            let next_ratios: Vec<Option<f64>> = segments.iter().map(|s| s.weekly_percent).collect();
+            if state.last_quota_ratios != next_ratios {
+                state.last_quota_ratios = next_ratios;
+                state.quota_update_count += 1;
+            }
             state.segments = segments.to_vec();
             state.selected = Some(selected.clone());
             state.layout = Some(layout);
@@ -249,6 +413,11 @@ impl SwitcherView {
     /// Current layout, if `update` has been called.
     pub fn layout(&self) -> Option<SwitcherLayout> {
         self.ivars().borrow().layout.clone()
+    }
+
+    /// Currently selected tab in this switcher view.
+    pub fn selected(&self) -> Option<SwitcherSelection> {
+        self.ivars().borrow().selected.clone()
     }
 
     /// Simulates clicking at `point` in view coordinates (for tests and direct activation).
@@ -281,13 +450,21 @@ impl SwitcherView {
         };
         let (segments, width) = {
             let state = self.ivars().borrow();
-            let width = state
-                .layout
-                .as_ref()
-                .map_or(self.bounds().size.width, |l| l.size.w);
+            let width = self.frame().size.width.max(1.0);
             (state.segments.clone(), width)
         };
-        self.update(&segments, &selection, width);
+        if !self.update(&segments, &selection, width) {
+            // Restore native toggle button states when clicking the already-active tab
+            // (`StatusMenuSwitcherRefreshTests.swift:52`).
+            let state = self.ivars().borrow();
+            for (idx, btn) in state.buttons.iter().enumerate() {
+                btn.setState(if idx == index {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+            }
+        }
         if changed {
             let cb = self.ivars().borrow().on_select.clone();
             if let Some(cb) = cb {
@@ -323,7 +500,10 @@ impl SwitcherView {
         Point::new(pt.x, pt.y)
     }
 
-    fn rebuild_subviews(&self, mtm: MainThreadMarker, layout: &SwitcherLayout) {
+    fn apply_subviews(&self, mtm: MainThreadMarker, layout: &SwitcherLayout) {
+        if self.try_update_subviews_in_place(layout) {
+            return;
+        }
         for view in self.subviews().iter() {
             view.removeFromSuperview();
         }
@@ -343,6 +523,25 @@ impl SwitcherView {
         let mut state = self.ivars().borrow_mut();
         state.buttons = buttons;
         state.labels = labels;
+        state.subview_rebuilds += 1;
+    }
+
+    fn try_update_subviews_in_place(&self, layout: &SwitcherLayout) -> bool {
+        let mut state = self.ivars().borrow_mut();
+        if state.buttons.len() != layout.segments.len()
+            || state.labels.len() != layout.segments.len()
+        {
+            return false;
+        }
+        for (idx, seg) in layout.segments.iter().enumerate() {
+            let button = &state.buttons[idx];
+            configure_accessibility_toggle(button, seg);
+            let (label, seg_idx) = &mut state.labels[idx];
+            *seg_idx = seg.index;
+            configure_title_label(label, seg, layout.stacked_icons);
+        }
+        state.in_place_updates += 1;
+        true
     }
 
     fn draw(&self) {
@@ -430,13 +629,7 @@ fn make_accessibility_toggle(
     button.setButtonType(NSButtonType::Toggle);
     button.setTitle(&NSString::from_str(""));
     button.setAlternateTitle(&NSString::from_str(""));
-    button.setTag(seg.index as isize);
-    button.setState(if seg.selected {
-        NSControlStateValueOn
-    } else {
-        NSControlStateValueOff
-    });
-    button.setAccessibilityLabel(Some(&NSString::from_str(&seg.title)));
+    configure_accessibility_toggle(&button, seg);
     // SAFETY: `target` is the enclosing `SwitcherView`, which owns `button` as a subview.
     unsafe {
         button.setTarget(Some(target));
@@ -445,12 +638,35 @@ fn make_accessibility_toggle(
     button
 }
 
+fn configure_accessibility_toggle(button: &NSButton, seg: &SwitcherSegmentLayout) {
+    let next_frame = ns_rect(seg.frame);
+    if button.frame() != next_frame {
+        button.setFrame(next_frame);
+    }
+    button.setTag(seg.index as isize);
+    button.setState(if seg.selected {
+        NSControlStateValueOn
+    } else {
+        NSControlStateValueOff
+    });
+    button.setAccessibilityLabel(Some(&NSString::from_str(&seg.title)));
+}
+
 fn make_title_label(
     mtm: MainThreadMarker,
     seg: &SwitcherSegmentLayout,
     stacked: bool,
 ) -> Retained<NSTextField> {
     let field = NSTextField::labelWithString(&NSString::from_str(&seg.title), mtm);
+    field.setSelectable(false);
+    field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    field.setMaximumNumberOfLines(1);
+    configure_title_label(&field, seg, stacked);
+    field
+}
+
+fn configure_title_label(field: &NSTextField, seg: &SwitcherSegmentLayout, stacked: bool) {
+    field.setStringValue(&NSString::from_str(&seg.title));
     let font = NSFont::systemFontOfSize(seg.font_size);
     field.setFont(Some(&font));
     let color = if seg.selected {
@@ -459,21 +675,20 @@ fn make_title_label(
         NSColor::secondaryLabelColor()
     };
     field.setTextColor(Some(&color));
-    field.setSelectable(false);
     field.setAlignment(if stacked {
         NSTextAlignment::Center
     } else {
         NSTextAlignment::Left
     });
-    field.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
-    field.setMaximumNumberOfLines(1);
-    field.setFrame(ns_rect(Rect::new(
+    let next_frame = ns_rect(Rect::new(
         seg.title_frame.x - LABEL_INSET,
         seg.title_frame.y,
         seg.title_frame.w + 2.0 * LABEL_INSET,
         seg.title_frame.h,
-    )));
-    field
+    ));
+    if field.frame() != next_frame {
+        field.setFrame(next_frame);
+    }
 }
 
 fn draw_segment_icon(icon: SwitcherIcon, frame: Rect, color: &NSColor) {

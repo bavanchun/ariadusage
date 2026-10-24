@@ -28,6 +28,7 @@ pub use icon_image::{
     image_png_bytes, quota_warning_flash_image, render as render_icon,
     render_morph as render_morph_icon, render_png_for_appearance, tint_image,
 };
+pub use menu::MenuController;
 pub use settings_view::SettingsView;
 pub use settings_window::SettingsWindowController;
 pub use switcher_view::SwitcherView;
@@ -162,6 +163,9 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
             refresh_ui();
         }));
     let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab, open_settings_window);
+    menu.set_on_refresh(|provider_id| {
+        trigger_user_refresh(provider_id);
+    });
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
         let settings_state = SettingsState::default();
@@ -204,7 +208,9 @@ pub fn set_loading(loading: bool) {
         return;
     };
     STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
         let Some(state) = guard.as_mut() else { return };
         state.global_loading = loading;
         sync_animation_timers(state);
@@ -219,7 +225,9 @@ pub fn set_provider_loading(provider_id: &str, loading: bool) {
         return;
     };
     STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
         let Some(state) = guard.as_mut() else { return };
         if loading {
             state.provider_loading.insert(provider_id.to_string());
@@ -234,17 +242,24 @@ pub fn set_provider_loading(provider_id: &str, loading: bool) {
 /// Public icon-state API: applies a new engine snapshot, records downward quota
 /// warning threshold crossings for the 60 s flash overlay, and refreshes the UI.
 pub fn set_snapshot(snapshot: Option<EngineSnapshot>) {
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let updated = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return false;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         if let Some(ref snap) = snapshot {
             state.global_loading = snap.engine.refreshing;
             record_snapshot_quota_warnings(state, snap);
             state.settings_window.apply_snapshot(snap.clone());
         }
         state.snapshot = snapshot;
+        true
     });
-    refresh_ui();
+    if updated {
+        refresh_ui();
+    }
 }
 
 /// Public icon-state API: triggers the 60 s quota-warning red flash overlay on
@@ -254,7 +269,9 @@ pub fn trigger_quota_warning_flash(provider_id: &str) {
         return;
     };
     STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
         let Some(state) = guard.as_mut() else { return };
         let _ = state
             .animation
@@ -340,32 +357,72 @@ fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapsho
 }
 
 fn handle_event(event: EngineEvent) {
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
-        match event {
-            EngineEvent::Connected { .. } => state.connected = true,
-            EngineEvent::Snapshot(snapshot) => {
+    match event {
+        EngineEvent::Connected { .. } => {
+            STATE.with(|cell| {
+                let Ok(mut guard) = cell.try_borrow_mut() else {
+                    return;
+                };
+                let Some(state) = guard.as_mut() else { return };
                 state.connected = true;
-                state.global_loading = snapshot.engine.refreshing;
-                record_snapshot_quota_warnings(state, &snapshot);
-                state.settings_window.apply_snapshot((*snapshot).clone());
-                state.snapshot = Some(*snapshot);
+            });
+            refresh_ui();
+        }
+        EngineEvent::Snapshot(snapshot) => {
+            STATE.with(|cell| {
+                let Ok(mut guard) = cell.try_borrow_mut() else {
+                    return;
+                };
+                let Some(state) = guard.as_mut() else { return };
+                state.connected = true;
+            });
+            set_snapshot(Some(*snapshot));
+            let finished: Vec<String> = STATE.with(|cell| {
+                let Ok(guard) = cell.try_borrow() else {
+                    return Vec::new();
+                };
+                let Some(state) = guard.as_ref() else {
+                    return Vec::new();
+                };
+                let active = state.menu.refreshing_providers(state.snapshot.as_ref());
+                state
+                    .provider_loading
+                    .iter()
+                    .filter(|id| !active.contains(*id))
+                    .cloned()
+                    .collect()
+            });
+            for id in finished {
+                set_provider_loading(&id, false);
             }
-            EngineEvent::Settings(page) => {
+        }
+        EngineEvent::Settings(page) => {
+            STATE.with(|cell| {
+                let Ok(mut guard) = cell.try_borrow_mut() else {
+                    return;
+                };
+                let Some(state) = guard.as_mut() else { return };
                 state.connected = true;
                 state.settings_state.apply_page(&page);
                 sync_state_from_settings(state);
                 state.settings_window.apply_settings_page(&page);
-            }
-            EngineEvent::Disconnected => {
+            });
+            refresh_ui();
+        }
+        EngineEvent::Disconnected => {
+            STATE.with(|cell| {
+                let Ok(mut guard) = cell.try_borrow_mut() else {
+                    return;
+                };
+                let Some(state) = guard.as_mut() else { return };
                 state.connected = false;
                 state.global_loading = false;
                 state.provider_loading.clear();
-            }
+                state.last_render_signature = None;
+            });
+            refresh_ui();
         }
-    });
-    refresh_ui();
+    }
 }
 
 fn select_tab(selection: SwitcherSelection) {
@@ -378,6 +435,36 @@ fn select_tab(selection: SwitcherSelection) {
         state.selected_tab = Some(selection);
     });
     refresh_ui();
+}
+
+fn trigger_user_refresh(provider_id: Option<String>) {
+    match &provider_id {
+        Some(id) => set_provider_loading(id, true),
+        None => set_loading(true),
+    }
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return;
+        };
+        let Some(state) = guard.as_mut() else { return };
+        let resolved = state.menu.start_user_refresh(
+            provider_id,
+            state.snapshot.as_ref(),
+            state.connected,
+            state.selected_tab.as_ref(),
+        );
+        if let Some(selection) = resolved {
+            if let SwitcherSelection::Provider(id) = &selection {
+                state.last_provider_id = Some(id.clone());
+            }
+            state.selected_tab = Some(selection);
+        }
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
 }
 
 fn provider_needs_loading_animation(state: &AppState, provider_id: Option<&str>) -> bool {
@@ -602,16 +689,19 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
         merged,
         state.prefs,
     );
-    let provider_id = provider.map(|p| p.id.as_str()).unwrap_or("codex");
-    let warning_flash = state
-        .animation
-        .is_quota_warning_flash_active(provider_id, now);
-    let needs_loading = provider_needs_loading_animation(state, Some(provider_id));
+    if !state.connected && state.snapshot.is_some() {
+        input.stale = true;
+    }
+    let provider_id = provider.map(|p| p.id.as_str());
+    let warning_flash =
+        provider_id.is_some_and(|id| state.animation.is_quota_warning_flash_active(id, now));
+    let needs_loading = provider_needs_loading_animation(state, provider_id);
     let phase = state.animation.active_loading_phase(needs_loading);
 
-    let effective_pattern = state
-        .loading_pattern
-        .effective_for(input.style, merged, provider_id);
+    let effective_pattern =
+        state
+            .loading_pattern
+            .effective_for(input.style, merged, provider_id.unwrap_or(""));
 
     if let Some(phase_val) = phase {
         if effective_pattern == icon::LoadingPattern::Unbraid {
@@ -651,7 +741,8 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
         input.stale = false;
     }
 
-    let (blink, wiggle, tilt) = state.animation.motion_for(provider_id);
+    let (blink, wiggle, tilt) =
+        provider_id.map_or((0.0, 0.0, 0.0), |id| state.animation.motion_for(id));
     if merged && input.style == icon::IconStyle::Combined {
         input.blink = 0.0;
         input.wiggle = 0.0;

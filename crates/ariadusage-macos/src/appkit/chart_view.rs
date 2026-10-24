@@ -302,6 +302,34 @@ impl CostHistoryChartView {
         view
     }
 
+    /// Updates the chart model in place while preserving user-selected metric and hover state
+    /// where valid. Returns `true` if the model changed.
+    pub fn update(&self, model: CostHistoryChartModel) -> bool {
+        let next_size = {
+            let mut state = self.ivars().borrow_mut();
+            if state.model == model {
+                return false;
+            }
+            if !model.available_metrics.contains(&state.metric) {
+                state.metric = model.default_metric;
+            }
+            if state
+                .hovered_index
+                .is_some_and(|idx| idx >= model.points.len())
+            {
+                state.hovered_index = None;
+            }
+            let h = model.preferred_height();
+            state.model = model;
+            NSSize::new(SUBMENU_CHART_WIDTH, h)
+        };
+        if self.frame().size != next_size {
+            self.setFrameSize(next_size);
+        }
+        self.setNeedsDisplay(true);
+        true
+    }
+
     pub fn render_bitmap(&self) -> Option<Retained<NSBitmapImageRep>> {
         let bounds = self.bounds();
         let rep = self.bitmapImageRepForCachingDisplayInRect(bounds)?;
@@ -620,6 +648,28 @@ impl QuotaBurndownChartView {
         unsafe { msg_send![super(this), initWithFrame: frame] }
     }
 
+    /// Updates the burndown chart model in place while preserving the selected series index
+    /// where valid. Returns `true` if the model changed.
+    pub fn update(&self, model: QuotaBurndownChartModel) -> bool {
+        let next_size = {
+            let mut state = self.ivars().borrow_mut();
+            if state.model == model {
+                return false;
+            }
+            if state.series_index >= model.series.len() {
+                state.series_index = model.default_series_index;
+            }
+            let h = model.preferred_height(state.series_index);
+            state.model = model;
+            NSSize::new(SUBMENU_CHART_WIDTH, h)
+        };
+        if self.frame().size != next_size {
+            self.setFrameSize(next_size);
+        }
+        self.setNeedsDisplay(true);
+        true
+    }
+
     pub fn render_bitmap(&self) -> Option<Retained<NSBitmapImageRep>> {
         let bounds = self.bounds();
         let rep = self.bitmapImageRepForCachingDisplayInRect(bounds)?;
@@ -916,6 +966,35 @@ impl PlanUtilizationChartView {
         let view: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: frame] };
         view.sync_tracking_area();
         view
+    }
+
+    /// Updates the utilization chart model in place while preserving user-selected series
+    /// and hover state where valid. Returns `true` if the model changed.
+    pub fn update(&self, model: PlanUtilizationChartModel) -> bool {
+        let next_size = {
+            let mut state = self.ivars().borrow_mut();
+            if state.model == model {
+                return false;
+            }
+            if state.series_index >= model.series.len() {
+                state.series_index = model.default_series_index;
+            }
+            let bar_len = model
+                .series
+                .get(state.series_index)
+                .map_or(0, |s| s.bars.len());
+            if state.hovered_bar_index.is_some_and(|idx| idx >= bar_len) {
+                state.hovered_bar_index = None;
+            }
+            let h = model.preferred_height();
+            state.model = model;
+            NSSize::new(SUBMENU_CHART_WIDTH, h)
+        };
+        if self.frame().size != next_size {
+            self.setFrameSize(next_size);
+        }
+        self.setNeedsDisplay(true);
+        true
     }
 
     pub fn render_bitmap(&self) -> Option<Retained<NSBitmapImageRep>> {

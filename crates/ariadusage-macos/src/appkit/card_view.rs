@@ -1,3 +1,4 @@
+// Ported from CodexBar Sources/CodexBar/MenuCardRefreshMonitor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuPresentation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+MenuCardItems.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -73,6 +74,8 @@ pub struct CardState {
     hovered_bar_index: Option<usize>,
     tracking_area: Option<Retained<NSTrackingArea>>,
     backdrop_dark: Option<bool>,
+    subview_rebuilds: usize,
+    in_place_updates: usize,
 }
 
 impl Default for CardState {
@@ -91,6 +94,8 @@ impl Default for CardState {
             hovered_bar_index: None,
             tracking_area: None,
             backdrop_dark: None,
+            subview_rebuilds: 0,
+            in_place_updates: 0,
         }
     }
 }
@@ -282,7 +287,10 @@ impl CardView {
         let mtm = self.mtm();
         let measure = AppKitMeasure::new(mtm);
         let next = card_layout::spend_summary_layout(summary, width, &measure);
-        (existing_h - next.size.h).abs() <= 0.5
+        crate::menu_session::MenuCardRefreshMonitor::has_compatible_tracked_layout(
+            existing_h,
+            next.size.h,
+        )
     }
 
     /// Whether `model` at `width` in `overview_mode` produces the same height as the
@@ -315,17 +323,28 @@ impl CardView {
         let mtm = self.mtm();
         let measure = AppKitMeasure::new(mtm);
         let next = card_layout::layout_section(model, section_mode, width, &measure);
-        (existing_h - next.size.h).abs() <= 0.5
+        crate::menu_session::MenuCardRefreshMonitor::has_compatible_tracked_layout(
+            existing_h,
+            next.size.h,
+        )
     }
 
     fn apply_layout(&self, layout: CardLayout, accent: Accent, measure: &AppKitMeasure) {
         let mtm = self.mtm();
         let highlighted = self.ivars().borrow().highlighted;
+        let next_size = NSSize::new(layout.size.w, layout.size.h);
+        if self.frame().size != next_size {
+            self.setFrameSize(next_size);
+        }
+
+        if self.try_apply_layout_in_place(&layout, accent, highlighted, measure) {
+            self.setNeedsDisplay(true);
+            return;
+        }
 
         for view in self.subviews().iter() {
             view.removeFromSuperview();
         }
-        self.setFrameSize(NSSize::new(layout.size.w, layout.size.h));
         let mut labels = Vec::new();
         let mut bars = Vec::new();
         let mut mini_strips = Vec::new();
@@ -386,9 +405,103 @@ impl CardView {
             state.labels = labels;
             state.bars = bars;
             state.mini_strips = mini_strips;
+            state.subview_rebuilds += 1;
         }
         self.sync_tracking_area();
         self.setNeedsDisplay(true);
+    }
+
+    /// Updates existing label and progress-bar subviews in place when the sequence
+    /// of subview-bearing items (`Text`, `Bar`, `MiniBarStrip`) matches the
+    /// currently attached subviews, avoiding `removeFromSuperview` / `addSubview`
+    /// churn while the menu is open.
+    fn try_apply_layout_in_place(
+        &self,
+        layout: &CardLayout,
+        accent: Accent,
+        highlighted: bool,
+        measure: &AppKitMeasure,
+    ) -> bool {
+        let mut state = self.ivars().borrow_mut();
+        let Some(prev_layout) = state.layout.as_ref() else {
+            return false;
+        };
+        if !same_subview_item_shapes(&prev_layout.items, &layout.items) {
+            return false;
+        }
+
+        let mut label_idx = 0usize;
+        let mut bar_idx = 0usize;
+        let mut strip_idx = 0usize;
+
+        for placed in &layout.items {
+            match &placed.item {
+                Item::Text(item) => {
+                    let Some((field, color)) = state.labels.get_mut(label_idx) else {
+                        return false;
+                    };
+                    measure.configure_label(field, item, highlighted, placed.frame);
+                    *color = item.color;
+                    label_idx += 1;
+                }
+                Item::Bar {
+                    spec,
+                    accessibility_label,
+                } => {
+                    let Some(bar) = state.bars.get(bar_idx) else {
+                        return false;
+                    };
+                    bar.update(placed.frame, spec.clone(), accent, accessibility_label);
+                    bar.set_highlighted(highlighted);
+                    bar_idx += 1;
+                }
+                Item::MiniBarStrip {
+                    points,
+                    max_label,
+                    label_frame: lf,
+                    strip_frame,
+                } => {
+                    let item = TextItem {
+                        text: max_label.clone().unwrap_or_default(),
+                        font: Font::new(TextStyle::Caption2, Weight::Regular),
+                        color: TextColor::Secondary,
+                        max_lines: 1,
+                        align: Align::Right,
+                        truncation: Truncation::Tail,
+                    };
+                    let Some((field, color)) = state.labels.get_mut(label_idx) else {
+                        return false;
+                    };
+                    measure.configure_label(field, &item, highlighted, *lf);
+                    *color = TextColor::Secondary;
+                    label_idx += 1;
+
+                    let Some(strip) = state.mini_strips.get_mut(strip_idx) else {
+                        return false;
+                    };
+                    strip.points = points.clone();
+                    strip.max_label = max_label.clone();
+                    strip.strip_frame = *strip_frame;
+                    strip_idx += 1;
+                }
+                Item::Divider | Item::ClockIcon { .. } => {}
+            }
+        }
+
+        state.layout = Some(layout.clone());
+        state.in_place_updates += 1;
+        true
+    }
+
+    /// Number of full subview rebuilds performed on this card view.
+    pub fn subview_rebuilds(&self) -> usize {
+        self.ivars().borrow().subview_rebuilds
+    }
+
+    /// Number of in-place subview updates performed on this card view without
+    /// removing or recreating subviews.
+    pub fn in_place_updates(&self) -> usize {
+        self.ivars().borrow().in_place_updates
     }
 
     fn sync_tracking_area(&self) {
@@ -485,6 +598,11 @@ impl CardView {
     /// The current layout, if a model was shown.
     pub fn layout(&self) -> Option<CardLayout> {
         self.ivars().borrow().layout.clone()
+    }
+
+    /// The current card model, if a provider card was shown.
+    pub fn model(&self) -> Option<CardModel> {
+        self.ivars().borrow().model.clone()
     }
 
     /// Draws the card and its subviews into a bitmap, as on screen.
@@ -635,6 +753,24 @@ fn label_frame(text: Rect) -> NSRect {
     ))
 }
 
+fn same_subview_item_shapes(prev: &[card_layout::Placed], next: &[card_layout::Placed]) -> bool {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum SubviewKind {
+        Text,
+        Bar,
+        MiniStrip,
+    }
+    let kind = |placed: &card_layout::Placed| match &placed.item {
+        Item::Text(_) => Some(SubviewKind::Text),
+        Item::Bar { .. } => Some(SubviewKind::Bar),
+        Item::MiniBarStrip { .. } => Some(SubviewKind::MiniStrip),
+        Item::Divider | Item::ClockIcon { .. } => None,
+    };
+    prev.iter()
+        .filter_map(kind)
+        .eq(next.iter().filter_map(kind))
+}
+
 /// Measures and creates labels with the system text styles.
 pub struct AppKitMeasure {
     mtm: MainThreadMarker,
@@ -674,6 +810,26 @@ impl AppKitMeasure {
     /// A label configured for `item`.
     fn label(&self, item: &TextItem, highlighted: bool) -> Retained<NSTextField> {
         let field = NSTextField::labelWithString(&NSString::from_str(&item.text), self.mtm);
+        self.apply_label_style(&field, item, highlighted);
+        field
+    }
+
+    fn configure_label(
+        &self,
+        field: &NSTextField,
+        item: &TextItem,
+        highlighted: bool,
+        frame: Rect,
+    ) {
+        field.setStringValue(&NSString::from_str(&item.text));
+        self.apply_label_style(field, item, highlighted);
+        let next_frame = label_frame(frame);
+        if field.frame() != next_frame {
+            field.setFrame(next_frame);
+        }
+    }
+
+    fn apply_label_style(&self, field: &NSTextField, item: &TextItem, highlighted: bool) {
         field.setFont(Some(&self.font(item.font)));
         field.setTextColor(Some(&ns_color(
             item.color.resolve(highlighted),
@@ -698,7 +854,6 @@ impl AppKitMeasure {
                 cell.setTruncatesLastVisibleLine(true);
             }
         }
-        field
     }
 }
 
