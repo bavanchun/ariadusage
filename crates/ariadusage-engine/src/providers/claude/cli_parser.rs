@@ -1942,14 +1942,20 @@ fn replace_dot_minutes(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     let mut i = 0;
     while i < chars.len() {
+        let is_boundary = |idx: usize| -> bool {
+            idx >= chars.len() || (!chars[idx].is_ascii_alphanumeric() && chars[idx] != '_')
+        };
+        let has_meridiem_suffix = i + 4 < chars.len()
+            && (chars[i + 3].eq_ignore_ascii_case(&'a') || chars[i + 3].eq_ignore_ascii_case(&'p'))
+            && chars[i + 4].eq_ignore_ascii_case(&'m')
+            && is_boundary(i + 5);
         if i > 0
             && chars[i - 1].is_ascii_digit()
             && chars[i] == '.'
             && i + 2 < chars.len()
             && chars[i + 1].is_ascii_digit()
             && chars[i + 2].is_ascii_digit()
-            && (i + 3 == chars.len()
-                || (!chars[i + 3].is_ascii_alphanumeric() && chars[i + 3] != '_'))
+            && (is_boundary(i + 3) || has_meridiem_suffix)
         {
             out.push(':');
             out.push(chars[i + 1]);

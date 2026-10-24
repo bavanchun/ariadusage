@@ -1219,13 +1219,24 @@ impl ClaudeStatusProbe {
         call: BrokerCall,
         timeout: Duration,
     ) -> Result<ClaudeCLIAccountIdentity, ClaudeStatusProbeError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
+        if let Some(ref fetch_override) = self.fetch_override {
+            let keep_alive = Self::should_keep_cli_session_alive(self.keep_cli_sessions_alive);
+            let snap =
+                (fetch_override)(PathBuf::from(&self.claude_binary), timeout, keep_alive).await?;
+            return Ok(ClaudeCLIAccountIdentity {
+                account_email: snap.account_email,
+                account_organization: snap.account_organization,
+                login_method: snap.login_method,
+            });
+        }
+        if self.direct_fetch_override.is_some() {
+            return Err(ClaudeStatusProbeError::ClaudeNotInstalled);
+        }
         let resolved =
             Self::resolve_binary_path(&self.claude_binary, &self.environment, &self.home_dir)
-                .or_else(|| {
-                    self.fetch_override
-                        .is_some()
-                        .then(|| PathBuf::from(&self.claude_binary))
-                })
                 .ok_or(ClaudeStatusProbeError::ClaudeNotInstalled)?;
         let account_scope = ClaudeAccountProfile::session_scope(
             &self.environment,
@@ -1248,13 +1259,20 @@ impl ClaudeStatusProbe {
         call: BrokerCall,
         timeout: Duration,
     ) -> Result<(), ClaudeStatusProbeError> {
+        if call.cancel.is_cancelled() {
+            return Err(ClaudeStatusProbeError::Cancelled);
+        }
+        if let Some(ref fetch_override) = self.fetch_override {
+            let keep_alive = Self::should_keep_cli_session_alive(self.keep_cli_sessions_alive);
+            return (fetch_override)(PathBuf::from(&self.claude_binary), timeout, keep_alive)
+                .await
+                .map(|_| ());
+        }
+        if self.direct_fetch_override.is_some() {
+            return Err(ClaudeStatusProbeError::ClaudeNotInstalled);
+        }
         let resolved =
             Self::resolve_binary_path(&self.claude_binary, &self.environment, &self.home_dir)
-                .or_else(|| {
-                    self.fetch_override
-                        .is_some()
-                        .then(|| PathBuf::from(&self.claude_binary))
-                })
                 .ok_or(ClaudeStatusProbeError::ClaudeNotInstalled)?;
         let account_scope = ClaudeAccountProfile::session_scope(
             &self.environment,
