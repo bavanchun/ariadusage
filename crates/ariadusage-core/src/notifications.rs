@@ -2852,28 +2852,28 @@ pub fn limit_reset_account_identifier(
 mod tests {
     use super::*;
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:8 does nothing without previous value
+    // upstream: SessionQuotaNotificationLogicTests.swift:7 does nothing without previous value
     #[test]
     fn session_quota_does_nothing_without_previous_value() {
         let transition = SessionQuotaNotificationLogic::transition(None, Some(0.0));
         assert_eq!(transition, SessionQuotaTransition::None);
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:14 detects depleted transition
+    // upstream: SessionQuotaNotificationLogicTests.swift:13 detects depleted transition
     #[test]
     fn session_quota_detects_depleted_transition() {
         let transition = SessionQuotaNotificationLogic::transition(Some(12.0), Some(0.0));
         assert_eq!(transition, SessionQuotaTransition::Depleted);
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:20 detects restored transition
+    // upstream: SessionQuotaNotificationLogicTests.swift:19 detects restored transition
     #[test]
     fn session_quota_detects_restored_transition() {
         let transition = SessionQuotaNotificationLogic::transition(Some(0.0), Some(5.0));
         assert_eq!(transition, SessionQuotaTransition::Restored);
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:26 ignores non transitions
+    // upstream: SessionQuotaNotificationLogicTests.swift:25 ignores non transitions
     #[test]
     fn session_quota_ignores_non_transitions() {
         assert_eq!(
@@ -2890,7 +2890,7 @@ mod tests {
         );
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:33 treats tiny positive remaining as depleted
+    // upstream: SessionQuotaNotificationLogicTests.swift:32 treats tiny positive remaining as depleted
     #[test]
     fn session_quota_treats_tiny_positive_remaining_as_depleted() {
         let transition = SessionQuotaNotificationLogic::transition(Some(0.0), Some(0.00001));
@@ -2917,7 +2917,7 @@ mod tests {
         assert_eq!(body, "Session quota is available again.");
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:7 quota warning copy includes current remaining and threshold
+    // upstream: QuotaWarningNotificationLogicTests.swift:6 quota warning copy includes current remaining and threshold
     #[test]
     fn quota_warning_copy_includes_current_remaining_and_threshold() {
         let (title, body) = QuotaWarningNotificationLogic::notification_copy(
@@ -2934,7 +2934,7 @@ mod tests {
         );
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:21 quota warning copy clamps current remaining
+    // upstream: QuotaWarningNotificationLogicTests.swift:20 quota warning copy clamps current remaining
     #[test]
     fn quota_warning_copy_clamps_current_remaining() {
         let (title, body) = QuotaWarningNotificationLogic::notification_copy(
@@ -2965,7 +2965,7 @@ mod tests {
         assert!(!body.contains('@'));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:50 quota warning copy uses the extra-window display label when provided
+    // upstream: QuotaWarningNotificationLogicTests.swift:49 quota warning copy uses the extra-window display label when provided
     #[test]
     fn quota_warning_copy_uses_extra_window_display_label_when_provided() {
         let (title, body) = QuotaWarningNotificationLogic::notification_copy(
@@ -2982,7 +2982,7 @@ mod tests {
         );
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:65 extra-window notification identifiers are independent
+    // upstream: QuotaWarningNotificationLogicTests.swift:64 extra-window notification identifiers are independent
     #[test]
     fn extra_window_notification_identifiers_are_independent() {
         let fable = QuotaWarningEvent::new(
@@ -3007,7 +3007,7 @@ mod tests {
         assert!(id_routines.contains("claude-routines"));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:101 does nothing without crossing
+    // upstream: QuotaWarningNotificationLogicTests.swift:100 does nothing without crossing
     #[test]
     fn quota_warning_does_nothing_without_crossing() {
         let crossed = QuotaWarningNotificationLogic::crossed_threshold(
@@ -3019,7 +3019,7 @@ mod tests {
         assert_eq!(crossed, None);
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:112 detects downward crossing
+    // upstream: QuotaWarningNotificationLogicTests.swift:111 detects downward crossing
     #[test]
     fn quota_warning_detects_downward_crossing() {
         let crossed = QuotaWarningNotificationLogic::crossed_threshold(
@@ -3031,7 +3031,7 @@ mod tests {
         assert_eq!(crossed, Some(50));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:123 skips already fired thresholds
+    // upstream: QuotaWarningNotificationLogicTests.swift:122 skips already fired thresholds
     #[test]
     fn quota_warning_skips_already_fired_thresholds() {
         let fired = BTreeSet::from([50]);
@@ -3040,7 +3040,7 @@ mod tests {
         assert_eq!(crossed, None);
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:134 chooses most severe threshold when crossing several at once
+    // upstream: QuotaWarningNotificationLogicTests.swift:133 chooses most severe threshold when crossing several at once
     #[test]
     fn quota_warning_chooses_most_severe_threshold_when_crossing_several_at_once() {
         let crossed = QuotaWarningNotificationLogic::crossed_threshold(
@@ -3052,7 +3052,7 @@ mod tests {
         assert_eq!(crossed, Some(20));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:145 startup below threshold warns once at most severe threshold
+    // upstream: QuotaWarningNotificationLogicTests.swift:144 startup below threshold warns once at most severe threshold
     #[test]
     fn quota_warning_startup_below_threshold_warns_once_at_most_severe_threshold() {
         let crossed = QuotaWarningNotificationLogic::crossed_threshold(
@@ -3064,14 +3064,14 @@ mod tests {
         assert_eq!(crossed, Some(20));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:156 warning marks threshold and higher thresholds fired
+    // upstream: QuotaWarningNotificationLogicTests.swift:155 warning marks threshold and higher thresholds fired
     #[test]
     fn quota_warning_marks_threshold_and_higher_thresholds_fired() {
         let fired = QuotaWarningNotificationLogic::fired_thresholds_after_warning(20, &[50, 20]);
         assert_eq!(fired, BTreeSet::from([50, 20]));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:165 recovery clears only thresholds below current remaining
+    // upstream: QuotaWarningNotificationLogicTests.swift:164 recovery clears only thresholds below current remaining
     #[test]
     fn quota_warning_recovery_clears_only_thresholds_below_current_remaining() {
         let already_fired = BTreeSet::from([50, 20]);
@@ -3079,7 +3079,7 @@ mod tests {
         assert_eq!(cleared, BTreeSet::from([20]));
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:174 zero threshold does not post quota warning
+    // upstream: QuotaWarningNotificationLogicTests.swift:173 zero threshold does not post quota warning
     #[test]
     fn quota_warning_zero_threshold_does_not_post_quota_warning() {
         let fired = BTreeSet::from([10]);
@@ -3092,7 +3092,7 @@ mod tests {
         );
     }
 
-    // upstream: CodexResetCreditExpiryNotifierTests.swift:9 posts one bounded summary without persisting or logging raw credit IDs
+    // upstream: CodexResetCreditExpiryNotifierTests.swift:8 posts one bounded summary without persisting or logging raw credit IDs
     #[test]
     fn codex_reset_credit_expiry_posts_one_bounded_summary_without_raw_credit_ids() {
         let now = Timestamp::from_second(1_781_726_400).unwrap();
@@ -3124,7 +3124,7 @@ mod tests {
         assert!(!notifier.remembered_fingerprints[0].contains(raw_id));
     }
 
-    // upstream: CodexResetCreditExpiryNotifierTests.swift:45 switching account inventories does not repeat either notification
+    // upstream: CodexResetCreditExpiryNotifierTests.swift:44 switching account inventories does not repeat either notification
     #[test]
     fn codex_reset_credit_expiry_switching_account_inventories_does_not_repeat_either_notification()
     {
@@ -3162,7 +3162,7 @@ mod tests {
         assert_eq!(notifier.remembered_fingerprints.len(), 2);
     }
 
-    // upstream: CodexResetCreditExpiryNotifierTests.swift:73 no-expiry inventory does not trigger an expiry notification
+    // upstream: CodexResetCreditExpiryNotifierTests.swift:72 no-expiry inventory does not trigger an expiry notification
     #[test]
     fn codex_reset_credit_expiry_no_expiry_inventory_does_not_trigger_notification() {
         let now = Timestamp::from_second(1_781_726_400).unwrap();
