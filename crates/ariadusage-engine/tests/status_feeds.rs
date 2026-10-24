@@ -41,6 +41,7 @@ fn declared_status_hosts_cover_first_party_descriptors() {
     assert!(origins.contains_url(&workspace_url));
 }
 
+// upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:121 fetchStatusSummary overlays description and updatedAt when incident io succeeds
 #[tokio::test]
 async fn fetch_status_summary_uses_incident_io_proxy_and_overlays_statuspage_status() {
     let server = https::start_server();
@@ -414,10 +415,9 @@ async fn runtime_status_refresh_preserves_last_good_status_when_newer_poll_fails
     assert_eq!(runtime.provider_status_components(&claude_id).len(), 1);
 }
 
+// upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:95 fetchStatusSummary returns status with empty components when component feed fails
 #[tokio::test]
 async fn fetch_status_summary_returns_status_with_empty_components_when_component_feed_fails() {
-    // Ported from StatuspageSummaryTests.swift:
-    // `fetchStatusSummary returns status with empty components when component feed fails`
     let server = https::start_server();
     let base_url = Url::parse(&server.base_url()).expect("server base url");
 
@@ -475,17 +475,7 @@ fn make_status_summary(indicator: StatusIndicator, description: &str) -> Provide
     )
 }
 
-#[tokio::test]
-async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can_publish_after_older()
- {
-    // Ported from ProviderStatusRefreshPublicationTests.swift:
-    // - `late scoped status cannot replace a newer background status`
-    // - `a newer request can publish after an overlapping older success`
-    // - `an older success remains useful when a newer request fails`
-    // - `an older status failure cannot request a retry after newer success`
-    // - `status publication ordering is independent for each provider`
-    // - `a later successful request can report a genuine recovery`
-    let tmp = TempDir::new().expect("tempdir");
+fn make_status_runtime(tmp: &TempDir, fetcher: ProviderStatusFetcher) -> Arc<EngineRuntime> {
     let config_store = ConfigStore::new(tmp.path().join("config.json"));
     let codex_id = ProviderId::new("codex").unwrap();
     let claude_id = ProviderId::new("claude").unwrap();
@@ -497,15 +487,24 @@ async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can
         .expect("enable codex and claude");
     let secret_store = Arc::new(SecretStore::new(MemoryBackend::new()));
     let net = Arc::new(https::broker(NetConfig::default()));
+    Arc::new(
+        EngineRuntime::new(config_store, secret_store, net, ProviderRegistry::empty())
+            .with_status_fetcher(fetcher),
+    )
+}
 
-    // Case 1: Late scoped status cannot replace a newer background status
-    let started1 = Arc::new(Notify::new());
-    let release1 = Arc::new(Notify::new());
-    let calls1 = Arc::new(AtomicUsize::new(0));
-    let s1 = Arc::clone(&started1);
-    let r1 = Arc::clone(&release1);
-    let c1 = Arc::clone(&calls1);
-    let fetcher1 = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:8 late scoped status cannot replace a newer background status
+#[tokio::test]
+async fn late_scoped_status_cannot_replace_a_newer_background_status() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let s1 = Arc::clone(&started);
+    let r1 = Arc::clone(&release);
+    let c1 = Arc::clone(&calls);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
         let req = c1.fetch_add(1, Ordering::SeqCst) + 1;
         let s1 = Arc::clone(&s1);
         let r1 = Arc::clone(&r1);
@@ -525,22 +524,13 @@ async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can
             }
         })
     }));
-    let runtime1 = Arc::new(
-        EngineRuntime::new(
-            ConfigStore::new(tmp.path().join("config.json")),
-            Arc::clone(&secret_store),
-            Arc::clone(&net),
-            ProviderRegistry::empty(),
-        )
-        .with_status_fetcher(fetcher1),
-    );
-    let rt1_older = Arc::clone(&runtime1);
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let rt_older = Arc::clone(&runtime);
     let codex1 = codex_id.clone();
-    let older_task = tokio::spawn(async move { rt1_older.refresh_provider_status(codex1).await });
-    started1.notified().await;
+    let older_task = tokio::spawn(async move { rt_older.refresh_provider_status(codex1).await });
+    started.notified().await;
 
-    // Newer status completes while older is still suspended
-    let newer_status = runtime1
+    let newer_status = runtime
         .refresh_provider_status(codex_id.clone())
         .await
         .expect("newer status succeeds")
@@ -550,18 +540,17 @@ async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can
         Some("Current incident")
     );
 
-    // Release older status -> must NOT replace "Current incident"
-    release1.notify_waiters();
+    release.notify_waiters();
     let older_res = older_task
         .await
         .unwrap()
         .expect("older finishes")
         .expect("status");
     assert_eq!(older_res.description.as_deref(), Some("Current incident"));
-    let snap1 = runtime1.current_snapshot();
-    let codex_snap1 = snap1.providers.iter().find(|p| p.id == codex_id).unwrap();
+    let snap = runtime.current_snapshot();
+    let codex_snap = snap.providers.iter().find(|p| p.id == codex_id).unwrap();
     assert_eq!(
-        codex_snap1
+        codex_snap
             .status
             .as_ref()
             .unwrap()
@@ -572,15 +561,79 @@ async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can
             .as_deref(),
         Some("Current incident")
     );
+}
 
-    // Case 2: An older success remains useful when a newer request fails
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:47 a newer request can publish after an overlapping older success
+#[tokio::test]
+async fn a_newer_request_can_publish_after_an_overlapping_older_success() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let started1 = Arc::new(Notify::new());
+    let release1 = Arc::new(Notify::new());
     let started2 = Arc::new(Notify::new());
     let release2 = Arc::new(Notify::new());
-    let calls2 = Arc::new(AtomicUsize::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let s1 = Arc::clone(&started1);
+    let r1 = Arc::clone(&release1);
     let s2 = Arc::clone(&started2);
     let r2 = Arc::clone(&release2);
-    let c2 = Arc::clone(&calls2);
-    let fetcher2 = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
+    let c = Arc::clone(&calls);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
+        let req = c.fetch_add(1, Ordering::SeqCst) + 1;
+        let s1 = Arc::clone(&s1);
+        let r1 = Arc::clone(&r1);
+        let s2 = Arc::clone(&s2);
+        let r2 = Arc::clone(&r2);
+        Box::pin(async move {
+            if req == 1 {
+                s1.notify_waiters();
+                r1.notified().await;
+                Ok(Some(make_status_summary(
+                    StatusIndicator::Minor,
+                    "Older degraded status",
+                )))
+            } else {
+                s2.notify_waiters();
+                r2.notified().await;
+                Ok(Some(make_status_summary(
+                    StatusIndicator::Critical,
+                    "Newer outage status",
+                )))
+            }
+        })
+    }));
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let rt1 = Arc::clone(&runtime);
+    let cid1 = codex_id.clone();
+    let older_task = tokio::spawn(async move { rt1.refresh_provider_status(cid1).await });
+    started1.notified().await;
+
+    let rt2 = Arc::clone(&runtime);
+    let cid2 = codex_id.clone();
+    let newer_task = tokio::spawn(async move { rt2.refresh_provider_status(cid2).await });
+    started2.notified().await;
+
+    release1.notify_waiters();
+    let older = older_task.await.unwrap().unwrap().unwrap();
+    assert_eq!(older.description.as_deref(), Some("Older degraded status"));
+
+    release2.notify_waiters();
+    let newer = newer_task.await.unwrap().unwrap().unwrap();
+    assert_eq!(newer.description.as_deref(), Some("Newer outage status"));
+}
+
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:77 an older success remains useful when a newer request fails
+#[tokio::test]
+async fn an_older_success_remains_useful_when_a_newer_request_fails() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let s2 = Arc::clone(&started);
+    let r2 = Arc::clone(&release);
+    let c2 = Arc::clone(&calls);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
         let req = c2.fetch_add(1, Ordering::SeqCst) + 1;
         let s2 = Arc::clone(&s2);
         let r2 = Arc::clone(&r2);
@@ -597,91 +650,163 @@ async fn late_scoped_status_cannot_replace_newer_background_status_and_newer_can
             }
         })
     }));
-    let runtime2 = Arc::new(
-        EngineRuntime::new(
-            ConfigStore::new(tmp.path().join("config.json")),
-            Arc::clone(&secret_store),
-            Arc::clone(&net),
-            ProviderRegistry::empty(),
-        )
-        .with_status_fetcher(fetcher2),
-    );
-    let rt2_older = Arc::clone(&runtime2);
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let rt_older = Arc::clone(&runtime);
     let codex2 = codex_id.clone();
-    let older2 = tokio::spawn(async move { rt2_older.refresh_provider_status(codex2).await });
-    started2.notified().await;
+    let older = tokio::spawn(async move { rt_older.refresh_provider_status(codex2).await });
+    started.notified().await;
 
-    // Newer fails while older is in flight
     assert!(
-        runtime2
+        runtime
             .refresh_provider_status(codex_id.clone())
             .await
             .is_err()
     );
-    release2.notify_waiters();
-    let older2_status = older2
+    release.notify_waiters();
+    let older_status = older
         .await
         .unwrap()
         .expect("older succeeds")
         .expect("status");
     assert_eq!(
-        older2_status.description.as_deref(),
+        older_status.description.as_deref(),
         Some("Available incident")
     );
+}
 
-    // Case 3: Status publication ordering is independent for each provider, and a later successful
-    // request can report a genuine recovery
-    let started3 = Arc::new(Notify::new());
-    let release3 = Arc::new(Notify::new());
-    let s3 = Arc::clone(&started3);
-    let r3 = Arc::clone(&release3);
-    let codex_calls3 = Arc::new(AtomicUsize::new(0));
-    let cc3 = Arc::clone(&codex_calls3);
-    let fetcher3 = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |id| {
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:102 an older status failure cannot request a retry after newer success
+#[tokio::test]
+async fn an_older_status_failure_cannot_request_a_retry_after_newer_success() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let s = Arc::clone(&started);
+    let r = Arc::clone(&release);
+    let c = Arc::clone(&calls);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
+        let req = c.fetch_add(1, Ordering::SeqCst) + 1;
+        let s = Arc::clone(&s);
+        let r = Arc::clone(&r);
+        Box::pin(async move {
+            if req == 1 {
+                s.notify_waiters();
+                r.notified().await;
+                Err(StatusFetchError::Http { status: 503 })
+            } else {
+                Ok(Some(make_status_summary(
+                    StatusIndicator::Major,
+                    "Current incident",
+                )))
+            }
+        })
+    }));
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let rt_older = Arc::clone(&runtime);
+    let cid = codex_id.clone();
+    let older = tokio::spawn(async move { rt_older.refresh_provider_status(cid).await });
+    started.notified().await;
+
+    let newer = runtime
+        .refresh_provider_status(codex_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(newer.description.as_deref(), Some("Current incident"));
+
+    release.notify_waiters();
+    assert!(older.await.unwrap().is_err());
+
+    let snap = runtime.current_snapshot();
+    let codex_snap = snap.providers.iter().find(|p| p.id == codex_id).unwrap();
+    assert_eq!(
+        codex_snap
+            .status
+            .as_ref()
+            .unwrap()
+            .value
+            .as_ref()
+            .unwrap()
+            .description
+            .as_deref(),
+        Some("Current incident")
+    );
+}
+
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:127 status publication ordering is independent for each provider
+#[tokio::test]
+async fn status_publication_ordering_is_independent_for_each_provider() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let s3 = Arc::clone(&started);
+    let r3 = Arc::clone(&release);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |id| {
         let s3 = Arc::clone(&s3);
         let r3 = Arc::clone(&r3);
-        let cc3 = Arc::clone(&cc3);
         Box::pin(async move {
             if id.as_str() == "codex" {
-                let n = cc3.fetch_add(1, Ordering::SeqCst) + 1;
-                if n == 1 {
-                    s3.notify_waiters();
-                    r3.notified().await;
-                    Ok(Some(make_status_summary(StatusIndicator::Major, "codex")))
-                } else {
-                    Ok(Some(make_status_summary(
-                        StatusIndicator::None,
-                        "Recovered",
-                    )))
-                }
+                s3.notify_waiters();
+                r3.notified().await;
+                Ok(Some(make_status_summary(StatusIndicator::Major, "codex")))
             } else {
                 Ok(Some(make_status_summary(StatusIndicator::Major, "claude")))
             }
         })
     }));
-    let runtime3 = Arc::new(
-        EngineRuntime::new(config_store, secret_store, net, ProviderRegistry::empty())
-            .with_status_fetcher(fetcher3),
-    );
-    let rt3_codex = Arc::clone(&runtime3);
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let rt_codex = Arc::clone(&runtime);
     let codex3 = codex_id.clone();
-    let codex_task = tokio::spawn(async move { rt3_codex.refresh_provider_status(codex3).await });
-    started3.notified().await;
+    let codex_task = tokio::spawn(async move { rt_codex.refresh_provider_status(codex3).await });
+    started.notified().await;
 
-    // Claude publishes independently while Codex is suspended
-    let claude_st = runtime3
-        .refresh_provider_status(claude_id.clone())
+    let claude_st = runtime
+        .refresh_provider_status(claude_id)
         .await
         .unwrap()
         .unwrap();
     assert_eq!(claude_st.description.as_deref(), Some("claude"));
 
-    release3.notify_waiters();
+    release.notify_waiters();
     let codex_st = codex_task.await.unwrap().unwrap().unwrap();
     assert_eq!(codex_st.description.as_deref(), Some("codex"));
+}
 
-    // Later successful request reports genuine recovery
-    let recovered = runtime3
+// upstream: Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift:148 a later successful request can report a genuine recovery
+#[tokio::test]
+async fn a_later_successful_request_can_report_a_genuine_recovery() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_id = ProviderId::new("codex").unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&calls);
+    let fetcher = ProviderStatusFetcher::new().with_fetch_override(Arc::new(move |_id| {
+        let n = c.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move {
+            if n == 1 {
+                Ok(Some(make_status_summary(
+                    StatusIndicator::Major,
+                    "Current incident",
+                )))
+            } else {
+                Ok(Some(make_status_summary(
+                    StatusIndicator::None,
+                    "Recovered",
+                )))
+            }
+        })
+    }));
+    let runtime = make_status_runtime(&tmp, fetcher);
+    let first = runtime
+        .refresh_provider_status(codex_id.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.indicator, StatusIndicator::Major);
+
+    let recovered = runtime
         .refresh_provider_status(codex_id)
         .await
         .unwrap()

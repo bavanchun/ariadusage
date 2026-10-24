@@ -935,6 +935,7 @@ mod tests {
         )
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:79 first sample establishes baseline without firing
     #[test]
     fn first_sample_establishes_baseline_without_firing() {
         let mut detector = HookTransitionDetector::new();
@@ -950,6 +951,7 @@ mod tests {
         assert!(dispatches.is_empty());
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:88 quota low fires once on upward crossing
     #[test]
     fn quota_low_fires_once_on_upward_crossing() {
         let mut detector = HookTransitionDetector::new();
@@ -992,6 +994,7 @@ mod tests {
         assert!(persisting.is_empty());
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:106 quota low dispatches only the rule whose threshold crossed
     #[test]
     fn quota_low_dispatches_only_the_rule_whose_threshold_crossed() {
         let mut detector = HookTransitionDetector::new();
@@ -1038,6 +1041,7 @@ mod tests {
         assert_eq!(rule_ids, vec!["high"]);
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:126 quota reached fires on upward edge only and not while saturated
     #[test]
     fn quota_reached_fires_on_upward_edge_only_and_not_while_saturated() {
         let mut detector = HookTransitionDetector::new();
@@ -1085,6 +1089,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:143 quota reached never fires for the weekly lane
     #[test]
     fn quota_reached_never_fires_for_weekly_lane() {
         let mut detector = HookTransitionDetector::new();
@@ -1118,6 +1123,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:162 quota reset fires when reset boundary advances
     #[test]
     fn quota_reset_fires_when_reset_boundary_advances() {
         let mut detector = HookTransitionDetector::new();
@@ -1157,6 +1163,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:179 quota reset fires on usage drop without reset boundary
     #[test]
     fn quota_reset_fires_on_usage_drop_without_reset_boundary() {
         let mut detector = HookTransitionDetector::new();
@@ -1187,6 +1194,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:191 reset suppresses depletion edge in same poll
     #[test]
     fn reset_suppresses_depletion_edge_in_same_poll() {
         let mut detector = HookTransitionDetector::new();
@@ -1218,6 +1226,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:205 provider status fires outage and recovery edges
     #[test]
     fn provider_status_fires_outage_and_recovery_edges() {
         let mut detector = HookTransitionDetector::new();
@@ -1258,6 +1267,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:223 unknown and maintenance never flip status state
     #[test]
     fn unknown_and_maintenance_never_flip_status_state() {
         let mut detector = HookTransitionDetector::new();
@@ -1300,6 +1310,7 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:241 first definite status does not fire
     #[test]
     fn first_definite_status_does_not_fire() {
         let mut detector = HookTransitionDetector::new();
@@ -1311,8 +1322,28 @@ mod tests {
         assert!(dispatches.is_empty());
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:252 refresh failure emits coarse status only
     #[test]
-    fn refresh_failure_emits_coarse_status_only_and_preserves_quota_baselines() {
+    fn refresh_failure_emits_coarse_status_only() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+
+        let failed = detector.evaluate(
+            &observation(vec![], HookProviderStatus::Unknown, Some("timeout")),
+            &cfg,
+            now,
+        );
+        assert_eq!(
+            failed.iter().map(|d| d.event.event).collect::<Vec<_>>(),
+            vec![HookEventType::RefreshFailed]
+        );
+        assert_eq!(failed[0].event.status.as_deref(), Some("timeout"));
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:262 refresh failure does not disturb quota baselines
+    #[test]
+    fn refresh_failure_does_not_disturb_quota_baselines() {
         let mut detector = HookTransitionDetector::new();
         let cfg = default_config(true, None);
         let now = sample_now();
@@ -1327,16 +1358,11 @@ mod tests {
             now,
         );
 
-        let failed = detector.evaluate(
-            &observation(vec![], HookProviderStatus::Unknown, Some("timeout")),
+        let _ = detector.evaluate(
+            &observation(vec![], HookProviderStatus::Unknown, Some("offline")),
             &cfg,
             now,
         );
-        assert_eq!(
-            failed.iter().map(|d| d.event.event).collect::<Vec<_>>(),
-            vec![HookEventType::RefreshFailed]
-        );
-        assert_eq!(failed[0].event.status.as_deref(), Some("timeout"));
 
         let crossing = detector.evaluate(
             &observation(
@@ -1354,8 +1380,37 @@ mod tests {
         );
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:280 disabled hooks produce no events
     #[test]
-    fn configuration_change_and_disappearing_lane_clear_baselines() {
+    fn disabled_hooks_produce_no_events() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(false, None);
+        let now = sample_now();
+
+        let _ = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(50.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        let dispatches = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(95.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert!(dispatches.is_empty());
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:291 configuration change clears baselines
+    #[test]
+    fn configuration_change_clears_baselines() {
         let mut detector = HookTransitionDetector::new();
         let cfg = default_config(true, None);
         let now = sample_now();
@@ -1382,6 +1437,54 @@ mod tests {
             now,
         );
         assert!(after_config_change.is_empty());
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:306 synthetic placeholder lane never fires
+    #[test]
+    fn synthetic_placeholder_lane_never_fires() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+
+        let _ = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(50.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+
+        let key = lane_key(QuotaWarningWindow::Session, None, None);
+        let dispatches = detector.evaluate(
+            &observation(
+                vec![lane(Some(100.0), key, None, vec![0.8], true)],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert!(dispatches.is_empty());
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:320 disappearing lane resets baseline
+    #[test]
+    fn disappearing_lane_resets_baseline() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+
+        let _ = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(50.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
 
         // Disappearing lane resets baseline.
         let _ = detector.evaluate(
@@ -1401,8 +1504,9 @@ mod tests {
         assert!(after_reappear.is_empty());
     }
 
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:335 accounts on same provider track independently
     #[test]
-    fn synthetic_placeholder_and_scoped_accounts_behave_independently() {
+    fn accounts_on_same_provider_track_independently() {
         let mut detector = HookTransitionDetector::new();
         let cfg = default_config(true, None);
         let now = sample_now();
@@ -1427,7 +1531,7 @@ mod tests {
             &observation(
                 vec![
                     lane(Some(85.0), first, None, vec![0.8], false),
-                    lane(Some(100.0), second, None, vec![0.8], true),
+                    lane(Some(55.0), second, None, vec![0.8], false),
                 ],
                 HookProviderStatus::Unknown,
                 None,
@@ -1437,6 +1541,88 @@ mod tests {
         );
         assert_eq!(dispatches.len(), 1);
         assert_eq!(dispatches[0].event.event, HookEventType::QuotaLow);
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:361 quota low respects explicit rule threshold over fallback
+    #[test]
+    fn quota_low_respects_explicit_rule_threshold_over_fallback() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(
+            true,
+            Some(vec![
+                HookRule::new(HookEventType::QuotaLow, "/bin/true").with_threshold(0.9),
+            ]),
+        );
+        let now = sample_now();
+        let key = lane_key(QuotaWarningWindow::Session, None, None);
+
+        let _ = detector.evaluate(
+            &observation(
+                vec![lane(Some(50.0), key.clone(), None, vec![0.8], false)],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+
+        let below = detector.evaluate(
+            &observation(
+                vec![lane(Some(85.0), key.clone(), None, vec![0.8], false)],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert!(below.is_empty());
+
+        let above = detector.evaluate(
+            &observation(
+                vec![lane(Some(95.0), key, None, vec![0.8], false)],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert_eq!(
+            above.iter().map(|d| d.event.event).collect::<Vec<_>>(),
+            vec![HookEventType::QuotaLow]
+        );
+    }
+
+    // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:383 quota low ignores rules scoped to another provider
+    #[test]
+    fn quota_low_ignores_rules_scoped_to_another_provider() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(
+            true,
+            Some(vec![
+                HookRule::new(HookEventType::QuotaLow, "/bin/true").with_provider("claude"),
+            ]),
+        );
+        let now = sample_now();
+
+        let _ = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(50.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        let dispatches = detector.evaluate(
+            &observation(
+                vec![default_lane(Some(95.0))],
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert!(dispatches.is_empty());
     }
 
     #[test]

@@ -618,6 +618,7 @@ pub fn parse_google_workspace_status(
 mod tests {
     use super::*;
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:8 parseStatuspageStatus parses indicator description and fractional timestamp
     #[test]
     fn parses_statuspage_status_with_fractional_timestamp() {
         let json = br#"{
@@ -630,6 +631,7 @@ mod tests {
         assert!(status.updated_at.is_some());
     }
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:45 parseStatuspageComponents nests children under groups
     #[test]
     fn parses_statuspage_components_into_grouped_summaries() {
         let json = br#"{
@@ -671,6 +673,7 @@ mod tests {
         assert_eq!(components[1].indicator, ProviderStatusIndicator::None);
     }
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:158 parseIncidentIOSummary groups Claude components and computes worst indicator
     #[test]
     fn parses_incident_io_summary_into_grouped_components() {
         let json = br#"{
@@ -769,6 +772,7 @@ mod tests {
         assert!(unaffected.description.is_none());
     }
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:23 parseStatuspageComponents maps and sorts leaf rows
     #[test]
     fn parse_statuspage_components_maps_and_sorts_leaf_rows() {
         let json = br#"{
@@ -795,11 +799,16 @@ mod tests {
         assert_eq!(components.last().unwrap().status, "degraded_performance");
     }
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:73 parseStatuspageComponents tolerates missing components
     #[test]
-    fn parse_statuspage_components_tolerates_missing_components_and_drops_blank_names() {
+    fn parse_statuspage_components_tolerates_missing_components() {
         let empty = parse_statuspage_components(b"{}").expect("tolerates missing components");
         assert!(empty.is_empty());
+    }
 
+    // upstream: Tests/CodexBarTests/StatuspageSummaryTests.swift:79 parseStatuspageComponents drops blank names
+    #[test]
+    fn parse_statuspage_components_drops_blank_names() {
         let json = br#"{
           "components": [
             {"id": "blank", "name": "   ", "status": "operational", "position": 1},
@@ -811,8 +820,9 @@ mod tests {
         assert_eq!(names, vec!["API"]);
     }
 
+    // upstream: Tests/CodexBarTests/GoogleWorkspaceStatusTests.swift:10 selectsWorstActiveIncident
     #[test]
-    fn parse_workspace_status_selects_worst_incident_and_ignores_resolved_incidents() {
+    fn selects_worst_active_incident() {
         let product_id = "npdyhgECDJ6tB66MxXyo";
         let worst_json = br#"[
           {
@@ -847,7 +857,12 @@ mod tests {
         assert_eq!(status.indicator, ProviderStatusIndicator::Critical);
         assert_eq!(status.description.as_deref(), Some("Gemini API error."));
         assert!(status.updated_at.is_some());
+    }
 
+    // upstream: Tests/CodexBarTests/GoogleWorkspaceStatusTests.swift:49 ignoresResolvedIncidents
+    #[test]
+    fn ignores_resolved_incidents() {
+        let product_id = "npdyhgECDJ6tB66MxXyo";
         let resolved_json = br#"[
           {
             "id": "inc-3",

@@ -293,6 +293,7 @@ mod tests {
 
     use super::*;
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:6 replacement cancels and orders predecessor while advancing current generation
     #[tokio::test]
     async fn replacement_cancels_and_orders_predecessor_while_advancing_current_generation() {
         let coordinator = ProviderRefreshCoordinator::<String>::new();
@@ -312,6 +313,7 @@ mod tests {
         first_task.await.expect("first task finishes");
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:27 invalidation cancels work without dropping waiter completion
     #[tokio::test]
     async fn invalidation_cancels_work_without_dropping_waiter_completion() {
         let coordinator = Arc::new(ProviderRefreshCoordinator::<String>::new());
@@ -343,6 +345,7 @@ mod tests {
         );
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:53 coalescing returns latest request independently per key
     #[test]
     fn coalescing_returns_latest_request_independently_per_key() {
         let coordinator = ProviderRefreshCoordinator::<String>::new();
@@ -362,6 +365,7 @@ mod tests {
         assert!(!Arc::ptr_eq(&coalesced_codex, &first_codex.state));
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:65 canceling one of two waiters keeps shared task alive
     #[tokio::test]
     async fn canceling_one_of_two_waiters_keeps_shared_task_alive() {
         let coordinator = Arc::new(ProviderRefreshCoordinator::<String>::new());
@@ -392,6 +396,7 @@ mod tests {
         assert_eq!(shared.await.expect("shared waiter"), WaitResult::Completed);
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:93 wait result exposes retry without leaking task state
     #[tokio::test]
     async fn wait_result_exposes_retry_without_leaking_task_state() {
         let coordinator = ProviderRefreshCoordinator::<String>::new();
@@ -402,6 +407,7 @@ mod tests {
         assert_eq!(result, WaitResult::RetryRequired);
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:106 completed request is not offered for coalescing before deferred removal
     #[test]
     fn completed_request_is_not_offered_for_coalescing() {
         let coordinator = ProviderRefreshCoordinator::<String>::new();
@@ -411,6 +417,7 @@ mod tests {
         assert!(coordinator.coalescing_state(&"codex".to_string()).is_none());
     }
 
+    // upstream: Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift:118 completion removal and activity counts are key scoped
     #[test]
     fn completion_removal_and_activity_counts_are_key_scoped() {
         let coordinator = ProviderRefreshCoordinator::<String>::new();

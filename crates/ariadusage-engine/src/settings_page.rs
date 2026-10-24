@@ -64,7 +64,7 @@ impl Default for AppPreferences {
             hide_personal_info: false,
             notifications_enabled: true,
             source_mode: "auto".to_string(),
-            menu_bar_icon_style: "bars".to_string(),
+            menu_bar_icon_style: "critters".to_string(),
             menu_bar_show_used: false,
             menu_bar_merge_icons: false,
             menu_bar_color_by_provider: false,

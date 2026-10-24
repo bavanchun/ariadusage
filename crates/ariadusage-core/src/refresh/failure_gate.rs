@@ -36,3 +36,32 @@ impl FailureGate {
         !(had_prior && self.streak == 1)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // upstream: Tests/CodexBarTests/ClaudeResilienceTests.swift:175 suppresses single flake when prior data exists
+    #[test]
+    fn suppresses_single_flake_when_prior_data_exists() {
+        let mut gate = FailureGate::new();
+        assert!(!gate.should_surface(true));
+        assert!(gate.should_surface(true));
+    }
+
+    // upstream: Tests/CodexBarTests/ClaudeResilienceTests.swift:184 surfaces failure without prior data
+    #[test]
+    fn surfaces_failure_without_prior_data() {
+        let mut gate = FailureGate::new();
+        assert!(gate.should_surface(false));
+    }
+
+    // upstream: Tests/CodexBarTests/ClaudeResilienceTests.swift:191 resets after success
+    #[test]
+    fn resets_after_success() {
+        let mut gate = FailureGate::new();
+        let _ = gate.should_surface(true);
+        gate.record_success();
+        assert!(!gate.should_surface(true));
+    }
+}
