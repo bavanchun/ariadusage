@@ -52,7 +52,7 @@ impl CreditEvent {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexCreditLimitSnapshot {
     pub title: String,
@@ -68,6 +68,38 @@ pub struct CodexCreditLimitSnapshot {
     pub resets_at: Option<Timestamp>,
     #[serde(with = "ariadusage_protocol::time::rfc3339")]
     pub updated_at: Timestamp,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCodexCreditLimitSnapshot {
+    title: String,
+    used: f64,
+    limit: f64,
+    #[serde(default)]
+    _remaining: Option<f64>,
+    remaining_percent: f64,
+    #[serde(default, with = "ariadusage_protocol::time::rfc3339_opt")]
+    resets_at: Option<Timestamp>,
+    #[serde(with = "ariadusage_protocol::time::rfc3339")]
+    updated_at: Timestamp,
+}
+
+impl<'de> Deserialize<'de> for CodexCreditLimitSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = RawCodexCreditLimitSnapshot::deserialize(deserializer)?;
+        Ok(Self::new(
+            raw.title,
+            raw.used,
+            raw.limit,
+            raw.remaining_percent,
+            raw.resets_at,
+            raw.updated_at,
+        ))
+    }
 }
 
 impl CodexCreditLimitSnapshot {
