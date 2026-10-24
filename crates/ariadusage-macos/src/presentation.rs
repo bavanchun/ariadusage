@@ -6,6 +6,8 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+HighestUsage.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeMonthlySpendWindow.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -15,6 +17,7 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Cursor/CursorProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Doubao/DoubaoProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Gemini/GeminiProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Kimi/KimiProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/LiteLLM/LiteLLMProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Mistral/MistralProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Perplexity/PerplexityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -231,62 +234,230 @@ pub fn primary_provider_for_unified_icon_with_overview<'a>(
         .find(|p| p.id.as_str() == resolved_id)
 }
 
-/// Picks the candidate provider with the highest non-exhausted usage (`remaining_percent > 0`),
-/// matching `UsageStore.providerWithHighestUsage(candidateProviders:)`.
+/// Picks the candidate provider with the highest non-excluded usage, matching
+/// `UsageStore.providerWithHighestUsage(candidateProviders:now:)` (`UsageStore+HighestUsage.swift:8-59`).
 pub fn provider_with_highest_usage<'a>(
     candidates: &[&'a ProviderSnapshot],
     now: Option<Timestamp>,
 ) -> Option<&'a ProviderSnapshot> {
+    provider_with_highest_usage_with_options(
+        candidates,
+        MenuBarMetricPreference::Automatic,
+        false,
+        now,
+    )
+}
+
+/// Picks the candidate provider with the highest non-excluded usage with explicit
+/// metric preference and Antigravity exhausted-quota priority options
+/// (`UsageStore.providerWithHighestUsage`, `UsageStore+HighestUsage.swift:8-84`).
+pub fn provider_with_highest_usage_with_options<'a>(
+    candidates: &[&'a ProviderSnapshot],
+    preference: MenuBarMetricPreference,
+    antigravity_prioritize_exhausted_quotas: bool,
+    now: Option<Timestamp>,
+) -> Option<&'a ProviderSnapshot> {
     let mut best: Option<(&'a ProviderSnapshot, Selection)> = None;
-    for provider in candidates {
-        if provider.id.as_str() == "antigravity"
-            && has_antigravity_quota_summary(provider)
-            && !antigravity_quota_summary_families_are_all_blocked(provider)
-        {
-            // When Antigravity has quota summary rows and at least one family is still usable,
-            // do not let a single exhausted family claim 100% blocked status over all families.
-            if let Some(w) = resolve_menu_bar_metric_window(
-                MenuBarMetricPreference::Automatic,
-                provider,
-                false,
-                false,
-                now,
-            ) && remaining_percent(&w) > 0.0
-                && let Some(sel) = make_selection(
-                    Candidate {
-                        window: w,
-                        slot: None,
-                    },
-                    provider.id.as_str(),
-                    now,
-                )
-                && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
-            {
-                best = Some((*provider, sel));
-            }
+    for &provider in candidates {
+        if !provider.enabled || !provider_has_snapshot_data(provider) {
             continue;
         }
-        if let Some(w) = resolve_menu_bar_metric_window(
-            MenuBarMetricPreference::Automatic,
+        let id = provider.id.as_str();
+        let automatic = preference == MenuBarMetricPreference::Automatic;
+        let selection = if id == "codex" && automatic {
+            codex_automatic_menu_bar_selection(provider, now)
+        } else {
+            let window = if id == "antigravity"
+                && automatic
+                && !antigravity_prioritize_exhausted_quotas
+                && has_antigravity_quota_summary(provider)
+            {
+                most_constrained_antigravity_quota_summary_window(provider)
+            } else {
+                resolve_menu_bar_metric_window(
+                    preference,
+                    provider,
+                    false,
+                    antigravity_prioritize_exhausted_quotas,
+                    now,
+                )
+            };
+            window.and_then(|w| {
+                let slot = if automatic {
+                    candidates_from_windows(std::slice::from_ref(&w), provider)
+                        .into_iter()
+                        .next()
+                        .and_then(|c| c.slot)
+                } else {
+                    None
+                };
+                make_selection(Candidate { window: w, slot }, id, now)
+            })
+        };
+        let Some(selection) = selection else {
+            continue;
+        };
+        if should_exclude_from_highest_usage(
             provider,
-            false,
-            true,
+            preference,
+            antigravity_prioritize_exhausted_quotas,
+            selection.window.used_percent,
             now,
-        ) && remaining_percent(&w) > 0.0
-            && let Some(sel) = make_selection(
-                Candidate {
-                    window: w,
-                    slot: None,
-                },
-                provider.id.as_str(),
-                now,
-            )
-            && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
-        {
-            best = Some((*provider, sel));
+        ) {
+            continue;
+        }
+        let priority = if automatic {
+            selection
+        } else {
+            Selection {
+                window: selection.window,
+                eta_seconds: None,
+            }
+        };
+        if best.as_ref().is_none_or(|(_, b)| precedes(b, &priority)) {
+            best = Some((provider, priority));
         }
     }
     best.map(|(p, _)| p)
+}
+
+/// Returns whether `provider` should be excluded from highest-usage unified icon selection
+/// (`UsageStore.shouldExcludeFromHighestUsage`, `UsageStore+HighestUsage.swift:86-161`).
+pub fn should_exclude_from_highest_usage(
+    provider: &ProviderSnapshot,
+    effective_preference: MenuBarMetricPreference,
+    antigravity_prioritize_exhausted_quotas: bool,
+    metric_percent: f64,
+    now: Option<Timestamp>,
+) -> bool {
+    if metric_percent < 100.0 {
+        return false;
+    }
+    let id = provider.id.as_str();
+    if matches!(id, "codex" | "claude")
+        && effective_preference == MenuBarMetricPreference::PrimaryAndSecondary
+    {
+        if id == "codex" && codex_has_binding_weekly_cap(provider, now) {
+            return true;
+        }
+        if id == "claude" && claude_spend_limit_window(provider).is_some() {
+            return true;
+        }
+        let percents: Vec<f64> = [
+            measured_window(provider.windows.primary.as_ref()),
+            measured_window(provider.windows.secondary.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|w| w.used_percent)
+        .collect();
+        if percents.is_empty() {
+            return true;
+        }
+        return percents.iter().all(|&p| p >= 100.0);
+    }
+    if id == "antigravity" && effective_preference == MenuBarMetricPreference::Automatic {
+        if antigravity_prioritize_exhausted_quotas {
+            return antigravity_quota_summary_families_are_all_blocked(provider);
+        }
+        let windows = antigravity_rendered_quota_summary_windows(provider);
+        if windows.is_empty() {
+            return true;
+        }
+        return windows.iter().all(|w| w.used_percent >= 100.0);
+    }
+    if id == "copilot"
+        && effective_preference == MenuBarMetricPreference::Automatic
+        && let (Some(primary), Some(secondary)) = (
+            measured_window(provider.windows.primary.as_ref()),
+            measured_window(provider.windows.secondary.as_ref()),
+        )
+    {
+        return primary.used_percent >= 100.0 && secondary.used_percent >= 100.0;
+    }
+    if id == "cursor" && effective_preference == MenuBarMetricPreference::Automatic {
+        let percents: Vec<f64> = [
+            measured_window(provider.windows.primary.as_ref()),
+            measured_window(provider.windows.secondary.as_ref()),
+            measured_window(provider.windows.tertiary.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|w| w.used_percent)
+        .collect();
+        if percents.is_empty() {
+            return true;
+        }
+        return percents.iter().all(|&p| p >= 100.0);
+    }
+    if effective_preference == MenuBarMetricPreference::Automatic
+        && automatic_selection_prioritizes_exhausted_window(id)
+    {
+        let percents: Vec<f64> = [
+            measured_window(provider.windows.primary.as_ref()),
+            measured_window(provider.windows.secondary.as_ref()),
+            measured_window(provider.windows.tertiary.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|w| w.used_percent)
+        .collect();
+        if percents.is_empty() {
+            return true;
+        }
+        return percents.iter().all(|&p| p >= 100.0);
+    }
+    true
+}
+
+/// Whether automatic selection prioritizes an exhausted window over non-exhausted windows
+/// (`MenuBarMetricWindowResolver.automaticSelectionPrioritizesExhaustedWindow`,
+/// `MenuBarMetricWindowResolver.swift:60-63`).
+pub fn automatic_selection_prioritizes_exhausted_window(provider_id: &str) -> bool {
+    !matches!(
+        provider_id,
+        "antigravity"
+            | "claude"
+            | "codex"
+            | "copilot"
+            | "cursor"
+            | "minimax"
+            | "perplexity"
+            | "warp"
+            | "zai"
+    )
+}
+
+/// Resolves the menu-bar icon credits fallback for `provider`
+/// (`StatusItemController.menuBarCreditsRemainingForIcon` and `CodexConsumerProjection.menuBarFallback`,
+/// `StatusItemController+Animation.swift:565-582`, `CodexConsumerProjection.swift:646-657`).
+///
+/// Only Codex projects credits into the menu-bar icon fallback, and only when `credits.remaining > 0`
+/// and either all rate windows are absent or at least one lane is exhausted (`remaining_percent <= 0`)
+/// with a reset timestamp still in the future (or absent).
+pub fn menu_bar_credits_remaining_for_icon(
+    provider: &ProviderSnapshot,
+    now: Option<Timestamp>,
+) -> Option<f64> {
+    if provider.id.as_str() != "codex" {
+        return None;
+    }
+    let credits = provider.credits.as_ref().and_then(displayable_value)?;
+    if credits.balance_read_succeeded == Some(false) || credits.credits_available == Some(false) {
+        return None;
+    }
+    if !credits.remaining.is_finite() || credits.remaining <= 0.0 {
+        return None;
+    }
+    let eval_now = now.or(provider.updated_at);
+    let lanes = codex_rate_windows_by_lane(provider);
+    let has_no_rate_windows = lanes.is_empty();
+    let has_exhausted_lane = lanes.values().any(|(w, _)| {
+        remaining_percent(w) <= 0.0
+            && w.resets_at
+                .is_none_or(|reset_at| eval_now.is_none_or(|n| reset_at > n))
+    });
+    (has_exhausted_lane || has_no_rate_windows).then_some(credits.remaining)
 }
 
 /// Resolves the icon input for one provider.
@@ -327,25 +498,7 @@ pub fn icon_input_with_override(
 
     let policy =
         quota_layout_policy_for_provider(provider, secondary_override_window_id, prefs.now);
-
-    let (raw_primary, raw_secondary) =
-        resolved_icon_windows(provider, secondary_override_window_id, prefs.now);
-    let credits_fallback_active = (raw_primary.is_none() && raw_secondary.is_none())
-        || raw_primary
-            .as_ref()
-            .is_some_and(|w| remaining_percent(w) <= 0.0)
-        || raw_secondary
-            .as_ref()
-            .is_some_and(|w| remaining_percent(w) <= 0.0);
-    let credits_remaining = if credits_fallback_active {
-        provider
-            .credits
-            .as_ref()
-            .and_then(displayable_value)
-            .map(|c| c.remaining)
-    } else {
-        None
-    };
+    let credits_remaining = menu_bar_credits_remaining_for_icon(provider, prefs.now);
 
     IconInput {
         primary,
@@ -521,6 +674,151 @@ fn classify_codex_lane(window: &RateWindow, fallback: CodexLaneKind) -> CodexLan
     }
 }
 
+fn codex_rate_windows_by_lane(
+    provider: &ProviderSnapshot,
+) -> HashMap<CodexLaneKind, (RateWindow, Option<UsageLane>)> {
+    let mut slotted: Vec<(CodexLaneKind, RateWindow, Option<UsageLane>)> = Vec::with_capacity(4);
+    if let Some(w) = measured_window(provider.windows.primary.as_ref()).cloned() {
+        let kind = classify_codex_lane(&w, CodexLaneKind::Session);
+        slotted.push((kind, w, Some(UsageLane::Primary)));
+    }
+    if let Some(w) = measured_window(provider.windows.secondary.as_ref()).cloned() {
+        let kind = classify_codex_lane(&w, CodexLaneKind::Weekly);
+        slotted.push((kind, w, Some(UsageLane::Secondary)));
+    }
+    if let Some(w) = measured_window(provider.windows.tertiary.as_ref()).cloned() {
+        let kind = classify_codex_lane(&w, CodexLaneKind::Monthly);
+        slotted.push((kind, w, Some(UsageLane::Tertiary)));
+    }
+    for named in &provider.windows.extra {
+        if let Some(w) = displayable_value(&named.window).cloned() {
+            let kind = classify_codex_lane(&w, CodexLaneKind::Monthly);
+            slotted.push((kind, w, None));
+        }
+    }
+
+    let mut windows_by_lane: HashMap<CodexLaneKind, (RateWindow, Option<UsageLane>)> =
+        HashMap::with_capacity(3);
+    for (lane, window, slot) in slotted {
+        windows_by_lane.insert(lane, (window, slot));
+    }
+
+    if windows_by_lane.is_empty()
+        && let Some(monthly) = codex_monthly_credit_limit_window(provider)
+    {
+        windows_by_lane.insert(CodexLaneKind::Monthly, (monthly, None));
+    }
+    windows_by_lane
+}
+
+fn codex_monthly_credit_limit_window(provider: &ProviderSnapshot) -> Option<RateWindow> {
+    if let Some(limit) = provider
+        .credits
+        .as_ref()
+        .and_then(displayable_value)
+        .and_then(|c| c.credit_limit.as_ref())
+        && limit.total.is_finite()
+        && limit.total > 0.0
+        && limit.used.is_finite()
+        && limit.used >= 0.0
+    {
+        let mut w = RateWindow::new((limit.used / limit.total) * 100.0);
+        w.window_minutes = Some(MONTHLY_SENTINEL_MINUTES);
+        w.resets_at = limit.resets_at;
+        w.reset_description = limit.reset_description.clone();
+        return Some(w);
+    }
+    let cost = provider.cost.as_ref().and_then(displayable_value)?;
+    let limit = cost.limit?;
+    if !cost.currency_code.eq_ignore_ascii_case("USD")
+        || !limit.is_finite()
+        || limit <= 0.0
+        || !cost.used.is_finite()
+        || cost.used < 0.0
+    {
+        return None;
+    }
+    let mut w = RateWindow::new((cost.used / limit) * 100.0);
+    w.window_minutes = Some(MONTHLY_SENTINEL_MINUTES);
+    w.resets_at = cost.resets_at;
+    w.reset_description = cost.period.clone();
+    Some(w)
+}
+
+/// Whether Codex's weekly lane is exhausted and its reset has not yet passed
+/// (`CodexConsumerProjection.hasBindingWeeklyCap`, `CodexConsumerProjection.swift:417-423, 558-561`).
+pub fn codex_has_binding_weekly_cap(provider: &ProviderSnapshot, now: Option<Timestamp>) -> bool {
+    let eval_now = now.or(provider.updated_at);
+    let lanes = codex_rate_windows_by_lane(provider);
+    lanes.get(&CodexLaneKind::Weekly).is_some_and(|(w, _)| {
+        remaining_percent(w) <= 0.0
+            && w.resets_at
+                .is_none_or(|reset_at| eval_now.is_none_or(|n| reset_at > n))
+    })
+}
+
+fn codex_automatic_menu_bar_selection(
+    provider: &ProviderSnapshot,
+    now: Option<Timestamp>,
+) -> Option<Selection> {
+    let eval_now = now.or(provider.updated_at);
+    let lanes = codex_rate_windows_by_lane(provider);
+    let is_expired =
+        |w: &RateWindow| -> bool { eval_now.is_some_and(|n| w.resets_at.is_some_and(|r| r <= n)) };
+    let weekly_caps_session = lanes
+        .get(&CodexLaneKind::Weekly)
+        .is_some_and(|(w, _)| remaining_percent(w) <= 0.0 && !is_expired(w));
+    let weekly_reset = lanes
+        .get(&CodexLaneKind::Weekly)
+        .and_then(|(w, _)| w.resets_at);
+
+    let mut visible: Vec<(CodexLaneKind, Candidate)> = Vec::with_capacity(3);
+    for kind in [
+        CodexLaneKind::Session,
+        CodexLaneKind::Weekly,
+        CodexLaneKind::Monthly,
+    ] {
+        let Some((mut window, slot)) = lanes.get(&kind).cloned() else {
+            continue;
+        };
+        if kind == CodexLaneKind::Session && weekly_caps_session {
+            window.used_percent = window.used_percent.max(100.0);
+            if let Some(wr) = weekly_reset {
+                window.resets_at = Some(match window.resets_at {
+                    Some(sr) => sr.max(wr),
+                    None => wr,
+                });
+            }
+        }
+        if remaining_percent(&window) <= 0.0 && is_expired(&window) {
+            continue;
+        }
+        visible.push((kind, Candidate { window, slot }));
+    }
+
+    let has_longer_than_weekly = visible
+        .iter()
+        .any(|(_, c)| c.window.window_minutes.is_some_and(|m| m > 10080));
+    let eligible: Vec<Candidate> = if has_longer_than_weekly
+        && let Some((_, weekly)) = visible.iter().find(|(k, _)| *k == CodexLaneKind::Weekly)
+    {
+        vec![weekly.clone()]
+    } else {
+        visible.into_iter().map(|(_, c)| c).collect()
+    };
+
+    let mut best: Option<Selection> = None;
+    for candidate in eligible {
+        let Some(sel) = make_selection(candidate, "codex", eval_now) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|b| precedes(b, &sel)) {
+            best = Some(sel);
+        }
+    }
+    best
+}
+
 fn codex_icon_windows(
     provider: &ProviderSnapshot,
     now: Option<Timestamp>,
@@ -587,6 +885,21 @@ fn claude_icon_windows(provider: &ProviderSnapshot) -> (Option<RateWindow>, Opti
         return (Some(fallback), None);
     }
     (raw_primary, raw_secondary)
+}
+
+/// Returns the Claude monthly spend-limit window when the account only exposes an
+/// enterprise/extra-usage spend limit and has no real session/weekly/tertiary or
+/// scoped-weekly quota lanes (`MenuBarMetricWindowResolver.claudeSpendLimitWindow`,
+/// `MenuBarMetricWindowResolver.swift:170-176`).
+pub fn claude_spend_limit_window(provider: &ProviderSnapshot) -> Option<RateWindow> {
+    if measured_window(provider.windows.primary.as_ref()).is_some()
+        || measured_window(provider.windows.secondary.as_ref()).is_some()
+        || measured_window(provider.windows.tertiary.as_ref()).is_some()
+        || claude_scoped_weekly_window(provider).is_some()
+    {
+        return None;
+    }
+    claude_monthly_spend_window(provider)
 }
 
 /// Resolves the most constrained `claude-weekly-scoped-*` extra window
@@ -717,6 +1030,33 @@ fn antigravity_icon_windows(
         most_constrained_antigravity(&windows, 300),
         most_constrained_antigravity(&windows, 10080),
     )
+}
+
+fn antigravity_rendered_quota_summary_windows(provider: &ProviderSnapshot) -> Vec<RateWindow> {
+    let (primary, secondary) = antigravity_icon_windows(provider);
+    [primary, secondary].into_iter().flatten().collect()
+}
+
+fn most_constrained_antigravity_quota_summary_window(
+    provider: &ProviderSnapshot,
+) -> Option<RateWindow> {
+    let windows = antigravity_rendered_quota_summary_windows(provider);
+    if windows.is_empty() {
+        return None;
+    }
+    let usable: Vec<&RateWindow> = windows.iter().filter(|w| w.used_percent < 100.0).collect();
+    let pool: Vec<&RateWindow> = if usable.is_empty() {
+        windows.iter().collect()
+    } else {
+        usable
+    };
+    pool.into_iter()
+        .max_by(|a, b| {
+            a.used_percent
+                .partial_cmp(&b.used_percent)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .cloned()
 }
 
 fn most_constrained_antigravity(
@@ -864,6 +1204,17 @@ pub fn resolve_menu_bar_metric_window(
         .and_then(displayable_value)
         .cloned();
 
+    // `CursorProviderDescriptor.menuBarMetrics.tertiaryRequiresWindow` falls back to `.automatic`
+    // when `.tertiary` is requested but the API lane (`tertiary`) is absent.
+    let preference = if id == "cursor"
+        && preference == MenuBarMetricPreference::Tertiary
+        && tertiary.is_none()
+    {
+        MenuBarMetricPreference::Automatic
+    } else {
+        preference
+    };
+
     // 1. Provider-specific `menuBarWindow` overrides
     match id {
         "claude" => {
@@ -956,6 +1307,12 @@ pub fn resolve_menu_bar_metric_window(
                 .or(secondary)
                 .or(tertiary);
         }
+        "kimi" if preference == MenuBarMetricPreference::Automatic => {
+            let monthly = extra_window_by_id(provider, "kimi-monthly");
+            return exhausted_of(&[monthly, primary.clone(), secondary.clone()])
+                .or(secondary)
+                .or(primary);
+        }
         "litellm" if preference == MenuBarMetricPreference::Automatic => {
             return exhausted_of(&[primary.clone(), secondary.clone()])
                 .or(secondary)
@@ -986,7 +1343,9 @@ pub fn resolve_menu_bar_metric_window(
         }
         MenuBarMetricPreference::PrimaryAndSecondary => most_constrained_of(&[primary, secondary]),
         MenuBarMetricPreference::Average => {
-            if supports_average && let (Some(p), Some(s)) = (&primary, &secondary) {
+            if (supports_average || id == "gemini")
+                && let (Some(p), Some(s)) = (&primary, &secondary)
+            {
                 Some(RateWindow::new((p.used_percent + s.used_percent) / 2.0))
             } else {
                 primary.or(secondary).or(tertiary)
