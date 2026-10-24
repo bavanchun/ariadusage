@@ -216,7 +216,7 @@ These come from CodexBar and are pinned by ported tests:
 - Cancellation is not a failure and never triggers the next strategy.
 - Keep last-good data through transient failures, with its original timestamp. The first consecutive failure is hidden when prior data exists; a surfaced non-preservable error, such as an authentication failure, drops it; account changes drop it and reset the gate.
 - Identity is siloed: one provider's account or plan never appears under another.
-- Hooks and notifications are edge-triggered; the first sample only sets a baseline.
+- Hooks and notifications are edge-triggered (dispatch lands with the notifier slice); the first sample only sets a baseline.
 
 ### 6.5 Configuration and paths
 

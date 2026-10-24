@@ -23,6 +23,7 @@ use crate::providers::claude::{
     CLAUDE_OAUTH_TOKEN_ENV_KEY, ClaudeCredentialRoute, ClaudeCredentialRouting,
     ClaudeOAuthStrategyConfig, ClaudeProviderPlan,
 };
+use crate::providers::codex::{CodexProviderPlan, CodexStrategyConfig};
 
 /// Per-refresh inputs resolved from configuration, secret store, and runtime state when
 /// building a provider's execution plan and `FetchContext`.
@@ -141,18 +142,17 @@ impl ProviderPlanFactory for ClaudeProviderPlanFactory {
 
         let configured_cookie_source = provider_config
             .and_then(|c| c.cookie_source)
-            .or(self.base_config.cookie_source)
-            .unwrap_or(CookieSource::Auto);
+            .or(self.base_config.cookie_source);
         let effective_cookie_source = match &route {
             ClaudeCredentialRoute::Oauth { .. } | ClaudeCredentialRoute::AdminApiKey(_) => {
-                CookieSource::Off
+                Some(CookieSource::Off)
             }
             ClaudeCredentialRoute::WebCookie { .. } | ClaudeCredentialRoute::None => {
                 configured_cookie_source
             }
         };
 
-        cfg.cookie_source = Some(effective_cookie_source);
+        cfg.cookie_source = effective_cookie_source;
         cfg.token_account_token = selected_token;
         cfg.manual_cookie_header = match route {
             ClaudeCredentialRoute::WebCookie { header } => Some(header),
@@ -162,6 +162,54 @@ impl ProviderPlanFactory for ClaudeProviderPlanFactory {
             cfg.web_organization_id = account.sanitized_organization_id();
         }
         Arc::new(ClaudeProviderPlan::new(cfg))
+    }
+}
+
+/// Factory that builds a `CodexProviderPlan` from a shared `CodexStrategyConfig` template,
+/// preserving stateful launch gates and process registries across refreshes while applying
+/// per-refresh environment and workspace configuration.
+pub struct CodexProviderPlanFactory {
+    base_config: CodexStrategyConfig,
+}
+
+impl CodexProviderPlanFactory {
+    pub fn new(base_config: CodexStrategyConfig) -> Self {
+        Self { base_config }
+    }
+}
+
+impl ProviderPlanFactory for CodexProviderPlanFactory {
+    fn build_plan(
+        &self,
+        provider_config: Option<&ProviderConfig>,
+        _selected_account: Option<&TokenAccountMeta>,
+        inputs: &ProviderPlanInputs,
+    ) -> Arc<dyn ProviderPlan> {
+        let mut cfg = self.base_config.clone();
+        for (k, v) in &inputs.base_environment {
+            cfg.environment
+                .insert(k.clone(), v.expose_secret().to_string());
+        }
+        if let Some(ws) = provider_config.and_then(ProviderConfig::sanitized_workspace_id) {
+            cfg.environment
+                .insert("CODEX_WORKSPACE_ID".to_string(), ws.clone());
+            cfg.managed_workspace_account_id = Some(ws);
+        } else if let Some(ws) = cfg
+            .environment
+            .get("CODEX_WORKSPACE_ID")
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned)
+        {
+            cfg.managed_workspace_account_id = Some(ws);
+        }
+        if let Some(home) = cfg.environment.get("HOME").map(PathBuf::from) {
+            cfg.home_directory = home.clone();
+            cfg.cli_fetcher.home_dir = Some(home);
+        }
+        cfg.cli_fetcher.environment = cfg.environment.clone();
+        Arc::new(CodexProviderPlan::new(cfg))
     }
 }
 
@@ -194,12 +242,15 @@ impl std::fmt::Debug for ResolvedProviderSpec {
 
 /// Registry of merged first-party provider descriptors and their runtime execution plans.
 ///
-/// Wires `ClaudeProviderPlan` out of the box and allows `Codex` (#49), `Antigravity` (#52),
+/// Wires `ClaudeProviderPlan` and `CodexProviderPlan` out of the box and allows `Antigravity` (#52)
 /// or test doubles to register their `ProviderPlan` or `ProviderPlanFactory`.
 #[derive(Clone)]
 pub struct ProviderRegistry {
     descriptors: &'static [ProviderDescriptor],
     factories: HashMap<ProviderId, Arc<dyn ProviderPlanFactory>>,
+    working_directory: PathBuf,
+    home_directory: PathBuf,
+    explicit_directories: bool,
 }
 
 impl Default for ProviderRegistry {
@@ -211,8 +262,12 @@ impl Default for ProviderRegistry {
         let home_dir = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| working_dir.clone());
-        let claude_config = ClaudeOAuthStrategyConfig::new(net, working_dir, home_dir);
-        Self::with_claude_config(claude_config)
+        let claude_config =
+            ClaudeOAuthStrategyConfig::new(Arc::clone(&net), working_dir.clone(), home_dir.clone());
+        let codex_config = CodexStrategyConfig::new(net, BTreeMap::new(), home_dir, working_dir);
+        let mut registry = Self::with_claude_and_codex_config(claude_config, codex_config);
+        registry.explicit_directories = false;
+        registry
     }
 }
 
@@ -220,7 +275,10 @@ impl ProviderRegistry {
     /// Creates a registry with the default descriptors and a `ClaudeProviderPlanFactory`
     /// backed by `claude_config`.
     pub fn with_claude_config(claude_config: ClaudeOAuthStrategyConfig) -> Self {
-        let mut registry = Self::empty();
+        let mut registry = Self::empty().with_directories(
+            claude_config.working_directory.clone(),
+            claude_config.home_directory.clone(),
+        );
         let claude_id = ProviderId::new("claude").expect("valid provider id");
         registry.register_factory(
             claude_id,
@@ -229,12 +287,46 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Creates a registry with the default descriptors and both `ClaudeProviderPlanFactory`
+    /// and `CodexProviderPlanFactory` registered.
+    pub fn with_claude_and_codex_config(
+        claude_config: ClaudeOAuthStrategyConfig,
+        codex_config: CodexStrategyConfig,
+    ) -> Self {
+        let mut registry = Self::with_claude_config(claude_config);
+        let codex_id = ProviderId::new("codex").expect("valid provider id");
+        registry.register_factory(
+            codex_id,
+            Arc::new(CodexProviderPlanFactory::new(codex_config)),
+        );
+        registry
+    }
+
     /// Creates a registry containing all first-party descriptors and no registered plan factories.
     pub fn empty() -> Self {
+        let working_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
+        let home_directory = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| working_directory.clone());
         Self {
             descriptors: first_party_order(),
             factories: HashMap::new(),
+            working_directory,
+            home_directory,
+            explicit_directories: false,
         }
+    }
+
+    /// Overrides the working and home directories used when fingerprinting ambient provider credentials.
+    pub fn with_directories(
+        mut self,
+        working_directory: impl Into<PathBuf>,
+        home_directory: impl Into<PathBuf>,
+    ) -> Self {
+        self.working_directory = working_directory.into();
+        self.home_directory = home_directory.into();
+        self.explicit_directories = true;
+        self
     }
 
     /// Registers a static `ProviderPlan` for `id` (used by provider modules or tests).
@@ -458,6 +550,158 @@ impl ProviderRegistry {
         ProviderEnvironmentResolver::resolve(&base, provider_config, None, &env_descriptor)
     }
 
+    /// Computes the account/credential discriminator for `id` from `provider_config`, `environment`,
+    /// and `inputs`.
+    ///
+    /// Used both before and after a provider fetch so credential swaps before or during a fetch
+    /// retire the prior account's snapshot, reset-backfill state, and failure gate.
+    pub fn compute_account_key(
+        &self,
+        id: &ProviderId,
+        provider_config: Option<&ProviderConfig>,
+        selected_account: Option<&TokenAccountMeta>,
+        environment: &BTreeMap<String, SecretString>,
+        inputs: &ProviderPlanInputs,
+    ) -> Option<String> {
+        if let Some(acct) = selected_account {
+            if let Some(tok) = &inputs.selected_account_token {
+                let digest = &ariadusage_core::digest::sha256_hex(
+                    "ariadusage:account-key:v1",
+                    &[tok.expose_secret().as_bytes()],
+                )[..12];
+                return Some(format!("token-account:{}:{digest}", acct.id));
+            }
+            return Some(format!("token-account:{}", acct.id));
+        }
+
+        let mut parts = Vec::new();
+        if let Some(ws) = provider_config.and_then(ProviderConfig::sanitized_workspace_id) {
+            parts.push(format!("workspace:{ws}"));
+        }
+        if let Some(api_key) = &inputs.api_key {
+            let digest = &ariadusage_core::digest::sha256_hex(
+                "ariadusage:account-key:v1",
+                &[api_key.expose_secret().as_bytes()],
+            )[..12];
+            parts.push(format!("api-key:{digest}"));
+        }
+        if let Some(cookie) = &inputs.manual_cookie_header {
+            let digest = &ariadusage_core::digest::sha256_hex(
+                "ariadusage:account-key:v1",
+                &[cookie.expose_secret().as_bytes()],
+            )[..12];
+            parts.push(format!("cookie:{digest}"));
+        }
+        for env_key in [
+            CLAUDE_OAUTH_TOKEN_ENV_KEY,
+            "ANTHROPIC_ADMIN_API_KEY",
+            "CLAUDE_ADMIN_API_KEY",
+            "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS",
+        ] {
+            if let Some(val) = environment
+                .get(env_key)
+                .map(SecretString::expose_secret)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let digest = &ariadusage_core::digest::sha256_hex(
+                    "ariadusage:account-key:v1",
+                    &[val.as_bytes()],
+                )[..12];
+                parts.push(format!("env:{env_key}:{digest}"));
+            }
+        }
+
+        if id.as_str() == "claude"
+            && (self.explicit_directories
+                || environment.contains_key("CLAUDE_CONFIG_DIR")
+                || environment.contains_key("HOME"))
+        {
+            let home_dir = environment
+                .get("HOME")
+                .map(|s| PathBuf::from(s.expose_secret()))
+                .unwrap_or_else(|| self.home_directory.clone());
+            let call = crate::brokers::call::BrokerCall {
+                interaction: ariadusage_core::pipeline::FetchInteraction::Background,
+                cancel: tokio_util::sync::CancellationToken::new(),
+                request_id: "account-key".to_string(),
+            };
+            let cred_path =
+                crate::providers::claude::ClaudeConfigPaths::credentials_path_from_secret_env(
+                    environment,
+                    &self.working_directory,
+                    &home_dir,
+                );
+            let decl = crate::brokers::credential_file::CredentialDecl::new(&cred_path);
+            match crate::brokers::credential_file::read(&decl, &call) {
+                Ok(read_res) => {
+                    let fp = crate::brokers::credential_file::sha256_prefix(&read_res.bytes);
+                    parts.push(format!("claude-cred:{fp}"));
+                }
+                Err(crate::brokers::credential_file::CredentialFileError::NotFound) => {}
+                Err(_) => {
+                    parts.push("claude-cred:unreadable".to_string());
+                }
+            }
+            if let Some(uuid) = crate::providers::claude::ClaudeAccountProfile::account_uuid(
+                environment,
+                &self.working_directory,
+                &home_dir,
+                &call,
+            ) {
+                let digest = &ariadusage_core::digest::sha256_hex(
+                    "ariadusage:account-key:v1",
+                    &[uuid.as_bytes()],
+                )[..12];
+                parts.push(format!("claude-acct:{digest}"));
+            }
+        }
+
+        if id.as_str() == "codex"
+            && (self.explicit_directories
+                || environment.contains_key("CODEX_HOME")
+                || environment.contains_key("HOME"))
+        {
+            let home_dir = environment
+                .get("HOME")
+                .map(|s| PathBuf::from(s.expose_secret()))
+                .unwrap_or_else(|| self.home_directory.clone());
+            let plain_env: BTreeMap<String, String> = environment
+                .iter()
+                .map(|(k, v)| (k.clone(), v.expose_secret().to_string()))
+                .collect();
+            let call = crate::brokers::call::BrokerCall {
+                interaction: ariadusage_core::pipeline::FetchInteraction::Background,
+                cancel: tokio_util::sync::CancellationToken::new(),
+                request_id: "account-key".to_string(),
+            };
+            if let Some(auth_path) =
+                crate::providers::codex::CodexOAuthCredentialsStore::auth_file_path(
+                    &plain_env,
+                    Some(&home_dir),
+                )
+            {
+                let decl = crate::brokers::credential_file::CredentialDecl::new(&auth_path);
+                match crate::brokers::credential_file::read(&decl, &call) {
+                    Ok(read_res) => {
+                        let fp = crate::brokers::credential_file::sha256_prefix(&read_res.bytes);
+                        parts.push(format!("codex-auth:{fp}"));
+                    }
+                    Err(crate::brokers::credential_file::CredentialFileError::NotFound) => {}
+                    Err(_) => {
+                        parts.push("codex-auth:unreadable".to_string());
+                    }
+                }
+            }
+        }
+
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("|"))
+        }
+    }
+
     /// Resolves the full `ResolvedProviderSpec` for `id` from `config` and `inputs`.
     pub fn resolve_spec(
         &self,
@@ -481,14 +725,13 @@ impl ProviderRegistry {
             selected_account.as_ref(),
             inputs,
         );
-        let account_key = selected_account
-            .as_ref()
-            .map(|acct| format!("token-account:{}", acct.id))
-            .or_else(|| {
-                provider_config
-                    .and_then(ProviderConfig::sanitized_workspace_id)
-                    .map(|ws| format!("workspace:{ws}"))
-            });
+        let account_key = self.compute_account_key(
+            id,
+            provider_config,
+            selected_account.as_ref(),
+            &environment,
+            inputs,
+        );
 
         let plan = match self.factories.get(id) {
             Some(factory) => factory.build_plan(provider_config, selected_account.as_ref(), inputs),

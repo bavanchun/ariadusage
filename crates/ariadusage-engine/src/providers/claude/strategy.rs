@@ -509,23 +509,25 @@ impl ClaudeOAuthStrategyConfig {
     }
 
     pub fn effective_cookie_source(&self) -> CookieSource {
-        if let Some(source) = self.cookie_source {
-            return source;
+        let selected_web_header = match ClaudeCredentialRouting::resolve(
+            self.token_account_token
+                .as_ref()
+                .map(SecretString::expose_secret),
+            None,
+        ) {
+            ClaudeCredentialRoute::WebCookie { header } => Some(header),
+            _ => None,
+        };
+        match cookie_core::resolve_cookie_source(
+            self.cookie_source,
+            false,
+            selected_web_header,
+            self.manual_cookie_header.is_some(),
+        ) {
+            cookie_core::CookieResolution::Manual => CookieSource::Manual,
+            cookie_core::CookieResolution::Import(_) => CookieSource::Auto,
+            cookie_core::CookieResolution::None => CookieSource::Off,
         }
-        if self.manual_cookie_header.is_some()
-            || matches!(
-                ClaudeCredentialRouting::resolve(
-                    self.token_account_token
-                        .as_ref()
-                        .map(SecretString::expose_secret),
-                    None,
-                ),
-                ClaudeCredentialRoute::WebCookie { .. }
-            )
-        {
-            return CookieSource::Manual;
-        }
-        CookieSource::Auto
     }
 
     pub fn effective_manual_cookie_header(&self) -> Option<SecretString> {
@@ -1173,18 +1175,22 @@ impl ClaudeWebFetchStrategy {
                 now: fetch_now,
             };
 
-            if let Some(manual_header) = self.config.effective_manual_cookie_header() {
-                ClaudeWebAPIFetcher::fetch_usage_with_cookie_header(
-                    &self.config.net,
-                    &self.config.web_endpoint,
-                    manual_header.expose_secret(),
-                    &options,
-                    &sub_call,
-                )
-                .await
-                .map_err(|e| e.into_fetch_error())
-            } else {
-                ClaudeWebAPIFetcher::fetch_usage_serialized(
+            match self.config.effective_cookie_source() {
+                CookieSource::Manual => {
+                    let Some(manual_header) = self.config.effective_manual_cookie_header() else {
+                        return Err(ClaudeWebFetchError::NoSessionKeyFound.into_fetch_error());
+                    };
+                    ClaudeWebAPIFetcher::fetch_usage_with_cookie_header(
+                        &self.config.net,
+                        &self.config.web_endpoint,
+                        manual_header.expose_secret(),
+                        &options,
+                        &sub_call,
+                    )
+                    .await
+                    .map_err(|e| e.into_fetch_error())
+                }
+                CookieSource::Auto => ClaudeWebAPIFetcher::fetch_usage_serialized(
                     &self.config.net,
                     &self.config.web_endpoint,
                     &self.config.cookie_cache,
@@ -1194,7 +1200,8 @@ impl ClaudeWebFetchStrategy {
                     &sub_call,
                 )
                 .await
-                .map_err(|e| e.into_fetch_error())
+                .map_err(|e| e.into_fetch_error()),
+                CookieSource::Off => Err(ClaudeWebFetchError::NoSessionKeyFound.into_fetch_error()),
             }
         };
 

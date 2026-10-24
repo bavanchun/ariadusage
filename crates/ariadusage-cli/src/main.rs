@@ -446,9 +446,14 @@ fn resolve_binary_path(override_path: Option<PathBuf>) -> Result<PathBuf, CliErr
 fn run_foreground_daemon(socket: Option<PathBuf>) -> Result<(), CliError> {
     #[cfg(unix)]
     {
+        let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
+            == Some(std::ffi::OsStr::new("1"));
         let runtime = current_thread_runtime()?;
         runtime
-            .block_on(ariadusage_engine::daemon::run_daemon(socket))
+            .block_on(ariadusage_engine::daemon::run_daemon_with_options(
+                socket,
+                disable_keyring,
+            ))
             .map_err(|_| CliError::new(16, "engine daemon failed"))
     }
     #[cfg(not(unix))]
