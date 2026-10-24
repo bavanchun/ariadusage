@@ -68,7 +68,20 @@ pub enum AntigravityRemoteFetchError {
 }
 
 impl AntigravityRemoteFetchError {
+    pub fn is_cancelled(&self) -> bool {
+        matches!(self, Self::NetworkError(msg) if msg.trim().eq_ignore_ascii_case("request cancelled"))
+    }
+
     pub fn into_classified_error(self) -> ClassifiedError {
+        let transport = match &self {
+            Self::NetworkError(msg) if msg.trim().eq_ignore_ascii_case("request cancelled") => {
+                Some(TransportClass::Cancelled)
+            }
+            Self::NetworkError(msg) if msg.trim().eq_ignore_ascii_case("request timed out") => {
+                Some(TransportClass::Timeout)
+            }
+            _ => None,
+        };
         let kind = match &self {
             Self::NotLoggedIn => ProviderErrorKind::MissingCredential,
             Self::ReauthenticationRequired | Self::RefreshFailed(_) => {
@@ -78,7 +91,12 @@ impl AntigravityRemoteFetchError {
             Self::ParseFailed(_) => ProviderErrorKind::ParseFailure,
             Self::NetworkError(_) => ProviderErrorKind::NetworkFailure,
         };
-        ClassifiedError::new(kind, self.to_string())
+        let classified = ClassifiedError::new(kind, self.to_string());
+        if let Some(transport) = transport {
+            classified.with_transport(transport)
+        } else {
+            classified
+        }
     }
 }
 
@@ -382,12 +400,18 @@ impl AntigravityRemoteUsageFetcher {
             .await
         {
             Ok(Some(snapshot)) => return Ok(snapshot),
-            Ok(None) => {}
+            Ok(None) => {
+                if call.cancel.is_cancelled() {
+                    return Err(AntigravityRemoteFetchError::NetworkError(
+                        "Request cancelled".to_owned(),
+                    ));
+                }
+            }
             Err(AntigravityRemoteFetchError::NotLoggedIn) => {
                 return Err(AntigravityRemoteFetchError::NotLoggedIn);
             }
-            Err(_) => {
-                if call.cancel.is_cancelled() {
+            Err(err) => {
+                if err.is_cancelled() || call.cancel.is_cancelled() {
                     return Err(AntigravityRemoteFetchError::NetworkError(
                         "Request cancelled".to_owned(),
                     ));
@@ -714,6 +738,12 @@ impl AntigravityRemoteUsageFetcher {
                 self.timeout.min(Duration::from_secs(2)),
             )
             .await?;
+
+        if call.cancel.is_cancelled() {
+            return Err(AntigravityRemoteFetchError::NetworkError(
+                "Request cancelled".to_owned(),
+            ));
+        }
 
         let mut summary =
             parse_quota_summary_response_with_source(&data, AntigravitySnapshotSource::Remote)
@@ -1161,7 +1191,10 @@ impl AntigravityRemoteUsageFetcher {
             net.send_response(call, &origins, net_req)
                 .await
                 .map_err(|err| match err {
-                    NetError::Transport(TransportClass::Timeout) | NetError::Cancelled => {
+                    NetError::Cancelled | NetError::Transport(TransportClass::Cancelled) => {
+                        AntigravityRemoteFetchError::NetworkError("Request cancelled".to_owned())
+                    }
+                    NetError::Transport(TransportClass::Timeout) => {
                         AntigravityRemoteFetchError::NetworkError("Request timed out".to_owned())
                     }
                     other => AntigravityRemoteFetchError::NetworkError(other.to_string()),
