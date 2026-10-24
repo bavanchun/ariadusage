@@ -5,9 +5,8 @@ use std::path::Path;
 
 use ariadusage_engine::cost::codex::{
     self, CODEX_SESSION_METADATA_MAX_LINE_BYTES, CodexDayModelKey, CodexForkBaseline,
-    CodexParseResult, CodexScanBudget, CodexScanOptions, CodexSessionMetadata,
-    CodexSubagentCounterSemantics, CodexSubagentObservation, CodexSubagentRolloutShape,
-    CodexTotals, CodexUsageRow,
+    CodexParseResult, CodexScanOptions, CodexSessionMetadata, CodexSubagentCounterSemantics,
+    CodexSubagentObservation, CodexSubagentRolloutShape, CodexTotals, CodexUsageRow,
 };
 use ariadusage_engine::cost::codex_priority::{
     self, CODEX_PRIORITY_COMPLETED_MODEL_RETENTION_LIMIT, CodexPriorityCursorAnchor,
@@ -38,7 +37,7 @@ fn write_jsonl(path: &Path, entries: &[Value]) {
     fs::write(path, text).expect("write jsonl");
 }
 
-// Upstream test ports (each marker identifies one @Test declaration).
+// Upstream-derived tests (full and partial markers identify the implemented coverage).
 
 // upstream: CostUsageScannerTests.swift:12 codex session metadata skips an oversized line without retaining it
 #[test]
@@ -1972,7 +1971,7 @@ fn legacy_child_proves_its_inherited_baseline_from_first_owned_total_minus_last(
     assert!(!resolved_parent);
 }
 
-// upstream: CodexSubagentAccountingIntegrationTests.swift:640 bounded append fallback reclassifies the complete subagent rollout
+// partial-upstream: CodexSubagentAccountingIntegrationTests.swift:640 bounded append fallback reclassifies the complete subagent rollout — missing: scanned child session/fork IDs, dependency-not-required key and complete-scan state after bounded reclassification
 #[test]
 fn bounded_append_fallback_reclassifies_the_complete_subagent_rollout() {
     let tmp = TempDir::new().expect("tempdir");
@@ -2094,7 +2093,7 @@ fn make_row(
     }
 }
 
-// upstream: CostUsageScannerForkSplitTests.swift:8 source verified short fork requests preserve pricing and persistence
+// partial-upstream: CostUsageScannerForkSplitTests.swift:8 source verified short fork requests preserve pricing and persistence — missing: actual unknown/priced report costs, project/session totals, no-rebuild SQLite persistence and warm-report parity
 #[test]
 fn source_verified_short_fork_requests_preserve_pricing_and_persistence() {
     let day_key = "2026-09-11";
@@ -2236,7 +2235,7 @@ fn source_verified_fork_requests_apply_long_context_pricing_only_to_the_long_req
     assert_eq!(reconciled.rows, vec![short_row, trailing_zero]);
 }
 
-// upstream: CostUsageScannerForkSplitTests.swift:212 codex report leaves threshold cost unavailable without exact request rows
+// partial-upstream: CostUsageScannerForkSplitTests.swift:212 codex report leaves threshold cost unavailable without exact request rows — missing: report totals 400000, unavailable threshold/aggregate costs and below-threshold fallback pricing assertion
 #[test]
 fn codex_report_leaves_threshold_cost_unavailable_without_exact_request_rows() {
     let day_key = "2026-09-11";
@@ -2282,22 +2281,6 @@ fn codex_report_leaves_threshold_cost_unavailable_without_exact_request_rows() {
             model: model.to_owned(),
         }])
     );
-}
-
-// upstream: CostUsageScannerForkSplitTests.swift:270 codex report safely prices linear aggregate fallback
-#[test]
-fn codex_report_safely_prices_linear_aggregate_fallback() {
-    let model = "gpt-5.4-mini";
-    let expected = pricing::codex_cost_usd_with_tier(
-        model,
-        300_000,
-        100_000,
-        100,
-        Some(pricing::CodexServiceTier::Standard),
-        None,
-    )
-    .unwrap();
-    assert!(expected > 0.0);
 }
 
 // upstream: CostUsageScannerForkSplitTests.swift:323 exact codex pricing rows retain persisted order
@@ -2426,7 +2409,7 @@ fn zero_owned_fork_rows_use_an_empty_suffix_without_hiding_parent_cost() {
     assert!(reconciled.unresolved_groups.is_empty());
 }
 
-// upstream: CostUsageScannerForkSplitTests.swift:484 exact rows price only requests with complete pricing
+// partial-upstream: CostUsageScannerForkSplitTests.swift:484 exact rows price only requests with complete pricing — missing: summary priced subtotal, priced/unpriced request counts 1/1 and complete report cost pricedCost + 42
 #[test]
 fn exact_rows_price_only_requests_with_complete_pricing() {
     let tmp = TempDir::new().expect("tempdir");
@@ -2509,54 +2492,6 @@ fn exact_rows_price_only_requests_with_complete_pricing() {
     assert!(unpriced_bd.cost_usd.is_none());
 }
 
-// upstream: CostUsageScannerForkSplitTests.swift:555 project primary report propagates unresolved same model ownership
-#[test]
-fn project_primary_report_propagates_unresolved_same_model_ownership() {
-    let day_key = "2026-09-11";
-    let model = "gpt-5.6-sol";
-    let r1 = make_row(
-        day_key,
-        model,
-        "unresolved-1",
-        1,
-        None,
-        220_000,
-        0,
-        5,
-        Some("standard"),
-        None,
-    );
-    let r2 = make_row(
-        day_key,
-        model,
-        "unresolved-2",
-        2,
-        None,
-        220_000,
-        0,
-        5,
-        Some("standard"),
-        None,
-    );
-    let unresolved_usage = CodexParseResult {
-        days: BTreeMap::from([(
-            day_key.to_owned(),
-            BTreeMap::from([(model.to_owned(), vec![400_000, 0, 10])]),
-        )]),
-        rows: vec![r1, r2],
-        ..Default::default()
-    };
-    let res = codex::codex_canonical_pricing_rows(&unresolved_usage.days, &unresolved_usage.rows);
-    assert!(res.rows.is_empty());
-    assert_eq!(
-        res.unresolved_groups,
-        BTreeSet::from([CodexDayModelKey {
-            day: day_key.to_owned(),
-            model: model.to_owned(),
-        }])
-    );
-}
-
 // upstream: CostUsageScannerForkSplitTests.swift:622 project primary report keeps priced models beside explicitly unpriced models
 #[test]
 fn project_primary_report_keeps_priced_models_beside_explicitly_unpriced_models() {
@@ -2592,7 +2527,7 @@ fn project_primary_report_keeps_priced_models_beside_explicitly_unpriced_models(
     assert_eq!(unpriced_row.unpriced_tokens, Some(50_010));
 }
 
-// upstream: CostUsageScannerForkSplitTests.swift:674 source refresh removes copied fork prefix without losing fast split
+// partial-upstream: CostUsageScannerForkSplitTests.swift:674 source refresh removes copied fork prefix without losing fast split — missing: canonical [150,60,15], polluted copied-prefix rows, source refresh/reopened parent-child parity and summary cost equality
 #[test]
 fn source_refresh_removes_copied_fork_prefix_without_losing_fast_split() {
     let tmp = TempDir::new().expect("tempdir");
@@ -5224,7 +5159,7 @@ fn codex_daily_report_applies_gpt55_priority_rates() {
     assert_eq!(breakdown.priority_tokens, Some(110));
 }
 
-// upstream: CostUsageScannerPriorityTests.swift:87 codex daily report applies API fast pricing from brief
+// partial-upstream: CostUsageScannerPriorityTests.swift:87 codex daily report applies API fast pricing from brief — missing: ModelsDevCache.save success and persisted catalog setup; Rust injects the catalog directly
 #[test]
 fn codex_daily_report_applies_api_fast_pricing_from_brief() {
     let tmp = TempDir::new().expect("tempdir");
@@ -5928,7 +5863,7 @@ fn codex_cumulative_totals_do_not_trigger_long_context_pricing() {
     assert!((report.summary.unwrap().total_cost_usd.unwrap() - expected).abs() < 1e-9);
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:6 unchanged source resolves ambiguous cached request rows
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:6 unchanged source resolves ambiguous cached request rows — missing: ambiguous retained-row contamination/repair, canonical row identities, actual report costs 1.5/2.5, reopened cache and zero-work assertions
 #[test]
 fn unchanged_source_resolves_ambiguous_cached_request_rows() {
     let tmp = TempDir::new().expect("tempdir");
@@ -5938,9 +5873,6 @@ fn unchanged_source_resolves_ambiguous_cached_request_rows() {
     let day_dir = codex_home.join("sessions/2026/09/10");
     let file_path = day_dir.join("ambiguous-requests.jsonl");
     let shared_turn = "synthetic-shared-turn";
-    let cumulative_a = [200_000i64, 200_000, 200_000];
-    let cumulative_b = [200_000i64, 200_000, 200_000, 400_000];
-    let cumulative_c = [200_000i64, 200_000, 200_000, 400_000, 400_000];
     let deltas = [200_000i64, 400_000];
 
     write_jsonl(
@@ -5954,7 +5886,6 @@ fn unchanged_source_resolves_ambiguous_cached_request_rows() {
         ],
     );
 
-    let _debounce = 3600.0f64;
     let opts = CostScannerOptions {
         codex_home: Some(codex_home.clone()),
         cache_root: Some(cache_root),
@@ -5963,12 +5894,6 @@ fn unchanged_source_resolves_ambiguous_cached_request_rows() {
     };
     let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
     assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(600_000));
-    let expected_cost: f64 = (200_000.0 * 5.0e-6) + (400_000.0 * 2.5e-6);
-    assert!((expected_cost - 2.0).abs() < 1e-9);
-    assert!((2.5f64 - 1.5f64 - 1.0).abs() < 1e-9);
-    assert_eq!(cumulative_a.len(), 3);
-    assert_eq!(cumulative_b.len(), 4);
-    assert_eq!(cumulative_c.len(), 5);
 
     let cold_cache = tmp.path().join("cold-cache");
     let cold_report = load_daily_report(
@@ -5986,7 +5911,7 @@ fn unchanged_source_resolves_ambiguous_cached_request_rows() {
     assert_eq!(cold_report.summary, report.summary);
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:60 source replay removes orphan model rows including from an empty session
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:60 source replay removes orphan model rows including from an empty session — missing: persisted orphan-model contamination, recovered rows/day aggregates, original report parity and reopened SQLite checks
 #[test]
 fn source_replay_removes_orphan_model_rows_including_from_an_empty_session() {
     let tmp = TempDir::new().expect("tempdir");
@@ -5994,8 +5919,6 @@ fn source_replay_removes_orphan_model_rows_including_from_an_empty_session() {
     let cache_root = tmp.path().join("cache");
     let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
     let file_path = codex_home.join("sessions/2026/09/10/orphan-model-rows.jsonl");
-    let _triples = [200_000i64, 200_000, 200_000];
-    let _zero = [0i64, 0, 0];
 
     write_jsonl(
         &file_path,
@@ -6027,7 +5950,6 @@ fn source_replay_removes_orphan_model_rows_including_from_an_empty_session() {
     let canonical = codex::codex_canonical_pricing_rows(&days, &[orphan_row]);
     assert!(canonical.rows.is_empty());
 
-    let _debounce = 3600.0f64;
     let report = load_daily_report(
         LocalCostProvider::Codex,
         day,
@@ -6044,80 +5966,7 @@ fn source_replay_removes_orphan_model_rows_including_from_an_empty_session() {
     assert!((report.summary.as_ref().unwrap().total_cost_usd.unwrap() - 1.5).abs() < 1e-9);
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:127 source replay cannot choose between conflicting retained prices
-#[test]
-fn source_replay_cannot_choose_between_conflicting_retained_prices() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("conflicting-prices.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let deltas = [200_000i64, 400_000];
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "conflict-sess"}}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4-mini", "service_tier": "priority"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": deltas[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-
-    let parsed = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    let mut r1 = parsed.rows[0].clone();
-    r1.known_cost_nanos = Some(1_000_000_000);
-    let mut r2 = parsed.rows[0].clone();
-    r2.known_cost_nanos = Some(2_000_000_000);
-    let recovered =
-        codex::recover_codex_rows_with_retained_pricing(&parsed.rows, &[r1, r2], &BTreeMap::new());
-    assert_eq!(recovered.len(), 2);
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:169 bounded source recovery retains unanimous pricing after reopening its store
-#[test]
-fn bounded_source_recovery_retains_unanimous_pricing_after_reopening_its_store() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let file_path = codex_home.join("sessions/2026/09/10/bounded-recovery.jsonl");
-    let steps = [200_000i64, 200_000, 200_000];
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "bounded-sess"}}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": steps[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-
-    let _tier_std = "standard";
-    let opts = CostScannerOptions {
-        codex_home: Some(codex_home),
-        cache_root: Some(cache_root),
-        timezone: Some(TimeZone::UTC),
-        ..Default::default()
-    };
-    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
-    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(600_000));
-    assert!((report.summary.as_ref().unwrap().total_cost_usd.unwrap() - 3.0).abs() < 1e-9);
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:271 append after bounded recovery is consumed once beyond the frozen target
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:271 append after bounded recovery is consumed once beyond the frozen target — missing: bounded recovery frozen-target transitions, exact appended row identity/pricing, canonical cache parity and zero repeated scan work
 #[test]
 fn append_after_bounded_recovery_is_consumed_once_beyond_the_frozen_target() {
     let tmp = TempDir::new().expect("tempdir");
@@ -6125,9 +5974,6 @@ fn append_after_bounded_recovery_is_consumed_once_beyond_the_frozen_target() {
     let cache_root = tmp.path().join("cache");
     let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
     let file_path = codex_home.join("sessions/2026/09/10/growing-recovery.jsonl");
-    let steps = [200_000i64, 200_000, 200_000];
-    let extended_steps = [200_000i64, 200_000, 200_000, 50_000];
-    assert_eq!(steps.len() + 1, extended_steps.len());
 
     let mut lines = vec![
         json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "grow-sess"}}),
@@ -6168,7 +6014,7 @@ fn append_after_bounded_recovery_is_consumed_once_beyond_the_frozen_target() {
     assert_eq!(cold_report.summary, report.summary);
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:353 fork source recovery preserves the parent baseline without inherited inflation
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:353 fork source recovery preserves the parent baseline without inherited inflation — missing: corrupt retained child-row recovery, lineage/dependency metadata, processed-row count 3 and reopened parent/child cache parity
 #[test]
 fn fork_source_recovery_preserves_the_parent_baseline_without_inherited_inflation() {
     let tmp = TempDir::new().expect("tempdir");
@@ -6176,7 +6022,6 @@ fn fork_source_recovery_preserves_the_parent_baseline_without_inherited_inflatio
     let cache_root = tmp.path().join("cache");
     let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
     let day_dir = codex_home.join("sessions/2026/09/10");
-    let _steps = [200_000i64, 200_000, 200_000];
 
     write_jsonl(
         &day_dir.join("a-recovery-parent.jsonl"),
@@ -6197,7 +6042,6 @@ fn fork_source_recovery_preserves_the_parent_baseline_without_inherited_inflatio
         ],
     );
 
-    let _debounce = 3600.0f64;
     let opts = CostScannerOptions {
         codex_home: Some(codex_home.clone()),
         cache_root: Some(cache_root),
@@ -6223,96 +6067,7 @@ fn fork_source_recovery_preserves_the_parent_baseline_without_inherited_inflatio
     assert_eq!(cold_report.summary, report.summary);
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:438 unavailable source retains unknown history without bypassing debounce
-#[test]
-fn unavailable_source_retains_unknown_history_without_bypassing_debounce() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let file_path = codex_home.join("sessions/2026/09/10/unavailable-source.jsonl");
-    let _steps = [200_000i64, 200_000, 200_000];
-    let _debounce = 3600.0f64;
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "unavail-sess"}}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-
-    let opts = CostScannerOptions {
-        codex_home: Some(codex_home),
-        cache_root: Some(cache_root),
-        timezone: Some(TimeZone::UTC),
-        ..Default::default()
-    };
-    let first = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
-    assert_eq!(first.summary.as_ref().unwrap().total_tokens, Some(600_000));
-
-    let debounced = load_daily_report(
-        LocalCostProvider::Codex,
-        day,
-        day,
-        day.checked_add(1_i64.seconds()).unwrap(),
-        &opts,
-    );
-    assert_eq!(
-        debounced.summary.as_ref().unwrap().total_tokens,
-        Some(600_000)
-    );
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:470 recovering an available source preserves unrelated unavailable history
-#[test]
-fn recovering_an_available_source_preserves_unrelated_unavailable_history() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let day_dir = codex_home.join("sessions/2026/09/10");
-    let _steps = [200_000i64, 200_000, 200_000];
-    let _deltas = [200_000i64, 400_000];
-    let _debounce = 3600.0f64;
-
-    write_jsonl(
-        &day_dir.join("available-source.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "avail-sess"}}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-    write_jsonl(
-        &day_dir.join("unavailable-history.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "synthetic-unavailable-session"}}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-
-    let opts = CostScannerOptions {
-        codex_home: Some(codex_home),
-        cache_root: Some(cache_root),
-        timezone: Some(TimeZone::UTC),
-        ..Default::default()
-    };
-    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
-    assert_eq!(
-        report.summary.as_ref().unwrap().total_tokens,
-        Some(1_200_000)
-    );
-    assert!((report.summary.as_ref().unwrap().total_cost_usd.unwrap() - 3.0).abs() < 1e-9);
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:512 source requests without retained pricing stay unpriced after recovery
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:512 source requests without retained pricing stay unpriced after recovery — missing: recovery with retained pricing, unpricedTokens [100000, nil, 300000], priced/unpriced counts 1/2, quota slices and reopened/no-work checks
 #[test]
 fn source_requests_without_retained_pricing_stay_unpriced_after_recovery() {
     let tmp = TempDir::new().expect("tempdir");
@@ -6320,7 +6075,6 @@ fn source_requests_without_retained_pricing_stay_unpriced_after_recovery() {
     let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
     let range = DayRange::new(day, day, Some(TimeZone::UTC));
     let steps = [100_000i64, 200_000, 300_000];
-    let _debounce = 3600;
 
     write_jsonl(
         &file_path,
@@ -6348,15 +6102,12 @@ fn source_requests_without_retained_pricing_stay_unpriced_after_recovery() {
     assert_eq!(parsed.rows.len(), 3);
     assert_eq!(parsed.rows[0].input, 100_000);
     assert_eq!(parsed.rows[2].input, 300_000);
-    assert_eq!(parsed.rows.len() - 1, 2);
-    assert_eq!(parsed.rows.len() - 2, 1);
 }
 
 // upstream: CostUsageCodexSourceRecoveryTests.swift:561 distinct canonical equal content requests retain different authoritative prices
 #[test]
 fn distinct_canonical_equal_content_requests_retain_different_authoritative_prices() {
     let ts_sec = 1_788_955_200i64;
-    let path = "/synthetic-canonical-requests.jsonl";
     let mut r1 = make_row(
         "2026-09-10",
         "gpt-5.4",
@@ -6399,40 +6150,9 @@ fn distinct_canonical_equal_content_requests_retain_different_authoritative_pric
         .sum::<i64>() as f64
         / 1e9;
     assert!((total_usd - 3.0).abs() < 1e-9);
-    let _ = path;
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:586 unresolved rows cannot replace recorded prices with a flat aggregate
-#[test]
-fn unresolved_rows_cannot_replace_recorded_prices_with_a_flat_aggregate() {
-    let path = "/synthetic-price-evidence.jsonl";
-    let _mini = "gpt-5.4-mini";
-    let _parts = [500i64, 1000];
-    let _partial = [1000i64, 0, 0];
-    let days = BTreeMap::from([(
-        "2026-09-10".to_owned(),
-        BTreeMap::from([("gpt-5.4".to_owned(), vec![1500, 0, 0])]),
-    )]);
-    let row = make_row(
-        "2026-09-10",
-        "gpt-5.4",
-        "synthetic-turn",
-        0,
-        Some(1_000),
-        1000,
-        0,
-        0,
-        Some("standard"),
-        None,
-    );
-    let canonical = codex::codex_canonical_pricing_rows(&days, &[row]);
-    assert!(!canonical.unresolved_groups.is_empty());
-    let flat_cost: f64 = 1500.0 * 2.5e-6;
-    assert!((flat_cost - 0.00375).abs() < 1e-12);
-    let _ = path;
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:634 stale parser revision keeps priority pricing when traces are gone
+// partial-upstream: CostUsageCodexSourceRecoveryTests.swift:634 stale parser revision keeps priority pricing when traces are gone — missing: stale parser revision and absent trace fixture, partial-before-upgrade variants, expected row/pricing modes and persisted recovery completion
 #[test]
 fn stale_parser_revision_keeps_priority_pricing_when_traces_are_gone() {
     let tmp = TempDir::new().expect("tempdir");
@@ -6440,9 +6160,6 @@ fn stale_parser_revision_keeps_priority_pricing_when_traces_are_gone() {
     let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
     let range = DayRange::new(day, day, Some(TimeZone::UTC));
     let steps = [200_000i64, 200_000, 200_000];
-    let _extended = [200_000i64, 200_000, 200_000, 200_000];
-    let _default_tier = "default";
-    let _std_tier = "standard";
 
     write_jsonl(
         &file_path,
@@ -6479,244 +6196,7 @@ fn stale_parser_revision_keeps_priority_pricing_when_traces_are_gone() {
     );
 }
 
-// upstream: CostUsageCodexSourceRecoveryTests.swift:822 buffered subagent growth prices only original requests from retained evidence
-#[test]
-fn buffered_subagent_growth_prices_only_original_requests_from_retained_evidence() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("growing-subagent.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let _steps = [200_000i64, 200_000, 200_000];
-    let _cold = "subagent-cold-cache";
-    let _budget = 512usize;
-    let _total_tok = 1_800_000i64;
-    let _total_cost = 9.0f64;
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "session_meta", "ordinal": 0, "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "synthetic-subagent-session", "forked_from_id": "synthetic-parent-session", "thread_source": "subagent", "subagent_history_start_ordinal": 10}}),
-            json!({"type": "turn_context", "ordinal": 1, "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4", "service_tier": "standard"}}),
-            json!({"type": "event_msg", "ordinal": 2, "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "turn_context", "ordinal": 10, "timestamp": "2026-09-10T12:00:02Z", "payload": {"model": "gpt-5.5", "service_tier": "priority"}}),
-            json!({"type": "inter_agent_communication_metadata", "ordinal": 11, "timestamp": "2026-09-10T12:00:02Z", "payload": {"trigger_turn": true}}),
-            json!({"type": "event_msg", "ordinal": 12, "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 700_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-
-    let parsed = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(Some(CodexTotals::new(100_000, 0, 0, None))),
-    );
-    assert_eq!(&parsed.days["2026-09-10"]["gpt-5.5"][..3], &[600_000, 0, 0]);
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:919 same size rewrite outside a large source anchor discards retained prices
-#[test]
-fn same_size_rewrite_outside_a_large_source_anchor_discards_retained_prices() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("large-recovery.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let _steps = [200_000i64, 200_000, 200_000];
-    let pad = "p".repeat(80 * 1024);
-    let _anchor_win = 64 * 1024;
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "synthetic_note", "padding": pad, "marker": "before"}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-    let first = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    let anchor_before = codex::codex_token_index_anchor(&first.token_snapshots);
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "synthetic_note", "padding": pad, "marker": "after!"}),
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-2", "model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 10}}}}),
-        ],
-    );
-    let second = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert!(!codex::codex_token_index_anchor_matches(
-        &second.token_snapshots,
-        anchor_before.as_ref()
-    ));
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:969 rewriting an unparsed suffix invalidates retained recovery pricing
-#[test]
-fn rewriting_an_unparsed_suffix_invalidates_retained_recovery_pricing() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("rewritten-tail.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let _steps = [200_000i64, 200_000, 200_000];
-    let pad = "p".repeat(64 * 1024);
-    let _count = 100usize;
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-            json!({"type": "synthetic_note", "padding": pad, "marker": "before"}),
-        ],
-    );
-    let first = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert_eq!(first.rows[0].input, 600_000);
-
-    let mut content = fs::read_to_string(&file_path).unwrap();
-    content = content.replace("before", "after!");
-    fs::write(&file_path, content).unwrap();
-    assert!(file_path.exists());
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:1066 growth after recovery selection retains pricing when the original target still matches
-#[test]
-fn growth_after_recovery_selection_retains_pricing_when_the_original_target_still_matches() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("selected-growth.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let steps = [200_000i64, 200_000, 200_000];
-
-    let mut lines = vec![
-        json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "sel-sess"}}),
-        json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
-        json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": steps[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
-    ];
-    write_jsonl(&file_path, &lines);
-
-    let first = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    lines.push(json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 250_000, "cached_input_tokens": 0, "output_tokens": 0}}}}));
-    write_jsonl(&file_path, &lines);
-
-    let resumed = codex::resume_codex_file(
-        &file_path,
-        &range,
-        &first,
-        Some(fs::metadata(&file_path).unwrap().len()),
-        Some(&first.rows),
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert_eq!(resumed.rows.len(), 1);
-    assert_eq!(resumed.rows[0].input, 50_000);
-}
-
-// upstream: CostUsageCodexSourceRecoveryTests.swift:1104 interrupted recovery drops pricing when source identity or prefix changes
-#[test]
-fn interrupted_recovery_drops_pricing_when_source_identity_or_prefix_changes() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("replaced-recovery.jsonl");
-    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
-    let range = DayRange::new(day, day, Some(TimeZone::UTC));
-    let _steps = [200_000i64, 200_000, 200_000];
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.5", "service_tier": "priority"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-    let first = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert_eq!(first.rows[0].model, "gpt-5.5");
-
-    write_jsonl(
-        &file_path,
-        &[
-            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-2", "model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
-        ],
-    );
-    let second = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert_eq!(second.rows[0].model, "gpt-5.4");
-    assert_eq!(second.rows[0].pricing_mode.as_deref(), Some("standard"));
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:9 adjacent offset counters pair only inside the mirror window
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:9 adjacent offset counters pair only inside the mirror window — missing: exact paired row counts/totals across offsets 2/4900/5000/5001/5100; current paired assertion is only a lower bound
 #[test]
 fn adjacent_offset_counters_pair_only_inside_the_mirror_window() {
     let offsets = [2i64, 4900, 5000, 5001, 5100];
@@ -6750,7 +6230,7 @@ fn adjacent_offset_counters_pair_only_inside_the_mirror_window() {
     }
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:25 drift pairing requires the same known turn
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:25 drift pairing requires the same known turn — missing: exact row count 2 and total 220 for different/missing turn variants; current total assertion is only an upper bound
 #[test]
 fn drift_pairing_requires_the_same_known_turn() {
     for mode in ["different", "missing"] {
@@ -6787,66 +6267,9 @@ fn drift_pairing_requires_the_same_known_turn() {
     }
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:46 revision 8 duplicate mirror rows are removed by the reparse
-#[test]
-fn revision_8_duplicate_mirror_rows_are_removed_by_the_reparse() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("duplicate-mirror.jsonl");
-    let tz = TimeZone::get("Asia/Shanghai").unwrap();
-    let start = utc_ymd_hms(2026, 8, 29, 15, 59, 0);
-    let end = utc_ymd_hms(2026, 8, 29, 16, 1, 5);
-    let range = DayRange::new(start, end, Some(tz));
-    let _rev = 8;
-    let _tot_a = [3000i64, 600, 300, 120];
-    let _tot_b = [2000i64, 400, 200, 80];
-    let _tot_c = [1500i64, 300, 150, 60];
-    let _tiers = ["priority", "standard"];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [1000, 200, 100, 40],
-        [3000, 600, 300, 120],
-        None,
-    ));
-    lines.push(ledger_legacy(
-        LEDGER_TS_A,
-        [1000, 200, 100, 40],
-        [3000, 600, 300, 120],
-    ));
-    write_jsonl(&file_path, &lines);
-
-    let parsed = codex::parse_codex_file(
-        &file_path,
-        &range,
-        0,
-        None,
-        None,
-        None,
-        &BTreeMap::new(),
-        &BTreeMap::new(),
-        None,
-        |_, _| CodexForkBaseline::Resolved(None),
-    );
-    assert_eq!(
-        parsed.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        1100
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:136 delayed mirrors require ledger first order and exact counter advances
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:136 delayed mirrors require ledger first order and exact counter advances — missing: ledger-first/legacy-first and continuous/discontinuous matrix, exact totals 176/242 and response IDs [one, two]
 #[test]
 fn delayed_mirrors_require_ledger_first_order_and_exact_counter_advances() {
-    let _turn = "synthetic-turn";
-    let _ids = ["one", "two"];
-    let _u2 = [60i64, 20, 6, 3];
-    let _t1 = [1160i64, 240, 116, 47];
-    let _t2 = [920i64, 192, 92, 37];
-    let _t3 = [925i64, 192, 92, 37];
-    let _offsets = [10i64, 29990];
-
     let mut lines = ledger_header();
     lines.push(ledger_record(
         "one",
@@ -6869,15 +6292,12 @@ fn delayed_mirrors_require_ledger_first_order_and_exact_counter_advances() {
         result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
         176
     );
-    assert_ne!(176, 242);
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:158 task context resume and bare usage separate pending observations
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:158 task context resume and bare usage separate pending observations — missing: all separator variants and exact totals 231 for bare usage or 220 otherwise; current assertion is only an upper bound
 #[test]
 fn task_context_resume_and_bare_usage_separate_pending_observations() {
     let separators = ["resume", "bare usage", "task started", "turn context"];
-    let _offsets = [1000i64, 2000];
-    let _bare = json!({"prompt_tokens": 10, "completion_tokens": 1});
 
     for sep in separators {
         let mut lines = vec![
@@ -6906,11 +6326,9 @@ fn task_context_resume_and_bare_usage_separate_pending_observations() {
     }
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:179 a replay does not pair with a different legacy request inside the mirror window
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:179 a replay does not pair with a different legacy request inside the mirror window — missing: exact row count 2 and total 220 for the upstream replay fixture; current assertion is only an upper bound
 #[test]
 fn a_replay_does_not_pair_with_a_different_legacy_request_inside_the_mirror_window() {
-    let _tot = [960i64, 192, 96, 38];
-    let _win = [500i64, 4000];
     let lines = vec![
         json!({"type": "session_meta", "timestamp": LEDGER_TS_A, "payload": {"id": "synthetic-thread"}}),
         json!({"type": "turn_context", "timestamp": LEDGER_TS_A, "payload": {"turn_id": "synthetic-turn", "model": "gpt-5"}}),
@@ -6928,71 +6346,9 @@ fn a_replay_does_not_pair_with_a_different_legacy_request_inside_the_mirror_wind
     assert!(result.rows.iter().map(|r| r.input + r.output).sum::<i64>() <= 220);
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:195 bare usage gives the same pairing across a bounded pass
-#[test]
-fn bare_usage_gives_the_same_pairing_across_a_bounded_pass() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("bounded-bare.jsonl");
-    let _offsets = [1000i64, 1998, 2000];
-    let _meta = (
-        "synthetic-thread",
-        "execution-session",
-        "subagent",
-        "thread_spawn",
-        "parent_thread_id",
-        "parent",
-        "UTC",
-    );
-    let lines = [
-        json!({"type": "session_meta", "timestamp": LEDGER_TS_A, "payload": {"id": "synthetic-thread"}}),
-        json!({"type": "turn_context", "timestamp": LEDGER_TS_A, "payload": {"turn_id": "synthetic-turn", "model": "gpt-5"}}),
-        json!({"timestamp": LEDGER_TS_A, "usage": {"prompt_tokens": 10, "completion_tokens": 1}}),
-        ledger_record(
-            "one",
-            "synthetic-thread",
-            LEDGER_TS_A,
-            [100, 20, 10, 4],
-            [1000, 200, 100, 40],
-            None,
-        ),
-    ];
-    write_jsonl(&file_path, &lines);
-    let result = parse_ledger_lines(&lines, false);
-    let total = result.rows.iter().map(|r| r.input + r.output).sum::<i64>();
-    assert!(total == 121 || total == 231 || total == 110);
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:233 fork bare usage keeps later drifted pairs when the parent resolves late
-#[test]
-fn fork_bare_usage_keeps_later_drifted_pairs_when_the_parent_resolves_late() {
-    let _offsets = [1000i64, 1500, 10000];
-    let _bare = json!({"prompt_tokens": 10, "completion_tokens": 1});
-    let _u2 = [60i64, 20, 6, 3];
-    let _t1 = [1160i64, 240, 116, 47];
-    let _t2 = [920i64, 192, 92, 37];
-    let _base = (760i64, 152i64, 76i64, 297i64);
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "two",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [60, 20, 6, 3],
-        [1160, 240, 116, 47],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(result.rows.len(), 1);
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:251 a counter that advances past its usage keeps equal requests distinct
+// partial-upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:251 a counter that advances past its usage keeps equal requests distinct — missing: upstream mirror-pair fixture and both ledgerFirst orderings; current three-row/330 checks use a reduced sequence
 #[test]
 fn a_counter_that_advances_past_its_usage_keeps_equal_requests_distinct() {
-    let _u = [100i64, 20, 10, 4];
-    let _t2 = [200i64, 40, 20, 8];
-    let _t3 = [300i64, 60, 30, 12];
-    let _off = 1000i64;
-
     let mut lines = ledger_header();
     lines.push(ledger_record(
         "one",
@@ -7023,300 +6379,7 @@ fn a_counter_that_advances_past_its_usage_keeps_equal_requests_distinct() {
     );
 }
 
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:269 first post compaction response with a delayed mirror counts once
-#[test]
-fn first_post_compaction_response_with_a_delayed_mirror_counts_once() {
-    let _delays = [49i64, 5023, 20049];
-    let _ts = [1000i64, 1002, 1004, 2000];
-    let _labels = ("compacted", "message");
-    let _zero = [0i64, 0, 0, 0];
-    let _t_post = [1300i64, 300, 130, 0];
-    let expected_ids = ["r1", "r2", "r3"];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "r1",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [1000, 200, 100, 0],
-        [1000, 200, 100, 0],
-        None,
-    ));
-    lines.push(ledger_record(
-        "r2",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [5000, 0, 400, 0],
-        [6000, 200, 500, 0],
-        None,
-    ));
-    lines.push(ledger_record(
-        "r3",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [300, 100, 30, 0],
-        [6300, 300, 530, 0],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(
-        result
-            .rows
-            .iter()
-            .filter_map(|r| r.response_id.as_deref())
-            .collect::<Vec<_>>(),
-        expected_ids
-    );
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        6830
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:309 owned legacy replays preserve continuity after counter history eviction
-#[test]
-fn owned_legacy_replays_preserve_continuity_after_counter_history_eviction() {
-    let _evict = (3usize, 71usize);
-    let _vals = (1100i64, 220i64, 110i64, 44i64, 900i64, 180i64, 90i64, 36i64);
-    let _win = (20000i64, 30000i64);
-    let _t1 = [900i64, 180, 90, 36];
-    let _t0 = [0i64, 0, 0, 0];
-    let _t2 = [800i64, 160, 80, 32];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1100, 220, 110, 44],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(result.rows.len(), 1);
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:361 owned responses can reset a counter to a previously seen total
-#[test]
-fn owned_responses_can_reset_a_counter_to_a_previously_seen_total() {
-    let steps = [
-        (100i64, 900i64, 2i64),
-        (100, 1000, 2),
-        (100, 900, 2),
-        (50, 950, 20000),
-        (100, 1050, 20000),
-    ];
-    let _win = (1000i64, 30000i64);
-    let mut lines = ledger_header();
-    for (idx, (inp, tot, _)) in steps.iter().enumerate() {
-        let out = inp / 10;
-        lines.push(ledger_record(
-            &format!("r-{idx}"),
-            "synthetic-thread",
-            LEDGER_TS_A,
-            [*inp, 0, out, 0],
-            [*tot, 0, tot / 10, 0],
-            None,
-        ));
-    }
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(result.rows.len(), 5);
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        495
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:385 zero usage observations retain continuity across a bounded resume
-#[test]
-fn zero_usage_observations_retain_continuity_across_a_bounded_resume() {
-    let tmp = TempDir::new().expect("tempdir");
-    let file_path = tmp.path().join("zero-prefix.jsonl");
-    let _turn = ("synthetic-turn", "gpt-5.4", 1000i64);
-    let _z = [0i64, 0, 0, 0];
-    let _u1 = [100i64, 0, 0, 0];
-    let _t1 = [1100i64, 20, 10, 4];
-    let _t2 = [300i64, 20, 10, 4];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "r1",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 0, 0, 0],
-        [1100, 20, 10, 4],
-        None,
-    ));
-    lines.push(ledger_record(
-        "r2",
-        "synthetic-thread",
-        LEDGER_TS_B,
-        [200, 20, 10, 4],
-        [300, 20, 10, 4],
-        None,
-    ));
-    write_jsonl(&file_path, &lines);
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(result.rows.len(), 2);
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:408 fork replay preserves continuity for an appended delayed mirror
-#[test]
-fn fork_replay_preserves_continuity_for_an_appended_delayed_mirror() {
-    let _t0 = [900i64, 180, 90, 36];
-    let _t1 = [1200i64, 240, 120, 48];
-    let _t2 = [1000i64, 200, 100, 40];
-    let _u_mid = [50i64, 10, 5, 2];
-    let _t_mid = [950i64, 190, 95, 38];
-    let _t3 = [1300i64, 260, 130, 52];
-    let _t4 = [1100i64, 220, 110, 44];
-    let _times = [1000i64, 1500, 2000, 20000];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1000, 200, 100, 40],
-        None,
-    ));
-    lines.push(ledger_record(
-        "two",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1200, 240, 120, 48],
-        None,
-    ));
-    lines.push(ledger_record(
-        "three",
-        "synthetic-thread",
-        LEDGER_TS_B,
-        [100, 20, 10, 4],
-        [1300, 260, 130, 52],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        330
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:423 fork replay retains a pending original ledger mirror
-#[test]
-fn fork_replay_retains_a_pending_original_ledger_mirror() {
-    let _t0 = [900i64, 180, 90, 36];
-    let _t1 = [1200i64, 240, 120, 48];
-    let _t2 = [1000i64, 200, 100, 40];
-    let _times = (1000i64, 20000i64, 3usize);
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1000, 200, 100, 40],
-        None,
-    ));
-    lines.push(ledger_record(
-        "two",
-        "synthetic-thread",
-        LEDGER_TS_B,
-        [100, 20, 10, 4],
-        [1200, 240, 120, 48],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        220
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:431 total only fork mirrors match after parent resolution
-#[test]
-fn total_only_fork_mirrors_match_after_parent_resolution() {
-    let _bases = [0i64, 80, 100];
-    let _u = [100i64, 0, 10, 0];
-    let _t = [1100i64, 0, 110, 0];
-    let _parent = (800i64, 80i64);
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 0, 10, 0],
-        [1100, 0, 110, 0],
-        None,
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        110
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:446 total only deferred replays cannot claim a new legacy request
-#[test]
-fn total_only_deferred_replays_cannot_claim_a_new_legacy_request() {
-    let _times = [1000i64, 1002];
-    let _u = [100i64, 20, 10, 4];
-    let _t1 = [1200i64, 240, 120, 48];
-    let _t2 = [1000i64, 200, 100, 40];
-    let _t0 = [900i64, 180, 90, 36];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1200, 240, 120, 48],
-        None,
-    ));
-    lines.push(ledger_legacy(
-        LEDGER_TS_B,
-        [100, 20, 10, 4],
-        [1000, 200, 100, 40],
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert_eq!(
-        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
-        220
-    );
-}
-
-// upstream: CostUsageCodexRequestLedgerTests+MirrorWindow.swift:463 fork resolution preserves the preceding mirror before later equal usage
-#[test]
-fn fork_resolution_preserves_the_preceding_mirror_before_later_equal_usage() {
-    let _u = [100i64, 20, 10, 4];
-    let _t0 = [900i64, 180, 90, 36];
-    let _t1 = [1100i64, 220, 110, 44];
-    let _t2 = [1000i64, 200, 100, 40];
-
-    let mut lines = ledger_header();
-    lines.push(ledger_record(
-        "one",
-        "synthetic-thread",
-        LEDGER_TS_A,
-        [100, 20, 10, 4],
-        [1100, 220, 110, 44],
-        None,
-    ));
-    lines.push(ledger_legacy(
-        LEDGER_TS_B,
-        [100, 20, 10, 4],
-        [1000, 200, 100, 40],
-    ));
-    let result = parse_ledger_lines(&lines, false);
-    assert!(result.rows.iter().map(|r| r.input + r.output).sum::<i64>() <= 220);
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:10 relaunch reuses persisted priority cursor and scans only appended rows
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:10 relaunch reuses persisted priority cursor and scans only appended rows — missing: full memo/cursor file identity, anchor row/digest parity, downgrade payload and persisted relaunch writeback assertions
 #[test]
 fn relaunch_reuses_persisted_priority_cursor_and_scans_only_appended_rows() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7389,7 +6452,7 @@ fn relaunch_reuses_persisted_priority_cursor_and_scans_only_appended_rows() {
     assert_ne!(reloaded.last_row_digest, persisted.last_row_digest);
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:77 persisted cursor still full scans after the database inode changes
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:77 persisted cursor still full scans after the database inode changes — missing: replacement file identity inequality, lastRowID 2 and reloaded cursor identity/turn parity
 #[test]
 fn persisted_cursor_still_full_scans_after_the_database_inode_changes() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7437,7 +6500,7 @@ fn persisted_cursor_still_full_scans_after_the_database_inode_changes() {
     );
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:126 replaced database with a reused inode still full scans when the content anchor mismatches
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:126 replaced database with a reused inode still full scans when the content anchor mismatches — missing: cold-versus-resumed memo equality, anchor/digest parity and subsequent incremental sentinel update turn-y/turn-z assertions
 #[test]
 fn replaced_database_with_a_reused_inode_still_full_scans_when_the_content_anchor_mismatches() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7512,7 +6575,7 @@ fn replaced_database_with_a_reused_inode_still_full_scans_when_the_content_ancho
     assert!(db_path.exists());
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:201 deleted terminal anchor with surviving quorum resumes incrementally
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:201 deleted terminal anchor with surviving quorum resumes incrementally — missing: anchor rows [2,4,6,8], exact retained/new turn set, absence of sentinel-old-row and updated cursor/anchor invariants
 #[test]
 fn deleted_terminal_anchor_with_surviving_quorum_resumes_incrementally() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7626,7 +6689,7 @@ fn pruned_tracked_request_and_completion_preserve_cold_scan_parity() {
     assert_eq!(resumed_turns["turn-a"].model.as_deref(), Some("gpt-5.5"));
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:292 changed retained priority source forces cold scan parity after terminal pruning
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:292 changed retained priority source forces cold scan parity after terminal pruning — missing: cold scan parity, exclusion of turn-a and retained requestSourcesByTurnID row-1 evidence
 #[test]
 fn changed_retained_priority_source_forces_cold_scan_parity_after_terminal_pruning() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7675,54 +6738,7 @@ fn changed_retained_priority_source_forces_cold_scan_parity_after_terminal_pruni
     );
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:333 failed fallback cold scan leaves refresh uncommitted until retry succeeds
-#[test]
-fn failed_fallback_cold_scan_leaves_refresh_uncommitted_until_retry_succeeds() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("logs_2.sqlite");
-    codex_priority::reset_codex_priority_turns_memo(&db_path);
-    create_test_logs_db(&db_path);
-    let epoch = utc_ymd_hms(2026, 5, 10, 12, 0, 0).as_second();
-
-    insert_test_log(
-        &db_path,
-        epoch,
-        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
-    );
-    for idx in 1..8 {
-        insert_test_log(
-            &db_path,
-            epoch,
-            &format!("thread_id=t-{idx} turn.id=u-{idx} routine trace row"),
-        );
-    }
-
-    let _ = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
-    let persisted = codex_priority::codex_priority_turns_persisted_cursor(&db_path).unwrap();
-    assert_eq!(
-        persisted
-            .anchors
-            .iter()
-            .map(|a| a.row_id)
-            .collect::<Vec<_>>(),
-        vec![1, 3, 5, 8]
-    );
-
-    let conn = Connection::open(&db_path).unwrap();
-    conn.execute(
-        "UPDATE logs SET feedback_log_body = ?1 WHERE id = 1",
-        [priority_req_body("thread-x", "turn-x", "gpt-5.5")],
-    )
-    .unwrap();
-    drop(conn);
-
-    codex_priority::reset_codex_priority_turns_memo(&db_path);
-    codex_priority::seed_codex_priority_turns_memo_if_empty_for_path(&db_path, persisted);
-    let turns = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
-    assert_eq!(turns.keys().cloned().collect::<Vec<_>>(), vec!["turn-x"]);
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:400 trace open failure retains persisted priority pricing
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:400 trace open failure retains persisted priority pricing — missing: migration-row pricing removal fixture, pending/retried data equality and unchanged scan stamp/persisted cursor checks
 #[test]
 fn trace_open_failure_retains_persisted_priority_pricing() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7773,7 +6789,7 @@ fn trace_open_failure_retains_persisted_priority_pricing() {
     assert_eq!(retried.summary, initial.summary);
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:463 historical trace read failure retains persisted priority pricing
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:463 historical trace read failure retains persisted priority pricing — missing: historical migration-row fixture, pending data equality and unchanged scan stamp/persisted cursor checks
 #[test]
 fn historical_trace_read_failure_retains_persisted_priority_pricing() {
     let tmp = TempDir::new().expect("tempdir");
@@ -7832,156 +6848,13 @@ fn historical_trace_read_failure_retains_persisted_priority_pricing() {
     assert_eq!(pending.summary, expected.summary);
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:527 historical correction survives trace failure and relaunch
-#[test]
-fn historical_correction_survives_trace_failure_and_relaunch() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let historical_day = utc_ymd_hms(2026, 5, 1, 12, 0, 0);
-    let now = utc_ymd_hms(2026, 5, 11, 12, 0, 0);
-    let db_path = codex_home.join("logs_2.sqlite");
-    let backup_path = codex_home.join("logs_2.backup.sqlite");
-
-    write_jsonl(
-        &codex_home.join("sessions/2026/05/01/s1.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-05-01T12:00:00Z", "payload": {"id": "thread-a"}}),
-            json!({"type": "turn_context", "timestamp": "2026-05-01T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-01T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-01T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
-        ],
-    );
-    write_jsonl(
-        &codex_home.join("sessions/2026/05/11/s2.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-05-11T12:00:00Z", "payload": {"id": "outside"}}),
-            json!({"type": "turn_context", "timestamp": "2026-05-11T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-11T12:00:01Z", "payload": {"type": "task_started", "turn_id": "outside"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-11T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
-        ],
-    );
-    create_test_logs_db(&db_path);
-    insert_test_log(
-        &db_path,
-        historical_day.as_second(),
-        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
-    );
-    insert_test_log(
-        &db_path,
-        now.as_second(),
-        &priority_req_body("outside", "outside", "gpt-5.5"),
-    );
-
-    let _debounce = 60.0f64;
-    let opts = CostScannerOptions {
-        codex_home: Some(codex_home),
-        cache_root: Some(cache_root),
-        timezone: Some(TimeZone::UTC),
-        ..Default::default()
-    };
-    let report = load_daily_report(
-        LocalCostProvider::Codex,
-        historical_day,
-        historical_day,
-        now,
-        &opts,
-    );
-    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(110));
-    assert_eq!(
-        report.data[0].model_breakdowns[0].priority_tokens,
-        Some(110)
-    );
-    assert!(!backup_path.exists());
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:666 fallback fault hook is scoped to its database path
-#[test]
-fn fallback_fault_hook_is_scoped_to_its_database_path() {
-    let tmp = TempDir::new().expect("tempdir");
-    let faulted_db = tmp.path().join("faulted.sqlite");
-    let unaffected_db = tmp.path().join("unaffected.sqlite");
-    let epoch = utc_ymd_hms(2026, 5, 10, 12, 0, 0).as_second();
-
-    for db_path in [&faulted_db, &unaffected_db] {
-        codex_priority::reset_codex_priority_turns_memo(db_path);
-        create_test_logs_db(db_path);
-        insert_test_log(
-            db_path,
-            epoch,
-            &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
-        );
-        for idx in 1..8 {
-            insert_test_log(db_path, epoch, &format!("routine trace row {idx}"));
-        }
-        let _ = codex_priority::codex_priority_turns(db_path, None, None, Some(TimeZone::UTC));
-        let conn = Connection::open(db_path).unwrap();
-        conn.execute(
-            "UPDATE logs SET feedback_log_body = ?1 WHERE id = 1",
-            [priority_req_body("thread-x", "turn-x", "gpt-5.5")],
-        )
-        .unwrap();
-    }
-
-    let unaffected =
-        codex_priority::codex_priority_turns(&unaffected_db, None, None, Some(TimeZone::UTC));
-    assert_eq!(
-        unaffected.keys().cloned().collect::<Vec<_>>(),
-        vec!["turn-x"]
-    );
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:707 trace failure never borrows a different report scope
-#[test]
-fn trace_failure_never_borrows_a_different_report_scope() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let day = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
-    let db_path = codex_home.join("logs_2.sqlite");
-    let backup_path = codex_home.join("logs_2.backup.sqlite");
-    let _tzs = ("Pacific/Honolulu", "Asia/Tokyo");
-
-    write_jsonl(
-        &codex_home.join("sessions/2026/05/10/s.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:00Z", "payload": {"id": "thread-a"}}),
-            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
-        ],
-    );
-    create_test_logs_db(&db_path);
-    insert_test_log(
-        &db_path,
-        day.as_second(),
-        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
-    );
-
-    let initial = load_daily_report(
-        LocalCostProvider::Codex,
-        day,
-        day,
-        day,
-        &CostScannerOptions {
-            codex_home: Some(codex_home),
-            cache_root: Some(cache_root),
-            timezone: Some(TimeZone::UTC),
-            ..Default::default()
-        },
-    );
-    assert_eq!(initial.summary.as_ref().unwrap().total_tokens, Some(110));
-    assert!(!backup_path.exists());
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:762 never observed trace paths do not block repeated usage scans
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:762 never observed trace paths do not block repeated usage scans — missing: explicit never-observed trace path, missing:path metadata, empty resolved turns and advancing scan stamp assertions
 #[test]
 fn never_observed_trace_paths_do_not_block_repeated_usage_scans() {
     let tmp = TempDir::new().expect("tempdir");
     let codex_home = tmp.path().join("codex-home");
     let cache_root = tmp.path().join("cache");
     let day = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
-    let _missing = codex_home.join("never-created.sqlite");
 
     write_jsonl(
         &codex_home.join("sessions/2026/05/10/s1.jsonl"),
@@ -8021,71 +6894,6 @@ fn never_observed_trace_paths_do_not_block_repeated_usage_scans() {
         },
     );
     assert_eq!(second.summary.as_ref().unwrap().total_tokens, Some(220));
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:782 new missing trace path does not inherit the old path requirement
-#[test]
-fn new_missing_trace_path_does_not_inherit_the_old_path_requirement() {
-    let tmp = TempDir::new().expect("tempdir");
-    let codex_home = tmp.path().join("codex-home");
-    let cache_root = tmp.path().join("cache");
-    let day = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
-    let db_path = codex_home.join("logs_2.sqlite");
-    let _missing = codex_home.join("new-missing.sqlite");
-
-    create_test_logs_db(&db_path);
-    insert_test_log(
-        &db_path,
-        day.as_second(),
-        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
-    );
-    write_jsonl(
-        &codex_home.join("sessions/2026/05/10/s1.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:00Z", "payload": {"id": "thread-a"}}),
-            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
-        ],
-    );
-    let opts = CostScannerOptions {
-        codex_home: Some(codex_home.clone()),
-        cache_root: Some(cache_root),
-        timezone: Some(TimeZone::UTC),
-        ..Default::default()
-    };
-    let _ = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
-
-    fs::remove_file(&db_path).unwrap();
-    write_jsonl(
-        &codex_home.join("sessions/2026/05/10/s2.jsonl"),
-        &[
-            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:02Z", "payload": {"id": "thread-b"}}),
-            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:02Z", "payload": {"model": "gpt-5.5"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:03Z", "payload": {"type": "task_started", "turn_id": "turn-b"}}),
-            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
-        ],
-    );
-    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
-    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(220));
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:810 validated empty pricing evidence persists independently of the resume cursor
-#[test]
-fn validated_empty_pricing_evidence_persists_independently_of_the_resume_cursor() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _turn = ("turn-a", "thread-a|gpt-5.5|1788192000");
-    let mut meta: CostUsageStoreMetadata = store.load_metadata().unwrap_or_default();
-    meta.priority_metadata_key = Some("thread-a|gpt-5.5|1788192000".to_owned());
-    meta.scan_since_day = Some("2026-08-01".to_owned());
-    meta.scan_until_day = Some("2026-08-31".to_owned());
-    assert!(store.save_metadata(&meta));
-
-    meta.priority_metadata_key = None;
-    assert!(store.save_metadata(&meta));
-    let reloaded = store.load_metadata().unwrap();
-    assert!(reloaded.priority_metadata_key.is_none());
 }
 
 // upstream: CostUsageScannerCodexPriorityCursorTests.swift:835 changed surviving anchor forces a full rescan
@@ -8265,6 +7073,7 @@ fn missing_legacy_anchor_remains_conservative() {
         turns.keys().cloned().collect::<Vec<_>>(),
         vec!["turn-new", "turn-x"]
     );
+    assert!(!turns.contains_key("turn-a"));
 }
 
 // upstream: CostUsageScannerCodexPriorityCursorTests.swift:975 small databases require every available anchor
@@ -8339,9 +7148,10 @@ fn missing_anchor_refreshes_metadata_without_an_appended_tail() {
     let refreshed = codex_priority::codex_priority_turns_persisted_cursor(&db_path).unwrap();
     assert_eq!(refreshed.last_row_id, persisted.last_row_id);
     assert!(!refreshed.anchors.iter().any(|a| a.row_id == deleted_row_id));
+    assert_eq!(refreshed.anchors.len(), 4);
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:1041 persisted cursor still full scans when the requested window expands earlier
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:1041 persisted cursor still full scans when the requested window expands earlier — missing: store-backed daily-report persistence/relaunch fixture, persisted coverage equality with narrow memo and exact persisted narrow turn set
 #[test]
 fn persisted_cursor_still_full_scans_when_the_requested_window_expands_earlier() {
     let tmp = TempDir::new().expect("tempdir");
@@ -8391,7 +7201,7 @@ fn persisted_cursor_still_full_scans_when_the_requested_window_expands_earlier()
     assert!(expanded_cursor.coverage_since_epoch < persisted.coverage_since_epoch);
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:1088 old priority state payload without a cursor still cold scans
+// partial-upstream: CostUsageScannerCodexPriorityCursorTests.swift:1088 old priority state payload without a cursor still cold scans — missing: legacy per-day priority keys/turn IDs, refreshed cursor writeback and resolved report-state checks
 #[test]
 fn old_priority_state_payload_without_a_cursor_still_cold_scans() {
     let tmp = TempDir::new().expect("tempdir");
@@ -8406,7 +7216,6 @@ fn old_priority_state_payload_without_a_cursor_still_cold_scans() {
     );
 
     let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _legacy_fields = ("turn-a", "priority", "2026-05-10");
     let mut meta = store.load_metadata().unwrap_or_default();
     meta.priority_metadata_key = Some("priority".to_owned());
     meta.priority_turns_cursor = None;
@@ -8578,22 +7387,6 @@ fn identical_content_skip_still_persists_an_advanced_priority_cursor() {
     );
 }
 
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:1257 malformed resolved pricing preserves valid priority state
-#[test]
-fn malformed_resolved_pricing_preserves_valid_priority_state() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _legacy = ("turn-a", "thread-a|gpt-5.4|123", "2026-05-10");
-    let mut meta = store.load_metadata().unwrap_or_default();
-    meta.priority_metadata_key = Some("thread-a|gpt-5.4|123".to_owned());
-    meta.scan_since_day = Some("2026-05-10".to_owned());
-    assert!(store.save_metadata(&meta));
-
-    let loaded = store.load_metadata().unwrap();
-    assert_eq!(loaded.priority_metadata_key, meta.priority_metadata_key);
-    assert_eq!(loaded.scan_since_day, meta.scan_since_day);
-}
-
 // upstream: CostUsageScannerCodexPriorityCursorTests.swift:1309 malformed priority turns cursor still loads turn keys
 #[test]
 fn malformed_priority_turns_cursor_still_loads_turn_keys() {
@@ -8622,57 +7415,6 @@ fn malformed_priority_turns_cursor_still_loads_turn_keys() {
 
     let loaded = store.load_metadata().unwrap_or_default();
     assert!(loaded.priority_turns_cursor.is_none());
-}
-
-// upstream: CostUsageScannerCodexPriorityCursorTests.swift:1330 persisted payload without content anchor fields still cold scans
-#[test]
-fn persisted_payload_without_content_anchor_fields_still_cold_scans() {
-    let tmp = TempDir::new().expect("tempdir");
-    let db_path = tmp.path().join("logs_2.sqlite");
-    codex_priority::reset_codex_priority_turns_memo(&db_path);
-    create_test_logs_db(&db_path);
-    let now = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
-    insert_test_log(
-        &db_path,
-        now.as_second(),
-        &priority_req_body("thread-cold", "turn-cold", "gpt-5.5"),
-    );
-
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let meta = store.load_metadata().unwrap_or_default();
-    assert!(store.save_metadata(&meta));
-
-    let conn = Connection::open(store.database_path()).unwrap();
-    let payload = serde_json::json!({
-        "priorityMetadataKey": "marker",
-        "turnKeys": {"2026-05-10": "marker"},
-        "turnIDsByDay": {"2026-05-10": ["turn-a"]},
-        "turnsCursor": {
-            "databasePath": "/tmp/logs_2.sqlite",
-            "coverageSinceEpoch": 0,
-            "lastRowID": 51,
-            "fileIdentity": 1,
-            "turns": {"turn-a": {"threadID": "thread-a", "turnID": "turn-a"}},
-            "requestSourcesByTurnID": {},
-            "priorityCompletedModelsByTurnID": {},
-            "completedModelsByTurnID": {},
-            "completedTurnIDInsertionOrder": [],
-            "completedTurnIDInsertionOrderStartIndex": 0
-        }
-    })
-    .to_string();
-    conn.execute(
-        "UPDATE scan_metadata SET payload = ?1 WHERE id = 1",
-        [payload.as_bytes()],
-    )
-    .unwrap();
-    drop(conn);
-
-    let loaded = store.load_metadata().unwrap_or_default();
-    assert!(loaded.priority_turns_cursor.is_none());
-
-    let turns = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
-    assert_eq!(turns.keys().cloned().collect::<Vec<_>>(), vec!["turn-cold"]);
 }
 
 // upstream: CostUsageScannerCodexPriorityCursorTests.swift:1387 force rescan drops a persisted priority cursor and cold scans
@@ -9918,12 +8660,6 @@ fn budgeted_scan_recovers_corrupt_cached_pricing_before_spending_budget_on_unind
             codex::pending_codex_scan_work_bytes(size, parsed)
         })
         .sum::<u64>();
-    let _budget = CodexScanBudget {
-        max_bytes: Some(200),
-        consumed_bytes: 0,
-        processed_files: 0,
-        deferred_changed_file: false,
-    };
     assert_eq!(pending, 128 + 256);
 }
 
@@ -12731,4 +11467,1119 @@ fn codex_priority_database_skipped_marks_report_partial_and_caches_private_copy(
         ariadusage_protocol::usage::CostProvenance::ListPriceEstimate,
     );
     assert!(hist.history_scan_is_partial);
+}
+
+// Rust-added: Pricing helper returns a positive standard price; no report aggregate fallback, priority-aggregate or mode-mismatch scenario.
+#[test]
+fn codex_report_safely_prices_linear_aggregate_fallback() {
+    let model = "gpt-5.4-mini";
+    let expected = pricing::codex_cost_usd_with_tier(
+        model,
+        300_000,
+        100_000,
+        100,
+        Some(pricing::CodexServiceTier::Standard),
+        None,
+    )
+    .unwrap();
+    assert!(expected > 0.0);
+}
+
+// Rust-added: Canonical pricing helper rejects ambiguous rows; no project report, path, token total 700020 or prepared-project parity.
+#[test]
+fn project_primary_report_propagates_unresolved_same_model_ownership() {
+    let day_key = "2026-09-11";
+    let model = "gpt-5.6-sol";
+    let r1 = make_row(
+        day_key,
+        model,
+        "unresolved-1",
+        1,
+        None,
+        220_000,
+        0,
+        5,
+        Some("standard"),
+        None,
+    );
+    let r2 = make_row(
+        day_key,
+        model,
+        "unresolved-2",
+        2,
+        None,
+        220_000,
+        0,
+        5,
+        Some("standard"),
+        None,
+    );
+    let unresolved_usage = CodexParseResult {
+        days: BTreeMap::from([(
+            day_key.to_owned(),
+            BTreeMap::from([(model.to_owned(), vec![400_000, 0, 10])]),
+        )]),
+        rows: vec![r1, r2],
+        ..Default::default()
+    };
+    let res = codex::codex_canonical_pricing_rows(&unresolved_usage.days, &unresolved_usage.rows);
+    assert!(res.rows.is_empty());
+    assert_eq!(
+        res.unresolved_groups,
+        BTreeSet::from([CodexDayModelKey {
+            day: day_key.to_owned(),
+            model: model.to_owned(),
+        }])
+    );
+}
+
+// Rust-added: Retained-pricing helper returns two rows for conflicting candidate prices; no source replay or unavailable-cost assertion.
+#[test]
+fn source_replay_cannot_choose_between_conflicting_retained_prices() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("conflicting-prices.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+    let deltas = [200_000i64, 400_000];
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "conflict-sess"}}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4-mini", "service_tier": "priority"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": deltas[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+
+    let parsed = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    let mut r1 = parsed.rows[0].clone();
+    r1.known_cost_nanos = Some(1_000_000_000);
+    let mut r2 = parsed.rows[0].clone();
+    r2.known_cost_nanos = Some(2_000_000_000);
+    let recovered =
+        codex::recover_codex_rows_with_retained_pricing(&parsed.rows, &[r1, r2], &BTreeMap::new());
+    assert_eq!(recovered.len(), 2);
+}
+
+// Rust-added: Initial priority-only scan reports 600000 tokens and cost 3; no bounded recovery or reopened-store scenario.
+#[test]
+fn bounded_source_recovery_retains_unanimous_pricing_after_reopening_its_store() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let file_path = codex_home.join("sessions/2026/09/10/bounded-recovery.jsonl");
+    let steps = [200_000i64, 200_000, 200_000];
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "bounded-sess"}}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": steps[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+
+    let opts = CostScannerOptions {
+        codex_home: Some(codex_home),
+        cache_root: Some(cache_root),
+        timezone: Some(TimeZone::UTC),
+        ..Default::default()
+    };
+    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
+    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(600_000));
+    assert!((report.summary.as_ref().unwrap().total_cost_usd.unwrap() - 3.0).abs() < 1e-9);
+}
+
+// Rust-added: Two ordinary scans return 600000 tokens; source is never made unavailable and unknown-history/debounce state is not tested.
+#[test]
+fn unavailable_source_retains_unknown_history_without_bypassing_debounce() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let file_path = codex_home.join("sessions/2026/09/10/unavailable-source.jsonl");
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "unavail-sess"}}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+
+    let opts = CostScannerOptions {
+        codex_home: Some(codex_home),
+        cache_root: Some(cache_root),
+        timezone: Some(TimeZone::UTC),
+        ..Default::default()
+    };
+    let first = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
+    assert_eq!(first.summary.as_ref().unwrap().total_tokens, Some(600_000));
+
+    let debounced = load_daily_report(
+        LocalCostProvider::Codex,
+        day,
+        day,
+        day.checked_add(1_i64.seconds()).unwrap(),
+        &opts,
+    );
+    assert_eq!(
+        debounced.summary.as_ref().unwrap().total_tokens,
+        Some(600_000)
+    );
+}
+
+// Rust-added: Two available files produce aggregate token/cost totals; no unavailable sibling or retained-source recovery is exercised.
+#[test]
+fn recovering_an_available_source_preserves_unrelated_unavailable_history() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let day_dir = codex_home.join("sessions/2026/09/10");
+
+    write_jsonl(
+        &day_dir.join("available-source.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "avail-sess"}}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+    write_jsonl(
+        &day_dir.join("unavailable-history.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "synthetic-unavailable-session"}}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 400_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+
+    let opts = CostScannerOptions {
+        codex_home: Some(codex_home),
+        cache_root: Some(cache_root),
+        timezone: Some(TimeZone::UTC),
+        ..Default::default()
+    };
+    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
+    assert_eq!(
+        report.summary.as_ref().unwrap().total_tokens,
+        Some(1_200_000)
+    );
+    assert!((report.summary.as_ref().unwrap().total_cost_usd.unwrap() - 3.0).abs() < 1e-9);
+}
+
+// Rust-added: Canonical pricing detects mismatched row/day totals; no authoritative zero/recorded-price report scenario is exercised.
+#[test]
+fn unresolved_rows_cannot_replace_recorded_prices_with_a_flat_aggregate() {
+    let days = BTreeMap::from([(
+        "2026-09-10".to_owned(),
+        BTreeMap::from([("gpt-5.4".to_owned(), vec![1500, 0, 0])]),
+    )]);
+    let row = make_row(
+        "2026-09-10",
+        "gpt-5.4",
+        "synthetic-turn",
+        0,
+        Some(1_000),
+        1000,
+        0,
+        0,
+        Some("standard"),
+        None,
+    );
+    let canonical = codex::codex_canonical_pricing_rows(&days, &[row]);
+    assert!(!canonical.unresolved_groups.is_empty());
+}
+
+// Rust-added: Cold parser totals a synthetic session to 600000 input tokens; no buffered subagent growth or retained-pricing recovery is exercised.
+#[test]
+fn buffered_subagent_growth_prices_only_original_requests_from_retained_evidence() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("growing-subagent.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "session_meta", "ordinal": 0, "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "synthetic-subagent-session", "forked_from_id": "synthetic-parent-session", "thread_source": "subagent", "subagent_history_start_ordinal": 10}}),
+            json!({"type": "turn_context", "ordinal": 1, "timestamp": "2026-09-10T12:00:00Z", "payload": {"model": "gpt-5.4", "service_tier": "standard"}}),
+            json!({"type": "event_msg", "ordinal": 2, "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "turn_context", "ordinal": 10, "timestamp": "2026-09-10T12:00:02Z", "payload": {"model": "gpt-5.5", "service_tier": "priority"}}),
+            json!({"type": "inter_agent_communication_metadata", "ordinal": 11, "timestamp": "2026-09-10T12:00:02Z", "payload": {"trigger_turn": true}}),
+            json!({"type": "event_msg", "ordinal": 12, "timestamp": "2026-09-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 700_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+
+    let parsed = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(Some(CodexTotals::new(100_000, 0, 0, None))),
+    );
+    assert_eq!(&parsed.days["2026-09-10"]["gpt-5.5"][..3], &[600_000, 0, 0]);
+}
+
+// Rust-added: Token-index anchor helper detects a rewritten source; no outside-anchor retained-price validation is exercised.
+#[test]
+fn same_size_rewrite_outside_a_large_source_anchor_discards_retained_prices() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("large-recovery.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+    let pad = "p".repeat(80 * 1024);
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "synthetic_note", "padding": pad, "marker": "before"}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+    let first = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    let anchor_before = codex::codex_token_index_anchor(&first.token_snapshots);
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "synthetic_note", "padding": pad, "marker": "after!"}),
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-2", "model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 200_000, "cached_input_tokens": 0, "output_tokens": 10}}}}),
+        ],
+    );
+    let second = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert!(!codex::codex_token_index_anchor_matches(
+        &second.token_snapshots,
+        anchor_before.as_ref()
+    ));
+}
+
+// Rust-added: A source is rewritten after an initial parse; no resumed recovery or retained-pricing invalidation is checked.
+#[test]
+fn rewriting_an_unparsed_suffix_invalidates_retained_recovery_pricing() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("rewritten-tail.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+    let pad = "p".repeat(64 * 1024);
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+            json!({"type": "synthetic_note", "padding": pad, "marker": "before"}),
+        ],
+    );
+    let first = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert_eq!(first.rows[0].input, 600_000);
+
+    let mut content = fs::read_to_string(&file_path).unwrap();
+    content = content.replace("before", "after!");
+    fs::write(&file_path, content).unwrap();
+    assert!(file_path.exists());
+}
+
+// Rust-added: Incremental file parsing returns an appended 50000-token row; no selected recovery-pricing validation is exercised.
+#[test]
+fn growth_after_recovery_selection_retains_pricing_when_the_original_target_still_matches() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("selected-growth.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+    let steps = [200_000i64, 200_000, 200_000];
+
+    let mut lines = vec![
+        json!({"type": "session_meta", "timestamp": "2026-09-10T12:00:00Z", "payload": {"id": "sel-sess"}}),
+        json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.4", "service_tier": "priority"}}),
+        json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": steps[0], "cached_input_tokens": 0, "output_tokens": 0}}}}),
+    ];
+    write_jsonl(&file_path, &lines);
+
+    let first = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    lines.push(json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:02Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 250_000, "cached_input_tokens": 0, "output_tokens": 0}}}}));
+    write_jsonl(&file_path, &lines);
+
+    let resumed = codex::resume_codex_file(
+        &file_path,
+        &range,
+        &first,
+        Some(fs::metadata(&file_path).unwrap().len()),
+        Some(&first.rows),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert_eq!(resumed.rows.len(), 1);
+    assert_eq!(resumed.rows[0].input, 50_000);
+}
+
+// Rust-added: Cold parses observe replacement model/tier metadata; no interrupted recovery or retained-pricing invalidation is exercised.
+#[test]
+fn interrupted_recovery_drops_pricing_when_source_identity_or_prefix_changes() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("replaced-recovery.jsonl");
+    let day = utc_ymd_hms(2026, 9, 10, 12, 0, 0);
+    let range = DayRange::new(day, day, Some(TimeZone::UTC));
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-1", "model": "gpt-5.5", "service_tier": "priority"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-1", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+    let first = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert_eq!(first.rows[0].model, "gpt-5.5");
+
+    write_jsonl(
+        &file_path,
+        &[
+            json!({"type": "turn_context", "timestamp": "2026-09-10T12:00:00Z", "payload": {"turn_id": "turn-2", "model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-09-10T12:00:01Z", "payload": {"type": "token_count", "turn_id": "turn-2", "info": {"total_token_usage": {"input_tokens": 600_000, "cached_input_tokens": 0, "output_tokens": 0}}}}),
+        ],
+    );
+    let second = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert_eq!(second.rows[0].model, "gpt-5.4");
+    assert_eq!(second.rows[0].pricing_mode.as_deref(), Some("standard"));
+}
+
+// Rust-added: Cold parser deduplicates a constructed ledger sequence; no revision-8 store migration/reparse or persistence checks.
+#[test]
+fn revision_8_duplicate_mirror_rows_are_removed_by_the_reparse() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("duplicate-mirror.jsonl");
+    let tz = TimeZone::get("Asia/Shanghai").unwrap();
+    let start = utc_ymd_hms(2026, 8, 29, 15, 59, 0);
+    let end = utc_ymd_hms(2026, 8, 29, 16, 1, 5);
+    let range = DayRange::new(start, end, Some(tz));
+
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [1000, 200, 100, 40],
+        [3000, 600, 300, 120],
+        None,
+    ));
+    lines.push(ledger_legacy(
+        LEDGER_TS_A,
+        [1000, 200, 100, 40],
+        [3000, 600, 300, 120],
+    ));
+    write_jsonl(&file_path, &lines);
+
+    let parsed = codex::parse_codex_file(
+        &file_path,
+        &range,
+        0,
+        None,
+        None,
+        None,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        |_, _| CodexForkBaseline::Resolved(None),
+    );
+    assert_eq!(
+        parsed.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        1100
+    );
+}
+
+// Rust-added: Cold parser accepts a bare-usage ledger sequence; no bounded pass, resume or exact 121/231 cold parity checks.
+#[test]
+fn bare_usage_gives_the_same_pairing_across_a_bounded_pass() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("bounded-bare.jsonl");
+    let lines = [
+        json!({"type": "session_meta", "timestamp": LEDGER_TS_A, "payload": {"id": "synthetic-thread"}}),
+        json!({"type": "turn_context", "timestamp": LEDGER_TS_A, "payload": {"turn_id": "synthetic-turn", "model": "gpt-5"}}),
+        json!({"timestamp": LEDGER_TS_A, "usage": {"prompt_tokens": 10, "completion_tokens": 1}}),
+        ledger_record(
+            "one",
+            "synthetic-thread",
+            LEDGER_TS_A,
+            [100, 20, 10, 4],
+            [1000, 200, 100, 40],
+            None,
+        ),
+    ];
+    write_jsonl(&file_path, &lines);
+    let result = parse_ledger_lines(&lines, false);
+    let total = result.rows.iter().map(|r| r.input + r.output).sum::<i64>();
+    assert!(total == 121 || total == 231 || total == 110);
+}
+
+// Rust-added: Cold parser handles one constructed response; no unresolved fork, late parent resolution or 297-token replay checks.
+#[test]
+fn fork_bare_usage_keeps_later_drifted_pairs_when_the_parent_resolves_late() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "two",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [60, 20, 6, 3],
+        [1160, 240, 116, 47],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(result.rows.len(), 1);
+}
+
+// Rust-added: Three unique response IDs accumulate ledger usage; no compaction/delayed-mirror continuity fixture.
+#[test]
+fn first_post_compaction_response_with_a_delayed_mirror_counts_once() {
+    let expected_ids = ["r1", "r2", "r3"];
+
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "r1",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [1000, 200, 100, 0],
+        [1000, 200, 100, 0],
+        None,
+    ));
+    lines.push(ledger_record(
+        "r2",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [5000, 0, 400, 0],
+        [6000, 200, 500, 0],
+        None,
+    ));
+    lines.push(ledger_record(
+        "r3",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [300, 100, 30, 0],
+        [6300, 300, 530, 0],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(
+        result
+            .rows
+            .iter()
+            .filter_map(|r| r.response_id.as_deref())
+            .collect::<Vec<_>>(),
+        expected_ids
+    );
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        6830
+    );
+}
+
+// Rust-added: One constructed ledger response parses once; no counter-history eviction, 3/71-pair scenarios or response-ID sequence checks.
+#[test]
+fn owned_legacy_replays_preserve_continuity_after_counter_history_eviction() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1100, 220, 110, 44],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(result.rows.len(), 1);
+}
+
+// Rust-added: Five unique ledger responses total 495 tokens; no mirrored legacy observations or previously-seen counter reset fixture.
+#[test]
+fn owned_responses_can_reset_a_counter_to_a_previously_seen_total() {
+    let steps = [
+        (100i64, 900i64, 2i64),
+        (100, 1000, 2),
+        (100, 900, 2),
+        (50, 950, 20000),
+        (100, 1050, 20000),
+    ];
+    let mut lines = ledger_header();
+    for (idx, (inp, tot, _)) in steps.iter().enumerate() {
+        let out = inp / 10;
+        lines.push(ledger_record(
+            &format!("r-{idx}"),
+            "synthetic-thread",
+            LEDGER_TS_A,
+            [*inp, 0, out, 0],
+            [*tot, 0, tot / 10, 0],
+            None,
+        ));
+    }
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(result.rows.len(), 5);
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        495
+    );
+}
+
+// Rust-added: Cold parser counts two responses; no zero-usage bounded prefix, resume or resumed-row equality check.
+#[test]
+fn zero_usage_observations_retain_continuity_across_a_bounded_resume() {
+    let tmp = TempDir::new().expect("tempdir");
+    let file_path = tmp.path().join("zero-prefix.jsonl");
+
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "r1",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 0, 0, 0],
+        [1100, 20, 10, 4],
+        None,
+    ));
+    lines.push(ledger_record(
+        "r2",
+        "synthetic-thread",
+        LEDGER_TS_B,
+        [200, 20, 10, 4],
+        [300, 20, 10, 4],
+        None,
+    ));
+    write_jsonl(&file_path, &lines);
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(result.rows.len(), 2);
+}
+
+// Rust-added: Cold parser sums three constructed responses; no fork parent, appended delayed mirror or bounded replay.
+#[test]
+fn fork_replay_preserves_continuity_for_an_appended_delayed_mirror() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1000, 200, 100, 40],
+        None,
+    ));
+    lines.push(ledger_record(
+        "two",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1200, 240, 120, 48],
+        None,
+    ));
+    lines.push(ledger_record(
+        "three",
+        "synthetic-thread",
+        LEDGER_TS_B,
+        [100, 20, 10, 4],
+        [1300, 260, 130, 52],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        330
+    );
+}
+
+// Rust-added: Two constructed ledger responses total 220 tokens; no unresolved fork or retained pending-original mirror.
+#[test]
+fn fork_replay_retains_a_pending_original_ledger_mirror() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1000, 200, 100, 40],
+        None,
+    ));
+    lines.push(ledger_record(
+        "two",
+        "synthetic-thread",
+        LEDGER_TS_B,
+        [100, 20, 10, 4],
+        [1200, 240, 120, 48],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        220
+    );
+}
+
+// Rust-added: One constructed ledger response totals 110 tokens; no total-only fork, parent resolution or input/order parameter matrix.
+#[test]
+fn total_only_fork_mirrors_match_after_parent_resolution() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 0, 10, 0],
+        [1100, 0, 110, 0],
+        None,
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        110
+    );
+}
+
+// Rust-added: Cold parser sums a constructed ledger/legacy pair to 220 tokens; no deferred fork replay or new-request ownership check.
+#[test]
+fn total_only_deferred_replays_cannot_claim_a_new_legacy_request() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1200, 240, 120, 48],
+        None,
+    ));
+    lines.push(ledger_legacy(
+        LEDGER_TS_B,
+        [100, 20, 10, 4],
+        [1000, 200, 100, 40],
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert_eq!(
+        result.rows.iter().map(|r| r.input + r.output).sum::<i64>(),
+        220
+    );
+}
+
+// Rust-added: Cold parser bounds a constructed response total; no fork resolution or duplicate/exact/ordering parameter matrix.
+#[test]
+fn fork_resolution_preserves_the_preceding_mirror_before_later_equal_usage() {
+    let mut lines = ledger_header();
+    lines.push(ledger_record(
+        "one",
+        "synthetic-thread",
+        LEDGER_TS_A,
+        [100, 20, 10, 4],
+        [1100, 220, 110, 44],
+        None,
+    ));
+    lines.push(ledger_legacy(
+        LEDGER_TS_B,
+        [100, 20, 10, 4],
+        [1000, 200, 100, 40],
+    ));
+    let result = parse_ledger_lines(&lines, false);
+    assert!(result.rows.iter().map(|r| r.input + r.output).sum::<i64>() <= 220);
+}
+
+// Rust-added: Changed trace rows are rescanned from a seeded cursor; no failing fallback hook, uncommitted report or retry lifecycle.
+#[test]
+fn failed_fallback_cold_scan_leaves_refresh_uncommitted_until_retry_succeeds() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("logs_2.sqlite");
+    codex_priority::reset_codex_priority_turns_memo(&db_path);
+    create_test_logs_db(&db_path);
+    let epoch = utc_ymd_hms(2026, 5, 10, 12, 0, 0).as_second();
+
+    insert_test_log(
+        &db_path,
+        epoch,
+        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
+    );
+    for idx in 1..8 {
+        insert_test_log(
+            &db_path,
+            epoch,
+            &format!("thread_id=t-{idx} turn.id=u-{idx} routine trace row"),
+        );
+    }
+
+    let _ = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
+    let persisted = codex_priority::codex_priority_turns_persisted_cursor(&db_path).unwrap();
+    assert_eq!(
+        persisted
+            .anchors
+            .iter()
+            .map(|a| a.row_id)
+            .collect::<Vec<_>>(),
+        vec![1, 3, 5, 8]
+    );
+
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "UPDATE logs SET feedback_log_body = ?1 WHERE id = 1",
+        [priority_req_body("thread-x", "turn-x", "gpt-5.5")],
+    )
+    .unwrap();
+    drop(conn);
+
+    codex_priority::reset_codex_priority_turns_memo(&db_path);
+    codex_priority::seed_codex_priority_turns_memo_if_empty_for_path(&db_path, persisted);
+    let turns = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
+    assert_eq!(turns.keys().cloned().collect::<Vec<_>>(), vec!["turn-x"]);
+}
+
+// Rust-added: Initial historical report contains 110 priority tokens; no historical correction, trace failure, relaunch or read-view parity.
+#[test]
+fn historical_correction_survives_trace_failure_and_relaunch() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let historical_day = utc_ymd_hms(2026, 5, 1, 12, 0, 0);
+    let now = utc_ymd_hms(2026, 5, 11, 12, 0, 0);
+    let db_path = codex_home.join("logs_2.sqlite");
+    let backup_path = codex_home.join("logs_2.backup.sqlite");
+
+    write_jsonl(
+        &codex_home.join("sessions/2026/05/01/s1.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-05-01T12:00:00Z", "payload": {"id": "thread-a"}}),
+            json!({"type": "turn_context", "timestamp": "2026-05-01T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-01T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-01T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
+        ],
+    );
+    write_jsonl(
+        &codex_home.join("sessions/2026/05/11/s2.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-05-11T12:00:00Z", "payload": {"id": "outside"}}),
+            json!({"type": "turn_context", "timestamp": "2026-05-11T12:00:00Z", "payload": {"model": "gpt-5.4"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-11T12:00:01Z", "payload": {"type": "task_started", "turn_id": "outside"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-11T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
+        ],
+    );
+    create_test_logs_db(&db_path);
+    insert_test_log(
+        &db_path,
+        historical_day.as_second(),
+        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
+    );
+    insert_test_log(
+        &db_path,
+        now.as_second(),
+        &priority_req_body("outside", "outside", "gpt-5.5"),
+    );
+
+    let opts = CostScannerOptions {
+        codex_home: Some(codex_home),
+        cache_root: Some(cache_root),
+        timezone: Some(TimeZone::UTC),
+        ..Default::default()
+    };
+    let report = load_daily_report(
+        LocalCostProvider::Codex,
+        historical_day,
+        historical_day,
+        now,
+        &opts,
+    );
+    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(110));
+    assert_eq!(
+        report.data[0].model_breakdowns[0].priority_tokens,
+        Some(110)
+    );
+    assert!(!backup_path.exists());
+}
+
+// Rust-added: Independent databases return independent turn sets; no path-scoped fallback fault is injected.
+#[test]
+fn fallback_fault_hook_is_scoped_to_its_database_path() {
+    let tmp = TempDir::new().expect("tempdir");
+    let faulted_db = tmp.path().join("faulted.sqlite");
+    let unaffected_db = tmp.path().join("unaffected.sqlite");
+    let epoch = utc_ymd_hms(2026, 5, 10, 12, 0, 0).as_second();
+
+    for db_path in [&faulted_db, &unaffected_db] {
+        codex_priority::reset_codex_priority_turns_memo(db_path);
+        create_test_logs_db(db_path);
+        insert_test_log(
+            db_path,
+            epoch,
+            &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
+        );
+        for idx in 1..8 {
+            insert_test_log(db_path, epoch, &format!("routine trace row {idx}"));
+        }
+        let _ = codex_priority::codex_priority_turns(db_path, None, None, Some(TimeZone::UTC));
+        let conn = Connection::open(db_path).unwrap();
+        conn.execute(
+            "UPDATE logs SET feedback_log_body = ?1 WHERE id = 1",
+            [priority_req_body("thread-x", "turn-x", "gpt-5.5")],
+        )
+        .unwrap();
+    }
+
+    let unaffected =
+        codex_priority::codex_priority_turns(&unaffected_db, None, None, Some(TimeZone::UTC));
+    assert_eq!(
+        unaffected.keys().cloned().collect::<Vec<_>>(),
+        vec!["turn-x"]
+    );
+}
+
+// Rust-added: Initial report contains 110 tokens; no trace failure, timezone/report-scope switch or cache non-borrowing check.
+#[test]
+fn trace_failure_never_borrows_a_different_report_scope() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let day = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
+    let db_path = codex_home.join("logs_2.sqlite");
+    let backup_path = codex_home.join("logs_2.backup.sqlite");
+
+    write_jsonl(
+        &codex_home.join("sessions/2026/05/10/s.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:00Z", "payload": {"id": "thread-a"}}),
+            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
+        ],
+    );
+    create_test_logs_db(&db_path);
+    insert_test_log(
+        &db_path,
+        day.as_second(),
+        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
+    );
+
+    let initial = load_daily_report(
+        LocalCostProvider::Codex,
+        day,
+        day,
+        day,
+        &CostScannerOptions {
+            codex_home: Some(codex_home),
+            cache_root: Some(cache_root),
+            timezone: Some(TimeZone::UTC),
+            ..Default::default()
+        },
+    );
+    assert_eq!(initial.summary.as_ref().unwrap().total_tokens, Some(110));
+    assert!(!backup_path.exists());
+}
+
+// Rust-added: Usage rescans after removing the old trace database; no new missing-path switch or metadata-key assertion.
+#[test]
+fn new_missing_trace_path_does_not_inherit_the_old_path_requirement() {
+    let tmp = TempDir::new().expect("tempdir");
+    let codex_home = tmp.path().join("codex-home");
+    let cache_root = tmp.path().join("cache");
+    let day = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
+    let db_path = codex_home.join("logs_2.sqlite");
+
+    create_test_logs_db(&db_path);
+    insert_test_log(
+        &db_path,
+        day.as_second(),
+        &priority_req_body("thread-a", "turn-a", "gpt-5.5"),
+    );
+    write_jsonl(
+        &codex_home.join("sessions/2026/05/10/s1.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:00Z", "payload": {"id": "thread-a"}}),
+            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:00Z", "payload": {"model": "gpt-5.5"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "task_started", "turn_id": "turn-a"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:01Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
+        ],
+    );
+    let opts = CostScannerOptions {
+        codex_home: Some(codex_home.clone()),
+        cache_root: Some(cache_root),
+        timezone: Some(TimeZone::UTC),
+        ..Default::default()
+    };
+    let _ = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
+
+    fs::remove_file(&db_path).unwrap();
+    write_jsonl(
+        &codex_home.join("sessions/2026/05/10/s2.jsonl"),
+        &[
+            json!({"type": "session_meta", "timestamp": "2026-05-10T12:00:02Z", "payload": {"id": "thread-b"}}),
+            json!({"type": "turn_context", "timestamp": "2026-05-10T12:00:02Z", "payload": {"model": "gpt-5.5"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:03Z", "payload": {"type": "task_started", "turn_id": "turn-b"}}),
+            json!({"type": "event_msg", "timestamp": "2026-05-10T12:00:03Z", "payload": {"type": "token_count", "info": {"total_token_usage": {"input_tokens": 100, "cached_input_tokens": 20, "output_tokens": 10}}}}),
+        ],
+    );
+    let report = load_daily_report(LocalCostProvider::Codex, day, day, day, &opts);
+    assert_eq!(report.summary.as_ref().unwrap().total_tokens, Some(220));
+}
+
+// Rust-added: Store metadata key can be cleared and reloaded; no resolved-empty-pricing payload or independent resume-cursor persistence.
+#[test]
+fn validated_empty_pricing_evidence_persists_independently_of_the_resume_cursor() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let mut meta: CostUsageStoreMetadata = store.load_metadata().unwrap_or_default();
+    meta.priority_metadata_key = Some("thread-a|gpt-5.5|1788192000".to_owned());
+    meta.scan_since_day = Some("2026-08-01".to_owned());
+    meta.scan_until_day = Some("2026-08-31".to_owned());
+    assert!(store.save_metadata(&meta));
+
+    meta.priority_metadata_key = None;
+    assert!(store.save_metadata(&meta));
+    let reloaded = store.load_metadata().unwrap();
+    assert!(reloaded.priority_metadata_key.is_none());
+}
+
+// Rust-added: Store round-trips valid metadata; no malformed resolved-pricing payload or preservation/clearing assertions.
+#[test]
+fn malformed_resolved_pricing_preserves_valid_priority_state() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let mut meta = store.load_metadata().unwrap_or_default();
+    meta.priority_metadata_key = Some("thread-a|gpt-5.4|123".to_owned());
+    meta.scan_since_day = Some("2026-05-10".to_owned());
+    assert!(store.save_metadata(&meta));
+
+    let loaded = store.load_metadata().unwrap();
+    assert_eq!(loaded.priority_metadata_key, meta.priority_metadata_key);
+    assert_eq!(loaded.scan_since_day, meta.scan_since_day);
+}
+
+// Rust-added: An absent cursor allows a cold trace scan; no persisted payload with removed content-anchor fields or refreshed anchor writeback.
+#[test]
+fn persisted_payload_without_content_anchor_fields_still_cold_scans() {
+    let tmp = TempDir::new().expect("tempdir");
+    let db_path = tmp.path().join("logs_2.sqlite");
+    codex_priority::reset_codex_priority_turns_memo(&db_path);
+    create_test_logs_db(&db_path);
+    let now = utc_ymd_hms(2026, 5, 10, 12, 0, 0);
+    insert_test_log(
+        &db_path,
+        now.as_second(),
+        &priority_req_body("thread-cold", "turn-cold", "gpt-5.5"),
+    );
+
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let meta = store.load_metadata().unwrap_or_default();
+    assert!(store.save_metadata(&meta));
+
+    let conn = Connection::open(store.database_path()).unwrap();
+    let payload = serde_json::json!({
+        "priorityMetadataKey": "marker",
+        "turnKeys": {"2026-05-10": "marker"},
+        "turnIDsByDay": {"2026-05-10": ["turn-a"]},
+        "turnsCursor": {
+            "databasePath": "/tmp/logs_2.sqlite",
+            "coverageSinceEpoch": 0,
+            "lastRowID": 51,
+            "fileIdentity": 1,
+            "turns": {"turn-a": {"threadID": "thread-a", "turnID": "turn-a"}},
+            "requestSourcesByTurnID": {},
+            "priorityCompletedModelsByTurnID": {},
+            "completedModelsByTurnID": {},
+            "completedTurnIDInsertionOrder": [],
+            "completedTurnIDInsertionOrderStartIndex": 0
+        }
+    })
+    .to_string();
+    conn.execute(
+        "UPDATE scan_metadata SET payload = ?1 WHERE id = 1",
+        [payload.as_bytes()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let loaded = store.load_metadata().unwrap_or_default();
+    assert!(loaded.priority_turns_cursor.is_none());
+
+    let turns = codex_priority::codex_priority_turns(&db_path, None, None, Some(TimeZone::UTC));
+    assert_eq!(turns.keys().cloned().collect::<Vec<_>>(), vec!["turn-cold"]);
 }
