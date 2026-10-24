@@ -172,6 +172,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
         let prefs = IconPreferences {
             show_used: settings_state.menu_bar_show_used,
             hide_critters: settings_state.menu_bar_icon_style == "bars",
+            now: Some(jiff::Timestamp::now()),
             ..IconPreferences::default()
         };
         *cell.borrow_mut() = Some(AppState {
@@ -285,6 +286,7 @@ pub fn trigger_quota_warning_flash(provider_id: &str) {
 fn sync_state_from_settings(state: &mut AppState) {
     state.prefs.show_used = state.settings_state.menu_bar_show_used;
     state.prefs.hide_critters = state.settings_state.menu_bar_icon_style == "bars";
+    state.prefs.now = Some(jiff::Timestamp::now());
     state.last_render_signature = None;
     let card_prefs = CardPreferences {
         show_used: state.settings_state.menu_bar_show_used,
@@ -324,13 +326,14 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
 /// Uses [`icon::DEFAULT_QUOTA_WARNING_THRESHOLDS`] (`[50, 20]`) until user-configured
 /// warning thresholds are exposed on the engine snapshot/settings.
 fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapshot) {
-    let now = now_secs();
+    let now_ts = jiff::Timestamp::now();
+    let now = now_ts.as_millisecond() as f64 / 1000.0;
     for provider in &snapshot.providers {
         if !provider.enabled {
             continue;
         }
         let (primary, secondary) =
-            presentation::resolved_icon_windows(provider, None, Some(snapshot.generated_at));
+            presentation::resolved_icon_windows(provider, None, Some(now_ts));
         let p_rem = primary
             .as_ref()
             .map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0));
@@ -685,7 +688,9 @@ fn on_flash_timer_tick() {
 }
 
 fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
-    let now = now_secs();
+    let now_ts = jiff::Timestamp::now();
+    let now = now_ts.as_millisecond() as f64 / 1000.0;
+    state.prefs.now = Some(now_ts);
     let selected_provider_id = match state.selected_tab.as_ref() {
         Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
         _ => state.last_provider_id.as_deref(),
