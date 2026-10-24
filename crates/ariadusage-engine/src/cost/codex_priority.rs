@@ -1224,6 +1224,41 @@ fn copy_regular_file_nofollow(src: &Path, dst: &Path, max_bytes: u64) -> std::io
 }
 
 #[cfg(unix)]
+fn sweep_stale_copy_children(parent: &Path) {
+    let active_paths: BTreeSet<PathBuf> = copy_cache()
+        .lock()
+        .map(|guard| {
+            guard
+                .values()
+                .map(|entry| {
+                    fs::canonicalize(entry.temp_dir.path())
+                        .unwrap_or_else(|_| entry.temp_dir.path().to_path_buf())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let Ok(entries) = fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_tmp_dir = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name.starts_with("ariadusage-tmp-"))
+            && entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+        if !is_tmp_dir {
+            continue;
+        }
+        let canon = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if !active_paths.contains(&canon) && !active_paths.contains(&path) {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+}
+
+#[cfg(unix)]
 fn ensure_private_0700_dir(dir: &Path) -> Option<PathBuf> {
     use rustix::fs::{FileType, Mode, OFlags, chmod, fchmod, fstat, lstat, open};
     use rustix::process::geteuid;
@@ -1267,7 +1302,9 @@ fn ensure_private_0700_dir(dir: &Path) -> Option<PathBuf> {
             return None;
         }
     }
-    Some(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+    let canon = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    sweep_stale_copy_children(&canon);
+    Some(canon)
 }
 
 fn resolve_temp_parent(injected_temp_dir: Option<&Path>) -> Option<PathBuf> {
