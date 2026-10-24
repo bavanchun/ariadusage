@@ -242,6 +242,7 @@ fn map_store_error(error: SecretStoreError) -> CliError {
     match error {
         SecretStoreError::Unavailable => CliError::new(10, "keyring unavailable"),
         SecretStoreError::Locked => CliError::new(11, "keyring is locked"),
+        SecretStoreError::Busy => CliError::new(11, "keyring is busy with an active prompt"),
         SecretStoreError::Dismissed => CliError::new(12, "keyring unlock was dismissed"),
         SecretStoreError::Timeout => CliError::new(13, "keyring operation timed out"),
         SecretStoreError::Cancelled => CliError::new(14, "keyring operation was cancelled"),

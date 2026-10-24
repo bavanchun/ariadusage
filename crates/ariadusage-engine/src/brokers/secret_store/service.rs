@@ -48,6 +48,10 @@ pub mod os_status {
     pub const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
     pub const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
     pub const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+    /// Internal synthetic status returned by [`super::with_macos_keychain_interaction`] when a
+    /// non-interactive background call is skipped because a user-initiated prompt holds
+    /// `USER_PROMPT_LOCK` on another thread.
+    pub const ERR_SEC_PROMPT_IN_FLIGHT_BUSY: i32 = -25309;
 }
 
 /// Low-level Keychain operations seam on macOS so tests can inject deterministic status codes
@@ -473,6 +477,13 @@ impl Drop for ThreadInteractionGuard {
     }
 }
 
+/// Returns `true` if `USER_PROMPT_LOCK` is currently held by either a user-initiated prompt or a
+/// background no-UI section.
+#[cfg(target_os = "macos")]
+pub fn is_macos_prompt_lock_held() -> bool {
+    USER_PROMPT_LOCK.try_lock().is_err()
+}
+
 /// Returns `true` if a user-initiated macOS Keychain operation (`allow_interaction == true`) is
 /// currently active.
 ///
@@ -485,7 +496,7 @@ pub fn is_macos_user_prompt_active() -> bool {
 }
 
 /// Returns the cumulative count of background no-UI Keychain calls that returned
-/// `ERR_SEC_INTERACTION_NOT_ALLOWED` early because a user-initiated prompt held `USER_PROMPT_LOCK`.
+/// `ERR_SEC_PROMPT_IN_FLIGHT_BUSY` early because a user-initiated prompt held `USER_PROMPT_LOCK`.
 #[cfg(target_os = "macos")]
 pub fn macos_background_no_ui_skipped_during_prompt_count() -> usize {
     BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.load(Ordering::SeqCst)
@@ -495,6 +506,36 @@ pub fn macos_background_no_ui_skipped_during_prompt_count() -> usize {
 #[cfg(target_os = "macos")]
 pub fn macos_label_update_warning_count() -> usize {
     LABEL_UPDATE_WARNING_COUNT.load(Ordering::SeqCst)
+}
+
+/// Process-wide Keychain UI control seam on macOS (`SecKeychainGetUserInteractionAllowed` /
+/// `SecKeychainSetUserInteractionAllowed`) so unit tests can verify UI disable and restore
+/// ordering inside [`with_macos_keychain_interaction_using`] without depending on an outer
+/// test-suite guard.
+#[cfg(target_os = "macos")]
+pub trait MacosKeychainUiControl {
+    type Guard;
+
+    fn user_interaction_allowed(&self) -> Result<bool, i32>;
+    fn disable_user_interaction(&self) -> Result<Self::Guard, i32>;
+}
+
+#[cfg(target_os = "macos")]
+struct DefaultMacosKeychainUiControl;
+
+#[cfg(target_os = "macos")]
+impl MacosKeychainUiControl for DefaultMacosKeychainUiControl {
+    type Guard = security_framework::os::macos::keychain::KeychainUserInteractionLock;
+
+    fn user_interaction_allowed(&self) -> Result<bool, i32> {
+        use security_framework::os::macos::keychain::SecKeychain;
+        SecKeychain::user_interaction_allowed().map_err(|e| e.code())
+    }
+
+    fn disable_user_interaction(&self) -> Result<Self::Guard, i32> {
+        use security_framework::os::macos::keychain::SecKeychain;
+        SecKeychain::disable_user_interaction().map_err(|e| e.code())
+    }
 }
 
 /// Runs `f` while enforcing per-call `Security.framework` user-interaction state across threads.
@@ -509,7 +550,7 @@ pub fn macos_label_update_warning_count() -> usize {
 ///     process-wide Keychain UI (`SecKeychainSetUserInteractionAllowed`) cannot be disabled for
 ///     this background call without interfering with the open user dialog, and running `f` with
 ///     process-wide UI enabled could trigger a second password dialog. Therefore, this helper
-///     immediately returns `Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED)` **before** executing
+///     immediately returns `Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY)` **before** executing
 ///     any data-read closure `f`.
 ///   - Otherwise, this helper holds both `BACKGROUND_NO_UI_LOCK` and `USER_PROMPT_LOCK` with
 ///     `SecKeychainSetUserInteractionAllowed(false)` for the entire duration of `f` (preserving an
@@ -519,8 +560,17 @@ pub fn with_macos_keychain_interaction<T>(
     allow_interaction: bool,
     f: impl FnOnce() -> Result<T, i32>,
 ) -> Result<T, i32> {
-    use security_framework::os::macos::keychain::SecKeychain;
+    with_macos_keychain_interaction_using(&DefaultMacosKeychainUiControl, allow_interaction, f)
+}
 
+/// Testable core of [`with_macos_keychain_interaction`] accepting an explicit
+/// [`MacosKeychainUiControl`] seam.
+#[cfg(target_os = "macos")]
+pub fn with_macos_keychain_interaction_using<T, C: MacosKeychainUiControl>(
+    ui_control: &C,
+    allow_interaction: bool,
+    f: impl FnOnce() -> Result<T, i32>,
+) -> Result<T, i32> {
     if let Some(current_mode) = CURRENT_THREAD_INTERACTION.with(Cell::get) {
         if allow_interaction && !current_mode {
             return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
@@ -541,18 +591,18 @@ pub fn with_macos_keychain_interaction<T>(
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if is_macos_user_prompt_active() {
             BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
-            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            return Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY);
         }
         let Ok(_user_guard) = USER_PROMPT_LOCK.try_lock() else {
             BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
-            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            return Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY);
         };
         if is_macos_user_prompt_active() {
             BACKGROUND_NO_UI_SKIPPED_DURING_PROMPT_COUNT.fetch_add(1, Ordering::SeqCst);
-            return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            return Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY);
         }
-        let _no_ui_guard = if SecKeychain::user_interaction_allowed().unwrap_or(true) {
-            Some(SecKeychain::disable_user_interaction().map_err(|e| e.code())?)
+        let _no_ui_guard = if ui_control.user_interaction_allowed().unwrap_or(true) {
+            Some(ui_control.disable_user_interaction()?)
         } else {
             None
         };
@@ -803,6 +853,8 @@ fn lookup_secret_macos(
             Ok(SecretLookup::Found(SecretString::new(text)))
         }
         Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Ok(SecretLookup::Missing),
+        Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY) if !user_initiated => Ok(SecretLookup::Busy),
+        Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY) => Err(SecretStoreError::Busy),
         Err(
             os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
             | os_status::ERR_SEC_AUTH_FAILED
@@ -915,6 +967,7 @@ fn chromium_key_macos(
             Ok(Some(key))
         }
         Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Err(SecretStoreError::Unsupported),
+        Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY) => Err(SecretStoreError::Busy),
         Err(os_status::ERR_SEC_USER_CANCELED) => Err(SecretStoreError::Dismissed),
         Err(os_status::ERR_SEC_AUTH_FAILED | os_status::ERR_SEC_NO_ACCESS_FOR_ITEM) => {
             if user_initiated {
