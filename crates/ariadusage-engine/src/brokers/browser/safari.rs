@@ -7,7 +7,7 @@ use crate::brokers::call::BrokerCall;
 
 use super::discover::DiscoveredProfile;
 use super::error::BrowserError;
-use super::sqlite_copy::read_optional_owned_file_allowing_permission_denied;
+use super::sqlite_copy::{OptionalOwnedFile, read_optional_owned_file_with_access_status};
 use super::{BrowserDiagnostics, CookieCandidate, CookieQuery};
 
 const MAX_BINARY_COOKIES_SIZE: usize = 16 * 1024 * 1024;
@@ -36,14 +36,27 @@ pub(super) fn read_profile(
     }
 
     // Safari's `Cookies.binarycookies` may be protected by macOS TCC (Full Disk Access).
-    // When the file is missing or unreadable due to `PermissionDenied`, skip Safari gracefully
-    // without surfacing a fatal error or recording a denial cooldown.
-    let Some(raw) = read_optional_owned_file_allowing_permission_denied(
+    // When the file is unreadable due to `PermissionDenied`, record `diagnostics.access_denied = 1`
+    // so callers can surface a Full Disk Access hint while skipping Safari without a fatal
+    // `BrowserError::Io` or a denial cooldown.
+    let raw = match read_optional_owned_file_with_access_status(
         &profile.database_path,
         MAX_BINARY_COOKIES_SIZE,
-    )?
-    else {
-        return Ok(Vec::new());
+    )? {
+        OptionalOwnedFile::Bytes(raw) => raw,
+        OptionalOwnedFile::Missing => return Ok(Vec::new()),
+        OptionalOwnedFile::AccessDenied => {
+            return Ok(vec![CookieCandidate {
+                browser: profile.browser,
+                profile_id: profile.profile_id.clone(),
+                label: profile.label.clone(),
+                records: Vec::new(),
+                diagnostics: BrowserDiagnostics {
+                    access_denied: 1,
+                    ..BrowserDiagnostics::default()
+                },
+            }]);
+        }
     };
     let bytes = Zeroizing::new(raw);
     let parsed = parse_binary_cookies(&bytes)?;

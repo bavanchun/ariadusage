@@ -149,11 +149,29 @@ async fn read_attempt(
         let key_result = if let Some(cached) = access.key_cache.get(&profile.browser) {
             cached.clone()
         } else {
-            let key_call = access.retry_scope.claim_key_read_call(call);
-            let result = access
-                .keys
-                .chromium_safe_storage(attribute, &key_call)
-                .await;
+            #[cfg(target_os = "macos")]
+            let result = {
+                let no_ui_call = RetryScope::background_key_read_call(call);
+                let first = access
+                    .keys
+                    .chromium_safe_storage(attribute, &no_ui_call)
+                    .await;
+                if matches!(
+                    first,
+                    Err(crate::brokers::secret_store::safe_storage::SafeStorageError::Locked)
+                ) && let Some(interactive_call) =
+                    access.retry_scope.claim_interactive_key_read(call)
+                {
+                    access
+                        .keys
+                        .chromium_safe_storage(attribute, &interactive_call)
+                        .await
+                } else {
+                    first
+                }
+            };
+            #[cfg(not(target_os = "macos"))]
+            let result = access.keys.chromium_safe_storage(attribute, call).await;
             access.key_cache.insert(profile.browser, result.clone());
             result
         };

@@ -43,26 +43,31 @@ impl RetryScope {
         }
     }
 
-    /// Returns the [`BrokerCall`] to pass to the safe-storage key lookup for one uncached browser.
-    ///
-    /// On macOS, only the first uncached browser key lookup in a user-initiated `RetryScope`
-    /// keeps `FetchInteraction::UserInitiated`; subsequent uncached browsers in the same scope
-    /// downgrade to `FetchInteraction::Background` (`allow_interaction=false`) so an
-    /// already-authorized item still succeeds while an unauthorized item fails with
-    /// `BrowserError::Locked` and no second Keychain prompt.
-    pub fn claim_key_read_call(&mut self, call: &BrokerCall) -> BrokerCall {
-        #[cfg(target_os = "macos")]
-        if call.interaction == FetchInteraction::UserInitiated {
-            if self.interactive_key_read_used {
-                return BrokerCall {
-                    interaction: FetchInteraction::Background,
-                    cancel: call.cancel.clone(),
-                    request_id: call.request_id.clone(),
-                };
-            }
-            self.interactive_key_read_used = true;
+    /// Returns a non-interactive (`FetchInteraction::Background`) [`BrokerCall`] preserving
+    /// `call`'s cancellation token and request id.
+    #[cfg(target_os = "macos")]
+    pub fn background_key_read_call(call: &BrokerCall) -> BrokerCall {
+        BrokerCall {
+            interaction: FetchInteraction::Background,
+            cancel: call.cancel.clone(),
+            request_id: call.request_id.clone(),
         }
-        call.clone()
+    }
+
+    /// Claims the single per-action interactive Keychain allowance on macOS after a no-UI
+    /// safe-storage read returned [`SafeStorageError::Locked`].
+    ///
+    /// Matches upstream `BrowserCookieAccessGate.swift:229-250`: an uncached browser key read on
+    /// macOS tries a no-UI read first so an already-authorized Keychain item does not spend the
+    /// interactive allowance; only when the no-UI read fails with `Locked` during a
+    /// user-initiated call does `claim_interactive_key_read` permit one interactive retry.
+    #[cfg(target_os = "macos")]
+    pub fn claim_interactive_key_read(&mut self, call: &BrokerCall) -> Option<BrokerCall> {
+        if call.interaction == FetchInteraction::UserInitiated && !self.interactive_key_read_used {
+            self.interactive_key_read_used = true;
+            return Some(call.clone());
+        }
+        None
     }
 }
 

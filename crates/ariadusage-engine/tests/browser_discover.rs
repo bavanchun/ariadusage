@@ -541,14 +541,22 @@ fn macos_safari_parses_binarycookies_filters_domains_and_skips_permission_denied
         "invented-legacy-safari-session"
     );
     assert!(fallback_candidates[0].records[0].host_only);
+    assert_eq!(
+        fallback_candidates[0].diagnostics.access_denied, 1,
+        "denied container root is counted in Safari diagnostics alongside the fallback session"
+    );
 
-    // If both Safari paths are unreadable (`PermissionDenied`), Safari returns `NoBrowserSession`
-    // (access-denied skip) rather than `BrowserError::Io`.
+    // If both Safari paths are unreadable (`PermissionDenied`), Safari surfaces a single
+    // diagnostic candidate with `records.is_empty()` and `diagnostics.access_denied == 2`
+    // (for a Full Disk Access hint) rather than `BrowserError::Io` or a cooldown.
     let legacy_path = home.safari_legacy_cookies_path();
     std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o000))
         .expect("simulate TCC permission denied on legacy path");
-    let err = candidates_for(&home, &[Browser::Safari]).expect_err("both Safari paths denied");
-    assert_eq!(err, BrowserError::NoBrowserSession);
+    let denied_candidates =
+        candidates_for(&home, &[Browser::Safari]).expect("Safari access-denied diagnostic");
+    assert_eq!(denied_candidates.len(), 1);
+    assert!(denied_candidates[0].records.is_empty());
+    assert_eq!(denied_candidates[0].diagnostics.access_denied, 2);
 
     // Restore permissions so TempDir cleanup succeeds.
     let _ = std::fs::set_permissions(&container_path, std::fs::Permissions::from_mode(0o600));

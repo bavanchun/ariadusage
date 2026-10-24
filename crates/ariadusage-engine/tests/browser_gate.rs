@@ -673,6 +673,7 @@ fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_brows
 
     struct TwoBrowserKeychain {
         calls: Mutex<Vec<(String, String, bool)>>,
+        chrome_requires_ui: bool,
         brave_requires_ui: bool,
     }
 
@@ -688,6 +689,9 @@ fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_brows
                 account.to_owned(),
                 allow_interaction,
             ));
+            if service == "Chrome Safe Storage" && self.chrome_requires_ui && !allow_interaction {
+                return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            }
             if service == "Brave Safe Storage" && self.brave_requires_ui && !allow_interaction {
                 return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
             }
@@ -709,15 +713,18 @@ fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_brows
     add_v11_profile(&home, Browser::Chrome, "Chrome Work");
     add_v11_profile(&home, Browser::Brave, "Brave Personal");
 
-    // Case 1: Chrome's session is rejected by the caller's validator; Brave is tried next in the
-    // same user-initiated BrokerCall. Chrome gets `allow_interaction=true`, while Brave is
-    // downgraded to `allow_interaction=false` (and succeeds when its Keychain item is already unlocked).
-    let keychain_unlocked = Arc::new(TwoBrowserKeychain {
+    // Case 1: Chrome's Keychain item is already unlocked (succeeds on the initial no-UI read,
+    // `allow_interaction=false`), so the per-action interactive allowance is NOT spent. When
+    // Chrome's session is rejected and Brave's Keychain item requires UI, Brave tries no-UI first
+    // (`allow_interaction=false` -> `ERR_SEC_INTERACTION_NOT_ALLOWED`) and then spends the single
+    // interactive allowance (`allow_interaction=true`) to succeed.
+    let keychain_chrome_no_ui_brave_prompts = Arc::new(TwoBrowserKeychain {
         calls: Mutex::new(Vec::new()),
-        brave_requires_ui: false,
+        chrome_requires_ui: false,
+        brave_requires_ui: true,
     });
     let key_source_unlocked: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(
-        ServiceBackend::with_operations(Arc::clone(&keychain_unlocked)),
+        ServiceBackend::with_operations(Arc::clone(&keychain_chrome_no_ui_brave_prompts)),
     ));
     let broker = home.broker(key_source_unlocked);
     let domains = cookie_core::DeclaredDomains::new(["claude.ai"]).expect("declared host");
@@ -742,17 +749,25 @@ fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_brows
     assert_eq!(accepted.browser, Browser::Brave);
     assert_eq!(accepted.records[0].value.expose_secret(), "Brave Personal");
     assert_eq!(
-        keychain_unlocked.calls.lock().expect("lock").as_slice(),
+        keychain_chrome_no_ui_brave_prompts
+            .calls
+            .lock()
+            .expect("lock")
+            .as_slice(),
         &[
-            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true),
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), false),
             ("Brave Safe Storage".to_owned(), "Brave".to_owned(), false),
+            ("Brave Safe Storage".to_owned(), "Brave".to_owned(), true),
         ]
     );
 
-    // Case 2: If Brave's Keychain item requires UI, the downgraded `allow_interaction=false`
-    // read fails with `ERR_SEC_INTERACTION_NOT_ALLOWED` (no second Keychain prompt, no cooldown).
+    // Case 2: Both Chrome and Brave require UI. Chrome tries no-UI first (`false`), fails with
+    // `ERR_SEC_INTERACTION_NOT_ALLOWED`, and spends the single interactive allowance (`true`).
+    // When Brave is tried next in the same user action, its no-UI read (`false`) fails with
+    // `ERR_SEC_INTERACTION_NOT_ALLOWED` and does NOT prompt a second time (no cooldown).
     let keychain_locked = Arc::new(TwoBrowserKeychain {
         calls: Mutex::new(Vec::new()),
+        chrome_requires_ui: true,
         brave_requires_ui: true,
     });
     let key_source_locked: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(
@@ -779,6 +794,7 @@ fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_brows
     assert_eq!(
         keychain_locked.calls.lock().expect("lock").as_slice(),
         &[
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), false),
             ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true),
             ("Brave Safe Storage".to_owned(), "Brave".to_owned(), false),
         ]
@@ -846,6 +862,9 @@ fn macos_keychain_safe_storage_source_enforces_background_no_ui_and_dismissal_co
                 account.to_owned(),
                 allow_interaction,
             ));
+            if !allow_interaction {
+                return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            }
             let status = *self.next_status.lock().expect("lock");
             if status == os_status::ERR_SEC_SUCCESS {
                 Ok(Zeroizing::new(b"family-key".to_vec()))
@@ -892,7 +911,8 @@ fn macos_keychain_safe_storage_source_enforces_background_no_ui_and_dismissal_co
         &[("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), false)]
     );
 
-    // 2. User-initiated read passes allow_interaction=true; ERR_SEC_USER_CANCELED -> Dismissed + 6h cooldown,
+    // 2. User-initiated read tries allow_interaction=false first (ERR_SEC_INTERACTION_NOT_ALLOWED),
+    //    then retries once with allow_interaction=true; ERR_SEC_USER_CANCELED -> Dismissed + 6h cooldown,
     //    and stops before prompting Brave in the same user action.
     keychain.calls.lock().expect("lock").clear();
     *keychain.next_status.lock().expect("lock") = os_status::ERR_SEC_USER_CANCELED;
@@ -907,7 +927,10 @@ fn macos_keychain_safe_storage_source_enforces_background_no_ui_and_dismissal_co
     assert_eq!(cooldown_count(&home), 2);
     assert_eq!(
         keychain.calls.lock().expect("lock").as_slice(),
-        &[("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true)]
+        &[
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), false),
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true),
+        ]
     );
 
     // 3. Subsequent user-initiated read without acknowledged_retry is blocked by cooldown (0 Keychain calls).

@@ -929,10 +929,7 @@ fn macos_chromium_browsers_read_distinct_safe_storage_keychain_services_via_key_
         queries,
         browsers
             .iter()
-            .enumerate()
-            .map(|(idx, (_, service, account))| {
-                ((*service).to_owned(), (*account).to_owned(), idx == 0)
-            })
+            .map(|(_, service, account)| { ((*service).to_owned(), (*account).to_owned(), false) })
             .collect::<Vec<_>>()
     );
 }

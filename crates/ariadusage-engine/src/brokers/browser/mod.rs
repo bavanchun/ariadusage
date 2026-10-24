@@ -254,6 +254,9 @@ pub struct BrowserDiagnostics {
     pub unsupported_by_tag: std::collections::BTreeMap<String, usize>,
     pub expired: usize,
     pub partitioned: usize,
+    /// Number of browser profile cookie stores skipped due to OS permission denial (e.g., macOS
+    /// TCC / Full Disk Access required to read Safari's `Cookies.binarycookies`).
+    pub access_denied: usize,
 }
 
 pub struct CookieCandidate {
