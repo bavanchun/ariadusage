@@ -70,6 +70,11 @@ impl UsageSnapshot {
             .filter(|id| id.provider_id.as_ref() == Some(provider_id))
     }
 
+    pub fn account_email(&self, provider_id: &ProviderId) -> Option<&str> {
+        self.identity_for(provider_id)
+            .and_then(|id| id.account_email.as_deref())
+    }
+
     pub fn with_account_label(&self, label: &str, provider_id: &ProviderId) -> Self {
         let label = label.trim();
         if label.is_empty() {
