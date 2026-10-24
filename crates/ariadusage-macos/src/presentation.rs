@@ -267,21 +267,18 @@ pub fn provider_with_highest_usage_with_options<'a>(
         let selection = if id == "codex" && automatic {
             codex_automatic_menu_bar_selection(provider, now)
         } else {
-            let window = if id == "antigravity"
-                && automatic
-                && !antigravity_prioritize_exhausted_quotas
-                && has_antigravity_quota_summary(provider)
-            {
-                most_constrained_antigravity_quota_summary_window(provider)
-            } else {
-                resolve_menu_bar_metric_window(
-                    preference,
-                    provider,
-                    false,
-                    antigravity_prioritize_exhausted_quotas,
-                    now,
-                )
-            };
+            let window =
+                if id == "antigravity" && automatic && !antigravity_prioritize_exhausted_quotas {
+                    most_constrained_antigravity_quota_summary_window(provider)
+                } else {
+                    resolve_menu_bar_metric_window(
+                        preference,
+                        provider,
+                        false,
+                        antigravity_prioritize_exhausted_quotas,
+                        now,
+                    )
+                };
             window.and_then(|w| {
                 let slot = if automatic {
                     candidates_from_windows(std::slice::from_ref(&w), provider)
@@ -451,7 +448,7 @@ pub fn menu_bar_credits_remaining_for_icon(
     }
     let eval_now = now.or(provider.updated_at);
     let lanes = codex_rate_windows_by_lane(provider);
-    let has_no_rate_windows = lanes.is_empty();
+    let has_no_rate_windows = lanes.is_empty() && !codex_has_any_rate_window(provider);
     let has_exhausted_lane = lanes.values().any(|(w, _)| {
         remaining_percent(w) <= 0.0
             && w.resets_at
@@ -674,10 +671,21 @@ fn classify_codex_lane(window: &RateWindow, fallback: CodexLaneKind) -> CodexLan
     }
 }
 
+fn codex_has_any_rate_window(provider: &ProviderSnapshot) -> bool {
+    measured_window(provider.windows.primary.as_ref()).is_some()
+        || measured_window(provider.windows.secondary.as_ref()).is_some()
+        || measured_window(provider.windows.tertiary.as_ref()).is_some()
+        || provider
+            .windows
+            .extra
+            .iter()
+            .any(|named| displayable_value(&named.window).is_some())
+}
+
 fn codex_rate_windows_by_lane(
     provider: &ProviderSnapshot,
 ) -> HashMap<CodexLaneKind, (RateWindow, Option<UsageLane>)> {
-    let mut slotted: Vec<(CodexLaneKind, RateWindow, Option<UsageLane>)> = Vec::with_capacity(4);
+    let mut slotted: Vec<(CodexLaneKind, RateWindow, Option<UsageLane>)> = Vec::with_capacity(2);
     if let Some(w) = measured_window(provider.windows.primary.as_ref()).cloned() {
         let kind = classify_codex_lane(&w, CodexLaneKind::Session);
         slotted.push((kind, w, Some(UsageLane::Primary)));
@@ -686,24 +694,14 @@ fn codex_rate_windows_by_lane(
         let kind = classify_codex_lane(&w, CodexLaneKind::Weekly);
         slotted.push((kind, w, Some(UsageLane::Secondary)));
     }
-    if let Some(w) = measured_window(provider.windows.tertiary.as_ref()).cloned() {
-        let kind = classify_codex_lane(&w, CodexLaneKind::Monthly);
-        slotted.push((kind, w, Some(UsageLane::Tertiary)));
-    }
-    for named in &provider.windows.extra {
-        if let Some(w) = displayable_value(&named.window).cloned() {
-            let kind = classify_codex_lane(&w, CodexLaneKind::Monthly);
-            slotted.push((kind, w, None));
-        }
-    }
 
     let mut windows_by_lane: HashMap<CodexLaneKind, (RateWindow, Option<UsageLane>)> =
-        HashMap::with_capacity(3);
+        HashMap::with_capacity(2);
     for (lane, window, slot) in slotted {
         windows_by_lane.insert(lane, (window, slot));
     }
 
-    if windows_by_lane.is_empty()
+    if !codex_has_any_rate_window(provider)
         && let Some(monthly) = codex_monthly_credit_limit_window(provider)
     {
         windows_by_lane.insert(CodexLaneKind::Monthly, (monthly, None));
@@ -712,6 +710,9 @@ fn codex_rate_windows_by_lane(
 }
 
 fn codex_monthly_credit_limit_window(provider: &ProviderSnapshot) -> Option<RateWindow> {
+    if codex_has_any_rate_window(provider) {
+        return None;
+    }
     if let Some(limit) = provider
         .credits
         .as_ref()
@@ -757,10 +758,10 @@ pub fn codex_has_binding_weekly_cap(provider: &ProviderSnapshot, now: Option<Tim
     })
 }
 
-fn codex_automatic_menu_bar_selection(
+fn codex_visible_rate_candidates(
     provider: &ProviderSnapshot,
     now: Option<Timestamp>,
-) -> Option<Selection> {
+) -> Vec<(CodexLaneKind, Candidate)> {
     let eval_now = now.or(provider.updated_at);
     let lanes = codex_rate_windows_by_lane(provider);
     let is_expired =
@@ -795,6 +796,15 @@ fn codex_automatic_menu_bar_selection(
         }
         visible.push((kind, Candidate { window, slot }));
     }
+    visible
+}
+
+fn codex_automatic_menu_bar_selection(
+    provider: &ProviderSnapshot,
+    now: Option<Timestamp>,
+) -> Option<Selection> {
+    let eval_now = now.or(provider.updated_at);
+    let visible = codex_visible_rate_candidates(provider, now);
 
     let has_longer_than_weekly = visible
         .iter()
@@ -817,6 +827,56 @@ fn codex_automatic_menu_bar_selection(
         }
     }
     best
+}
+
+fn codex_menu_bar_metric_window(
+    preference: MenuBarMetricPreference,
+    provider: &ProviderSnapshot,
+    supports_average: bool,
+    now: Option<Timestamp>,
+) -> Option<RateWindow> {
+    let visible = codex_visible_rate_candidates(provider, now);
+    let find_kind = |kind: CodexLaneKind| -> Option<RateWindow> {
+        visible
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, c)| c.window.clone())
+    };
+    match preference {
+        MenuBarMetricPreference::MonthlyPlan => None,
+        MenuBarMetricPreference::ExtraUsage => spend_limit_window(provider),
+        MenuBarMetricPreference::Primary => find_kind(CodexLaneKind::Session)
+            .or_else(|| find_kind(CodexLaneKind::Weekly))
+            .or_else(|| find_kind(CodexLaneKind::Monthly)),
+        MenuBarMetricPreference::Secondary => find_kind(CodexLaneKind::Weekly)
+            .or_else(|| find_kind(CodexLaneKind::Session))
+            .or_else(|| find_kind(CodexLaneKind::Monthly)),
+        MenuBarMetricPreference::Tertiary => find_kind(CodexLaneKind::Monthly)
+            .or_else(|| find_kind(CodexLaneKind::Session))
+            .or_else(|| find_kind(CodexLaneKind::Weekly)),
+        MenuBarMetricPreference::PrimaryAndSecondary => {
+            let candidates: Vec<Option<RateWindow>> =
+                visible.into_iter().map(|(_, c)| Some(c.window)).collect();
+            most_constrained_of(&candidates)
+        }
+        MenuBarMetricPreference::Average => {
+            if supports_average
+                && let (Some(s), Some(w)) = (
+                    find_kind(CodexLaneKind::Session),
+                    find_kind(CodexLaneKind::Weekly),
+                )
+            {
+                Some(RateWindow::new((s.used_percent + w.used_percent) / 2.0))
+            } else {
+                find_kind(CodexLaneKind::Session)
+                    .or_else(|| find_kind(CodexLaneKind::Weekly))
+                    .or_else(|| find_kind(CodexLaneKind::Monthly))
+            }
+        }
+        MenuBarMetricPreference::Automatic => {
+            codex_automatic_menu_bar_selection(provider, now).map(|s| s.window)
+        }
+    }
 }
 
 fn codex_icon_windows(
@@ -1217,6 +1277,9 @@ pub fn resolve_menu_bar_metric_window(
 
     // 1. Provider-specific `menuBarWindow` overrides
     match id {
+        "codex" if preference != MenuBarMetricPreference::Automatic || tertiary.is_none() => {
+            return codex_menu_bar_metric_window(preference, provider, supports_average, now);
+        }
         "claude" => {
             if preference == MenuBarMetricPreference::ExtraUsage {
                 return claude_monthly_spend_window(provider);
@@ -1430,14 +1493,6 @@ pub fn antigravity_quota_summary_families_are_all_blocked(provider: &ProviderSna
         }
     }
     !family_blocked.is_empty() && family_blocked.values().all(|&blocked| blocked)
-}
-
-fn has_antigravity_quota_summary(provider: &ProviderSnapshot) -> bool {
-    provider
-        .windows
-        .extra
-        .iter()
-        .any(|w| w.id.starts_with(ANTIGRAVITY_QUOTA_SUMMARY_PREFIX))
 }
 
 fn antigravity_quota_family(id: &str, window_minutes: Option<u32>) -> Option<String> {
