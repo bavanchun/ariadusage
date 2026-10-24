@@ -1,7 +1,3 @@
-// Ported from CodexBar Tests/CodexBarTests/CostUsageWindowSummaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/CostUsageStoreTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/CostUsageStoreCutoverTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-
 use std::fs;
 use std::path::Path;
 
@@ -36,6 +32,9 @@ fn make_entry(
     }
 }
 
+// Upstream test ports (each marker identifies one @Test declaration).
+
+// upstream: CostUsageWindowSummaryTests.swift:6 overflow invalidates only its total while unavailable rows stay absent
 #[test]
 fn overflow_invalidates_only_its_total_while_unavailable_rows_stay_absent() {
     let now = utc_ymd_hms(2026, 7, 1, 0, 0, 0);
@@ -50,6 +49,7 @@ fn overflow_invalidates_only_its_total_while_unavailable_rows_stay_absent() {
     assert_eq!(summary.cost_usd, Some(3.0));
 }
 
+// upstream: CostUsageWindowSummaryTests.swift:25 summaries use calendar windows instead of the last nonempty rows
 #[test]
 fn summaries_use_calendar_windows_instead_of_the_last_nonempty_rows() {
     let now = utc_ymd_hms(2026, 7, 1, 0, 0, 0);
@@ -67,6 +67,7 @@ fn summaries_use_calendar_windows_instead_of_the_last_nonempty_rows() {
     assert_eq!(summary_7.total_requests, Some(9));
 }
 
+// upstream: CostUsageWindowSummaryTests.swift:37 comparison periods are unique sorted and bounded by scanned history
 #[test]
 fn comparison_periods_are_unique_sorted_and_bounded_by_scanned_history() {
     let now = utc_ymd_hms(2026, 7, 1, 0, 0, 0);
@@ -81,6 +82,7 @@ fn comparison_periods_are_unique_sorted_and_bounded_by_scanned_history() {
     assert_eq!(days, vec![7, 30]);
 }
 
+// upstream: CostUsageWindowSummaryTests.swift:47 summary preserves unavailable totals as nil
 #[test]
 fn summary_preserves_unavailable_totals_as_nil() {
     let now = utc_ymd_hms(2026, 7, 1, 0, 0, 0);
@@ -91,6 +93,7 @@ fn summary_preserves_unavailable_totals_as_nil() {
     assert_eq!(summary.total_requests, None);
 }
 
+// upstream: CostUsageWindowSummaryTests.swift:64 comparison summaries keep Gregorian entries under a Buddhist calendar
 #[test]
 fn comparison_summaries_keep_gregorian_entries_under_a_buddhist_calendar() {
     let bangkok = TimeZone::get("Asia/Bangkok").unwrap_or(TimeZone::UTC);
@@ -122,6 +125,202 @@ fn comparison_summaries_keep_gregorian_entries_under_a_buddhist_calendar() {
     assert_eq!(thirty_days.total_tokens, Some(1000));
 }
 
+// upstream: CostUsageStoreCutoverTests.swift:47 fixture report remains identical through the store
+#[test]
+fn fixture_report_remains_identical_through_the_store() {
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fixtures/codexbar/cost-usage/issue-2037/archived-fork-33ce-3869");
+    let manifest_bytes = fs::read(fixture_root.join("manifest.json")).expect("read manifest.json");
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&manifest_bytes).expect("decode manifest.json");
+
+    let tmp = TempDir::new().expect("tempdir");
+    let cache_root = tmp.path().join("cache");
+    for file in manifest["files"].as_array().expect("manifest.files") {
+        let rel = file["relativePath"].as_str().expect("relativePath");
+        let src = fixture_root.join(rel);
+        let dst = tmp.path().join(rel);
+        if let Some(parent) = dst.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::copy(&src, &dst).unwrap();
+    }
+    let codex_home = tmp.path().join("codex-home");
+
+    let since = utc_ymd_hms(2030, 1, 1, 12, 0, 0);
+    let until = utc_ymd_hms(2030, 1, 2, 12, 0, 0);
+    let scanned = load_daily_report(
+        LocalCostProvider::Codex,
+        since,
+        until,
+        until,
+        &CostScannerOptions {
+            codex_home: Some(codex_home),
+            cache_root: Some(cache_root.clone()),
+            timezone: Some(TimeZone::UTC),
+            ..Default::default()
+        },
+    );
+
+    let mut store = CostUsageStore::new(Some(&cache_root));
+    let (stored, _) = store
+        .load_provider_report("codex")
+        .expect("stored codex report");
+    assert_eq!(stored.data, scanned.data);
+    assert_eq!(stored.summary, scanned.summary);
+}
+
+// upstream: CostUsageStoreTests.swift:44 database lives beside the legacy artifact directory
+#[test]
+fn database_lives_beside_the_legacy_artifact_directory() {
+    let tmp = TempDir::new().expect("tempdir");
+    let store = CostUsageStore::new(Some(tmp.path()));
+
+    assert_eq!(
+        store.database_path().file_name().and_then(|s| s.to_str()),
+        Some("cost-usage.sqlite")
+    );
+    assert_eq!(
+        store
+            .database_path()
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str()),
+        Some("cost-usage")
+    );
+}
+
+fn init_store_and_read_pragmas(store: &mut CostUsageStore) -> (String, i64, i64, i32) {
+    let _ = store.load_metadata();
+    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
+    let journal_mode: String = conn
+        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+        .unwrap();
+    let foreign_keys: i64 = conn
+        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
+        .unwrap();
+    let auto_vacuum: i64 = conn
+        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
+        .unwrap();
+    let user_version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    (journal_mode, foreign_keys, auto_vacuum, user_version)
+}
+
+// upstream: CostUsageStoreTests.swift:54 new database uses WAL
+#[test]
+fn new_database_uses_wal() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let (journal_mode, _, _, _) = init_store_and_read_pragmas(&mut store);
+
+    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
+}
+
+// upstream: CostUsageStoreTests.swift:63 new database configures busy timeout
+#[test]
+fn new_database_configures_busy_timeout() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let _ = store.load_metadata();
+    assert!(store.database_path().exists());
+}
+
+// upstream: CostUsageStoreTests.swift:72 new database accepts a fixture busy timeout
+#[test]
+fn new_database_accepts_a_fixture_busy_timeout() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::with_versions(
+        Some(tmp.path()),
+        ariadusage_engine::cost::store::combined_schema_version(
+            ariadusage_engine::cost::store::BASE_SCHEMA_VERSION,
+            ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
+        ),
+        ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
+        25,
+    );
+    let _ = store.load_metadata();
+    assert!(store.database_path().exists());
+}
+
+// upstream: CostUsageStoreTests.swift:83 new database enables foreign keys
+#[test]
+fn new_database_enables_foreign_keys() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let _ = store.load_metadata();
+    // foreign_keys is a per-connection pragma enabled inside CostUsageStore::open_validated;
+    // verify the foreign-key constraint on `files` -> `usage_rows` exists in sqlite_master.
+    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
+    let fk_count: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_foreign_key_list('usage_rows')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(fk_count, 1);
+}
+
+// upstream: CostUsageStoreTests.swift:92 new database uses incremental auto vacuum
+#[test]
+fn new_database_uses_incremental_auto_vacuum() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let (_, _, auto_vacuum, _) = init_store_and_read_pragmas(&mut store);
+
+    assert_eq!(auto_vacuum, 2);
+}
+
+// upstream: CostUsageStoreTests.swift:101 user version combines schema and parser hash
+#[test]
+fn user_version_combines_schema_and_parser_hash() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let (_, _, _, user_version) = init_store_and_read_pragmas(&mut store);
+
+    assert_eq!(
+        user_version,
+        ariadusage_engine::cost::store::combined_schema_version(
+            ariadusage_engine::cost::store::BASE_SCHEMA_VERSION,
+            ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
+        )
+    );
+    assert_ne!(
+        ariadusage_engine::cost::store::combined_schema_version(1, "a"),
+        ariadusage_engine::cost::store::combined_schema_version(1, "b")
+    );
+}
+
+// upstream: CostUsageStoreTests.swift:112 schema contains phase two query indexes
+#[test]
+fn schema_contains_phase_two_query_indexes() {
+    let tmp = TempDir::new().expect("tempdir");
+    let mut store = CostUsageStore::new(Some(tmp.path()));
+    let _ = store.load_metadata();
+
+    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
+        .unwrap();
+    let indexes: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect();
+    assert!(indexes.iter().any(|n| n == "files_path_idx"));
+    assert!(indexes.iter().any(|n| n == "usage_rows_file_idx"));
+    assert!(indexes.iter().any(|n| n == "day_aggregates_day_idx"));
+}
+
+// Rust-added tests (no direct upstream @Test equivalent; excluded from parity totals).
+
+// Rust-added: Cost history populates today last 30 days comparison windows and top model.
 #[test]
 fn cost_history_populates_today_last_30_days_comparison_windows_and_top_model() {
     let tmp = TempDir::new().expect("tempdir");
@@ -189,6 +388,7 @@ fn cost_history_populates_today_last_30_days_comparison_windows_and_top_model() 
     );
 }
 
+// Rust-added: Cost usage store persists and rebuilds on schema mismatch.
 #[test]
 fn cost_usage_store_persists_and_rebuilds_on_schema_mismatch() {
     let tmp = TempDir::new().expect("tempdir");
@@ -265,10 +465,7 @@ fn cost_usage_store_persists_and_rebuilds_on_schema_mismatch() {
     assert!(ledger::compute_top_model(&protocol_entries).is_some());
 }
 
-// ============================================================================
-// CostUsageStoreCutoverTests.swift
-// ============================================================================
-
+// Rust-added: Legacy artifact cleanup deletes json and rebuilds SQLite from source.
 #[test]
 fn legacy_artifact_cleanup_deletes_json_and_rebuilds_sqlite_from_source() {
     let tmp = TempDir::new().expect("tempdir");
@@ -349,54 +546,7 @@ fn legacy_artifact_cleanup_deletes_json_and_rebuilds_sqlite_from_source() {
     assert!(paths.iter().any(|p| p.ends_with("current.jsonl")));
 }
 
-#[test]
-fn fixture_report_remains_identical_through_the_store() {
-    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("fixtures/codexbar/cost-usage/issue-2037/archived-fork-33ce-3869");
-    let manifest_bytes = fs::read(fixture_root.join("manifest.json")).expect("read manifest.json");
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&manifest_bytes).expect("decode manifest.json");
-
-    let tmp = TempDir::new().expect("tempdir");
-    let cache_root = tmp.path().join("cache");
-    for file in manifest["files"].as_array().expect("manifest.files") {
-        let rel = file["relativePath"].as_str().expect("relativePath");
-        let src = fixture_root.join(rel);
-        let dst = tmp.path().join(rel);
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent).unwrap();
-        }
-        fs::copy(&src, &dst).unwrap();
-    }
-    let codex_home = tmp.path().join("codex-home");
-
-    let since = utc_ymd_hms(2030, 1, 1, 12, 0, 0);
-    let until = utc_ymd_hms(2030, 1, 2, 12, 0, 0);
-    let scanned = load_daily_report(
-        LocalCostProvider::Codex,
-        since,
-        until,
-        until,
-        &CostScannerOptions {
-            codex_home: Some(codex_home),
-            cache_root: Some(cache_root.clone()),
-            timezone: Some(TimeZone::UTC),
-            ..Default::default()
-        },
-    );
-
-    let mut store = CostUsageStore::new(Some(&cache_root));
-    let (stored, _) = store
-        .load_provider_report("codex")
-        .expect("stored codex report");
-    assert_eq!(stored.data, scanned.data);
-    assert_eq!(stored.summary, scanned.summary);
-}
-
+// Rust-added: Cost usage store writes 0700 dir and 0600 files and rejects symlinks without rebuilding.
 #[cfg(unix)]
 #[test]
 fn cost_usage_store_writes_0700_dir_and_0600_files_and_rejects_symlinks_without_rebuilding() {
@@ -449,144 +599,4 @@ fn cost_usage_store_writes_0700_dir_and_0600_files_and_rejects_symlinks_without_
     assert!(!sym_store.save_metadata(&meta));
     assert_eq!(sym_store.rebuild_count(), 0);
     assert_eq!(fs::read(&victim).unwrap(), b"DO_NOT_OVERWRITE");
-}
-
-// ---------------------------------------------------------------------------
-// Upstream parity: CostUsageStoreTests.swift
-// ---------------------------------------------------------------------------
-
-#[test]
-fn database_lives_beside_the_legacy_artifact_directory() {
-    let tmp = TempDir::new().expect("tempdir");
-    let store = CostUsageStore::new(Some(tmp.path()));
-
-    assert_eq!(
-        store.database_path().file_name().and_then(|s| s.to_str()),
-        Some("cost-usage.sqlite")
-    );
-    assert_eq!(
-        store
-            .database_path()
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|s| s.to_str()),
-        Some("cost-usage")
-    );
-}
-
-fn init_store_and_read_pragmas(store: &mut CostUsageStore) -> (String, i64, i64, i32) {
-    let _ = store.load_metadata();
-    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
-    let journal_mode: String = conn
-        .query_row("PRAGMA journal_mode", [], |r| r.get(0))
-        .unwrap();
-    let foreign_keys: i64 = conn
-        .query_row("PRAGMA foreign_keys", [], |r| r.get(0))
-        .unwrap();
-    let auto_vacuum: i64 = conn
-        .query_row("PRAGMA auto_vacuum", [], |r| r.get(0))
-        .unwrap();
-    let user_version: i32 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .unwrap();
-    (journal_mode, foreign_keys, auto_vacuum, user_version)
-}
-
-#[test]
-fn new_database_uses_wal() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let (journal_mode, _, _, _) = init_store_and_read_pragmas(&mut store);
-
-    assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
-}
-
-#[test]
-fn new_database_configures_busy_timeout() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _ = store.load_metadata();
-    assert!(store.database_path().exists());
-}
-
-#[test]
-fn new_database_accepts_a_fixture_busy_timeout() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::with_versions(
-        Some(tmp.path()),
-        ariadusage_engine::cost::store::combined_schema_version(
-            ariadusage_engine::cost::store::BASE_SCHEMA_VERSION,
-            ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
-        ),
-        ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
-        25,
-    );
-    let _ = store.load_metadata();
-    assert!(store.database_path().exists());
-}
-
-#[test]
-fn new_database_enables_foreign_keys() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _ = store.load_metadata();
-    // foreign_keys is a per-connection pragma enabled inside CostUsageStore::open_validated;
-    // verify the foreign-key constraint on `files` -> `usage_rows` exists in sqlite_master.
-    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
-    let fk_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM pragma_foreign_key_list('usage_rows')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(fk_count, 1);
-}
-
-#[test]
-fn new_database_uses_incremental_auto_vacuum() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let (_, _, auto_vacuum, _) = init_store_and_read_pragmas(&mut store);
-
-    assert_eq!(auto_vacuum, 2);
-}
-
-#[test]
-fn user_version_combines_schema_and_parser_hash() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let (_, _, _, user_version) = init_store_and_read_pragmas(&mut store);
-
-    assert_eq!(
-        user_version,
-        ariadusage_engine::cost::store::combined_schema_version(
-            ariadusage_engine::cost::store::BASE_SCHEMA_VERSION,
-            ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
-        )
-    );
-    assert_ne!(
-        ariadusage_engine::cost::store::combined_schema_version(1, "a"),
-        ariadusage_engine::cost::store::combined_schema_version(1, "b")
-    );
-}
-
-#[test]
-fn schema_contains_phase_two_query_indexes() {
-    let tmp = TempDir::new().expect("tempdir");
-    let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _ = store.load_metadata();
-
-    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
-    let mut stmt = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'index'")
-        .unwrap();
-    let indexes: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .unwrap()
-        .filter_map(Result::ok)
-        .collect();
-    assert!(indexes.iter().any(|n| n == "files_path_idx"));
-    assert!(indexes.iter().any(|n| n == "usage_rows_file_idx"));
-    assert!(indexes.iter().any(|n| n == "day_aggregates_day_idx"));
 }

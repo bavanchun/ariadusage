@@ -1,5 +1,3 @@
-// Ported from CodexBar Tests/CodexBarTests/CostUsagePricingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-
 use std::collections::BTreeMap;
 
 use ariadusage_engine::cost::pricing::{
@@ -7,6 +5,9 @@ use ariadusage_engine::cost::pricing::{
     ModelsDevCatalog, ModelsDevCost, ModelsDevModel, ModelsDevProvider,
 };
 
+// Upstream test ports (each marker identifies one @Test declaration).
+
+// upstream: CostUsagePricingTests.swift:6 normalizes codex model variants exactly
 #[test]
 fn normalizes_codex_model_variants_exactly() {
     assert_eq!(
@@ -100,6 +101,7 @@ fn normalizes_codex_model_variants_exactly() {
     );
 }
 
+// upstream: CostUsagePricingTests.swift:34 unattributed codex usage stays unpriced despite a catalog collision
 #[test]
 fn unattributed_codex_usage_stays_unpriced_despite_a_catalog_collision() {
     let mut catalog = ModelsDevCatalog::default();
@@ -140,6 +142,7 @@ fn unattributed_codex_usage_stays_unpriced_despite_a_catalog_collision() {
     assert_eq!(cost, None);
 }
 
+// upstream: CostUsagePricingTests.swift:169 codex cost supports gpt51 codex max
 #[test]
 fn codex_cost_supports_gpt51_codex_max() {
     let cost = pricing::codex_cost_usd_with_tier(
@@ -153,6 +156,7 @@ fn codex_cost_supports_gpt51_codex_max() {
     assert!(cost.is_some());
 }
 
+// upstream: CostUsagePricingTests.swift:180 codex cost supports gpt53 codex
 #[test]
 fn codex_cost_supports_gpt53_codex() {
     let cost = pricing::codex_cost_usd_with_tier(
@@ -166,6 +170,7 @@ fn codex_cost_supports_gpt53_codex() {
     assert!(cost.is_some());
 }
 
+// upstream: CostUsagePricingTests.swift:191 codex cost supports gpt54 mini and nano
 #[test]
 fn codex_cost_supports_gpt54_mini_and_nano() {
     let mini = pricing::codex_cost_usd_with_tier(
@@ -188,6 +193,7 @@ fn codex_cost_supports_gpt54_mini_and_nano() {
     assert!(nano.is_some());
 }
 
+// upstream: CostUsagePricingTests.swift:210 codex cost supports gpt55 bundled fallback
 #[test]
 fn codex_cost_supports_gpt55_bundled_fallback() {
     let cost = pricing::codex_cost_usd(
@@ -207,6 +213,7 @@ fn codex_cost_supports_gpt55_bundled_fallback() {
     assert!((cost - expected).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:226 codex cost supports gpt56 sol terra luna bundled fallback
 #[test]
 fn codex_cost_supports_gpt56_sol_terra_luna_bundled_fallback() {
     let sol = pricing::codex_cost_usd(
@@ -251,6 +258,7 @@ fn codex_cost_supports_gpt56_sol_terra_luna_bundled_fallback() {
     assert!((alias - sol).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:998 codex cost supports gpt55 pro bundled fallback
 #[test]
 fn codex_cost_supports_gpt55_pro_bundled_fallback() {
     let cost = pricing::codex_cost_usd(
@@ -269,6 +277,7 @@ fn codex_cost_supports_gpt55_pro_bundled_fallback() {
     assert!((cost.unwrap() - expected).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1014 codex cost returns zero for research preview fallback model
 #[test]
 fn codex_cost_returns_zero_for_research_preview_fallback_model() {
     let cost = pricing::codex_cost_usd(
@@ -291,6 +300,7 @@ fn codex_cost_returns_zero_for_research_preview_fallback_model() {
     assert_eq!(pricing::codex_display_label("gpt-5.2-codex"), None);
 }
 
+// upstream: CostUsagePricingTests.swift:1110 normalizes claude opus41 dated variants
 #[test]
 fn normalizes_claude_opus41_dated_variants() {
     assert_eq!(
@@ -299,6 +309,7 @@ fn normalizes_claude_opus41_dated_variants() {
     );
 }
 
+// upstream: CostUsagePricingTests.swift:1115 claude cost supports opus41 dated variant
 #[test]
 fn claude_cost_supports_opus41_dated_variant() {
     let cost = pricing::claude_cost_usd(
@@ -317,6 +328,7 @@ fn claude_cost_supports_opus41_dated_variant() {
     assert!(cost.is_some());
 }
 
+// upstream: CostUsagePricingTests.swift:1127 claude cost supports opus46 dated variant
 #[test]
 fn claude_cost_supports_opus46_dated_variant() {
     let cost = pricing::claude_cost_usd(
@@ -335,6 +347,7 @@ fn claude_cost_supports_opus46_dated_variant() {
     assert!(cost.is_some());
 }
 
+// upstream: CostUsagePricingTests.swift:1139 claude cost supports opus47
 #[test]
 fn claude_cost_supports_opus47() {
     let cost = pricing::claude_cost_usd(
@@ -354,6 +367,7 @@ fn claude_cost_supports_opus47() {
     assert!((cost - ((10.0 * 5e-6) + (5.0 * 2.5e-5))).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1152 claude cost supports opus48
 #[test]
 fn claude_cost_supports_opus48() {
     let cost = pricing::claude_cost_usd(
@@ -373,6 +387,7 @@ fn claude_cost_supports_opus48() {
     assert!((cost - ((10.0 * 5e-6) + (5.0 * 2.5e-5))).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1168 claude cost supports fable5 bundled fallback
 #[test]
 fn claude_cost_supports_fable5_bundled_fallback() {
     let cost = pricing::claude_cost_usd(
@@ -393,6 +408,7 @@ fn claude_cost_supports_fable5_bundled_fallback() {
     assert!((cost - expected).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1182 claude cost preserves historical sonnet46 long context pricing
 #[test]
 fn claude_cost_preserves_historical_sonnet46_long_context_pricing() {
     let historical = pricing::claude_cost_usd(
@@ -427,6 +443,7 @@ fn claude_cost_preserves_historical_sonnet46_long_context_pricing() {
     assert!((current - 0.72).abs() < 1e-9);
 }
 
+// upstream: CostUsagePricingTests.swift:1244 claude cost prices one hour cache writes separately
 #[test]
 fn claude_cost_prices_one_hour_cache_writes_separately() {
     let cost = pricing::claude_cost_usd(
@@ -447,6 +464,7 @@ fn claude_cost_prices_one_hour_cache_writes_separately() {
     assert!((cost - expected).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1302 claude sonnet46 uses standard pricing across full context
 #[test]
 fn claude_sonnet46_uses_standard_pricing_across_full_context() {
     let cost = pricing::claude_cost_usd(
@@ -466,6 +484,7 @@ fn claude_sonnet46_uses_standard_pricing_across_full_context() {
     assert!((cost - 240_000.0 * 3.75e-6).abs() < 1e-12);
 }
 
+// upstream: CostUsagePricingTests.swift:1315 claude cost returns nil for unknown models
 #[test]
 fn claude_cost_returns_nil_for_unknown_models() {
     let cost = pricing::claude_cost_usd(
@@ -484,6 +503,7 @@ fn claude_cost_returns_nil_for_unknown_models() {
     assert_eq!(cost, None);
 }
 
+// upstream: CostUsagePricingTests.swift:1551 GPT-5_6 Terra and Luna use explicit July 2026 boundary dates
 #[test]
 fn gpt_5_6_terra_and_luna_use_explicit_july_2026_boundary_dates() {
     let before = 1_785_369_599_i64;
@@ -550,6 +570,7 @@ fn gpt_5_6_terra_and_luna_use_explicit_july_2026_boundary_dates() {
     assert!(luna_old > luna_new);
 }
 
+// upstream: CostUsagePricingTests.swift:1602 GPT-5_6 Sol pricing is unchanged across explicit July 2026 boundary dates
 #[test]
 fn gpt_5_6_sol_pricing_is_unchanged_across_explicit_july_2026_boundary_dates() {
     let before = 1_785_369_599_i64;
@@ -581,6 +602,9 @@ fn gpt_5_6_sol_pricing_is_unchanged_across_explicit_july_2026_boundary_dates() {
     assert_eq!(sol_old, sol_new);
 }
 
+// Rust-added tests (no direct upstream @Test equivalent; excluded from parity totals).
+
+// Rust-added: Historical pricing does not activate without a pricingdate.
 #[test]
 fn historical_pricing_does_not_activate_without_a_pricingdate() {
     let after = 1_785_369_601_i64;
@@ -611,6 +635,7 @@ fn historical_pricing_does_not_activate_without_a_pricingdate() {
     assert_eq!(terra_nil, terra_new);
 }
 
+// Rust-added: Claude model normalization strips provider prefixes and dates.
 #[test]
 fn claude_model_normalization_strips_provider_prefixes_and_dates() {
     assert_eq!(
@@ -635,6 +660,7 @@ fn claude_model_normalization_strips_provider_prefixes_and_dates() {
     );
 }
 
+// Rust-added: Claude pricing calculates standard and tiered costs.
 #[test]
 fn claude_pricing_calculates_standard_and_tiered_costs() {
     // Under 200k threshold: claude-sonnet-4-5 is $3/M input, $15/M output
@@ -675,6 +701,7 @@ fn claude_pricing_calculates_standard_and_tiered_costs() {
     assert!(over > under * 2.0);
 }
 
+// Rust-added: Claude pricing supports 1h cache creation split.
 #[test]
 fn claude_pricing_supports_1h_cache_creation_split() {
     let cost = pricing::claude_cost_usd(
@@ -696,6 +723,7 @@ fn claude_pricing_supports_1h_cache_creation_split() {
     assert!((cost - expected).abs() < 1e-9);
 }
 
+// Rust-added: Codex model normalization and priority multiplier.
 #[test]
 fn codex_model_normalization_and_priority_multiplier() {
     assert_eq!(
@@ -734,6 +762,7 @@ fn codex_model_normalization_and_priority_multiplier() {
     assert!((priority - standard * 2.0).abs() < 1e-9);
 }
 
+// Rust-added: Models dev catalog and custom pricing overrides resolve.
 #[test]
 fn models_dev_catalog_and_custom_pricing_overrides_resolve() {
     let mut catalog = ModelsDevCatalog::default();
