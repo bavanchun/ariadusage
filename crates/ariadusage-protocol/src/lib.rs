@@ -1,5 +1,6 @@
 //! Protocol types, schemas, and framing for AriadUsage.
 
+pub mod cli_cost_config;
 pub mod ids;
 pub mod ipc;
 pub mod metric;
@@ -15,6 +16,11 @@ pub mod codec;
 #[cfg(all(feature = "fixture", unix))]
 pub mod fixture;
 
+pub use cli_cost_config::{
+    ConfigProviderStatusResult, ConfigProviderToggleResult, ConfigSetSourceResult,
+    CostDailyEntryPayload, CostErrorPayload, CostModelBreakdownPayload, CostPayload,
+    CostProjectPayload, CostProjectSourcePayload, CostTotalsPayload, CostUsageCoverageCounts,
+};
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{
     ClientInfo, ClientMessage, ErrorCode, IpcError, IpcMessage, MAX_FRAME_BYTES, NoticeLevel,
