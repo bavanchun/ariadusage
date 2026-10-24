@@ -49,6 +49,9 @@ pub struct CostScannerOptions {
     pub codex_sessions_root: Option<PathBuf>,
     pub codex_priority_db_path: Option<PathBuf>,
     pub cache_root: Option<PathBuf>,
+    pub temp_dir: Option<PathBuf>,
+    pub max_codex_sqlite_bytes: Option<u64>,
+    pub force_rescan: bool,
     pub timezone: Option<TimeZone>,
     pub catalog: Option<ModelsDevCatalog>,
 }
@@ -88,10 +91,23 @@ pub fn load_daily_report(
             report
         }
         LocalCostProvider::Codex => {
+            let persisted_cursor = if options.force_rescan {
+                None
+            } else if let Some(ref cache_root) = options.cache_root {
+                let mut store = CostUsageStore::new(Some(cache_root));
+                store.load_metadata().and_then(|m| m.priority_turns_cursor)
+            } else {
+                None
+            };
             let codex_opts = CodexScanOptions {
                 codex_home: options.codex_home.clone(),
                 codex_sessions_root: options.codex_sessions_root.clone(),
                 priority_db_path: options.codex_priority_db_path.clone(),
+                temp_dir: options.temp_dir.clone(),
+                max_sqlite_bytes: options.max_codex_sqlite_bytes,
+                priority_deadline: None,
+                persisted_priority_cursor: persisted_cursor,
+                force_rescan: options.force_rescan,
                 timezone: options.timezone.clone(),
                 catalog: options.catalog.clone(),
             };

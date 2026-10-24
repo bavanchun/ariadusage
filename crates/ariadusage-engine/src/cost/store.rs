@@ -175,7 +175,78 @@ CREATE TABLE IF NOT EXISTS provider_reports (
 );
 "#;
 
-/// Persisted day/model aggregate row (`CostUsageStoreDayAggregate` in CodexBar).
+/// Store error classification mirroring `CostUsageStore.StoreError`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CostUsageStoreError {
+    Sqlite(i32),
+    InvalidData,
+    IncompatibleSchema,
+}
+
+/// Persisted token snapshot row (`CostUsageStoreTokenSnapshot` in CodexBar).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostUsageStoreTokenSnapshot {
+    pub path: String,
+    pub event_index: i64,
+    pub timestamp: String,
+    pub timestamp_unix_ms: Option<i64>,
+    pub day: Option<String>,
+    pub last_input: Option<i64>,
+    pub last_cached: Option<i64>,
+    pub last_output: Option<i64>,
+    pub last_reasoning: Option<i64>,
+    pub total_input: Option<i64>,
+    pub total_cached: Option<i64>,
+    pub total_output: Option<i64>,
+    pub total_reasoning: Option<i64>,
+    pub end_offset: Option<i64>,
+}
+
+/// Persisted usage row (`CostUsageStoreUsageRow` in CodexBar).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CostUsageStoreUsageRow {
+    pub path: String,
+    pub row_index: i64,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StoreReadyError {
+    Untrusted,
+    NeedsRebuild,
+}
+
+/// Returns true only when `error` represents database corruption or schema drift
+/// (`CostUsageStore.shouldRebuild(after:)`). Transient and constraint errors preserve history.
+#[must_use]
+pub const fn should_rebuild(error: CostUsageStoreError) -> bool {
+    match error {
+        CostUsageStoreError::InvalidData | CostUsageStoreError::IncompatibleSchema => true,
+        CostUsageStoreError::Sqlite(code) => should_rebuild_sqlite_code(code),
+    }
+}
+
+/// Classifies a raw or extended SQLite result code by its primary 8-bit code.
+#[must_use]
+pub const fn should_rebuild_sqlite_code(code: i32) -> bool {
+    // Primary SQLite result codes that must NOT destroy existing history:
+    // SQLITE_PERM(3), SQLITE_BUSY(5), SQLITE_LOCKED(6), SQLITE_NOMEM(7), SQLITE_READONLY(8),
+    // SQLITE_INTERRUPT(9), SQLITE_IOERR(10), SQLITE_FULL(13), SQLITE_TOOBIG(18),
+    // SQLITE_CONSTRAINT(19), SQLITE_MISUSE(21), SQLITE_AUTH(23), SQLITE_RANGE(25).
+    !matches!(
+        code & 0xFF,
+        3 | 5 | 6 | 7 | 8 | 9 | 10 | 13 | 18 | 19 | 21 | 23 | 25
+    )
+}
+
+fn should_rebuild_rusqlite_error(err: &rusqlite::Error) -> bool {
+    match err {
+        rusqlite::Error::SqliteFailure(ffi_err, _) => {
+            should_rebuild_sqlite_code(ffi_err.extended_code)
+        }
+        _ => true,
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CostUsageStoreDayAggregate {
     pub day: String,
@@ -234,6 +305,9 @@ pub struct CostUsageStoreMetadata {
     pub total_bytes: Option<i64>,
     pub completed_files: Option<usize>,
     pub total_files: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_turns_cursor:
+        Option<crate::cost::codex_priority::CodexPriorityTurnsPersistedCursor>,
 }
 
 /// Computes the combined SQLite `user_version` from `base` and `parser_hash`
@@ -249,9 +323,13 @@ pub fn combined_schema_version(base: i32, parser_hash: &str) -> i32 {
     combined as i32
 }
 
-/// Resolves the cache root directory from injected environment and home directory.
+/// Resolves the cache root directory from injected environment, home directory, and optional temp directory.
 #[must_use]
-pub fn resolve_cache_root(env: &BTreeMap<String, String>, home: Option<&Path>) -> PathBuf {
+pub fn resolve_cache_root_with_temp(
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+    temp_dir: Option<&Path>,
+) -> PathBuf {
     if let Some(xdg) = env.get("XDG_CACHE_HOME").map(|s| s.trim())
         && !xdg.is_empty()
     {
@@ -260,7 +338,19 @@ pub fn resolve_cache_root(env: &BTreeMap<String, String>, home: Option<&Path>) -
     if let Some(home) = home {
         return home.join(".cache").join("ariadusage");
     }
-    std::env::temp_dir().join("ariadusage")
+    if let Some(temp_dir) = temp_dir {
+        return temp_dir.join("ariadusage");
+    }
+    if let Some(runtime_dir) = crate::paths::trusted_runtime_dir() {
+        return runtime_dir.join("ariadusage");
+    }
+    PathBuf::from("/tmp/ariadusage")
+}
+
+/// Resolves the cache root directory from injected environment and home directory.
+#[must_use]
+pub fn resolve_cache_root(env: &BTreeMap<String, String>, home: Option<&Path>) -> PathBuf {
+    resolve_cache_root_with_temp(env, home, None)
 }
 
 /// Resolves the default cache root directory when no explicit root is provided.
@@ -416,6 +506,150 @@ impl CostUsageStore {
         })
     }
 
+    /// Appends token snapshots for existing files in a single transaction
+    /// (`CostUsageStore.appendTokenSnapshots`). Constraint failures on unknown files roll back
+    /// without triggering a store rebuild.
+    pub fn append_token_snapshots(&mut self, snapshots: &[CostUsageStoreTokenSnapshot]) -> bool {
+        if snapshots.is_empty() {
+            return true;
+        }
+        self.with_database(false, |conn| {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO token_snapshots (
+                        file_id, event_index, timestamp, timestamp_ms, day,
+                        last_input, last_cached, last_output, last_reasoning,
+                        total_input, total_cached, total_output, total_reasoning, end_offset
+                    ) VALUES (
+                        (SELECT id FROM files WHERE path = ?1),
+                        ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14
+                    )
+                    ON CONFLICT(file_id, event_index) DO UPDATE SET
+                        timestamp = excluded.timestamp,
+                        timestamp_ms = excluded.timestamp_ms,
+                        day = excluded.day,
+                        last_input = excluded.last_input,
+                        last_cached = excluded.last_cached,
+                        last_output = excluded.last_output,
+                        last_reasoning = excluded.last_reasoning,
+                        total_input = excluded.total_input,
+                        total_cached = excluded.total_cached,
+                        total_output = excluded.total_output,
+                        total_reasoning = excluded.total_reasoning,
+                        end_offset = excluded.end_offset",
+                )?;
+                for snap in snapshots {
+                    stmt.execute(params![
+                        snap.path,
+                        snap.event_index,
+                        snap.timestamp,
+                        snap.timestamp_unix_ms,
+                        snap.day,
+                        snap.last_input,
+                        snap.last_cached,
+                        snap.last_output,
+                        snap.last_reasoning,
+                        snap.total_input,
+                        snap.total_cached,
+                        snap.total_output,
+                        snap.total_reasoning,
+                        snap.end_offset,
+                    ])?;
+                }
+            }
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
+    /// Loads token snapshots for `path` ordered by `event_index`.
+    #[must_use]
+    pub fn fetch_token_snapshots(&mut self, path: &str) -> Vec<CostUsageStoreTokenSnapshot> {
+        self.with_database(Vec::new(), |conn| {
+            let mut stmt = conn.prepare(
+                "SELECT f.path, s.event_index, s.timestamp, s.timestamp_ms, s.day,
+                        s.last_input, s.last_cached, s.last_output, s.last_reasoning,
+                        s.total_input, s.total_cached, s.total_output, s.total_reasoning, s.end_offset
+                 FROM token_snapshots s
+                 JOIN files f ON f.id = s.file_id
+                 WHERE f.path = ?1
+                 ORDER BY s.event_index ASC",
+            )?;
+            let rows = stmt.query_map(params![path], |row| {
+                Ok(CostUsageStoreTokenSnapshot {
+                    path: row.get(0)?,
+                    event_index: row.get(1)?,
+                    timestamp: row.get(2)?,
+                    timestamp_unix_ms: row.get(3)?,
+                    day: row.get(4)?,
+                    last_input: row.get(5)?,
+                    last_cached: row.get(6)?,
+                    last_output: row.get(7)?,
+                    last_reasoning: row.get(8)?,
+                    total_input: row.get(9)?,
+                    total_cached: row.get(10)?,
+                    total_output: row.get(11)?,
+                    total_reasoning: row.get(12)?,
+                    end_offset: row.get(13)?,
+                })
+            })?;
+            Ok(rows.flatten().collect())
+        })
+    }
+
+    /// Appends usage rows for existing files in a single transaction
+    /// (`CostUsageStore.appendUsageRows`). Constraint failures on unknown files roll back
+    /// without triggering a store rebuild.
+    pub fn append_usage_rows(&mut self, usage_rows: &[CostUsageStoreUsageRow]) -> bool {
+        if usage_rows.is_empty() {
+            return true;
+        }
+        self.with_database(false, |conn| {
+            let tx = conn.unchecked_transaction()?;
+            {
+                let mut stmt = tx.prepare(
+                    "INSERT INTO usage_rows (
+                        file_id, row_index, payload
+                    ) VALUES (
+                        (SELECT id FROM files WHERE path = ?1),
+                        ?2, ?3
+                    )
+                    ON CONFLICT(file_id, row_index) DO UPDATE SET
+                        payload = excluded.payload",
+                )?;
+                for row in usage_rows {
+                    stmt.execute(params![row.path, row.row_index, row.payload])?;
+                }
+            }
+            tx.commit()?;
+            Ok(true)
+        })
+    }
+
+    /// Checkpoints the WAL into the main database file and returns the on-disk byte size
+    /// (`CostUsageStore.fileSizeBytes`).
+    pub fn file_size_bytes(&mut self) -> u64 {
+        if !self.database_path.exists() {
+            return 0;
+        }
+        self.with_database(0, |conn| {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            let page_count: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+            let page_size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+            Ok((page_count.max(0) as u64).saturating_mul(page_size.max(0) as u64))
+        })
+    }
+
+    /// Queries the active SQLite `user_version` (`CostUsageStore.configuration().userVersion`).
+    #[must_use]
+    pub fn user_version(&mut self) -> Option<i32> {
+        self.with_database(None, |conn| {
+            let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            Ok(Some(v))
+        })
+    }
+
     /// Replaces `day_aggregates` in a single transaction.
     pub fn save_day_aggregates(&mut self, aggregates: &[CostUsageStoreDayAggregate]) -> bool {
         self.with_database(false, |conn| {
@@ -561,6 +795,11 @@ impl CostUsageStore {
         updated_at_unix_ms: i64,
     ) -> CostUsageDailyReport {
         let _ = self.remove_legacy_codex_artifact_if_present();
+        if scan.validation_pending
+            && let Some((cached_report, _)) = self.load_provider_report("codex")
+        {
+            return cached_report;
+        }
         let report = ledger::build_codex_daily_report(scan, range);
         let mut agg_map: BTreeMap<(String, String), CostUsageStoreDayAggregate> = BTreeMap::new();
 
@@ -627,6 +866,7 @@ impl CostUsageStore {
             total_bytes: None,
             completed_files: Some(scan.files.len()),
             total_files: Some(scan.files.len()),
+            priority_turns_cursor: scan.persisted_priority_cursor.clone(),
         });
         let _ = self.save_provider_report("codex", &report, updated_at_unix_ms);
         report
@@ -636,8 +876,16 @@ impl CostUsageStore {
     where
         F: FnMut(&Connection) -> rusqlite::Result<T>,
     {
-        let Ok((open_path, existed)) = self.ensure_private_store_ready() else {
-            return fallback;
+        let (open_path, existed) = match self.ensure_private_store_ready() {
+            Ok(pair) => pair,
+            Err(StoreReadyError::Untrusted) => return fallback,
+            Err(StoreReadyError::NeedsRebuild) => {
+                self.rebuild_database();
+                let Ok(pair) = self.ensure_private_store_ready() else {
+                    return fallback;
+                };
+                pair
+            }
         };
         match self.open_and_validate(&open_path, existed) {
             Ok(conn) => match operation(&conn) {
@@ -646,8 +894,12 @@ impl CostUsageStore {
                     self.repair_store_permissions(&open_path);
                     val
                 }
-                Err(_) => {
+                Err(err) => {
                     drop(conn);
+                    if !should_rebuild_rusqlite_error(&err) {
+                        self.repair_store_permissions(&open_path);
+                        return fallback;
+                    }
                     self.rebuild_database();
                     let Ok((open_path2, existed2)) = self.ensure_private_store_ready() else {
                         return fallback;
@@ -663,7 +915,10 @@ impl CostUsageStore {
                     }
                 }
             },
-            Err(_) => {
+            Err(err) => {
+                if !should_rebuild_rusqlite_error(&err) {
+                    return fallback;
+                }
                 self.rebuild_database();
                 let Ok((open_path2, existed2)) = self.ensure_private_store_ready() else {
                     return fallback;
@@ -683,13 +938,14 @@ impl CostUsageStore {
 
     /// Creates/verifies the `0700` parent directory and `0600` database file (and any sidecars)
     /// without following symlinks. Returns `Ok((canonical_parent_db_path, existed))` if ready,
-    /// or `Err(())` if a security/ownership check fails.
-    fn ensure_private_store_ready(&self) -> Result<(PathBuf, bool), ()> {
+    /// `Err(StoreReadyError::NeedsRebuild)` if the database path is occupied by an owned directory,
+    /// or `Err(StoreReadyError::Untrusted)` if a security/ownership check fails.
+    fn ensure_private_store_ready(&self) -> Result<(PathBuf, bool), StoreReadyError> {
         let Some(parent) = self.database_path.parent() else {
-            return Err(());
+            return Err(StoreReadyError::Untrusted);
         };
         let Some(file_name) = self.database_path.file_name() else {
-            return Err(());
+            return Err(StoreReadyError::Untrusted);
         };
         #[cfg(unix)]
         {
@@ -700,27 +956,47 @@ impl CostUsageStore {
             if let Ok(existing_parent_stat) = lstat(parent)
                 && FileType::from_raw_mode(existing_parent_stat.st_mode) != FileType::Directory
             {
-                return Err(());
+                return Err(StoreReadyError::Untrusted);
             }
 
             let mut builder = fs::DirBuilder::new();
             builder.recursive(true).mode(0o700);
-            builder.create(parent).map_err(|_| ())?;
+            builder
+                .create(parent)
+                .map_err(|_| StoreReadyError::Untrusted)?;
 
-            let dir_stat = lstat(parent).map_err(|_| ())?;
+            let dir_stat = lstat(parent).map_err(|_| StoreReadyError::Untrusted)?;
             if FileType::from_raw_mode(dir_stat.st_mode) != FileType::Directory {
-                return Err(());
+                return Err(StoreReadyError::Untrusted);
             }
             let euid = geteuid().as_raw();
             if dir_stat.st_uid != euid {
-                return Err(());
+                return Err(StoreReadyError::Untrusted);
             }
             if (dir_stat.st_mode & 0o777) != 0o700 {
                 let _ = chmod(parent, Mode::from_raw_mode(0o700));
             }
 
-            let canon_parent = fs::canonicalize(parent).map_err(|_| ())?;
+            let canon_parent = fs::canonicalize(parent).map_err(|_| StoreReadyError::Untrusted)?;
             let open_path = canon_parent.join(file_name);
+
+            let pre_existed = match lstat(&open_path) {
+                Ok(st) => {
+                    if st.st_uid != euid {
+                        return Err(StoreReadyError::Untrusted);
+                    }
+                    let ft = FileType::from_raw_mode(st.st_mode);
+                    if ft == FileType::Directory {
+                        return Err(StoreReadyError::NeedsRebuild);
+                    }
+                    if ft != FileType::RegularFile {
+                        return Err(StoreReadyError::Untrusted);
+                    }
+                    true
+                }
+                Err(rustix::io::Errno::NOENT) => false,
+                Err(_) => return Err(StoreReadyError::Untrusted),
+            };
 
             let base = open_path.to_string_lossy().into_owned();
             for suffix in ["-wal", "-shm", "-journal"] {
@@ -729,7 +1005,7 @@ impl CostUsageStore {
                     && (FileType::from_raw_mode(st.st_mode) != FileType::RegularFile
                         || st.st_uid != euid)
                 {
-                    return Err(());
+                    return Err(StoreReadyError::Untrusted);
                 }
             }
 
@@ -738,26 +1014,33 @@ impl CostUsageStore {
                 OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::from_raw_mode(0o600),
             )
-            .map_err(|_| ())?;
-            let st = fstat(&fd).map_err(|_| ())?;
+            .map_err(|_| StoreReadyError::Untrusted)?;
+            let st = fstat(&fd).map_err(|_| StoreReadyError::Untrusted)?;
             if FileType::from_raw_mode(st.st_mode) != FileType::RegularFile || st.st_uid != euid {
-                return Err(());
+                return Err(StoreReadyError::Untrusted);
             }
-            fchmod(&fd, Mode::from_raw_mode(0o600)).map_err(|_| ())?;
-            Ok((open_path, st.st_size > 0))
+            fchmod(&fd, Mode::from_raw_mode(0o600)).map_err(|_| StoreReadyError::Untrusted)?;
+            Ok((open_path, pre_existed))
         }
         #[cfg(not(unix))]
         {
-            fs::create_dir_all(parent).map_err(|_| ())?;
+            fs::create_dir_all(parent).map_err(|_| StoreReadyError::Untrusted)?;
             let meta = fs::symlink_metadata(&self.database_path);
-            if let Ok(ref m) = meta
-                && m.file_type().is_symlink()
-            {
-                return Err(());
-            }
-            let existed = meta.is_ok_and(|m| m.len() > 0);
+            let pre_existed = match meta {
+                Ok(ref m) => {
+                    if m.file_type().is_symlink() {
+                        return Err(StoreReadyError::Untrusted);
+                    }
+                    if m.file_type().is_dir() {
+                        return Err(StoreReadyError::NeedsRebuild);
+                    }
+                    true
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => false,
+                Err(_) => return Err(StoreReadyError::Untrusted),
+            };
             let canon_parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
-            Ok((canon_parent.join(file_name), existed))
+            Ok((canon_parent.join(file_name), pre_existed))
         }
     }
 
@@ -828,7 +1111,10 @@ impl CostUsageStore {
         if quick_check != "ok" {
             return Err(rusqlite::Error::InvalidQuery);
         }
-        conn.execute_batch(SCHEMA_SQL)?;
+        let auto_vacuum: i32 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+        if auto_vacuum != 2 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         Ok(())
     }
 
@@ -849,8 +1135,15 @@ impl CostUsageStore {
         let base = self.database_path.to_string_lossy().into_owned();
         for suffix in ["", "-wal", "-shm", "-journal"] {
             let candidate = PathBuf::from(format!("{base}{suffix}"));
-            if fs::symlink_metadata(&candidate).is_ok() {
-                let _ = fs::remove_file(candidate);
+            if let Ok(meta) = fs::symlink_metadata(&candidate) {
+                if meta.file_type().is_symlink() {
+                    continue;
+                }
+                if meta.file_type().is_dir() {
+                    let _ = fs::remove_dir_all(&candidate);
+                } else {
+                    let _ = fs::remove_file(&candidate);
+                }
             }
         }
         self.rebuild_count += 1;
