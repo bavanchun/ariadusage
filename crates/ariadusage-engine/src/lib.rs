@@ -1,6 +1,7 @@
 pub mod brokers;
 pub mod config_store;
 pub mod coordinator;
+pub mod cost;
 pub mod daemon;
 pub mod error;
 pub mod hardening;
