@@ -341,10 +341,10 @@ pub fn resolve_cache_root_with_temp(
     if let Some(temp_dir) = temp_dir {
         return temp_dir.join("ariadusage");
     }
-    if let Some(runtime_dir) = crate::paths::trusted_runtime_dir() {
-        return runtime_dir.join("ariadusage");
+    if let Ok(state_dir) = crate::paths::state_dir() {
+        return state_dir.join("ariadusage");
     }
-    PathBuf::from("/tmp/ariadusage")
+    PathBuf::from("/var/tmp/ariadusage")
 }
 
 /// Resolves the cache root directory from injected environment and home directory.
@@ -356,7 +356,19 @@ pub fn resolve_cache_root(env: &BTreeMap<String, String>, home: Option<&Path>) -
 /// Resolves the default cache root directory when no explicit root is provided.
 #[must_use]
 pub fn default_cache_root() -> PathBuf {
-    resolve_cache_root(&BTreeMap::new(), None)
+    let home = etcetera::home_dir().ok().filter(|p| p.is_absolute());
+    resolve_cache_root(&BTreeMap::new(), home.as_deref())
+}
+
+/// Resolves the disk-backed `0700` parent directory beside the cost cache root
+/// (`<cache_root>/codex-sqlite-copies`, sibling to `<cache_root>/cost-usage`) for private copies
+/// of foreign Codex SQLite databases.
+#[must_use]
+pub fn default_sqlite_copy_parent(cache_root: Option<&Path>) -> PathBuf {
+    let root = cache_root
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_cache_root);
+    root.join("codex-sqlite-copies")
 }
 
 /// SQLite persistence store for local cost scanning (`CostUsageStore` in CodexBar).
