@@ -14,6 +14,7 @@ pub struct Context {
     pub home: PathBuf,
     pub additional_profile_homes: Vec<String>,
     pub environment: BTreeMap<String, String>,
+    pub copy_parent: Option<PathBuf>,
 }
 
 impl Context {
@@ -27,11 +28,30 @@ impl Context {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/"));
+        let copy_parent = default_sqlite_copy_parent(&environment, &home);
         Self {
             home,
             additional_profile_homes,
             environment,
+            copy_parent,
         }
+    }
+
+    #[must_use]
+    pub fn with_copy_parent(mut self, copy_parent: impl Into<PathBuf>) -> Self {
+        self.copy_parent = Some(copy_parent.into());
+        self
+    }
+
+    #[must_use]
+    pub fn with_provider_config(
+        mut self,
+        provider_config: &ariadusage_core::config::ProviderConfig,
+    ) -> Self {
+        self.additional_profile_homes = provider_config
+            .antigravity_additional_profile_homes()
+            .unwrap_or_default();
+        self
     }
 
     #[must_use]
@@ -64,6 +84,16 @@ impl Context {
             .unwrap_or_else(|| self.home.join(".config/tokscale"));
         config.join("antigravity-cache/sessions")
     }
+}
+
+fn default_sqlite_copy_parent(
+    environment: &BTreeMap<String, String>,
+    home: &Path,
+) -> Option<PathBuf> {
+    let valid_home = (home.is_absolute() && home != Path::new("/")).then_some(home);
+    let cache_root = crate::cost::store::resolve_cache_root(environment, valid_home);
+    (!cache_root.as_os_str().is_empty())
+        .then(|| crate::cost::store::default_sqlite_copy_parent(Some(&cache_root)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -157,6 +187,7 @@ pub struct Budget {
     clock: Arc<ClockFn>,
     started: f64,
     state: Arc<Mutex<BudgetState>>,
+    copy_parent: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Budget {
@@ -166,6 +197,7 @@ impl std::fmt::Debug for Budget {
             .field("started", &self.started)
             .field("statistics", &self.statistics())
             .field("database_schema_bytes", &self.database_schema_bytes())
+            .field("copy_parent", &self.copy_parent)
             .finish()
     }
 }
@@ -184,6 +216,7 @@ impl Budget {
             clock: Arc::new(clock),
             started,
             state: Arc::new(Mutex::new(BudgetState::default())),
+            copy_parent: None,
         }
     }
 
@@ -194,6 +227,17 @@ impl Budget {
     {
         let epoch = Instant::now();
         Self::new(limits, move || epoch.elapsed().as_secs_f64(), cancellation)
+    }
+
+    #[must_use]
+    pub fn with_copy_parent(mut self, copy_parent: Option<PathBuf>) -> Self {
+        self.copy_parent = copy_parent;
+        self
+    }
+
+    #[must_use]
+    pub fn copy_parent(&self) -> Option<&Path> {
+        self.copy_parent.as_deref()
     }
 
     #[must_use]

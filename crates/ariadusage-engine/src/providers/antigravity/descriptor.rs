@@ -26,8 +26,6 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::local_probe::LocalProbe;
 use crate::brokers::net::NetBroker;
 
-use super::local_reader::{AntigravityLocalReader, CostUsageTokenSnapshot, DailyReportResult};
-use super::local_scan::{Context as LocalScanContext, Limits as LocalScanLimits, ScanFailure};
 use super::oauth_store::{AntigravityOAuthCredentialsStore, EnvValue};
 use super::offline_store::AntigravityOfflineStore;
 use super::remote_fetcher::{
@@ -540,7 +538,6 @@ pub struct AntigravityStrategyConfig {
     pub local_probe: LocalProbe,
     pub home_directory: PathBuf,
     pub working_directory: PathBuf,
-    pub additional_profile_homes: Vec<String>,
     pub probe_timeout: Duration,
     pub oauth_timeout: Duration,
     pub selected_token_override: Option<String>,
@@ -563,7 +560,6 @@ impl AntigravityStrategyConfig {
             local_probe: LocalProbe::new(),
             home_directory: home_directory.into(),
             working_directory: working_directory.into(),
-            additional_profile_homes: Vec::new(),
             probe_timeout: Duration::from_secs(8),
             oauth_timeout: Duration::from_secs(15),
             selected_token_override: None,
@@ -574,21 +570,6 @@ impl AntigravityStrategyConfig {
             clock: Arc::new(Timestamp::now),
             cli: Arc::new(super::cli_https::CliRuntime::default()),
         }
-    }
-
-    pub fn with_additional_profile_homes(mut self, homes: Vec<String>) -> Self {
-        self.additional_profile_homes = homes;
-        self
-    }
-
-    pub fn with_provider_config(
-        mut self,
-        provider_config: &ariadusage_core::config::ProviderConfig,
-    ) -> Self {
-        self.additional_profile_homes = provider_config
-            .antigravity_additional_profile_homes()
-            .unwrap_or_default();
-        self
     }
 
     pub fn with_local_probe(mut self, local_probe: LocalProbe) -> Self {
@@ -916,11 +897,7 @@ impl FetchStrategy for AntigravityOAuthFetchStrategy {
 
     fn should_fallback(&self, _error: &FetchError, cx: &FetchContext) -> bool {
         let home = resolve_home_directory(&self.config.home_directory, &cx.env);
-        AntigravityOfflineStore::has_offline_data_with_profiles(
-            &home,
-            &cx.env,
-            &self.config.additional_profile_homes,
-        )
+        AntigravityOfflineStore::has_offline_data(&home, &cx.env)
     }
 }
 
@@ -957,7 +934,6 @@ pub enum AntigravityOfflinePriorError {
 /// `~/.gemini/antigravity-cli/conversations/*.db` as a non-quota snapshot.
 pub struct AntigravityOfflineFetchStrategy {
     home_directory: PathBuf,
-    additional_profile_homes: Vec<String>,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
 }
 
@@ -965,7 +941,6 @@ impl Default for AntigravityOfflineFetchStrategy {
     fn default() -> Self {
         Self {
             home_directory: PathBuf::new(),
-            additional_profile_homes: Vec::new(),
             clock: Arc::new(Timestamp::now),
         }
     }
@@ -975,7 +950,6 @@ impl AntigravityOfflineFetchStrategy {
     pub fn new(config: AntigravityStrategyConfig) -> Self {
         Self {
             home_directory: config.home_directory,
-            additional_profile_homes: config.additional_profile_homes,
             clock: config.clock,
         }
     }
@@ -983,93 +957,8 @@ impl AntigravityOfflineFetchStrategy {
     pub fn with_home_directory(home_directory: impl Into<PathBuf>) -> Self {
         Self {
             home_directory: home_directory.into(),
-            additional_profile_homes: Vec::new(),
             clock: Arc::new(Timestamp::now),
         }
-    }
-
-    pub fn with_additional_profile_homes(mut self, homes: Vec<String>) -> Self {
-        self.additional_profile_homes = homes;
-        self
-    }
-
-    pub fn with_provider_config(
-        mut self,
-        provider_config: &ariadusage_core::config::ProviderConfig,
-    ) -> Self {
-        self.additional_profile_homes = provider_config
-            .antigravity_additional_profile_homes()
-            .unwrap_or_default();
-        self
-    }
-
-    pub fn local_context(&self, cx: &FetchContext) -> LocalScanContext {
-        let home = resolve_home_directory(&self.home_directory, &cx.env);
-        let mut env: BTreeMap<String, String> = cx
-            .env
-            .iter()
-            .map(|(k, v)| (k.clone(), v.expose_secret().to_owned()))
-            .collect();
-        if !home.as_os_str().is_empty() && env.get("HOME").is_none_or(String::is_empty) {
-            env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
-        }
-        LocalScanContext {
-            home,
-            additional_profile_homes: self.additional_profile_homes.clone(),
-            environment: env,
-        }
-    }
-
-    pub fn load_local_daily_report(
-        &self,
-        cx: &FetchContext,
-    ) -> Result<DailyReportResult, FetchError> {
-        let local_cx = self.local_context(cx);
-        let cancel = cx.cancel.clone();
-        let epoch = std::time::Instant::now();
-        AntigravityLocalReader::make_daily_report_with_status(
-            &local_cx,
-            0,
-            false,
-            None,
-            LocalScanLimits::default(),
-            move || epoch.elapsed().as_secs_f64(),
-            move || {
-                if cancel.is_cancelled() {
-                    Err(ScanFailure::Cancelled("cancelled".to_owned()))
-                } else {
-                    Ok(())
-                }
-            },
-        )
-        .map_err(|err| match err {
-            ScanFailure::Cancelled(_) => FetchError::Cancelled,
-            other => FetchError::Classified(
-                AntigravityStatusProbeError::ParseFailed(other.to_string()).into_classified_error(),
-            ),
-        })
-    }
-
-    pub fn load_local_token_snapshot(
-        &self,
-        cx: &FetchContext,
-    ) -> Result<CostUsageTokenSnapshot, FetchError> {
-        let local_cx = self.local_context(cx);
-        let cancel = cx.cancel.clone();
-        let now = (self.clock)();
-        AntigravityLocalReader::load_token_snapshot(&local_cx, now, 30, 0, None, move || {
-            if cancel.is_cancelled() {
-                Err(ScanFailure::Cancelled("cancelled".to_owned()))
-            } else {
-                Ok(())
-            }
-        })
-        .map_err(|err| match err {
-            ScanFailure::Cancelled(_) => FetchError::Cancelled,
-            other => FetchError::Classified(
-                AntigravityStatusProbeError::ParseFailed(other.to_string()).into_classified_error(),
-            ),
-        })
     }
 
     pub fn diagnostic_for_prior_failure(error: &AntigravityRemoteFetchError) -> Option<String> {
@@ -1194,11 +1083,7 @@ impl FetchStrategy for AntigravityOfflineFetchStrategy {
     fn is_available<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, bool> {
         Box::pin(async move {
             let home = resolve_home_directory(&self.home_directory, &cx.env);
-            AntigravityOfflineStore::has_offline_data_with_profiles(
-                &home,
-                &cx.env,
-                &self.additional_profile_homes,
-            )
+            AntigravityOfflineStore::has_offline_data(&home, &cx.env)
         })
     }
 
@@ -1208,17 +1093,12 @@ impl FetchStrategy for AntigravityOfflineFetchStrategy {
                 return Err(FetchError::Cancelled);
             }
             let home = resolve_home_directory(&self.home_directory, &cx.env);
-            let count = AntigravityOfflineStore::count_conversations_with_profiles(
-                &home,
-                &cx.env,
-                &self.additional_profile_homes,
-            );
+            let count = AntigravityOfflineStore::count_conversations(&home, &cx.env);
             if count == 0 {
                 return Err(FetchError::Classified(
                     AntigravityStatusProbeError::NotRunning.into_classified_error(),
                 ));
             }
-            let _local_report = self.load_local_daily_report(cx)?;
             let window = RateWindow::new(0.0, None, None, None, None, false).map_err(|e| {
                 FetchError::Classified(
                     AntigravityStatusProbeError::ParseFailed(e.to_string()).into_classified_error(),

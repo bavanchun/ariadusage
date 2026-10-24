@@ -1181,7 +1181,8 @@ fn installed_client_negative_cache_hits_and_invalidates_on_artifact_fingerprint_
 }
 
 #[tokio::test]
-async fn offline_strategy_wires_local_reader_and_additional_profile_homes() {
+async fn additional_profile_homes_do_not_affect_offline_usage_or_oauth_fallback() {
+    let empty_primary = ProfileFixture::new();
     let primary = ProfileFixture::new();
     let additional = ProfileFixture::new();
     primary.database(
@@ -1194,6 +1195,11 @@ async fn offline_strategy_wires_local_reader_and_additional_profile_homes() {
         0,
         &[ProfileFixture::blob_with(1_790_769_600, None, 100)],
     );
+    additional.database(
+        "october-1",
+        1,
+        &[ProfileFixture::blob_with(1_790_856_000, None, 100)],
+    );
 
     let mut provider_config = ProviderConfig::new(ProviderId::new("antigravity").unwrap());
     provider_config.set_antigravity_additional_profile_homes(Some(vec![
@@ -1204,12 +1210,53 @@ async fn offline_strategy_wires_local_reader_and_additional_profile_homes() {
             .into_owned(),
     ]));
 
-    let strategy = AntigravityOfflineFetchStrategy::with_home_directory(&primary.root)
-        .with_provider_config(&provider_config);
-    let cx = make_context(primary.environment.clone(), None);
+    // 1. When primary home has no conversations, additional profile homes do not make
+    // offline usage available or trigger OAuth should_fallback.
+    let empty_strategy = AntigravityOfflineFetchStrategy::with_home_directory(&empty_primary.root);
+    let empty_cx = make_context(empty_primary.environment.clone(), None);
+    assert!(!empty_strategy.is_available(&empty_cx).await);
+    assert!(empty_strategy.fetch(&empty_cx).await.is_err());
 
-    assert!(strategy.is_available(&cx).await);
-    let fetched = strategy.fetch(&cx).await.unwrap();
+    let net = Arc::new(NetBroker::new(NetConfig::default()).unwrap());
+    let oauth_empty = AntigravityOAuthFetchStrategy::new(AntigravityStrategyConfig::new(
+        Arc::clone(&net),
+        &empty_primary.root,
+        &empty_primary.root,
+    ));
+    let dummy_err =
+        FetchError::Classified(AntigravityStatusProbeError::NotRunning.into_classified_error());
+    assert!(!oauth_empty.should_fallback(&dummy_err, &empty_cx));
+
+    // LocalScanContext still includes additional profile homes for AntigravityLocalReader.
+    let local_empty_ctx = LocalContext::new(empty_primary.environment.clone(), Vec::new())
+        .with_provider_config(&provider_config);
+    let local_only_additional = AntigravityLocalReader::make_daily_report_with_status(
+        &local_empty_ctx,
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(local_only_additional.coverage, LocalCoverage::Complete);
+    assert_eq!(
+        local_only_additional
+            .report
+            .data
+            .iter()
+            .map(|d| d.date.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-09-30", "2026-10-01"]
+    );
+
+    // 2. When primary home has 1 conversation and additional profile home has 2 conversations,
+    // offline usage reports only the 1 primary conversation while LocalScanContext unions all 3.
+    let primary_strategy = AntigravityOfflineFetchStrategy::with_home_directory(&primary.root);
+    let primary_cx = make_context(primary.environment.clone(), None);
+    assert!(primary_strategy.is_available(&primary_cx).await);
+    let fetched = primary_strategy.fetch(&primary_cx).await.unwrap();
     assert_eq!(fetched.source_label, "offline");
     assert_eq!(
         fetched
@@ -1218,26 +1265,44 @@ async fn offline_strategy_wires_local_reader_and_additional_profile_homes() {
             .as_ref()
             .and_then(|w| w.first())
             .map(|w| w.title.as_str()),
-        Some("Offline \u{00b7} 2 conversations")
+        Some("Offline \u{00b7} 1 conversation")
     );
 
-    let report = strategy.load_local_daily_report(&cx).unwrap();
-    assert_eq!(report.coverage, LocalCoverage::Complete);
+    let oauth_primary = AntigravityOAuthFetchStrategy::new(AntigravityStrategyConfig::new(
+        net,
+        &primary.root,
+        &primary.root,
+    ));
+    assert!(oauth_primary.should_fallback(&dummy_err, &primary_cx));
+
+    let local_primary_ctx = LocalContext::new(primary.environment.clone(), Vec::new())
+        .with_provider_config(&provider_config);
+    let union_report = AntigravityLocalReader::make_daily_report_with_status(
+        &local_primary_ctx,
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(union_report.coverage, LocalCoverage::Complete);
     assert_eq!(
-        report
+        union_report
             .report
             .data
             .iter()
             .map(|d| d.date.as_str())
             .collect::<Vec<_>>(),
-        vec!["2026-09-29", "2026-09-30"]
+        vec!["2026-09-29", "2026-09-30", "2026-10-01"]
     );
     assert_eq!(
-        report.report.summary.as_ref().and_then(|s| s.total_tokens),
-        Some(374)
+        union_report
+            .report
+            .summary
+            .as_ref()
+            .and_then(|s| s.total_tokens),
+        Some(561)
     );
-
-    let token_snapshot = strategy.load_local_token_snapshot(&cx).unwrap();
-    assert!(token_snapshot.history_coverage_is_established);
-    assert_eq!(token_snapshot.daily.len(), 2);
 }
