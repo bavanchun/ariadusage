@@ -29,7 +29,7 @@ Hooks are configured under the `hooks` object in `config.json`:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` | Stable identifier for rate-limiting and diagnostics (auto-generated UUID v4 when omitted). |
+| `id` | `string` | Stable rule identifier for editor and CLI test diagnostics (auto-generated uppercase UUID v4 when omitted on config load). |
 | `enabled` | `boolean` | Whether this rule is active (default: `true`). |
 | `event` | `string` | Event trigger (`quota_low`, `quota_reached`, `quota_reset`, `provider_unavailable`, `provider_recovered`, `refresh_failed`, or `usage_updated`). |
 | `provider` | `string?` | Optional lowercase provider ID (`claude`, `codex`, `antigravity`). Omit or set to `null` to match all providers. |
@@ -47,7 +47,7 @@ Hooks are configured under the `hooks` object in `config.json`:
 | `provider_unavailable` | Provider status transitions into an unhealthy state (`degraded`, `major_outage`, or `unknown`), or changes between unhealthy states after the initial observation. |
 | `provider_recovered` | Provider status returns to `operational` (`none`) from a previously observed unhealthy state. |
 | `refresh_failed` | A refresh attempt fails after a previously healthy observation, or fails with a different error message (`network`, `unauthorized`, `rate_limited`, `parse_error`, `timeout`, or `unknown`). |
-| `usage_updated` | A refresh publishes a valid usage snapshot (`primary` or `secondary` rate window present). Fires on every successful poll without transition-cooldown suppression. |
+| `usage_updated` | A refresh publishes a valid usage snapshot (non-synthetic `primary` or `secondary` rate window present), subject to the 600 s per-account rate limit. |
 
 ## Execution and security invariants
 
@@ -56,7 +56,7 @@ Hooks run exclusively through the engine's `Process` broker (`ariadusage-engine:
 - **No shell interpolation**: `executable` must resolve to an `AbsolutePath`, and `arguments` are passed as a fixed `argv` vector. AriadUsage never constructs a shell command string from event data.
 - **Bounded stdin payload**: The serialized `HookEvent` JSON document is written to the child process's `stdin` and capped at `4096` bytes (`MAXIMUM_PAYLOAD_BYTES`).
 - **Timeouts and process-group teardown**: Each execution runs in its own process group with `timeoutSeconds` enforced (`SIGTERM` followed by `SIGKILL` after grace period) and stdout/stderr capped at 64 KiB.
-- **Rate limiting**: Transition events (`quota_low`, `quota_reached`, `quota_reset`, `provider_unavailable`, `provider_recovered`, `refresh_failed`) are rate-limited to once per 600 seconds per `(rule.id, event, provider, account_lane)`. `usage_updated` bypasses the cooldown so live consumers receive every successful poll.
+- **Rate limiting**: Storm-prone events (`quota_low`, `quota_reached`, `provider_unavailable`, `refresh_failed`, and `usage_updated`) are rate-limited to once per 600 seconds per `(event, provider, account discriminator or account, window)`. `quota_reset` and `provider_recovered` bypass the cooldown so recovery and reset transitions always fire.
 
 ## Environment variables
 

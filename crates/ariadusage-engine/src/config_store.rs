@@ -64,7 +64,9 @@ impl ConfigStore {
             file.read_to_end(&mut bytes)?;
 
             match ariadusage_core::config::decode(&bytes)? {
-                Some(cfg) => Ok(Some(ariadusage_core::config::normalize(cfg))),
+                Some(cfg) => Ok(Some(fill_missing_hook_rule_ids(
+                    ariadusage_core::config::normalize(cfg),
+                ))),
                 None => Ok(None),
             }
         }
@@ -76,7 +78,9 @@ impl ConfigStore {
             }
             let bytes = std::fs::read(&self.path)?;
             match ariadusage_core::config::decode(&bytes)? {
-                Some(cfg) => Ok(Some(ariadusage_core::config::normalize(cfg))),
+                Some(cfg) => Ok(Some(fill_missing_hook_rule_ids(
+                    ariadusage_core::config::normalize(cfg),
+                ))),
                 None => Ok(None),
             }
         }
@@ -305,4 +309,90 @@ impl ConfigStore {
 
 fn default_config() -> Config {
     ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
+}
+
+fn fill_missing_hook_rule_ids(mut config: Config) -> Config {
+    if let Some(mut hooks) = config.hooks_config()
+        && hooks.events.iter().any(|rule| rule.id.is_empty())
+    {
+        for rule in &mut hooks.events {
+            if rule.id.is_empty() {
+                let mut buf = uuid::Uuid::encode_buffer();
+                rule.id = uuid::Uuid::new_v4()
+                    .hyphenated()
+                    .encode_upper(&mut buf)
+                    .to_owned();
+            }
+        }
+        config.set_hooks_config(Some(hooks));
+    }
+    config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hook_rules_without_id_receive_distinct_uppercase_uuid_v4_ids_on_load() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(temp.path(), std::fs::Permissions::from_mode(0o700))
+                .expect("chmod dir");
+        }
+        let config_path = temp.path().join("config.json");
+        let raw_json = r#"{
+  "version": 1,
+  "providers": [],
+  "hooks": {
+    "enabled": true,
+    "events": [
+      {
+        "event": "quota_reached",
+        "executable": "/usr/bin/true"
+      },
+      {
+        "event": "quota_reached",
+        "executable": "/usr/bin/true"
+      },
+      {
+        "id": "explicit-id",
+        "event": "quota_low",
+        "executable": "/usr/bin/true"
+      }
+    ]
+  }
+}"#;
+        std::fs::write(&config_path, raw_json).expect("write config.json");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod file");
+        }
+
+        let store = ConfigStore::new(config_path);
+        let config = store.load_effective().expect("load_effective");
+        let hooks = config.hooks_config().expect("hooks_config");
+        assert_eq!(hooks.events.len(), 3);
+        let first_id = &hooks.events[0].id;
+        let second_id = &hooks.events[1].id;
+        assert_ne!(first_id, second_id);
+        assert_eq!(hooks.events[2].id, "explicit-id");
+
+        for id in [first_id, second_id] {
+            let parts: Vec<&str> = id.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+                vec![8, 4, 4, 4, 12]
+            );
+            assert!(parts[2].starts_with('4'));
+            assert!(parts.iter().all(|p| {
+                p.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_lowercase())
+            }));
+        }
+    }
 }
