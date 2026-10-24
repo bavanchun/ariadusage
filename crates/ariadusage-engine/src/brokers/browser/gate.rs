@@ -9,7 +9,7 @@ use crate::brokers::call::BrokerCall;
 use crate::state_store::BrokerStateStore;
 
 use super::Browser;
-use super::error::BrowserError;
+use super::BrowserError;
 
 const COOLDOWN_SECONDS: i64 = 6 * 60 * 60;
 
@@ -158,6 +158,32 @@ impl BrowserGate {
                     None => cooldowns.remove(&family),
                 };
             })
+            .map_err(|_| BrowserError::Io)
+    }
+
+    pub fn has_active_denial(&self, browser: Browser, now_seconds: i64) -> bool {
+        if !browser.is_chromium() {
+            return false;
+        }
+        let Ok(state) = self.state.load() else {
+            return false;
+        };
+        let browser_until = state
+            .browser_cooldowns
+            .get(&browser_key(browser))
+            .copied()
+            .unwrap_or_default();
+        let family_until = state
+            .browser_cooldowns
+            .get(&family_key())
+            .copied()
+            .unwrap_or_default();
+        browser_until > now_seconds || family_until > now_seconds
+    }
+
+    pub fn clear_all(&self) -> Result<(), BrowserError> {
+        self.state
+            .update(|state| state.browser_cooldowns.clear())
             .map_err(|_| BrowserError::Io)
     }
 }

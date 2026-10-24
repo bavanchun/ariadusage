@@ -1,5 +1,12 @@
 pub mod hooks;
-pub mod launch_agent;
+
+#[cfg(target_os = "macos")]
+use ariadusage_cli::launch_agent;
+use ariadusage_cli::{
+    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, SessionsOptions,
+    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_sessions_focus,
+    execute_sessions_list, execute_usage,
+};
 
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -71,6 +78,136 @@ enum Commands {
     /// Run external commands on quota/provider events
     #[command(long_about = hooks::HOOKS_LONG_ABOUT)]
     Hooks(hooks::HooksCommandArgs),
+
+    /// Export redacted provider diagnostic JSON
+    Diagnose {
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        format: Option<String>,
+        #[arg(long)]
+        redact: bool,
+        #[arg(long)]
+        output: Option<String>,
+        #[arg(long)]
+        pretty: bool,
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        #[arg(long)]
+        json_output: bool,
+        #[arg(long)]
+        log_level: Option<String>,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// Manage cached browser cookies and local cost scan caches
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommands,
+    },
+
+    /// Manage browser session cookies
+    Cookie {
+        #[command(subcommand)]
+        command: CookieCommands,
+    },
+
+    /// List or focus live local coding agent sessions
+    Sessions {
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "json-v2")]
+        json_v2: bool,
+        #[arg(long)]
+        pretty: bool,
+        #[command(subcommand)]
+        action: Option<SessionsCommands>,
+    },
+
+    /// Fetch provider usage metrics directly for CLI inspection
+    Usage {
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        #[arg(long)]
+        pretty: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CacheCommands {
+    /// Clear browser cookie caches, cost scan caches, or both
+    Clear {
+        #[arg(long)]
+        cookies: bool,
+        #[arg(long)]
+        cost: bool,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        format: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        json_only: bool,
+        #[arg(long)]
+        pretty: bool,
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        #[arg(long)]
+        json_output: bool,
+        #[arg(long)]
+        log_level: Option<String>,
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum CookieCommands {
+    /// Re-import browser cookies for a provider or all supported providers
+    Refresh {
+        #[arg(long)]
+        provider: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        allow_keychain_prompt: bool,
+        #[arg(long)]
+        format: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        json_only: bool,
+        #[arg(long)]
+        pretty: bool,
+        #[arg(short = 'v', long)]
+        verbose: bool,
+        #[arg(long)]
+        json_output: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionsCommands {
+    /// List live local coding agent sessions
+    List {
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "json-v2")]
+        json_v2: bool,
+        #[arg(long)]
+        pretty: bool,
+    },
+    /// Focus the terminal or desktop window of a live session
+    Focus {
+        /// Session identifier
+        id: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -167,6 +304,188 @@ fn main() {
                 std::process::exit(i32::from(error.code));
             }
         }
+        Some(Commands::Diagnose {
+            provider,
+            format,
+            redact,
+            output,
+            pretty,
+            verbose,
+            json_output,
+            log_level,
+            socket,
+        }) => {
+            let has_output_file = output.as_deref().is_some_and(|p| !p.is_empty());
+            let opts = DiagnoseOptions {
+                provider,
+                format,
+                redact,
+                output,
+                pretty,
+                verbose,
+                json_output,
+                log_level,
+                socket,
+            };
+            match execute_diagnose(&opts) {
+                Ok(rendered) => {
+                    if !has_output_file {
+                        println!("{rendered}");
+                    }
+                }
+                Err((code, msg)) => {
+                    eprintln!("{msg}");
+                    std::process::exit(i32::from(code));
+                }
+            }
+        }
+        Some(Commands::Cache {
+            command:
+                CacheCommands::Clear {
+                    cookies,
+                    cost,
+                    all,
+                    provider,
+                    format,
+                    json,
+                    json_only,
+                    pretty,
+                    verbose,
+                    json_output,
+                    log_level,
+                    socket,
+                },
+        }) => {
+            let parsed_format = match format {
+                Some(raw) => match OutputFormat::parse(&raw) {
+                    Some(fmt) => Some(fmt),
+                    None => {
+                        eprintln!("Invalid format: {raw}");
+                        std::process::exit(2);
+                    }
+                },
+                None => None,
+            };
+            let opts = CacheClearOptions {
+                cookies,
+                cost,
+                all,
+                provider,
+                format: parsed_format,
+                json_shortcut: json,
+                json_only,
+                pretty,
+                verbose,
+                json_output,
+                log_level,
+            };
+            match execute_cache_clear(&opts, socket.as_deref()) {
+                Ok((_results, rendered)) => {
+                    if !rendered.is_empty() {
+                        println!("{rendered}");
+                    }
+                }
+                Err((code, msg)) => {
+                    eprintln!("{msg}");
+                    std::process::exit(i32::from(code));
+                }
+            }
+        }
+        Some(Commands::Cookie {
+            command:
+                CookieCommands::Refresh {
+                    provider,
+                    all,
+                    allow_keychain_prompt,
+                    format,
+                    json,
+                    json_only,
+                    pretty,
+                    verbose,
+                    json_output,
+                },
+        }) => {
+            let parsed_format = match format {
+                Some(raw) => match OutputFormat::parse(&raw) {
+                    Some(fmt) => Some(fmt),
+                    None => {
+                        eprintln!("Invalid format: {raw}");
+                        std::process::exit(2);
+                    }
+                },
+                None => None,
+            };
+            let opts = CookieRefreshOptions {
+                verbose,
+                json_output,
+                json_shortcut: json,
+                json_only,
+                pretty,
+                format: parsed_format,
+                all,
+                provider,
+                allow_keychain_prompt,
+            };
+            match execute_cookie_refresh(&opts) {
+                Ok(rendered) => {
+                    if !rendered.is_empty() {
+                        println!("{rendered}");
+                    }
+                }
+                Err((code, msg)) => {
+                    if opts.effective_format() == OutputFormat::Json {
+                        println!("{msg}");
+                    } else {
+                        eprintln!("{msg}");
+                    }
+                    std::process::exit(i32::from(code));
+                }
+            }
+        }
+        Some(Commands::Sessions {
+            json,
+            json_v2,
+            pretty,
+            action,
+        }) => match action {
+            None => {
+                let opts = SessionsOptions {
+                    json_shortcut: json,
+                    json_v2,
+                    pretty,
+                };
+                println!("{}", execute_sessions_list(&opts));
+            }
+            Some(SessionsCommands::List {
+                json: l_json,
+                json_v2: l_json_v2,
+                pretty: l_pretty,
+            }) => {
+                let opts = SessionsOptions {
+                    json_shortcut: json || l_json,
+                    json_v2: json_v2 || l_json_v2,
+                    pretty: pretty || l_pretty,
+                };
+                println!("{}", execute_sessions_list(&opts));
+            }
+            Some(SessionsCommands::Focus { id }) => {
+                if let Err((code, msg)) = execute_sessions_focus(id.as_deref()) {
+                    eprintln!("{msg}");
+                    std::process::exit(i32::from(code));
+                }
+            }
+        },
+        Some(Commands::Usage {
+            provider,
+            verbose,
+            pretty,
+        }) => match execute_usage(provider.as_deref(), verbose, pretty) {
+            Ok(rendered) => println!("{rendered}"),
+            Err((code, msg)) => {
+                eprintln!("{msg}");
+                std::process::exit(i32::from(code));
+            }
+        },
         None => {}
     }
 }

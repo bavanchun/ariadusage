@@ -13,7 +13,6 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::secret_store::safe_storage::{SafeStorageError, SafeStorageKeySource};
 use crate::state_store::BrokerStateStore;
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod catalog;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod chromium;
@@ -25,7 +24,6 @@ mod discover;
 mod error;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod firefox;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod gate;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod local_state;
@@ -58,57 +56,13 @@ pub mod test_support {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use catalog::{Browser, DEFAULT_IMPORT_ORDER};
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub use catalog_stub::{Browser, DEFAULT_IMPORT_ORDER};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use error::BrowserError;
+pub use gate::{BrowserGate, RetryScope};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use discover::BrowserBrokerInner;
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-mod catalog_stub {
-    use std::fmt;
-
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    pub enum Browser {
-        Chrome,
-        Edge,
-        Brave,
-        Chromium,
-        Vivaldi,
-        Firefox,
-        Opera,
-        Safari,
-    }
-
-    pub const DEFAULT_IMPORT_ORDER: [Browser; 7] = [
-        Browser::Chrome,
-        Browser::Edge,
-        Browser::Brave,
-        Browser::Chromium,
-        Browser::Vivaldi,
-        Browser::Firefox,
-        Browser::Opera,
-    ];
-
-    impl fmt::Display for Browser {
-        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-            f.write_str(match self {
-                Self::Chrome => "Chrome",
-                Self::Edge => "Edge",
-                Self::Brave => "Brave",
-                Self::Chromium => "Chromium",
-                Self::Vivaldi => "Vivaldi",
-                Self::Firefox => "Firefox",
-                Self::Opera => "Opera",
-                Self::Safari => "Safari",
-            })
-        }
-    }
-}
 
 /// Injectable Secret Service / Keychain seam used for Chromium-family key retrieval.
 pub type SafeStorageFuture<'a> =
