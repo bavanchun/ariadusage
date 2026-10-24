@@ -302,7 +302,7 @@ mod imp {
 
         fn read_database(url: &Path, budget: &Budget) -> Result<SourceResult, ScanFailure> {
             let before_source = Self::idle_database_state(url);
-            let Some(temp_parent) = Self::resolve_copy_parent(url, budget) else {
+            let Some(temp_parent) = Self::resolve_copy_parent(budget) else {
                 return Ok(SourceResult::incomplete());
             };
             let Ok(temp_dir) = crate::private_tempdir::create_in(&temp_parent) else {
@@ -343,14 +343,9 @@ mod imp {
             Ok(source)
         }
 
-        fn resolve_copy_parent(url: &Path, budget: &Budget) -> Option<PathBuf> {
-            if let Some(configured) = budget.copy_parent() {
-                return ensure_private_0700_dir(configured);
-            }
-            if !std::fs::symlink_metadata(url).is_ok_and(|meta| meta.file_type().is_file()) {
-                return None;
-            }
-            url.parent().and_then(ensure_existing_dir)
+        fn resolve_copy_parent(budget: &Budget) -> Option<PathBuf> {
+            let configured = budget.copy_parent()?;
+            crate::private_tempdir::ensure_private_0700_dir(configured)
         }
 
         fn idle_database_state(url: &Path) -> Option<IdleDatabaseState> {
@@ -1118,68 +1113,6 @@ mod imp {
             rows.source.events.sort_by_key(|e| e.row);
             recovered_count
         }
-    }
-
-    fn ensure_existing_dir(dir: &Path) -> Option<PathBuf> {
-        use std::os::unix::fs::MetadataExt as _;
-        if !dir.is_absolute() {
-            return None;
-        }
-        let meta = std::fs::symlink_metadata(dir).ok()?;
-        if !meta.file_type().is_dir() {
-            return None;
-        }
-        let euid = rustix::process::geteuid().as_raw();
-        if meta.uid() != euid {
-            return None;
-        }
-        std::fs::canonicalize(dir).ok()
-    }
-
-    fn ensure_private_0700_dir(dir: &Path) -> Option<PathBuf> {
-        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
-        if !dir.is_absolute() {
-            return None;
-        }
-        if let Some(parent) = dir.parent()
-            && std::fs::symlink_metadata(parent).is_err()
-        {
-            let mut parent_builder = std::fs::DirBuilder::new();
-            parent_builder.recursive(true).mode(0o700);
-            parent_builder.create(parent).ok()?;
-        }
-        match std::fs::symlink_metadata(dir) {
-            Ok(meta) => {
-                if !meta.file_type().is_dir() {
-                    return None;
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                let mut builder = std::fs::DirBuilder::new();
-                builder.mode(0o700);
-                builder.create(dir).ok()?;
-            }
-            Err(_) => return None,
-        }
-        let meta = std::fs::symlink_metadata(dir).ok()?;
-        if !meta.file_type().is_dir() {
-            return None;
-        }
-        let euid = rustix::process::geteuid().as_raw();
-        if meta.uid() != euid {
-            return None;
-        }
-        if (meta.mode() & 0o777) != 0o700 {
-            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).ok()?;
-            let refreshed = std::fs::symlink_metadata(dir).ok()?;
-            if !refreshed.file_type().is_dir()
-                || refreshed.uid() != euid
-                || (refreshed.mode() & 0o777) != 0o700
-            {
-                return None;
-            }
-        }
-        std::fs::canonicalize(dir).ok()
     }
 }
 

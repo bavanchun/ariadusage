@@ -1180,6 +1180,7 @@ fn installed_client_negative_cache_hits_and_invalidates_on_artifact_fingerprint_
     );
 }
 
+// Rust-added: additional profile homes stay scoped to LocalScanContext and do not affect offline usage or OAuth fallback
 #[tokio::test]
 async fn additional_profile_homes_do_not_affect_offline_usage_or_oauth_fallback() {
     let empty_primary = ProfileFixture::new();
