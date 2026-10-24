@@ -1483,3 +1483,108 @@ sources = [
     "Tests/CodexBarTests/CodexUsageFetcherFallbackTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_workspace_balance.rs"
+sources = ["Tests/CodexBarTests/CodexWorkspaceBalanceTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_monthly_usage.rs"
+sources = ["Tests/CodexBarTests/CodexSpendControlsMonthlyUsageTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_contracts.rs"
+sources = ["Tests/CodexBarTests/CodexPlanFormattingTests.swift", "Tests/CodexBarTests/CodexIdentityResolverTests.swift", "Tests/CodexBarTests/CodexSpendControlNumberTests.swift", "Tests/CodexBarTests/CodexCLILaunchGateTests.swift", "Tests/CodexBarTests/CodexCLIBackendConfigurationTests.swift", "Tests/CodexBarTests/CodexOAuthTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_oauth_requests.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthRequestTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_usage_mapping.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthTests.swift", "Tests/CodexBarTests/CodexAdditionalRateLimitsTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_extra_usage.rs"
+sources = ["Tests/CodexBarTests/CodexExtraUsageCostTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_credential_cases.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift", "Tests/CodexBarTests/CodexOAuthTests.swift", "Tests/CodexBarTests/CodexOAuthCredentialsStorePermissionsTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_window_cases.rs"
+sources = ["Tests/CodexBarTests/CodexCLIWindowNormalizationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_credit_limit_cases.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthCreditLimitTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_strategy_cases.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthTests.swift", "Tests/CodexBarTests/CodexOAuthResetCreditFetchTests.swift", "Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift", "Tests/CodexBarTests/CodexOAuthManagedWorkspaceRecoveryTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_reset_credit_cases.rs"
+sources = ["Tests/CodexBarTests/CodexRateLimitResetCreditsTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_rpc_cases.rs"
+sources = ["Tests/CodexBarTests/CodexUsageFetcherFallbackTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_expiry_cases.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_credit_reconciliation.rs"
+sources = ["Tests/CodexBarTests/CodexWorkspaceBalanceReconciliationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_unlimited_cases.rs"
+sources = ["Tests/CodexBarTests/CodexUnlimitedCreditsTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/support/codex_rpc.rs"
+sources = ["Tests/CodexBarTests/CodexUsageFetcherFallbackTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_pipeline_baseline.rs"
+sources = ["Tests/CodexBarTests/CodexBaselineCharacterizationTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_url_config.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthConfigTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_pat_mapping.rs"
+sources = ["Tests/CodexBarTests/CodexPATTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_endpoint_status.rs"
+sources = ["Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_reconciled_cases.rs"
+sources = ["Tests/CodexBarTests/CodexbarTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
