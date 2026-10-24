@@ -2493,3 +2493,18 @@ sources = [
     "Tests/CodexBarTests/AntigravityLocalReaderTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/local_probe/lsof.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/local_probe/error.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_port_discovery_cases.rs"
+sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift", "TestsLinux/AntigravityProcessLauncherLinuxTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

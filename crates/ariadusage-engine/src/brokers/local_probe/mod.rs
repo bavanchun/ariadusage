@@ -4,6 +4,8 @@
 //! LocalProbe broker for same-user process and listening TCP port discovery.
 
 pub mod error;
+#[cfg(target_os = "linux")]
+mod lsof;
 pub mod proc_net;
 
 use std::fmt;
@@ -19,7 +21,7 @@ use crate::brokers::process::ProcessIdentity;
 #[cfg(unix)]
 use crate::brokers::process::procscan;
 
-pub use error::ProbeError;
+pub use error::{ListenerCommandError, ProbeError};
 pub use proc_net::{parse_tcp_table, socket_inode};
 
 /// Non-owning view of a process's command-line arguments seen by the filter predicate.
@@ -120,6 +122,8 @@ pub fn parse_cmdline(bytes: &[u8]) -> Vec<String> {
 /// The LocalProbe broker discovery interface.
 #[derive(Clone, Debug)]
 pub struct LocalProbe {
+    #[cfg(target_os = "linux")]
+    listener_command: lsof::ListenerCommand,
     #[cfg(unix)]
     proc_root: PathBuf,
     #[cfg(unix)]
@@ -150,6 +154,18 @@ fn read_process_argv(proc_root: &Path, pid: i32) -> Option<Vec<String>> {
     Some(parse_cmdline(&bytes))
 }
 
+#[cfg(target_os = "linux")]
+fn same_effective_user(proc_root: &Path, pid: i32, uid: u32) -> bool {
+    let Ok(status) = std::fs::read_to_string(proc_root.join(pid.to_string()).join("status")) else {
+        return false;
+    };
+    let Some(line) = status.lines().find_map(|line| line.strip_prefix("Uid:")) else {
+        return false;
+    };
+    let mut uids = line.split_whitespace().map(str::parse::<u32>);
+    uids.next() == Some(Ok(uid)) && uids.next() == Some(Ok(uid))
+}
+
 impl LocalProbe {
     /// Creates a LocalProbe with system defaults.
     pub fn new() -> Self {
@@ -162,6 +178,8 @@ impl LocalProbe {
                 proc_root,
                 uid,
                 own_net_ns,
+                #[cfg(target_os = "linux")]
+                listener_command: lsof::ListenerCommand::default(),
             }
         }
         #[cfg(not(unix))]
@@ -187,6 +205,8 @@ impl LocalProbe {
                 proc_root,
                 uid,
                 own_net_ns: resolved_ns,
+                #[cfg(target_os = "linux")]
+                listener_command: lsof::ListenerCommand::with_candidates(Vec::new()),
             }
         }
         #[cfg(not(unix))]
@@ -194,6 +214,25 @@ impl LocalProbe {
             let _ = (proc_root, uid, own_net_ns);
             Self {}
         }
+    }
+
+    /// Overrides the lsof candidate for invented executable/proc fixtures.
+    #[cfg(all(target_os = "linux", feature = "test-hooks"))]
+    pub fn with_listener_executable(mut self, executable: Option<PathBuf>) -> Self {
+        self.listener_command =
+            lsof::ListenerCommand::with_candidates(executable.into_iter().collect());
+        self
+    }
+
+    #[cfg(target_os = "linux")]
+    fn listener_identity(&self, pid: i32) -> Option<ProcessIdentity> {
+        if !same_effective_user(&self.proc_root, pid, self.uid)
+            || self.own_net_ns.is_none()
+            || procscan::process_net_ns(&self.proc_root, pid) != self.own_net_ns
+        {
+            return None;
+        }
+        procscan::process_identity(&self.proc_root, pid)
     }
 
     /// Accessor for the configured proc root path.
@@ -249,6 +288,10 @@ impl LocalProbe {
                     for identity in identities {
                         if cancel.is_cancelled() {
                             return Err(ProbeError::Cancelled);
+                        }
+                        #[cfg(target_os = "linux")]
+                        if !same_effective_user(&proc_root, identity.pid, uid) {
+                            continue;
                         }
                         let net_ns = procscan::process_net_ns(&proc_root, identity.pid);
                         if net_ns.as_ref() != Some(&own_net_ns) {
@@ -369,6 +412,39 @@ impl LocalProbe {
                 return Err(ProbeError::ProcUnavailable);
             }
 
+            let started = std::time::Instant::now();
+            #[cfg(target_os = "linux")]
+            let identity = self
+                .listener_identity(pid)
+                .ok_or(ProbeError::NoListeningPorts)?;
+            #[cfg(target_os = "linux")]
+            let pending = {
+                let result = self.listener_command.ports(call, pid, timeout).await;
+                if call.cancel.is_cancelled() {
+                    return Err(ProbeError::Cancelled);
+                }
+                if matches!(
+                    &result,
+                    Err(ProbeError::ListenerCommand(_)
+                        | ProbeError::Cancelled
+                        | ProbeError::TimedOut)
+                ) {
+                    return result;
+                }
+                if self.listener_identity(pid) != Some(identity) {
+                    return Err(ProbeError::NoListeningPorts);
+                }
+                match result {
+                    Ok(ports) if !ports.is_empty() => return Ok(ports),
+                    Ok(_) => None,
+                    Err(error @ ProbeError::ListenerDiscoveryPending(_)) => Some(error),
+                    Err(error) => return Err(error),
+                }
+            };
+            let timeout = timeout.saturating_sub(started.elapsed());
+            if timeout.is_zero() {
+                return Err(ProbeError::TimedOut);
+            }
             let proc_root = self.proc_root.clone();
             let cancel = call.cancel.clone();
 
@@ -386,7 +462,13 @@ impl LocalProbe {
                         if call.cancel.is_cancelled() {
                             return Err(ProbeError::Cancelled);
                         }
+                        #[cfg(target_os = "linux")]
+                        if self.listener_identity(pid) != Some(identity) {
+                            return Err(ProbeError::NoListeningPorts);
+                        }
                         if ports.is_empty() {
+                            #[cfg(target_os = "linux")]
+                            if let Some(error) = pending { return Err(error); }
                             Err(ProbeError::NoListeningPorts)
                         } else {
                             Ok(ports)
@@ -424,6 +506,10 @@ impl LocalProbe {
                 return Err(ProbeError::ProcUnavailable);
             }
 
+            #[cfg(target_os = "linux")]
+            if self.listener_identity(identity.pid) != Some(identity) {
+                return Ok(false);
+            }
             let proc_root = self.proc_root.clone();
             let uid = self.uid;
             let own_net_ns = self.own_net_ns.clone();
@@ -443,6 +529,10 @@ impl LocalProbe {
                 if current_uid != Some(uid) {
                     return Ok(false);
                 }
+                #[cfg(target_os = "linux")]
+                if !same_effective_user(&proc_root, identity.pid, uid) {
+                    return Ok(false);
+                }
                 // 3. Recheck network namespace
                 let current_ns = procscan::process_net_ns(&proc_root, identity.pid);
                 if current_ns.is_none() || own_net_ns.is_none() || current_ns != own_net_ns {
@@ -450,7 +540,15 @@ impl LocalProbe {
                 }
                 // 4. Recheck listening socket ownership
                 let ports = proc_net::proc_listening_ports(&proc_root, identity.pid);
-                if !ports.contains(&port) {
+                if !ports.contains(&port)
+                    || procscan::process_identity(&proc_root, identity.pid) != Some(identity)
+                {
+                    return Ok(false);
+                }
+                #[cfg(target_os = "linux")]
+                if !same_effective_user(&proc_root, identity.pid, uid)
+                    || procscan::process_net_ns(&proc_root, identity.pid) != own_net_ns
+                {
                     return Ok(false);
                 }
                 Ok(true)
