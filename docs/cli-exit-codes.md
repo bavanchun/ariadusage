@@ -6,7 +6,8 @@ setting ID or secret value in its error text.
 
 | Code | Meaning |
 |---:|---|
-| 0 | Secret saved |
+| 0 | Command succeeded (or secret saved) |
+| 1 | `hooks` command argument, configuration, or hook rule execution failure |
 | 2 | Invalid setting ID or command-line syntax |
 | 3 | Secret or consent input could not be read |
 | 4 | Secret input exceeded 64 KiB |

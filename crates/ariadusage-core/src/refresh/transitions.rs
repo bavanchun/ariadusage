@@ -261,6 +261,7 @@ pub struct HookRule {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
+    #[serde(alias = "command")]
     pub executable: String,
     #[serde(default)]
     pub arguments: Vec<String>,
@@ -413,7 +414,7 @@ impl HookRule {
 pub struct HooksConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    #[serde(default, alias = "rules")]
     pub events: Vec<HookRule>,
 }
 
@@ -626,6 +627,8 @@ pub fn sample_hook_event(
 pub const HOOKS_WATCH_DEFAULT_INTERVAL: f64 = 300.0;
 /// Minimum allowed `--interval` (in seconds) for `hooks watch`.
 pub const HOOKS_WATCH_MINIMUM_INTERVAL: f64 = 60.0;
+/// Default web timeout (in seconds) for `hooks watch`.
+pub const HOOKS_WATCH_DEFAULT_WEB_TIMEOUT: f64 = 60.0;
 /// Poll-period tick (in nanoseconds) used by [`sleep_interruptibly`].
 pub const HOOKS_WATCH_SLEEP_TICK_NANOSECONDS: u64 = 200_000_000;
 
@@ -715,6 +718,14 @@ pub fn decode_hooks_watch_interval(raw: Option<&str>) -> Result<f64, HooksWatchA
         )));
     }
     Ok(parsed)
+}
+
+/// Decodes `--web-timeout` for `hooks watch`, falling back to [`HOOKS_WATCH_DEFAULT_WEB_TIMEOUT`]
+/// (`60.0` seconds) when omitted, non-numeric, non-finite, or `<= 0.0`.
+pub fn decode_hooks_watch_web_timeout(raw: Option<&str>) -> f64 {
+    raw.and_then(|s| s.parse::<f64>().ok())
+        .filter(|&seconds| seconds.is_finite() && seconds > 0.0)
+        .unwrap_or(HOOKS_WATCH_DEFAULT_WEB_TIMEOUT)
 }
 
 /// Validates explicit `--provider` names (`all`, `both`, or concrete provider names) without

@@ -104,3 +104,18 @@ Fields whose values are `null` (`account`, `window`, `usagePercent`, `windowMinu
 
 - **Default mode (`hidePersonalInfo == false`)**: When the active provider snapshot includes an account email, `hook_account_display_name` populates `HookEvent.account`, which is serialized as `"account"` in the JSON stdin payload and exported as `ARIADUSAGE_ACCOUNT` in the child environment (matching upstream behavior).
 - **Privacy mode (`hidePersonalInfo == true`)**: `hook_account_display_name` returns `None`, so `"account"` is omitted from the JSON stdin payload and `ARIADUSAGE_ACCOUNT` is never set in the child environment. Internally, `HookTransitionDetector` and `HookRunner` still compute a private `hook_account_discriminator` so multi-account state tracking and rate-limiting remain isolated per account without exposing the identifier to hook subprocesses.
+
+## CLI commands (`ariadusage hooks`)
+
+The CLI provides five subcommands under `ariadusage hooks` (running `ariadusage hooks` with no subcommand defaults to `list`):
+
+- `ariadusage hooks [list] [--format text|json] [--json] [--json-only] [--pretty]`
+  Lists whether hooks are enabled and prints each configured rule (`[on|off] <event> provider=<provider|any>: <executable> [args...]`), or emits the `HooksConfig` JSON object when JSON output is requested.
+- `ariadusage hooks enable [--format text|json] [--json] [--json-only] [--pretty]`
+  Enables hooks in `config.json` and prints `Hooks: enabled` (or the updated `HooksConfig` JSON).
+- `ariadusage hooks disable [--format text|json] [--json] [--json-only] [--pretty]`
+  Disables hooks in `config.json` and prints `Hooks: disabled` (or the updated `HooksConfig` JSON).
+- `ariadusage hooks test <event> --provider <name> [--format text|json] [--json] [--json-only] [--pretty]`
+  Synthesizes a representative `HookEvent` for `<event>` and `<provider>`, matches it against `config.json`, runs every matching rule through the `Process` broker with `ARIADUSAGE_*` environment variables and JSON stdin, and exits `0` when all matching rules succeed or `1` when arguments/config are invalid or any rule fails.
+- `ariadusage hooks watch [--interval <seconds>] [--provider <name|both|all>] [--web-timeout <seconds>] [-v|--verbose] [--format text|json] [--json] [--json-only] [--pretty]`
+  Continuously polls the selected (or enabled) providers every `--interval` seconds (default `300`, minimum `60`), evaluates `HookTransitionDetector` across polls, dispatches matching rules through `HookRunner` with `HookRateLimiter`, and stops cleanly on `SIGINT`, `SIGTERM`, or `SIGHUP`. Argument flags (`--once` rejection, `--interval`, `--provider`) are validated before reading `config.json`.
