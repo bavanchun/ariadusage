@@ -75,9 +75,12 @@ fn save_oauth_with_dead_loopback(home: &std::path::Path, cfg: &CodexStrategyConf
         Some(home),
     )
     .unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
     fs::write(
         home.join("config.toml"),
-        "chatgpt_base_url = \"http://127.0.0.1:9\"",
+        format!("chatgpt_base_url = \"http://127.0.0.1:{port}\""),
     )
     .unwrap();
 }

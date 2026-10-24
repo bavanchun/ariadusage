@@ -76,8 +76,6 @@ struct RawCodexCreditLimitSnapshot {
     title: String,
     used: f64,
     limit: f64,
-    #[serde(default)]
-    _remaining: Option<f64>,
     remaining_percent: f64,
     #[serde(default, with = "ariadusage_protocol::time::rfc3339_opt")]
     resets_at: Option<Timestamp>,
