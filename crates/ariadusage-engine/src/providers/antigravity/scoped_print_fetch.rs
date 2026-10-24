@@ -441,6 +441,8 @@ fn non_empty(value: &str) -> Option<String> {
 }
 
 fn set_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    #[cfg(not(unix))]
+    let _ = path;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

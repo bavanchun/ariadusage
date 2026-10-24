@@ -8,24 +8,32 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
 use ariadusage_core::pipeline::{
     FetchContext, FetchInteraction, FetchPhase, FetchRuntime, FetchStrategy,
 };
+#[cfg(target_os = "linux")]
 use ariadusage_core::providers::SourceMode;
 use ariadusage_engine::brokers::exec_resolver::{
     FileOwnerAndMode, ResolveError, ResolverFs, ResolverInputs, Tool, resolve,
 };
+#[cfg(target_os = "linux")]
 use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
 use ariadusage_engine::brokers::process::ProcessEnv;
+#[cfg(target_os = "linux")]
+use ariadusage_engine::providers::antigravity::cli_https::AntigravityCLIHTTPSFetchStrategy;
 use ariadusage_engine::providers::antigravity::cli_https::{
-    AntigravityCLIHTTPSFetchStrategy, SnapshotWaitDependencies, wait_for_snapshot,
+    SnapshotWaitDependencies, wait_for_snapshot,
 };
+#[cfg(target_os = "linux")]
 use ariadusage_engine::providers::antigravity::descriptor::AntigravityStrategyConfig;
 use ariadusage_engine::providers::antigravity::status_probe::{
     AntigravityConnectionEndpoint, AntigravityModelQuota, AntigravitySnapshotSource,
     AntigravityStatusProbe, AntigravityStatusSnapshot, EndpointSource,
 };
+#[cfg(target_os = "linux")]
 use ariadusage_protocol::ProviderId;
+#[cfg(target_os = "linux")]
 use ariadusage_protocol::secret::SecretString;
 use tokio_util::sync::CancellationToken;
 
@@ -153,6 +161,7 @@ fn minimal_fallback_preserves_a_hit_or_no_executable() {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn fetch_context_with_binary(binary: &Path) -> FetchContext {
     FetchContext {
         provider: ProviderId::new("antigravity").unwrap(),
@@ -173,6 +182,7 @@ fn fetch_context_with_binary(binary: &Path) -> FetchContext {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn strategy_for_tests() -> AntigravityCLIHTTPSFetchStrategy {
     let net = Arc::new(NetBroker::new(NetConfig::default()).unwrap());
     AntigravityCLIHTTPSFetchStrategy::new(AntigravityStrategyConfig::new(
@@ -182,7 +192,7 @@ fn strategy_for_tests() -> AntigravityCLIHTTPSFetchStrategy {
     ))
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn synthetic_executable() -> tempfile::NamedTempFile {
     use std::os::unix::fs::PermissionsExt;
     let file = tempfile::NamedTempFile::new().unwrap();
