@@ -625,6 +625,7 @@ fn safe_storage_key_is_requested_once_for_a_browser_refresh() {
     assert_eq!(keys.calls.load(Ordering::SeqCst), 1);
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 // CodexBar: BrowserCookieAccessGateTests.swift:172
 fn v11_rows_can_use_the_empty_password_fallback() {
@@ -656,6 +657,131 @@ fn v11_rows_can_use_the_empty_password_fallback() {
     assert_eq!(
         candidates[0].records[0].value.expose_secret(),
         "empty-fallback"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+// CodexBar: BrowserCookieAccessGate.swift:229
+fn macos_single_interactive_keychain_read_per_user_action_downgrades_later_browsers_to_no_ui() {
+    use ariadusage_engine::brokers::secret_store::safe_storage::SafeStorageKeySource;
+    use ariadusage_engine::brokers::secret_store::service::{
+        MacosKeychainOperations, ServiceBackend, os_status,
+    };
+    use std::sync::Mutex;
+    use zeroize::Zeroizing;
+
+    struct TwoBrowserKeychain {
+        calls: Mutex<Vec<(String, String, bool)>>,
+        brave_requires_ui: bool,
+    }
+
+    impl MacosKeychainOperations for TwoBrowserKeychain {
+        fn read_generic_password(
+            &self,
+            service: &str,
+            account: &str,
+            allow_interaction: bool,
+        ) -> Result<Zeroizing<Vec<u8>>, i32> {
+            self.calls.lock().expect("lock").push((
+                service.to_owned(),
+                account.to_owned(),
+                allow_interaction,
+            ));
+            if service == "Brave Safe Storage" && self.brave_requires_ui && !allow_interaction {
+                return Err(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
+            }
+            Ok(Zeroizing::new(b"family-key".to_vec()))
+        }
+
+        fn write_generic_password(
+            &self,
+            _service: &str,
+            _account: &str,
+            _label: &str,
+            _password: &[u8],
+        ) -> Result<(), i32> {
+            Err(os_status::ERR_SEC_UNIMPLEMENTED)
+        }
+    }
+
+    let home = TestHome::new();
+    add_v11_profile(&home, Browser::Chrome, "Chrome Work");
+    add_v11_profile(&home, Browser::Brave, "Brave Personal");
+
+    // Case 1: Chrome's session is rejected by the caller's validator; Brave is tried next in the
+    // same user-initiated BrokerCall. Chrome gets `allow_interaction=true`, while Brave is
+    // downgraded to `allow_interaction=false` (and succeeds when its Keychain item is already unlocked).
+    let keychain_unlocked = Arc::new(TwoBrowserKeychain {
+        calls: Mutex::new(Vec::new()),
+        brave_requires_ui: false,
+    });
+    let key_source_unlocked: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(
+        ServiceBackend::with_operations(Arc::clone(&keychain_unlocked)),
+    ));
+    let broker = home.broker(key_source_unlocked);
+    let domains = cookie_core::DeclaredDomains::new(["claude.ai"]).expect("declared host");
+    let browsers = [Browser::Chrome, Browser::Brave];
+    let q = cookie_db::query(&domains, &browsers);
+    let accepted = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let call = cookie_db::call(FetchInteraction::UserInitiated);
+            let mut sessions = broker.sessions(&call, authorization(), q).await?;
+            while let Some(candidate) = sessions.next().await {
+                if candidate.browser != Browser::Chrome {
+                    return Ok::<_, BrowserError>(Some(candidate));
+                }
+            }
+            Ok(None)
+        })
+        .expect("session cursor")
+        .expect("Brave candidate accepted");
+    assert_eq!(accepted.browser, Browser::Brave);
+    assert_eq!(accepted.records[0].value.expose_secret(), "Brave Personal");
+    assert_eq!(
+        keychain_unlocked.calls.lock().expect("lock").as_slice(),
+        &[
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true),
+            ("Brave Safe Storage".to_owned(), "Brave".to_owned(), false),
+        ]
+    );
+
+    // Case 2: If Brave's Keychain item requires UI, the downgraded `allow_interaction=false`
+    // read fails with `ERR_SEC_INTERACTION_NOT_ALLOWED` (no second Keychain prompt, no cooldown).
+    let keychain_locked = Arc::new(TwoBrowserKeychain {
+        calls: Mutex::new(Vec::new()),
+        brave_requires_ui: true,
+    });
+    let key_source_locked: Arc<dyn SafeStorageKeyProvider> = Arc::new(SafeStorageKeySource::new(
+        ServiceBackend::with_operations(Arc::clone(&keychain_locked)),
+    ));
+    let broker_locked = home.broker(key_source_locked);
+    let q_locked = cookie_db::query(&domains, &browsers);
+    let second_candidate = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime")
+        .block_on(async {
+            let call = cookie_db::call(FetchInteraction::UserInitiated);
+            let mut sessions = broker_locked
+                .sessions(&call, authorization(), q_locked)
+                .await?;
+            let first = sessions.next().await.expect("Chrome candidate");
+            assert_eq!(first.browser, Browser::Chrome);
+            Ok::<_, BrowserError>(sessions.next().await)
+        })
+        .expect("session cursor");
+    assert!(second_candidate.is_none());
+    assert_eq!(cooldown_count(&home), 0);
+    assert_eq!(
+        keychain_locked.calls.lock().expect("lock").as_slice(),
+        &[
+            ("Chrome Safe Storage".to_owned(), "Chrome".to_owned(), true),
+            ("Brave Safe Storage".to_owned(), "Brave".to_owned(), false),
+        ]
     );
 }
 
@@ -811,4 +937,35 @@ fn macos_keychain_safe_storage_source_enforces_background_no_ui_and_dismissal_co
         "Chrome Work"
     );
     assert_eq!(cooldown_count(&home), 0);
+
+    // 5. Safari cookie reads ignore Chromium family cooldowns and make zero Keychain calls.
+    dismiss(&home, Browser::Chrome);
+    assert_eq!(cooldown_count(&home), 2);
+    keychain.calls.lock().expect("lock").clear();
+    cookie_db::write_safari_cookies(
+        &home.safari_container_cookies_path(),
+        &[cookie_db::SafariRow {
+            host: ".claude.ai",
+            name: "sid",
+            path: "/",
+            value: "Safari Personal",
+            expiration_mac_secs: 0.0,
+            secure: true,
+            http_only: true,
+        }],
+    );
+    let safari_candidates = read(
+        &home,
+        &[Browser::Safari],
+        FetchInteraction::UserInitiated,
+        Arc::clone(&key_source),
+    )
+    .expect("Safari candidate during Chromium cooldown");
+    assert_eq!(safari_candidates.len(), 1);
+    assert_eq!(safari_candidates[0].browser, Browser::Safari);
+    assert_eq!(
+        safari_candidates[0].records[0].value.expose_secret(),
+        "Safari Personal"
+    );
+    assert!(keychain.calls.lock().expect("lock").is_empty());
 }

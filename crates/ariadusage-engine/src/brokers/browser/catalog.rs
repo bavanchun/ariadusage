@@ -11,8 +11,22 @@ pub enum Browser {
     Vivaldi,
     Firefox,
     Opera,
+    Safari,
 }
 
+#[cfg(target_os = "macos")]
+pub const DEFAULT_IMPORT_ORDER: [Browser; 8] = [
+    Browser::Chrome,
+    Browser::Edge,
+    Browser::Brave,
+    Browser::Chromium,
+    Browser::Vivaldi,
+    Browser::Firefox,
+    Browser::Opera,
+    Browser::Safari,
+];
+
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_IMPORT_ORDER: [Browser; 7] = [
     Browser::Chrome,
     Browser::Edge,
@@ -40,11 +54,12 @@ impl Browser {
             Self::Vivaldi => "Vivaldi",
             Self::Firefox => "Firefox",
             Self::Opera => "Opera",
+            Self::Safari => "Safari",
         }
     }
 
     pub fn is_chromium(self) -> bool {
-        !matches!(self, Self::Firefox)
+        !matches!(self, Self::Firefox | Self::Safari)
     }
 
     pub fn safe_storage_attribute(self) -> Option<&'static str> {
@@ -56,7 +71,7 @@ impl Browser {
                 Self::Brave => Some("brave"),
                 Self::Chromium => Some("chromium"),
                 Self::Vivaldi => Some("vivaldi"),
-                Self::Firefox => None,
+                Self::Firefox | Self::Safari => None,
                 Self::Opera => Some("opera"),
             }
         }
@@ -66,7 +81,7 @@ impl Browser {
                 Self::Chrome | Self::Vivaldi => Some("chrome"),
                 Self::Edge | Self::Chromium | Self::Opera => Some("chromium"),
                 Self::Brave => Some("brave"),
-                Self::Firefox => None,
+                Self::Firefox | Self::Safari => None,
             }
         }
     }
@@ -83,6 +98,7 @@ impl Browser {
                 Self::Vivaldi => "Vivaldi",
                 Self::Firefox => return firefox_roots(paths),
                 Self::Opera => "com.operasoftware.Opera",
+                Self::Safari => return safari_roots(paths),
             };
             vec![ProfileRoot {
                 path: app_support.join(rel),
@@ -101,6 +117,7 @@ impl Browser {
                 Self::Vivaldi => "vivaldi",
                 Self::Firefox => return firefox_roots(paths),
                 Self::Opera => "opera",
+                Self::Safari => return Vec::new(),
             };
             roots.push(ProfileRoot {
                 path: paths.config_home.join(config_root),
@@ -115,7 +132,7 @@ impl Browser {
                 Self::Chromium => Some(("org.chromium.Chromium", "chromium")),
                 Self::Vivaldi => Some(("com.vivaldi.Vivaldi", "vivaldi")),
                 Self::Opera => Some(("com.operasoftware.Opera", "opera")),
-                Self::Firefox => None,
+                Self::Firefox | Self::Safari => None,
             };
             if let Some((app_id, root)) = flatpak {
                 roots.push(ProfileRoot {
@@ -191,4 +208,22 @@ fn firefox_roots(paths: &BrowserPaths) -> Vec<ProfileRoot> {
             },
         ]
     }
+}
+
+#[cfg(target_os = "macos")]
+fn safari_roots(paths: &BrowserPaths) -> Vec<ProfileRoot> {
+    vec![
+        ProfileRoot {
+            path: paths
+                .home
+                .join("Library/Containers/com.apple.Safari/Data/Library/Cookies"),
+            sandboxed: true,
+            unverified: false,
+        },
+        ProfileRoot {
+            path: paths.home.join("Library/Cookies"),
+            sandboxed: false,
+            unverified: false,
+        },
+    ]
 }

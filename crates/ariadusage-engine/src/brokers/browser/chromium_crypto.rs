@@ -13,7 +13,9 @@ const ITERATIONS: u32 = 1003;
 #[cfg(not(target_os = "macos"))]
 const ITERATIONS: u32 = 1;
 const IV: [u8; 16] = [0x20; 16];
+#[cfg(any(not(target_os = "macos"), feature = "test-hooks"))]
 const V10_PASSWORD: &[u8] = b"peanuts";
+#[cfg(target_os = "linux")]
 const EMPTY_PASSWORD: &[u8] = b"";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +25,7 @@ pub enum DecryptFailure {
     InvalidText,
 }
 
+#[cfg(any(not(target_os = "macos"), feature = "test-hooks"))]
 pub(super) fn decrypt_v10(
     encrypted: &[u8],
     host: &str,
@@ -40,6 +43,7 @@ pub(super) fn decrypt_v11(
     decrypt_with_password(encrypted, password, host, database_version)
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn decrypt_empty_password(
     encrypted: &[u8],
     host: &str,

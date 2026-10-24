@@ -15,7 +15,7 @@ pub(super) fn create_copy_dir(
 ) -> Result<crate::PrivateTempDir, BrowserError> {
     let runtime_dir = runtime_dir.ok_or(BrowserError::Unsupported)?;
     let runtime_dir = std::fs::canonicalize(runtime_dir).map_err(|_| BrowserError::Unsupported)?;
-    if !is_trusted_tmpfs(&runtime_dir) {
+    if !is_trusted_copy_root(&runtime_dir) {
         return Err(BrowserError::Unsupported);
     }
     crate::private_tempdir::create_in(&runtime_dir).map_err(|_| BrowserError::Unsupported)
@@ -24,13 +24,13 @@ pub(super) fn create_copy_dir(
 pub(super) fn sweep_stale(runtime_dir: Option<&Path>) {
     if let Some(runtime_dir) = runtime_dir
         .and_then(|path| std::fs::canonicalize(path).ok())
-        .filter(|path| is_trusted_tmpfs(path))
+        .filter(|path| is_trusted_copy_root(path))
     {
         crate::private_tempdir::sweep_stale_in(&runtime_dir);
     }
 }
 
-pub(super) fn is_trusted_tmpfs(path: &Path) -> bool {
+pub(super) fn is_trusted_copy_root(path: &Path) -> bool {
     let Ok(stat) = rustix::fs::stat(path) else {
         return false;
     };
@@ -71,9 +71,29 @@ pub(super) fn read_optional_owned_file(
     path: &Path,
     max_size: usize,
 ) -> Result<Option<Vec<u8>>, BrowserError> {
+    read_optional_owned_file_with_policy(path, max_size, false)
+}
+
+pub(super) fn read_optional_owned_file_allowing_permission_denied(
+    path: &Path,
+    max_size: usize,
+) -> Result<Option<Vec<u8>>, BrowserError> {
+    read_optional_owned_file_with_policy(path, max_size, true)
+}
+
+fn read_optional_owned_file_with_policy(
+    path: &Path,
+    max_size: usize,
+    allow_permission_denied: bool,
+) -> Result<Option<Vec<u8>>, BrowserError> {
     let file = match open_owned_file(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error)
+            if allow_permission_denied && error.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            return Ok(None);
+        }
         Err(_) => return Err(BrowserError::Io),
     };
     let limit = u64::try_from(max_size)
@@ -141,7 +161,7 @@ fn open_owned_file(path: &Path) -> Result<File, std::io::Error> {
         || stat.st_uid != geteuid().as_raw()
     {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::InvalidData,
             "browser source rejected",
         ));
     }
