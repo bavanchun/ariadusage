@@ -1140,6 +1140,7 @@ impl EngineRuntime {
             manual_cookie_header,
             selected_account_token,
             include_optional_usage: prefs.show_optional_credits_and_extra_usage,
+            secret_store: Some(Arc::clone(&self.secret_store)),
         }
     }
 

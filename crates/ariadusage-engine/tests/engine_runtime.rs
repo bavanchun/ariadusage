@@ -2155,3 +2155,154 @@ async fn credentials_change_during_successful_claude_fetch_applies_fresh_snapsho
         Some("d@example.invalid")
     );
 }
+
+#[tokio::test]
+async fn configured_claude_admin_key_wins_over_ambient_and_projects_workspace_spend_and_token_account_target()
+ {
+    use std::collections::BTreeMap;
+
+    use ariadusage_core::config::{
+        Config, ProviderConfig, ProviderEntry, TokenAccountMeta, TokenAccountsMeta,
+    };
+    use ariadusage_core::pipeline::{FetchContext, FetchInteraction, FetchPhase, FetchRuntime};
+    use ariadusage_core::providers::SourceMode;
+    use ariadusage_engine::providers::claude::ClaudeAdminAPISettingsReader;
+    use ariadusage_engine::registry::ProviderPlanInputs;
+    use ariadusage_protocol::secret::SecretString;
+    use tokio_util::sync::CancellationToken;
+
+    let tmp = TempDir::new().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+    let registry = ProviderRegistry::default().with_directories(tmp.path(), tmp.path());
+
+    let mut claude_cfg = ProviderConfig::new(claude_id.clone());
+    claude_cfg.enabled = Some(true);
+    claude_cfg.set_claude_workspace_spend_enabled(true);
+    let mut config = Config::new(
+        Config::CURRENT_VERSION,
+        vec![ProviderEntry::Typed(claude_cfg)],
+    );
+
+    let secret_store = Arc::new(SecretStore::new(MemoryBackend::new()));
+    let mut base_env = BTreeMap::new();
+    base_env.insert(
+        ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY.to_string(),
+        SecretString::new("sk-ant-admin-ambient"),
+    );
+    base_env.insert(
+        ClaudeAdminAPISettingsReader::ALTERNATE_ADMIN_API_KEY_ENV_KEY.to_string(),
+        SecretString::new("sk-ant-admin-ambient-alt"),
+    );
+
+    let inputs = ProviderPlanInputs {
+        base_environment: base_env.clone(),
+        api_key: Some(SecretString::new(" \"sk-ant-admin-configured\" ")),
+        manual_cookie_header: None,
+        selected_account_token: None,
+        include_optional_usage: true,
+        secret_store: Some(Arc::clone(&secret_store)),
+    };
+
+    let spec = registry
+        .resolve_spec(&claude_id, &config, &inputs)
+        .expect("resolved claude spec");
+
+    assert_eq!(
+        spec.environment
+            .get(ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY)
+            .map(SecretString::expose_secret),
+        Some("sk-ant-admin-configured"),
+        "configured key must overwrite ambient ANTHROPIC_ADMIN_KEY with Config precedence"
+    );
+    assert_eq!(
+        ClaudeAdminAPISettingsReader::api_key(&spec.environment)
+            .as_ref()
+            .map(SecretString::expose_secret),
+        Some("sk-ant-admin-configured"),
+        "ClaudeAdminAPISettingsReader::api_key must resolve the configured key ahead of any ambient key"
+    );
+    assert_eq!(
+        spec.environment
+            .get(ClaudeAdminAPISettingsReader::WORKSPACE_SPEND_ENV_KEY)
+            .map(SecretString::expose_secret),
+        Some("true"),
+        "claude_workspace_spend_enabled must project into ANTHROPIC_ADMIN_WORKSPACE_SPEND"
+    );
+    assert!(ClaudeAdminAPISettingsReader::workspace_spend_enabled(
+        &spec.environment
+    ));
+
+    // Verify ClaudeProviderPlanFactory wired admin_api_key, secret_store, and workspace_spend_enabled
+    let cx = FetchContext {
+        provider: claude_id.clone(),
+        runtime: FetchRuntime::Daemon,
+        interaction: FetchInteraction::UserInitiated,
+        phase: FetchPhase::Regular,
+        request_id: "test-admin-key".to_string(),
+        source_mode: SourceMode::Auto,
+        env: BTreeMap::new(),
+        include_credits: true,
+        selected_token_account: None,
+        cancel: CancellationToken::new(),
+    };
+    let strategies = spec.plan.resolve_strategies(&cx).await;
+    assert_eq!(
+        strategies.iter().map(|s| s.id()).collect::<Vec<_>>(),
+        vec!["claude.admin-api"],
+        "Auto mode must select claude.admin-api via ClaudeOAuthStrategyConfig.admin_api_key even with an empty FetchContext env"
+    );
+
+    // Selected token account with an Admin API token must scrub ambient keys and target ANTHROPIC_ADMIN_KEY
+    let acct_meta = TokenAccountMeta {
+        id: "acct-admin".to_string(),
+        label: "Org Admin".to_string(),
+        added_at: 1000.0,
+        last_used: None,
+        external_identifier: None,
+        usage_scope: None,
+        organization_id: None,
+        workspace_id: None,
+        claude_config_directory: None,
+        seat_credit_entitlement: None,
+        model_rate_limits: None,
+        extra: BTreeMap::new(),
+    };
+    if let Some(entry) = config
+        .providers
+        .iter_mut()
+        .find(|p| p.id() == "claude")
+        .and_then(ProviderEntry::as_typed_mut)
+    {
+        entry.token_accounts = Some(TokenAccountsMeta {
+            version: 1,
+            active_index: 0,
+            accounts: vec![acct_meta],
+        });
+    }
+    let acct_inputs = ProviderPlanInputs {
+        base_environment: base_env,
+        api_key: Some(SecretString::new("sk-ant-admin-configured")),
+        manual_cookie_header: None,
+        selected_account_token: Some(SecretString::new("Bearer sk-ant-admin-account")),
+        include_optional_usage: true,
+        secret_store: Some(secret_store),
+    };
+    let acct_spec = registry
+        .resolve_spec(&claude_id, &config, &acct_inputs)
+        .expect("resolved claude token-account spec");
+    assert_eq!(acct_spec.source_mode, SourceMode::Api);
+    assert_eq!(
+        acct_spec
+            .environment
+            .get(ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY)
+            .map(SecretString::expose_secret),
+        Some("sk-ant-admin-account"),
+        "selected token account Admin key must project into ANTHROPIC_ADMIN_KEY"
+    );
+    assert!(
+        !acct_spec
+            .environment
+            .contains_key(ClaudeAdminAPISettingsReader::ALTERNATE_ADMIN_API_KEY_ENV_KEY),
+        "selected token account must scrub ambient ANTHROPIC_ADMIN_API_KEY"
+    );
+}
