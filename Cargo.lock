@@ -138,6 +138,7 @@ dependencies = [
  "ariadusage-core",
  "ariadusage-engine",
  "ariadusage-protocol",
+ "base64 0.23.1",
  "bytes",
  "cbc",
  "etcetera",
