@@ -28,7 +28,7 @@ secret in the private file fallback. The first non-interactive fallback use
 must pass `--allow-file-fallback`; later calls honor the saved
 `secretFileFallback` consent. File fallback is currently Linux-only.
 
-## `diagnose`, `cache clear`, `cookie refresh`, and `sessions`
+## `diagnose`, `cache clear`, and `cookie refresh`
 
 | Command | Code | Meaning |
 |---|---:|---|
@@ -37,7 +37,7 @@ must pass `--allow-file-fallback`; later calls honor the saved
 | `diagnose` | 2 | Invalid command-line flags, unsupported format, or unknown provider |
 | `diagnose` | 18 | Process hardening failed |
 | `cache clear` | 0 | Requested cookie and/or cost caches cleared (or nothing to clear) |
-| `cache clear` | 1 | Cost cache directory or file removal failed |
+| `cache clear` | 1 | Cost cache directory removal failed |
 | `cache clear` | 2 | Missing `--cookies`, `--cost`, or `--all`, `--provider` combined with `--cost`, or unknown provider |
 | `cache clear` | 18 | Process hardening failed |
 | `cookie refresh` | 0 | All targeted providers refreshed or skipped |
@@ -45,13 +45,7 @@ must pass `--allow-file-fallback`; later calls honor the saved
 | `cookie refresh` | 2 | Invalid flags, neither or both of `--provider` and `--all`, unknown provider, or provider does not support browser cookie refresh |
 | `cookie refresh` | 16 | Configuration, data path, or runtime initialization failed |
 | `cookie refresh` | 18 | Process hardening failed |
-| `sessions` / `sessions list` | 0 | Session table or JSON array (`--json` v1 / `--json-v2`) printed |
-| `sessions` / `sessions list` | 2 | Invalid command-line flags |
-| `sessions` / `sessions list` | 18 | Process hardening failed |
-| `sessions focus` | 1 | Missing session ID or unknown session ID |
-| `sessions focus` | 2 | Session focus is unsupported on this frontend |
-| `sessions focus` | 18 | Process hardening failed |
 
-Argument-validation and flag errors across `diagnose`, `cache clear`,
-`cookie refresh`, and `sessions` return exit code `2` (matching AriadUsage's
-CLI convention for invalid command-line syntax, whereas upstream returns `1`).
+Argument-validation and flag errors across `diagnose`, `cache clear`, and
+`cookie refresh` return exit code `2` (matching AriadUsage's CLI convention for
+invalid command-line syntax, whereas upstream returns `1`).

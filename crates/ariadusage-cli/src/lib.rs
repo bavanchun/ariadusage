@@ -1,12 +1,11 @@
 // Ported from CodexBar Sources/CodexBarCLI/CLIDiagnoseCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLICacheCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLICookieCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCLI/CLISessionsCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLIHelp.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 pub mod launch_agent;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -26,7 +25,6 @@ use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::daemon::build_default_runtime_with_options;
 use ariadusage_engine::paths;
 use ariadusage_engine::runtime::EngineRuntime;
-use ariadusage_engine::sessions::{AgentSession, AgentSessionProvider, LocalAgentSessionScanner};
 use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::usage::ProviderErrorKind;
 use jiff::Timestamp;
@@ -55,29 +53,34 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
     let cfg_path = paths::config_path().map_err(|e| e.to_string())?;
     let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)
-        .map_err(|e| e.to_string())?;
-    runtime.register_antigravity_default();
-    let mut cli_env = BTreeMap::new();
-    for key in [
-        "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
-        "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "ANTHROPIC_ADMIN_API_KEY",
-        "ANTHROPIC_ADMIN_KEY",
-        "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
-        "OPENAI_API_KEY",
-        "CODEX_HOME",
-        "GEMINI_CLI_HOME",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            cli_env.insert(
-                key.to_owned(),
-                ariadusage_protocol::secret::SecretString::new(val),
-            );
-        }
+    let runtime =
+        build_default_runtime_with_options(ConfigStore::new(cfg_path.clone()), disable_keyring)
+            .map_err(|e| e.to_string())?;
+    if let (Ok(agy_id), Ok(net)) = (
+        ProviderId::new("antigravity"),
+        ariadusage_engine::brokers::net::NetBroker::new(
+            ariadusage_engine::brokers::net::NetConfig::default(),
+        ),
+    ) {
+        let working_dir = std::env::current_dir()
+            .or_else(|_| cfg_path.parent().map(Path::to_path_buf).ok_or(()))
+            .map_err(|()| "working directory unavailable".to_owned())?;
+        let home_dir = cfg_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| working_dir.clone());
+        let agy_cfg = ariadusage_engine::providers::antigravity::AntigravityStrategyConfig::new(
+            Arc::new(net),
+            working_dir,
+            home_dir,
+        );
+        runtime.register_provider_plan(
+            agy_id,
+            Arc::new(
+                ariadusage_engine::providers::antigravity::AntigravityProviderPlan::new(agy_cfg),
+            ),
+        );
     }
-    runtime.set_base_environment(cli_env);
     Ok(runtime)
 }
 
@@ -1227,205 +1230,4 @@ pub fn execute_cookie_refresh(opts: &CookieRefreshOptions) -> Result<String, (u8
     } else {
         Ok(rendered)
     }
-}
-
-// ============================================================================
-// 4. Sessions (`CLISessionsCommand.swift`)
-// ============================================================================
-
-/// Ported from `CLIHelp.sessionsHelp(version:)` (`CLIHelp.swift:169-190`).
-pub fn sessions_help(version: &str) -> String {
-    format!(
-        "CodexBar {version}\n\n\
-         Usage:\n  \
-         codexbar sessions [--json|--json-v2] [--pretty]\n  \
-         codexbar sessions focus <id>\n\n\
-         Description:\n  \
-         List live local Codex, Claude Code, pi, and OMP agent sessions.\n  \
-         --json emits the legacy v1 array with only Codex and Claude providers.\n  \
-         --json-v2 emits the complete current array, including Pi-family sessions.\n  \
-         JSON uses stable AgentSession field names and ISO-8601 dates.\n  \
-         Focus activates the owning terminal or desktop app on macOS.\n\n\
-         Examples:\n  \
-         codexbar sessions\n  \
-         codexbar sessions --json\n  \
-         codexbar sessions --json-v2\n  \
-         codexbar sessions focus 019f3497-73bf-7df3-a173-4f67d968914a"
-    )
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SessionsOptions {
-    pub json_shortcut: bool,
-    pub json_v2: bool,
-    pub pretty: bool,
-}
-
-impl SessionsOptions {
-    pub fn parse_from_slice(args: &[&str]) -> Result<Self, String> {
-        let mut opts = Self::default();
-        for &arg in args {
-            match arg {
-                "--json" => opts.json_shortcut = true,
-                "--json-v2" => opts.json_v2 = true,
-                "--pretty" => opts.pretty = true,
-                other => return Err(format!("Unknown argument: {other}")),
-            }
-        }
-        Ok(opts)
-    }
-}
-
-/// Ported from `CodexBarCLI.sessionsJSONProtocolVersion` (`CLISessionsCommand.swift:17-25`).
-pub fn sessions_json_protocol_version(options: &SessionsOptions) -> Option<u8> {
-    if options.json_v2 {
-        Some(2)
-    } else if options.json_shortcut {
-        Some(1)
-    } else {
-        None
-    }
-}
-
-/// Ported from `CodexBarCLI.sessionsForJSON` (`CLISessionsCommand.swift:27-31`).
-pub fn sessions_for_json(sessions: &[AgentSession], include_pi_family: bool) -> Vec<AgentSession> {
-    if include_pi_family {
-        return sessions.to_vec();
-    }
-    sessions
-        .iter()
-        .filter(|s| {
-            matches!(
-                s.provider,
-                AgentSessionProvider::Codex | AgentSessionProvider::Claude
-            )
-        })
-        .cloned()
-        .collect()
-}
-
-/// Ported from `CodexBarCLI.renderSessionsTable` (`CLISessionsCommand.swift:61-99`).
-pub fn render_sessions_table(sessions: &[AgentSession], now: Timestamp) -> String {
-    if sessions.is_empty() {
-        return "No agent sessions found.".to_owned();
-    }
-    let rows: Vec<[String; 7]> = sessions
-        .iter()
-        .map(|session| {
-            let state = match session.state {
-                ariadusage_engine::sessions::AgentSessionState::Active => "active",
-                ariadusage_engine::sessions::AgentSessionState::Idle => "idle",
-            };
-            let provider = session.provider.as_str();
-            let dialect = session.dialect.map_or("—", |d| d.as_str());
-            let source = session.source.as_str();
-            let project = session.project_name.as_deref().unwrap_or("—");
-            let age = session_age(session, now);
-            [
-                state.to_owned(),
-                provider.to_owned(),
-                dialect.to_owned(),
-                source.to_owned(),
-                project.to_owned(),
-                age,
-                session.id.clone(),
-            ]
-        })
-        .collect();
-
-    let headers = [
-        "STATE", "PROVIDER", "DIALECT", "SOURCE", "PROJECT", "ACTIVITY", "ID",
-    ];
-    let mut widths = [0usize; 7];
-    for (idx, header) in headers.iter().enumerate() {
-        let max_row = rows
-            .iter()
-            .map(|r| r[idx].chars().count())
-            .max()
-            .unwrap_or(0);
-        widths[idx] = header.chars().count().max(max_row);
-    }
-
-    let render_row = |cols: &[&str; 7]| -> String {
-        cols.iter()
-            .enumerate()
-            .map(|(idx, col)| {
-                let len = col.chars().count();
-                let pad = widths[idx].saturating_sub(len);
-                format!("{col}{}", " ".repeat(pad))
-            })
-            .collect::<Vec<_>>()
-            .join("  ")
-    };
-
-    let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(render_row(&headers));
-    for row in &rows {
-        let refs = [
-            row[0].as_str(),
-            row[1].as_str(),
-            row[2].as_str(),
-            row[3].as_str(),
-            row[4].as_str(),
-            row[5].as_str(),
-            row[6].as_str(),
-        ];
-        lines.push(render_row(&refs));
-    }
-    lines.join("\n")
-}
-
-fn session_age(session: &AgentSession, now: Timestamp) -> String {
-    let Some(date) = session.last_activity_at.or(session.started_at) else {
-        return "now".to_owned();
-    };
-    let seconds = (now.as_second() - date.as_second()).max(0);
-    if seconds < 60 {
-        return format!("{seconds}s");
-    }
-    if seconds < 3600 {
-        return format!("{}m", seconds / 60);
-    }
-    if seconds < 86_400 {
-        return format!("{}h", seconds / 3600);
-    }
-    format!("{}d", seconds / 86_400)
-}
-
-pub fn execute_sessions_list(opts: &SessionsOptions) -> String {
-    let env_map: HashMap<String, String> = std::env::vars().collect();
-    let sessions = LocalAgentSessionScanner::default().scan_sync(Timestamp::now(), &env_map, true);
-    if let Some(version) = sessions_json_protocol_version(opts) {
-        let filtered = sessions_for_json(&sessions, version == 2);
-        if opts.pretty {
-            serde_json::to_string_pretty(&filtered).unwrap_or_else(|_| "[]".to_owned())
-        } else {
-            serde_json::to_string(&filtered).unwrap_or_else(|_| "[]".to_owned())
-        }
-    } else {
-        render_sessions_table(&sessions, Timestamp::now())
-    }
-}
-
-pub fn execute_sessions_focus(session_id: Option<&str>) -> Result<(), (u8, String)> {
-    let env_map: HashMap<String, String> = std::env::vars().collect();
-    execute_sessions_focus_with_scanner(session_id, &LocalAgentSessionScanner::default(), &env_map)
-}
-
-pub fn execute_sessions_focus_with_scanner(
-    session_id: Option<&str>,
-    scanner: &LocalAgentSessionScanner,
-    environment: &HashMap<String, String>,
-) -> Result<(), (u8, String)> {
-    let Some(id) = session_id.map(str::trim).filter(|s| !s.is_empty()) else {
-        return Err((1, "Missing session id.".to_owned()));
-    };
-    let sessions = scanner.scan_sync(Timestamp::now(), environment, true);
-    let Some(_session) = sessions.iter().find(|s| s.id == id) else {
-        return Err((1, format!("Unknown session: {id}")));
-    };
-    Err((
-        2,
-        "Session focus is unsupported on this frontend.".to_owned(),
-    ))
 }

@@ -220,7 +220,9 @@ fn test_diagnostic_export_marks_named_windows_with_unknown_usage() {
 
     let json = to_pretty_json(&summary);
     let object: serde_json::Value = serde_json::from_str(&json).expect("json value");
+    assert!(object.is_object());
     let windows = object["windows"].as_array().expect("windows array");
+    assert!(!windows.is_empty());
 
     assert_eq!(
         windows.first().and_then(|w| w["usageKnown"].as_bool()),
@@ -640,7 +642,7 @@ fn test_builder_creates_generic_safe_diagnostic_with_error_on_failure() {
     );
 }
 
-// upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:679 builder creates generic safe diagnostic with MiniMax details on success
+// partial-upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:679 builder creates generic safe diagnostic with MiniMax details on success
 #[test]
 fn test_builder_creates_generic_safe_diagnostic_on_success() {
     let now = Timestamp::from_second(1_700_000_000).unwrap();
