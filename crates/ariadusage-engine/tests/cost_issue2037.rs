@@ -1,7 +1,4 @@
 // Ported from CodexBar Tests/CodexBarTests/Issue2037FixtureSupport.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/Issue2037FixtureHarnessTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/Issue2037ProvenanceFixtureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/Issue2037ScannerIntegrationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -330,8 +327,9 @@ fn scanned_units_from_report(
         .sum()
 }
 
-// --- Issue2037FixtureHarnessTests.swift ---
+// Upstream test ports (each marker identifies one @Test declaration).
 
+// upstream: Issue2037FixtureHarnessTests.swift:6 issue 2037 fixture harness installs a sanitized family into an isolated codex home
 #[test]
 fn issue_2037_fixture_harness_installs_a_sanitized_family_into_an_isolated_codex_home() {
     let fixture = SanitizedForkFamilyFixture::load("harness-smoke");
@@ -387,8 +385,7 @@ fn issue_2037_fixture_harness_installs_a_sanitized_family_into_an_isolated_codex
     assert_eq!(entry.total_tokens, Some(17));
 }
 
-// --- Issue2037ProvenanceFixtureTests.swift ---
-
+// upstream: Issue2037ProvenanceFixtureTests.swift:5 archived fork fixture preserves the copied normalized prefix and hand oracle
 #[test]
 fn archived_fork_fixture_preserves_the_copied_normalized_prefix_and_hand_oracle() {
     let fixture = SanitizedForkFamilyFixture::load("archived-fork-33ce-3869");
@@ -457,6 +454,7 @@ fn archived_fork_fixture_preserves_the_copied_normalized_prefix_and_hand_oracle(
     );
 }
 
+// upstream: Issue2037ProvenanceFixtureTests.swift:54 live fork 4d90 fixture preserves the copied normalized prefix and hand oracle
 #[test]
 fn live_fork_4d90_fixture_preserves_the_copied_normalized_prefix_and_hand_oracle() {
     let fixture = SanitizedForkFamilyFixture::load("live-fork-4d90-52bf");
@@ -517,18 +515,19 @@ fn live_fork_4d90_fixture_preserves_the_copied_normalized_prefix_and_hand_oracle
     assert!(!has_total_token_usage_drop(&child));
 }
 
+// upstream: Issue2037ProvenanceFixtureTests.swift:100 archived fork fixture admits only provenance safe fields
 #[test]
 fn archived_fork_fixture_admits_only_provenance_safe_fields() {
     assert_provenance_safe_fields("archived-fork-33ce-3869");
 }
 
+// upstream: Issue2037ProvenanceFixtureTests.swift:105 live fork 4d90 fixture admits only provenance safe fields
 #[test]
 fn live_fork_4d90_fixture_admits_only_provenance_safe_fields() {
     assert_provenance_safe_fields("live-fork-4d90-52bf");
 }
 
-// --- Issue2037ScannerIntegrationTests.swift ---
-
+// upstream: Issue2037ScannerIntegrationTests.swift:10 archived fork family scanner matches parent-owns-prefix oracle
 #[test]
 fn archived_fork_family_scanner_matches_parent_owns_prefix_oracle() {
     let fixture = SanitizedForkFamilyFixture::load("archived-fork-33ce-3869");
@@ -577,6 +576,7 @@ fn archived_fork_family_scanner_matches_parent_owns_prefix_oracle() {
     assert_eq!(scanned_units_from_report(&report), expected_scanner_units);
 }
 
+// upstream: Issue2037ScannerIntegrationTests.swift:69 live fork 4d90 family scanner matches parent-owns-prefix oracle
 #[test]
 fn live_fork_4d90_family_scanner_matches_parent_owns_prefix_oracle() {
     let fixture = SanitizedForkFamilyFixture::load("live-fork-4d90-52bf");
@@ -632,6 +632,7 @@ fn live_fork_4d90_family_scanner_matches_parent_owns_prefix_oracle() {
     );
 }
 
+// upstream: Issue2037ScannerIntegrationTests.swift:127 missing parent equal counter siblings fail closed
 #[test]
 fn missing_parent_equal_counter_siblings_fail_closed() {
     let tmp = TempDir::new().expect("tempdir");
@@ -690,6 +691,7 @@ fn missing_parent_equal_counter_siblings_fail_closed() {
     assert!(report.data.iter().all(|d| d.cost_usd.is_none()));
 }
 
+// upstream: Issue2037ScannerIntegrationTests.swift:186 missing parent forks stay in the scan window without billed days
 #[test]
 fn missing_parent_forks_stay_in_the_scan_window_without_billed_days() {
     let fixture = SanitizedForkFamilyFixture::load("missing-parent-siblings");
@@ -740,7 +742,9 @@ fn missing_parent_forks_stay_in_the_scan_window_without_billed_days() {
     );
 }
 
-// Rust-added unit test (no direct upstream @Test counterpart; tests codex_contained_total_delta directly).
+// Rust-added tests (no direct upstream @Test equivalent; excluded from parity totals).
+
+// Rust-added: Issue 2037 interleaved cumulative counters contain watermark gaps.
 #[test]
 fn issue_2037_interleaved_cumulative_counters_contain_watermark_gaps() {
     let mut acc = CodexSnapshotAccumulator::default();
