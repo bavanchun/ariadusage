@@ -2630,3 +2630,103 @@ sources = [
     "Sources/CodexBarCore/PiFamilySessionRootResolver.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/accounts.rs"
+sources = ["Sources/CodexBarCLI/CLIServeAccounts.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/auth.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIServeAuth.swift",
+    "Sources/CodexBarCLI/CLIServeCommand.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/coordinator.rs"
+sources = ["Sources/CodexBarCLI/CLIServeOperationCoordinator.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/dashboard.rs"
+sources = [
+    "Sources/CodexBarCLI/DashboardPayloads.swift",
+    "Sources/CodexBarCLI/DashboardSnapshotBuilder.swift",
+    "Sources/CodexBarCLI/DashboardAccountCollector.swift",
+    "Sources/CodexBarCLI/DashboardManagedCodexAccounts.swift",
+    "Sources/CodexBarCLI/DashboardUsageAccount.swift",
+    "Sources/CodexBarCLI/CLIDashboardCommand.swift",
+    "Sources/CodexBarCLI/CLIPayloads.swift",
+    "Sources/CodexBarCLI/CLICostCommand.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/http_server.rs"
+sources = ["Sources/CodexBarCLI/CLILocalHTTPServer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/mod.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIServeCommand.swift",
+    "Sources/CodexBarCLI/CLIServeHeapTrimmer.swift",
+    "Sources/CodexBarCLI/CLIHelp.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/provider_icons.rs"
+sources = ["Sources/CodexBarCLI/CLIServeProviderIcons.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/serve/web_ui.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIServeWebUI.swift",
+    "Sources/CodexBarCLI/CLIServeWebUI+HTML.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/serve.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIServeCommand.swift",
+    "Sources/CodexBarCLI/CLIDashboardCommand.swift",
+    "Sources/CodexBarCLI/CLIHelp.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cli_serve.rs"
+sources = [
+    "Tests/CodexBarTests/CLIServeAccountsTests.swift",
+    "Tests/CodexBarTests/CLIServeAuthTests.swift",
+    "Tests/CodexBarTests/CLIServeDashboardIdentityTests.swift",
+    "Tests/CodexBarTests/CLIServeRawHTTPTests.swift",
+    "Tests/CodexBarTests/CLIServeRouterTests.swift",
+    "Tests/CodexBarTests/CLIServeTestSupport.swift",
+    "Tests/CodexBarTests/CLIServeTimeoutTests.swift",
+    "Tests/CodexBarTests/CLIServeWebUITests.swift",
+    "TestsLinux/CLIServeRequestDeadlineLinuxTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cli_dashboard.rs"
+sources = [
+    "Tests/CodexBarTests/DashboardAntigravityWindowTests.swift",
+    "Tests/CodexBarTests/DashboardClaudeSwapSnapshotTests.swift",
+    "Tests/CodexBarTests/DashboardManagedCodexCollectionTests.swift",
+    "Tests/CodexBarTests/DashboardManagedCodexSnapshotTests.swift",
+    "Tests/CodexBarTests/DashboardReportedCostTests.swift",
+    "Tests/CodexBarTests/DashboardSnapshotBuilderTests.swift",
+    "TestsLinux/DashboardAccountInventoryTests.swift",
+    "TestsLinux/DashboardAccountPrivacyTests.swift",
+    "TestsLinux/DashboardClaudeSwapCollectionTests.swift",
+    "TestsLinux/DashboardMultiAccountTests.swift",
+    "TestsLinux/DashboardServeScopeTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

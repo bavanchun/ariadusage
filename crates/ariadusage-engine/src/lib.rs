@@ -14,6 +14,7 @@ pub mod private_tempdir;
 pub mod providers;
 pub mod registry;
 pub mod runtime;
+pub mod serve;
 pub mod sessions;
 pub mod settings_page;
 pub mod state_store;
