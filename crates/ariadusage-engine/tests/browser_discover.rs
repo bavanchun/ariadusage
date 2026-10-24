@@ -64,6 +64,21 @@ fn candidates_with_broker(
 
 #[test]
 fn catalog_keeps_the_approved_linux_import_order() {
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        DEFAULT_IMPORT_ORDER,
+        [
+            Browser::Chrome,
+            Browser::Edge,
+            Browser::Brave,
+            Browser::Chromium,
+            Browser::Vivaldi,
+            Browser::Firefox,
+            Browser::Opera,
+            Browser::Safari,
+        ]
+    );
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         DEFAULT_IMPORT_ORDER,
         [
@@ -412,11 +427,132 @@ fn macos_discovers_application_support_profiles_across_all_supported_browsers() 
         "",
     );
 
+    cookie_db::write_safari_cookies(
+        &home.safari_container_cookies_path(),
+        &[cookie_db::SafariRow {
+            host: ".claude.ai",
+            name: "sid",
+            path: "/",
+            value: "Safari",
+            expiration_mac_secs: 0.0,
+            secure: true,
+            http_only: true,
+        }],
+    );
+
     let candidates = candidates_for(&home, &[]).expect("all macOS browsers discovered");
     assert_eq!(
         candidates.iter().map(|c| c.browser).collect::<Vec<_>>(),
         DEFAULT_IMPORT_ORDER
     );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_safari_parses_binarycookies_filters_domains_and_skips_permission_denied() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = TestHome::new();
+    let future_mac_secs = (jiff::Timestamp::now().as_second() - 978_307_200 + 7_200) as f64;
+    let expired_mac_secs = (jiff::Timestamp::now().as_second() - 978_307_200 - 3_600) as f64;
+
+    cookie_db::write_safari_cookies(
+        &home.safari_container_cookies_path(),
+        &[
+            cookie_db::SafariRow {
+                host: ".claude.ai",
+                name: "sessionKey",
+                path: "/",
+                value: "invented-safari-session",
+                expiration_mac_secs: future_mac_secs,
+                secure: true,
+                http_only: true,
+            },
+            cookie_db::SafariRow {
+                host: ".claude.ai",
+                name: "expiredKey",
+                path: "/",
+                value: "invented-expired-safari-session",
+                expiration_mac_secs: expired_mac_secs,
+                secure: true,
+                http_only: false,
+            },
+            cookie_db::SafariRow {
+                host: ".example.com",
+                name: "otherSiteKey",
+                path: "/",
+                value: "invented-other-site",
+                expiration_mac_secs: future_mac_secs,
+                secure: true,
+                http_only: true,
+            },
+        ],
+    );
+
+    let keys = Arc::new(StaticKeys::failing(SafeStorageError::Dismissed));
+    let broker = home.broker(keys.clone());
+    let candidates = candidates_with_broker(&broker, &[Browser::Safari]).expect("Safari candidate");
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].browser, Browser::Safari);
+    assert_eq!(candidates[0].label, "Safari");
+    assert_eq!(candidates[0].diagnostics.rows_read, 2);
+    assert_eq!(candidates[0].diagnostics.expired, 1);
+    assert_eq!(candidates[0].records.len(), 1);
+    assert_eq!(candidates[0].records[0].name, "sessionKey");
+    assert_eq!(
+        candidates[0].records[0].value.expose_secret(),
+        "invented-safari-session"
+    );
+    assert_eq!(candidates[0].records[0].domain, "claude.ai");
+    assert!(!candidates[0].records[0].host_only);
+    assert!(candidates[0].records[0].secure);
+    assert!(candidates[0].records[0].http_only);
+    assert!(candidates[0].records[0].expires.is_some());
+    assert_eq!(
+        keys.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "Safari cookie import must never touch Keychain"
+    );
+
+    // When the container `Cookies.binarycookies` is unreadable due to TCC (`PermissionDenied`),
+    // Safari skips it without surfacing `BrowserError::Io` or recording a cooldown, and falls
+    // back to the legacy `~/Library/Cookies/Cookies.binarycookies` path when present.
+    let container_path = home.safari_container_cookies_path();
+    std::fs::set_permissions(&container_path, std::fs::Permissions::from_mode(0o000))
+        .expect("simulate TCC permission denied");
+    cookie_db::write_safari_cookies(
+        &home.safari_legacy_cookies_path(),
+        &[cookie_db::SafariRow {
+            host: "claude.ai",
+            name: "sessionKey",
+            path: "/",
+            value: "invented-legacy-safari-session",
+            expiration_mac_secs: 0.0,
+            secure: true,
+            http_only: false,
+        }],
+    );
+
+    let fallback_candidates =
+        candidates_for(&home, &[Browser::Safari]).expect("legacy Safari fallback candidate");
+    assert_eq!(fallback_candidates.len(), 1);
+    assert_eq!(
+        fallback_candidates[0].records[0].value.expose_secret(),
+        "invented-legacy-safari-session"
+    );
+    assert!(fallback_candidates[0].records[0].host_only);
+
+    // If both Safari paths are unreadable (`PermissionDenied`), Safari returns `NoBrowserSession`
+    // (access-denied skip) rather than `BrowserError::Io`.
+    let legacy_path = home.safari_legacy_cookies_path();
+    std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o000))
+        .expect("simulate TCC permission denied on legacy path");
+    let err = candidates_for(&home, &[Browser::Safari]).expect_err("both Safari paths denied");
+    assert_eq!(err, BrowserError::NoBrowserSession);
+
+    // Restore permissions so TempDir cleanup succeeds.
+    let _ = std::fs::set_permissions(&container_path, std::fs::Permissions::from_mode(0o600));
+    let _ = std::fs::set_permissions(&legacy_path, std::fs::Permissions::from_mode(0o600));
 }
 
 #[cfg(target_os = "macos")]

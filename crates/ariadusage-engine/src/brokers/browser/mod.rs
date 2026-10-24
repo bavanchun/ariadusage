@@ -32,6 +32,8 @@ mod local_state;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod profiles_ini;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod safari;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod sqlite_copy;
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "test-hooks"))]
@@ -79,6 +81,7 @@ mod catalog_stub {
         Vivaldi,
         Firefox,
         Opera,
+        Safari,
     }
 
     pub const DEFAULT_IMPORT_ORDER: [Browser; 7] = [
@@ -101,6 +104,7 @@ mod catalog_stub {
                 Self::Vivaldi => "Vivaldi",
                 Self::Firefox => "Firefox",
                 Self::Opera => "Opera",
+                Self::Safari => "Safari",
             })
         }
     }
@@ -190,8 +194,7 @@ impl BrowserPaths {
             .filter(|path| path.is_absolute())
             .unwrap_or_else(|| home.join(".config"));
         let runtime_value = env("XDG_RUNTIME_DIR");
-        #[allow(unused_mut)]
-        let mut runtime_dir = crate::paths::resolve_runtime_dir(
+        let xdg_runtime_dir = crate::paths::resolve_runtime_dir(
             |key| {
                 (key == "XDG_RUNTIME_DIR")
                     .then(|| runtime_value.clone())
@@ -200,12 +203,14 @@ impl BrowserPaths {
             Some(&home),
         );
         #[cfg(target_os = "macos")]
-        if runtime_dir.is_none() {
-            runtime_dir = env("TMPDIR")
+        let runtime_dir = xdg_runtime_dir.or_else(|| {
+            env("TMPDIR")
                 .and_then(|value| value.into_string().ok())
                 .map(|value| PathBuf::from(value.trim()))
-                .filter(|path| path.is_absolute());
-        }
+                .filter(|path| path.is_absolute())
+        });
+        #[cfg(not(target_os = "macos"))]
+        let runtime_dir = xdg_runtime_dir;
         Ok(Self {
             home,
             config_home,

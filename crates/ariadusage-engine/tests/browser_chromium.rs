@@ -253,12 +253,27 @@ fn automatic_import_without_a_browser_list_covers_every_supported_browser() {
     let home = TestHome::new();
     add_plain_session(&home, Browser::Opera, &["session"], "opera-session");
     let candidates = read_in_order(&home, &[], Arc::new(StaticKeys::without_key()))
-        .expect("default order reaches the last browser");
+        .expect("default order reaches Opera");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].browser, Browser::Opera);
 
     let mut ordered = ariadusage_engine::brokers::browser::DEFAULT_IMPORT_ORDER.to_vec();
     ordered.sort_unstable();
+    #[cfg(target_os = "macos")]
+    assert_eq!(
+        ordered,
+        [
+            Browser::Chrome,
+            Browser::Edge,
+            Browser::Brave,
+            Browser::Chromium,
+            Browser::Vivaldi,
+            Browser::Firefox,
+            Browser::Opera,
+            Browser::Safari,
+        ]
+    );
+    #[cfg(not(target_os = "macos"))]
     assert_eq!(
         ordered,
         [
@@ -567,6 +582,7 @@ fn decrypts_v10_v11_and_plaintext_rows_and_reports_rejections_by_count() {
     assert!(!debug.contains("synthetic-password"));
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn v11_falls_back_to_the_empty_password_and_bad_v24_host_hash_is_counted() {
     let home = TestHome::new();
@@ -610,6 +626,72 @@ fn v11_falls_back_to_the_empty_password_and_bad_v24_host_hash_is_counted() {
     assert_eq!(
         candidates[0].records[0].value.expose_secret(),
         "empty-password-value"
+    );
+    assert_eq!(candidates[0].diagnostics.rejected_by_hash, 1);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_v10_does_not_fall_back_to_empty_password_and_counts_bad_v24_host_hash() {
+    let home = TestHome::new();
+    let profile = home.chromium_profile(Browser::Chrome, "Work");
+    let database = profile.join("Cookies");
+    let empty_pw_v10 = encrypted_value(".claude.ai", b"empty-password-value", b"", b"v10");
+    let valid_v10 = encrypted_value(
+        ".claude.ai",
+        b"keychain-password-value",
+        SYNTHETIC_PASSWORD,
+        b"v10",
+    );
+    let mut mismatch_plain = vec![0xA5; 32];
+    mismatch_plain.extend_from_slice(b"wrong-host-prefix");
+    let encrypted_mismatch =
+        test_support::encrypt_test(&mismatch_plain, SYNTHETIC_PASSWORD).expect("ciphertext");
+    let mut tagged_mismatch = b"v10".to_vec();
+    tagged_mismatch.extend_from_slice(&encrypted_mismatch);
+    insert_chromium(
+        &database,
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "empty-key",
+            expires_utc: 0,
+            value: "",
+            encrypted: &empty_pw_v10,
+            partition_key: "",
+        },
+    );
+    insert_chromium(
+        &database,
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "valid-key",
+            expires_utc: 0,
+            value: "",
+            encrypted: &valid_v10,
+            partition_key: "",
+        },
+    );
+    insert_chromium(
+        &database,
+        ChromiumRow {
+            host: ".claude.ai",
+            name: "wrong-hash",
+            expires_utc: 0,
+            value: "",
+            encrypted: &tagged_mismatch,
+            partition_key: "",
+        },
+    );
+    let candidates = read_chrome(
+        &home,
+        Browser::Chrome,
+        Arc::new(StaticKeys::available(SYNTHETIC_PASSWORD.to_vec())),
+    )
+    .expect("candidate");
+    assert_eq!(candidates[0].records.len(), 1);
+    assert_eq!(
+        candidates[0].records[0].value.expose_secret(),
+        "keychain-password-value"
     );
     assert_eq!(candidates[0].diagnostics.rejected_by_hash, 1);
 }
@@ -847,7 +929,10 @@ fn macos_chromium_browsers_read_distinct_safe_storage_keychain_services_via_key_
         queries,
         browsers
             .iter()
-            .map(|(_, service, account)| ((*service).to_owned(), (*account).to_owned(), true))
+            .enumerate()
+            .map(|(idx, (_, service, account))| {
+                ((*service).to_owned(), (*account).to_owned(), idx == 0)
+            })
             .collect::<Vec<_>>()
     );
 }

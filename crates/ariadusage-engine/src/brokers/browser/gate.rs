@@ -18,11 +18,16 @@ const COOLDOWN_SECONDS: i64 = 6 * 60 * 60;
 /// A saved denial cooldown blocks user-initiated reads unless the caller acknowledges
 /// the retry, which permits one keyring read through the cooldown. Background reads
 /// skip the cooldown because they already run noninteractively (`allow_unlock=false`).
+/// On macOS, at most one interactive Keychain read is permitted per user action (`RetryScope`),
+/// matching upstream `BrowserCookieAccessGate.swift`; subsequent browsers in the same scope read
+/// with `FetchInteraction::Background` (`allow_interaction=false`).
 pub struct RetryScope {
     interaction: FetchInteraction,
     bypasses_cooldown: bool,
     chromium_retry_used: bool,
     chromium_dismissed_in_scope: bool,
+    #[cfg(target_os = "macos")]
+    interactive_key_read_used: bool,
 }
 
 impl RetryScope {
@@ -33,7 +38,31 @@ impl RetryScope {
                 && call.interaction == FetchInteraction::UserInitiated,
             chromium_retry_used: false,
             chromium_dismissed_in_scope: false,
+            #[cfg(target_os = "macos")]
+            interactive_key_read_used: false,
         }
+    }
+
+    /// Returns the [`BrokerCall`] to pass to the safe-storage key lookup for one uncached browser.
+    ///
+    /// On macOS, only the first uncached browser key lookup in a user-initiated `RetryScope`
+    /// keeps `FetchInteraction::UserInitiated`; subsequent uncached browsers in the same scope
+    /// downgrade to `FetchInteraction::Background` (`allow_interaction=false`) so an
+    /// already-authorized item still succeeds while an unauthorized item fails with
+    /// `BrowserError::Locked` and no second Keychain prompt.
+    pub fn claim_key_read_call(&mut self, call: &BrokerCall) -> BrokerCall {
+        #[cfg(target_os = "macos")]
+        if call.interaction == FetchInteraction::UserInitiated {
+            if self.interactive_key_read_used {
+                return BrokerCall {
+                    interaction: FetchInteraction::Background,
+                    cancel: call.cancel.clone(),
+                    request_id: call.request_id.clone(),
+                };
+            }
+            self.interactive_key_read_used = true;
+        }
+        call.clone()
     }
 }
 

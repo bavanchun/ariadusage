@@ -111,6 +111,7 @@ impl TestHome {
                     Browser::Vivaldi => "Vivaldi",
                     Browser::Firefox => panic!("Firefox profile requested as Chromium"),
                     Browser::Opera => "com.operasoftware.Opera",
+                    Browser::Safari => panic!("Safari profile requested as Chromium"),
                 })
         }
         #[cfg(not(target_os = "macos"))]
@@ -123,6 +124,7 @@ impl TestHome {
                 Browser::Vivaldi => "vivaldi",
                 Browser::Firefox => panic!("Firefox profile requested as Chromium"),
                 Browser::Opera => "opera",
+                Browser::Safari => panic!("Safari profile requested as Chromium"),
             })
         }
     }
@@ -182,6 +184,98 @@ impl TestHome {
         create_firefox_database(&profile.join("cookies.sqlite"), schema_version);
         profile
     }
+
+    pub fn safari_container_cookies_path(&self) -> PathBuf {
+        self.home
+            .join("Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies")
+    }
+
+    pub fn safari_legacy_cookies_path(&self) -> PathBuf {
+        self.home.join("Library/Cookies/Cookies.binarycookies")
+    }
+}
+
+pub struct SafariRow<'a> {
+    pub host: &'a str,
+    pub name: &'a str,
+    pub path: &'a str,
+    pub value: &'a str,
+    /// Seconds since the Mac epoch (`2001-01-01T00:00:00Z`), or `<= 0.0` for a session cookie.
+    pub expiration_mac_secs: f64,
+    pub secure: bool,
+    pub http_only: bool,
+}
+
+pub fn encode_binary_cookies(rows: &[SafariRow<'_>]) -> Vec<u8> {
+    let mut cookie_blobs = Vec::with_capacity(rows.len());
+    for row in rows {
+        let mut record = vec![0_u8; 56];
+        let mut flags = 0_u32;
+        if row.secure {
+            flags |= 0x1;
+        }
+        if row.http_only {
+            flags |= 0x4;
+        }
+        record[8..12].copy_from_slice(&flags.to_le_bytes());
+
+        let url_offset = record.len() as u32;
+        record.extend_from_slice(row.host.as_bytes());
+        record.push(0);
+
+        let name_offset = record.len() as u32;
+        record.extend_from_slice(row.name.as_bytes());
+        record.push(0);
+
+        let path_offset = record.len() as u32;
+        record.extend_from_slice(row.path.as_bytes());
+        record.push(0);
+
+        let value_offset = record.len() as u32;
+        record.extend_from_slice(row.value.as_bytes());
+        record.push(0);
+
+        let cookie_size = record.len() as u32;
+        record[0..4].copy_from_slice(&cookie_size.to_le_bytes());
+        record[16..20].copy_from_slice(&url_offset.to_le_bytes());
+        record[20..24].copy_from_slice(&name_offset.to_le_bytes());
+        record[24..28].copy_from_slice(&path_offset.to_le_bytes());
+        record[28..32].copy_from_slice(&value_offset.to_le_bytes());
+        record[40..48].copy_from_slice(&row.expiration_mac_secs.to_le_bytes());
+        record[48..56].copy_from_slice(&0.0_f64.to_le_bytes());
+        cookie_blobs.push(record);
+    }
+
+    let mut page = Vec::new();
+    page.extend_from_slice(&[0x00, 0x00, 0x01, 0x00]);
+    let num_cookies = cookie_blobs.len() as u32;
+    page.extend_from_slice(&num_cookies.to_le_bytes());
+    let mut offset = 8 + cookie_blobs.len() * 4 + 4;
+    for blob in &cookie_blobs {
+        page.extend_from_slice(&(offset as u32).to_le_bytes());
+        offset += blob.len();
+    }
+    page.extend_from_slice(&0_u32.to_le_bytes());
+    for blob in &cookie_blobs {
+        page.extend_from_slice(blob);
+    }
+
+    let mut file = Vec::new();
+    file.extend_from_slice(b"cook");
+    file.extend_from_slice(&1_u32.to_be_bytes());
+    file.extend_from_slice(&(page.len() as u32).to_be_bytes());
+    file.extend_from_slice(&page);
+    // Standard 8-byte checksum/footer after pages.
+    file.extend_from_slice(&[0_u8; 8]);
+    file
+}
+
+pub fn write_safari_cookies(path: &Path, rows: &[SafariRow<'_>]) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).expect("create Safari cookies directory");
+    }
+    let bytes = encode_binary_cookies(rows);
+    std::fs::write(path, bytes).expect("write synthetic Cookies.binarycookies");
 }
 
 pub struct StaticKeys {

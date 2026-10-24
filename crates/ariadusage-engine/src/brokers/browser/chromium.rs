@@ -91,7 +91,7 @@ async fn read_attempt(
     };
     let now = Timestamp::now();
     let mut records = Vec::new();
-    let mut encrypted_v11 = Vec::new();
+    let mut keyed_rows = Vec::new();
 
     for mut row in rows {
         if row.partitioned {
@@ -109,7 +109,7 @@ async fn read_attempt(
         }
         #[cfg(target_os = "macos")]
         if row.encrypted.starts_with(b"v10") {
-            encrypted_v11.push(row);
+            keyed_rows.push(row);
         } else {
             let tag = encryption_tag(&row.encrypted);
             *diagnostics.unsupported_by_tag.entry(tag).or_default() += 1;
@@ -124,7 +124,7 @@ async fn read_attempt(
                 Err(_) => {}
             }
         } else if row.encrypted.starts_with(b"v11") {
-            encrypted_v11.push(row);
+            keyed_rows.push(row);
         } else {
             let tag = encryption_tag(&row.encrypted);
             *diagnostics.unsupported_by_tag.entry(tag).or_default() += 1;
@@ -134,7 +134,7 @@ async fn read_attempt(
     let mut key_error = None;
     let mut safe_storage_key = None;
     let has_cached_key = matches!(access.key_cache.get(&profile.browser), Some(Ok(Some(_))));
-    if !encrypted_v11.is_empty()
+    if !keyed_rows.is_empty()
         && (has_cached_key
             || access.gate.should_attempt_key(
                 profile.browser,
@@ -149,7 +149,11 @@ async fn read_attempt(
         let key_result = if let Some(cached) = access.key_cache.get(&profile.browser) {
             cached.clone()
         } else {
-            let result = access.keys.chromium_safe_storage(attribute, call).await;
+            let key_call = access.retry_scope.claim_key_read_call(call);
+            let result = access
+                .keys
+                .chromium_safe_storage(attribute, &key_call)
+                .await;
             access.key_cache.insert(profile.browser, result.clone());
             result
         };
@@ -163,7 +167,8 @@ async fn read_attempt(
             Ok(None) => key_error = Some(BrowserError::Unsupported),
             Err(error) => {
                 key_error = Some(match error {
-                    crate::brokers::secret_store::safe_storage::SafeStorageError::Locked => {
+                    crate::brokers::secret_store::safe_storage::SafeStorageError::Locked
+                    | crate::brokers::secret_store::safe_storage::SafeStorageError::Busy => {
                         BrowserError::Locked
                     }
                     crate::brokers::secret_store::safe_storage::SafeStorageError::Dismissed => {
@@ -183,29 +188,37 @@ async fn read_attempt(
                 });
             }
         }
-    } else if !encrypted_v11.is_empty() {
+    } else if !keyed_rows.is_empty() {
         key_error = Some(BrowserError::Dismissed);
     }
-    for row in encrypted_v11 {
+    for row in keyed_rows {
         let ciphertext = &row.encrypted[3..];
         let primary = safe_storage_key.as_ref().and_then(|key| {
             super::chromium_crypto::decrypt_v11(ciphertext, key, &row.host, version).ok()
         });
+        #[cfg(target_os = "linux")]
         let decrypted = primary.or_else(|| {
             super::chromium_crypto::decrypt_empty_password(ciphertext, &row.host, version).ok()
         });
+        #[cfg(not(target_os = "linux"))]
+        let decrypted = primary;
         match decrypted {
             Some(plain) => records.push(to_record(row, plain)?),
             None => {
-                if safe_storage_key.as_ref().is_some_and(|key| {
+                let primary_hash_mismatch = safe_storage_key.as_ref().is_some_and(|key| {
                     matches!(
                         super::chromium_crypto::decrypt_v11(ciphertext, key, &row.host, version),
                         Err(super::chromium_crypto::DecryptFailure::HostHashMismatch)
                     )
-                }) || matches!(
+                });
+                #[cfg(target_os = "linux")]
+                let fallback_hash_mismatch = matches!(
                     super::chromium_crypto::decrypt_empty_password(ciphertext, &row.host, version),
                     Err(super::chromium_crypto::DecryptFailure::HostHashMismatch)
-                ) {
+                );
+                #[cfg(not(target_os = "linux"))]
+                let fallback_hash_mismatch = false;
+                if primary_hash_mismatch || fallback_hash_mismatch {
                     diagnostics.rejected_by_hash += 1;
                 }
             }

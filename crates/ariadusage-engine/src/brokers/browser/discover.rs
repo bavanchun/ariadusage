@@ -173,18 +173,26 @@ impl SessionCursor<'_> {
             if self.call.cancel.is_cancelled() {
                 break;
             }
-            let result = if profile.browser == Browser::Firefox {
-                super::firefox::read_profile(&profile, &self.inner.paths, &self.query, self.call)
-                    .map(|candidates| (candidates, None))
-            } else {
-                super::chromium::read_profile(
+            let result = match profile.browser {
+                Browser::Firefox => super::firefox::read_profile(
                     &profile,
                     &self.inner.paths,
                     &self.query,
                     self.call,
-                    &mut access,
                 )
-                .await
+                .map(|candidates| (candidates, None)),
+                Browser::Safari => super::safari::read_profile(&profile, &self.query, self.call)
+                    .map(|candidates| (candidates, None)),
+                _ => {
+                    super::chromium::read_profile(
+                        &profile,
+                        &self.inner.paths,
+                        &self.query,
+                        self.call,
+                        &mut access,
+                    )
+                    .await
+                }
             };
             match result {
                 Ok((candidates, error)) => {
@@ -218,6 +226,9 @@ fn prefer_error(current: Option<BrowserError>, candidate: BrowserError) -> Optio
 pub(super) fn discover_profiles(paths: &BrowserPaths, browser: Browser) -> Vec<DiscoveredProfile> {
     if browser == Browser::Firefox {
         return discover_firefox(paths);
+    }
+    if browser == Browser::Safari {
+        return discover_safari(paths);
     }
     let mut profiles = Vec::new();
     for root in browser.roots(paths) {
@@ -320,6 +331,42 @@ fn discover_firefox(paths: &BrowserPaths) -> Vec<DiscoveredProfile> {
     }
     deduplicate_profiles(&mut profiles);
     profiles
+}
+
+fn discover_safari(paths: &BrowserPaths) -> Vec<DiscoveredProfile> {
+    let mut profiles = Vec::new();
+    for root in Browser::Safari.roots(paths) {
+        let Some(root_path) = canonical_directory(&root.path) else {
+            continue;
+        };
+        let Some(database_path) = has_safari_cookie_file(&root_path) else {
+            continue;
+        };
+        profiles.push(DiscoveredProfile {
+            browser: Browser::Safari,
+            profile_id: opaque_profile_id(&root_path),
+            label: "Safari".to_owned(),
+            profile_path: root_path,
+            database_path,
+            _unverified: root.unverified,
+        });
+    }
+    deduplicate_profiles(&mut profiles);
+    profiles
+}
+
+fn has_safari_cookie_file(root_path: &Path) -> Option<PathBuf> {
+    let candidate = root_path.join("Cookies.binarycookies");
+    let parent = candidate.parent()?;
+    let canonical_parent = std::fs::canonicalize(parent).ok()?;
+    if !canonical_parent.starts_with(root_path) {
+        return None;
+    }
+    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    Some(canonical_parent.join(candidate.file_name()?))
 }
 
 fn scan_firefox_profiles(root: &Path) -> Vec<super::profiles_ini::FirefoxProfileEntry> {
