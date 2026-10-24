@@ -195,14 +195,24 @@ mod imp {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     struct PendingTimestampRow {
         row: i64,
         step_uuid: String,
         turn: ParsedTurn,
     }
 
-    #[derive(Debug, Default)]
+    impl std::fmt::Debug for PendingTimestampRow {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PendingTimestampRow")
+                .field("row", &self.row)
+                .field("has_step_uuid", &!self.step_uuid.is_empty())
+                .field("turn", &self.turn)
+                .finish()
+        }
+    }
+
+    #[derive(Default)]
     struct ParsedRows {
         source: SourceResult,
         pending_timestamp_rows: Vec<PendingTimestampRow>,
@@ -210,20 +220,39 @@ mod imp {
         bot_id_uses: BTreeMap<String, usize>,
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Clone)]
     struct StepOccurrence {
         row: i64,
         timestamp_ms: Option<i64>,
         bot_id: Option<String>,
     }
 
-    #[derive(Debug, Clone)]
+    impl std::fmt::Debug for StepOccurrence {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("StepOccurrence")
+                .field("row", &self.row)
+                .field("timestamp_ms", &self.timestamp_ms)
+                .field("has_bot_id", &self.bot_id.is_some())
+                .finish()
+        }
+    }
+
+    #[derive(Clone)]
     struct ExactStepTimestamp {
         step_uuid: String,
         timestamp_ms: i64,
     }
 
-    #[derive(Debug, Default)]
+    impl std::fmt::Debug for ExactStepTimestamp {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ExactStepTimestamp")
+                .field("has_step_uuid", &!self.step_uuid.is_empty())
+                .field("timestamp_ms", &self.timestamp_ms)
+                .finish()
+        }
+    }
+
+    #[derive(Default)]
     struct StepTimestampScan {
         timestamps: BTreeMap<String, Vec<i64>>,
         by_bot_id: BTreeMap<String, ExactStepTimestamp>,
@@ -272,25 +301,43 @@ mod imp {
         }
 
         fn read_database(url: &Path, budget: &Budget) -> Result<SourceResult, ScanFailure> {
-            let attempt = Self::read_database_with_mode(url, budget, OpenMode::ReadOnly)?;
+            let before_source = Self::idle_database_state(url);
+            let temp_parent = crate::paths::trusted_runtime_dir().unwrap_or_else(|| {
+                let raw = std::env::temp_dir();
+                std::fs::canonicalize(&raw).unwrap_or(raw)
+            });
+            let Ok(temp_dir) = crate::private_tempdir::create_in(&temp_parent) else {
+                return Ok(SourceResult::incomplete());
+            };
+            let Ok(copied_url) =
+                crate::brokers::browser::sqlite_copy::copy_database(url, temp_dir.path())
+            else {
+                return Ok(SourceResult::incomplete());
+            };
+            let attempt = Self::read_database_with_mode(&copied_url, budget, OpenMode::ReadOnly)?;
             // Some SQLite builds (Apple's system library among them) decline read-only access to a WAL database
             // whose -wal and -shm sidecars are absent, because a read-only connection may not create them.
             // A cleanly closed conversation is exactly that file. An absent -wal also means no WAL connection
             // holds the database, so the main file alone carries the checkpointed state.
-            let Some(before) = (if attempt.cannot_open {
-                Self::idle_database_state(url)
+            let Some(before_copy) = (if attempt.cannot_open {
+                Self::idle_database_state(&copied_url)
             } else {
                 None
             }) else {
                 return Ok(attempt.source);
             };
+            let Some(before_source) = before_source else {
+                return Ok(attempt.source);
+            };
             budget.update_statistics(|s| s.immutable_fallbacks += 1);
             let mut source =
-                Self::read_database_with_mode(url, budget, OpenMode::Immutable)?.source;
+                Self::read_database_with_mode(&copied_url, budget, OpenMode::Immutable)?.source;
             // An immutable connection neither locks nor detects changes. A writer that appeared during the read
             // could have checkpointed pages into the main file, so the result is trusted only when the file and
             // its sidecar state are unchanged afterwards. Anything else stays incomplete, as before.
-            if Self::idle_database_state(url).as_ref() != Some(&before) {
+            if Self::idle_database_state(&copied_url).as_ref() != Some(&before_copy)
+                || Self::idle_database_state(url).as_ref() != Some(&before_source)
+            {
                 source.is_complete = false;
                 source.evidence_is_unstable = true;
             }
@@ -298,21 +345,32 @@ mod imp {
         }
 
         fn idle_database_state(url: &Path) -> Option<IdleDatabaseState> {
-            // SQLite places sidecars next to the resolved database file, not next to a symlink.
-            let resolved = std::fs::canonicalize(url).unwrap_or_else(|_| url.to_path_buf());
-            let mut wal_os = resolved.as_os_str().to_os_string();
+            let mut wal_os = url.as_os_str().to_os_string();
             wal_os.push("-wal");
             if std::fs::symlink_metadata(Path::new(&wal_os)).is_ok() {
                 return None;
             }
-            let metadata = std::fs::metadata(&resolved).ok()?;
+            let metadata = std::fs::symlink_metadata(url).ok()?;
+            if !metadata.file_type().is_file() {
+                return None;
+            }
             let size = metadata.len();
             let modified = metadata.modified().ok()?;
             #[cfg(unix)]
             let file_number = std::os::unix::fs::MetadataExt::ino(&metadata);
             #[cfg(not(unix))]
             let file_number = 0u64;
-            let mut handle = std::fs::File::open(&resolved).ok()?;
+            let fd = rustix::fs::open(
+                url,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::NONBLOCK
+                    | rustix::fs::OFlags::NOCTTY
+                    | rustix::fs::OFlags::CLOEXEC
+                    | rustix::fs::OFlags::NOFOLLOW,
+                rustix::fs::Mode::empty(),
+            )
+            .ok()?;
+            let mut handle = std::fs::File::from(fd);
             let mut buf = [0u8; 100];
             let mut read_len = 0usize;
             while read_len < 100 {
@@ -372,7 +430,9 @@ mod imp {
             let result = match mode {
                 OpenMode::ReadOnly => Connection::open_with_flags(
                     url,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY
+                        | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                        | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 ),
                 OpenMode::Immutable => {
                     let Some(uri) = Self::immutable_uri(url) else {
@@ -382,12 +442,21 @@ mod imp {
                         uri,
                         OpenFlags::SQLITE_OPEN_READ_ONLY
                             | OpenFlags::SQLITE_OPEN_URI
-                            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                     )
                 }
             };
             match result {
                 Ok(conn) => {
+                    if conn
+                        .set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true)
+                        .is_err()
+                        || conn.pragma_update(None, "trusted_schema", false).is_err()
+                    {
+                        let _ = conn.close();
+                        return Err(false);
+                    }
                     budget.update_statistics(|s| s.sqlite_handles_opened += 1);
                     Ok(conn)
                 }
@@ -425,7 +494,7 @@ mod imp {
                 .create_scalar_function(
                     "antigravity_payload_limit",
                     0,
-                    FunctionFlags::SQLITE_UTF8,
+                    FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
                     move |_ctx| Ok(limit_progress.payload_limit()),
                 )
                 .is_err()
@@ -595,7 +664,7 @@ mod imp {
                 .create_scalar_function(
                     "antigravity_step_payload_limit",
                     0,
-                    FunctionFlags::SQLITE_UTF8,
+                    FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
                     move |_ctx| Ok(step_progress.step_payload_limit()),
                 )
                 .is_err()

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-hooks")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
@@ -166,6 +167,7 @@ struct InstalledClientCacheKey {
 static INSTALLED_CLIENT_CACHE: OnceLock<
     Mutex<BTreeMap<InstalledClientCacheKey, Option<AntigravityOAuthClient>>>,
 > = OnceLock::new();
+#[cfg(feature = "test-hooks")]
 static INSTALLED_ARTIFACT_READ_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl AntigravityOAuthConfig {
@@ -228,6 +230,7 @@ impl AntigravityOAuthConfig {
         Self::installed_client(app_bundle_url, home_directory)
     }
 
+    #[cfg(feature = "test-hooks")]
     pub fn installed_client_artifact_read_count() -> usize {
         INSTALLED_ARTIFACT_READ_COUNT.load(Ordering::SeqCst)
     }
@@ -344,6 +347,7 @@ impl AntigravityOAuthConfig {
 
     fn read_bounded_client_artifact(path: &Path) -> Option<Vec<u8>> {
         let data = Self::read_bounded_artifact(path)?;
+        #[cfg(feature = "test-hooks")]
         INSTALLED_ARTIFACT_READ_COUNT.fetch_add(1, Ordering::SeqCst);
         Some(data)
     }

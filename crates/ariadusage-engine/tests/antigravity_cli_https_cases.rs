@@ -22,10 +22,9 @@ use ariadusage_engine::providers::antigravity::{
     ANTIGRAVITY_APP_LOCAL_STRATEGY_ID, ANTIGRAVITY_CLI_HTTPS_STRATEGY_ID,
     ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID, ANTIGRAVITY_OAUTH_STRATEGY_ID,
     ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityConnectionEndpoint, AntigravityModelQuota,
-    AntigravityOfflinePlaceholderStrategy, AntigravityProviderPlan,
-    AntigravitySelectedAccountGuard, AntigravityStatusFetchStrategy, AntigravityStatusProbeError,
-    AntigravityStatusSnapshot, AntigravityStrategyConfig, EndpointSource, OperationDeadline,
-    RequestContext, RequestPayload,
+    AntigravityOfflineFetchStrategy, AntigravityProviderPlan, AntigravitySelectedAccountGuard,
+    AntigravityStatusFetchStrategy, AntigravityStatusProbeError, AntigravityStatusSnapshot,
+    AntigravityStrategyConfig, EndpointSource, OperationDeadline, RequestContext, RequestPayload,
 };
 use ariadusage_protocol::ProviderId;
 use ariadusage_protocol::metric::Confidence;
@@ -433,7 +432,7 @@ fn offline_fallback_explains_the_masked_live_failure() {
         },
     );
     let diagnostic =
-        AntigravityOfflinePlaceholderStrategy::diagnostic_for_prior_probe_failure(&error).unwrap();
+        AntigravityOfflineFetchStrategy::diagnostic_for_prior_probe_failure(&error).unwrap();
     assert_eq!(
         diagnostic,
         "Live Antigravity usage is unavailable; showing offline data. Antigravity CLI usage report failed: agy exited 1; the eligibility check failed on a network request (check network or proxy settings)"
@@ -446,7 +445,7 @@ fn offline_diagnostic_never_leaks_raw_process_output() {
     let error =
         AntigravityStatusProbeError::ApiError("HTTP 500: {\"secret\":\"token-value\"}".into());
     let diagnostic =
-        AntigravityOfflinePlaceholderStrategy::diagnostic_for_prior_probe_failure(&error).unwrap();
+        AntigravityOfflineFetchStrategy::diagnostic_for_prior_probe_failure(&error).unwrap();
     assert!(!diagnostic.contains("token-value"));
     assert!(diagnostic.contains("HTTP 500"));
 }
@@ -455,7 +454,7 @@ fn offline_diagnostic_never_leaks_raw_process_output() {
 #[test]
 fn clean_offline_fallback_stays_silent_about_earlier_sources() {
     assert_eq!(
-        AntigravityOfflinePlaceholderStrategy::diagnostic_for_prior_probe_failure(
+        AntigravityOfflineFetchStrategy::diagnostic_for_prior_probe_failure(
             &AntigravityStatusProbeError::Cancelled,
         ),
         None

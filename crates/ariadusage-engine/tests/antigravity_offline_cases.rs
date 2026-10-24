@@ -1116,6 +1116,7 @@ async fn quota_requests_use_the_hub_identity_for_every_credential_source() {
 // Installed OAuth Client Negative Cache (PR #52 Review Low 4)
 // ============================================================================
 
+#[cfg(feature = "test-hooks")]
 #[test]
 fn installed_client_negative_cache_hits_and_invalidates_on_artifact_fingerprint_change() {
     let tmp = tempdir().unwrap();
@@ -1177,4 +1178,66 @@ fn installed_client_negative_cache_hits_and_invalidates_on_artifact_fingerprint_
             "GOCSPX-testsecretvalue"
         ))
     );
+}
+
+#[tokio::test]
+async fn offline_strategy_wires_local_reader_and_additional_profile_homes() {
+    let primary = ProfileFixture::new();
+    let additional = ProfileFixture::new();
+    primary.database(
+        "september-29",
+        2,
+        &[ProfileFixture::blob_with(1_790_683_200, None, 100)],
+    );
+    additional.database(
+        "september-30",
+        0,
+        &[ProfileFixture::blob_with(1_790_769_600, None, 100)],
+    );
+
+    let mut provider_config = ProviderConfig::new(ProviderId::new("antigravity").unwrap());
+    provider_config.set_antigravity_additional_profile_homes(Some(vec![
+        additional
+            .root
+            .join(".gemini")
+            .to_string_lossy()
+            .into_owned(),
+    ]));
+
+    let strategy = AntigravityOfflineFetchStrategy::with_home_directory(&primary.root)
+        .with_provider_config(&provider_config);
+    let cx = make_context(primary.environment.clone(), None);
+
+    assert!(strategy.is_available(&cx).await);
+    let fetched = strategy.fetch(&cx).await.unwrap();
+    assert_eq!(fetched.source_label, "offline");
+    assert_eq!(
+        fetched
+            .usage
+            .extra_rate_windows
+            .as_ref()
+            .and_then(|w| w.first())
+            .map(|w| w.title.as_str()),
+        Some("Offline \u{00b7} 2 conversations")
+    );
+
+    let report = strategy.load_local_daily_report(&cx).unwrap();
+    assert_eq!(report.coverage, LocalCoverage::Complete);
+    assert_eq!(
+        report
+            .report
+            .data
+            .iter()
+            .map(|d| d.date.as_str())
+            .collect::<Vec<_>>(),
+        vec!["2026-09-29", "2026-09-30"]
+    );
+    assert_eq!(
+        report.report.summary.as_ref().and_then(|s| s.total_tokens),
+        Some(374)
+    );
+
+    let token_snapshot = strategy.load_local_token_snapshot(&cx).unwrap();
+    assert!(token_snapshot.history_coverage_is_established);
+    assert_eq!(token_snapshot.daily.len(), 2);
 }

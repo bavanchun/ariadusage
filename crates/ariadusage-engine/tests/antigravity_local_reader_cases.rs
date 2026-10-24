@@ -4724,11 +4724,6 @@ fn declared_linked_roots_overrides_and_session_files_retain_normal_path_semantic
     std::os::unix::fs::symlink(&external, &orig_parent).unwrap();
     assert_eq!(fixture.snapshot().last_30_days_tokens, Some(187));
 
-    let linked_file = fixture.root.join("owned-session-data");
-    fs::rename(external.join("session-a.db"), &linked_file).unwrap();
-    std::os::unix::fs::symlink(&linked_file, external.join("session-a.db")).unwrap();
-    assert_eq!(fixture.snapshot().last_30_days_tokens, Some(187));
-
     let linked_gemini = fixture.root.join("linked-gemini");
     std::os::unix::fs::symlink(fixture.root.join(".gemini"), &linked_gemini).unwrap();
     let mut linked_env = fixture.environment();
@@ -4738,27 +4733,36 @@ fn declared_linked_roots_overrides_and_session_files_retain_normal_path_semantic
     );
     assert_eq!(
         fixture
-            .snapshot_with_env(Some(linked_env))
+            .snapshot_with_env(Some(linked_env.clone()))
             .last_30_days_tokens,
         Some(187)
     );
+
+    let linked_file = fixture.root.join("owned-session-data");
+    fs::rename(external.join("session-a.db"), &linked_file).unwrap();
+    std::os::unix::fs::symlink(&linked_file, external.join("session-a.db")).unwrap();
+    assert_eq!(fixture.snapshot().last_30_days_tokens, None);
+    assert!(!fixture.snapshot().history_coverage_is_established);
 
     let cache = Fixture::new();
     let cache_file = cache.jsonl(&[Fixture::CACHE_USAGE]);
     let linked_config = cache.root.join("linked-config");
     std::os::unix::fs::symlink(cache.root.join(".config/tokscale"), &linked_config).unwrap();
-    let data_file = cache.root.join("owned-session-data");
-    fs::rename(&cache_file, &data_file).unwrap();
-    std::os::unix::fs::symlink(&data_file, &cache_file).unwrap();
     let mut env = cache.environment();
     env.insert(
         "TOKSCALE_CONFIG_DIR".to_owned(),
         linked_config.to_string_lossy().into_owned(),
     );
     assert_eq!(
-        cache.snapshot_with_env(Some(env)).last_30_days_tokens,
+        cache
+            .snapshot_with_env(Some(env.clone()))
+            .last_30_days_tokens,
         Some(180)
     );
+    let data_file = cache.root.join("owned-session-data");
+    fs::rename(&cache_file, &data_file).unwrap();
+    std::os::unix::fs::symlink(&data_file, &cache_file).unwrap();
+    assert_eq!(cache.snapshot_with_env(Some(env)).last_30_days_tokens, None);
 }
 
 // upstream: AntigravityLocalReaderTests.swift:544 one-shot caller Cocoa and POSIX cancellation errors preserve their original cause
@@ -5734,4 +5738,59 @@ fn safety_routed_gemini_flash_turns_price_from_the_base_flash_model() {
         AntigravityLocalReader::pricing_base_model_id("gemini-3.7-flash-safety-le").as_deref(),
         Some("gemini-3.7-flash")
     );
+}
+
+#[test]
+fn entry_symlinks_pointing_outside_roots_are_rejected_in_discovery_and_jsonl_reader() {
+    let fixture = Fixture::new();
+    let outside_dir = tempfile::tempdir().unwrap();
+    let outside_db = outside_dir.path().join("outside-session.db");
+    let conn = Fixture::open(&outside_db);
+    Fixture::execute(
+        &conn,
+        "CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)",
+    );
+    Fixture::insert(&conn, 0, &Fixture::blob());
+    drop(conn);
+
+    let roots = fixture.context().database_roots();
+    fs::create_dir_all(&roots[0]).unwrap();
+    let symlink_db = roots[0].join("escaped-session.db");
+    std::os::unix::fs::symlink(&outside_db, &symlink_db).unwrap();
+
+    let budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let discovery = AntigravityLocalReader::discover(&roots, "db", &budget).unwrap();
+    assert!(discovery.paths.is_empty());
+    assert!(!discovery.is_complete);
+
+    let db_budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let db_source =
+        AntigravityLocalReader::read_databases(std::slice::from_ref(&symlink_db), &db_budget)
+            .unwrap();
+    assert!(!db_source.is_complete);
+    assert!(db_source.events.is_empty());
+    assert_eq!(db_budget.statistics().sqlite_handles_opened, 0);
+
+    let outside_jsonl = outside_dir.path().join("outside-cache.jsonl");
+    fs::write(&outside_jsonl, format!("{}\n", Fixture::CACHE_USAGE)).unwrap();
+    let cache_root = fixture.context().cache_root();
+    fs::create_dir_all(&cache_root).unwrap();
+    let symlink_jsonl = cache_root.join("escaped-cache.jsonl");
+    std::os::unix::fs::symlink(&outside_jsonl, &symlink_jsonl).unwrap();
+
+    let cache_discovery = AntigravityLocalReader::discover(
+        std::slice::from_ref(&cache_root),
+        "jsonl",
+        &Budget::with_cancellation(Limits::default(), || Ok(())),
+    )
+    .unwrap();
+    assert!(cache_discovery.paths.is_empty());
+    assert!(!cache_discovery.is_complete);
+
+    let jsonl_budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let jsonl_source =
+        AntigravityLocalReader::read_jsonl(std::slice::from_ref(&symlink_jsonl), &jsonl_budget)
+            .unwrap();
+    assert!(!jsonl_source.is_complete);
+    assert!(jsonl_source.events.is_empty());
 }

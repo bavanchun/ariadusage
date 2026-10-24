@@ -52,7 +52,7 @@ pub(super) fn is_trusted_copy_root(path: &Path) -> bool {
     }
 }
 
-pub(super) fn copy_database(source: &Path, target_dir: &Path) -> Result<PathBuf, BrowserError> {
+pub(crate) fn copy_database(source: &Path, target_dir: &Path) -> Result<PathBuf, BrowserError> {
     let name = source.file_name().ok_or(BrowserError::Io)?;
     let target = target_dir.join(name);
     let total = copy_one(source, &target, 0)?;

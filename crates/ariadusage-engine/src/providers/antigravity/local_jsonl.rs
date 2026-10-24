@@ -9,7 +9,7 @@ use super::local_reader::{AntigravityLocalReader, Event, SourceResult};
 use super::local_scan::{Budget, ScanFailure};
 use super::proto_reader::{ParsedTurn, ParsedUsage};
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct JSONLSession {
     id: Option<String>,
     model: Option<String>,
@@ -38,10 +38,23 @@ impl AntigravityLocalReader {
     }
 
     fn read_jsonl_file(url: &Path, budget: &Budget) -> Result<SourceResult, ScanFailure> {
-        let Ok(meta) = std::fs::metadata(url) else {
+        let Ok(meta) = std::fs::symlink_metadata(url) else {
             return Ok(SourceResult::incomplete());
         };
-        if !meta.is_file() {
+        if !meta.file_type().is_file() {
+            return Ok(SourceResult::incomplete());
+        }
+        let Some(parent) = url.parent() else {
+            return Ok(SourceResult::incomplete());
+        };
+        let (Ok(canonical_parent), Ok(canonical_url)) =
+            (std::fs::canonicalize(parent), std::fs::canonicalize(url))
+        else {
+            return Ok(SourceResult::incomplete());
+        };
+        if !canonical_url.starts_with(&canonical_parent)
+            || canonical_url.parent() != Some(canonical_parent.as_path())
+        {
             return Ok(SourceResult::incomplete());
         }
         let size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
@@ -56,7 +69,7 @@ impl AntigravityLocalReader {
             budget.charge_bytes(size)?;
             return Err(ScanFailure::Exhausted);
         }
-        let Ok(mut handle) = std::fs::File::open(url) else {
+        let Ok(mut handle) = Self::open_regular_jsonl_nofollow(url) else {
             return Ok(SourceResult::incomplete());
         };
         let mut result = SourceResult::default();
@@ -119,6 +132,39 @@ impl AntigravityLocalReader {
             result.is_complete = false;
         }
         Ok(result)
+    }
+
+    fn open_regular_jsonl_nofollow(url: &Path) -> std::io::Result<std::fs::File> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{FileType, Mode, OFlags, fstat, open};
+            use rustix::process::geteuid;
+
+            let fd = open(
+                url,
+                OFlags::RDONLY
+                    | OFlags::NONBLOCK
+                    | OFlags::NOCTTY
+                    | OFlags::CLOEXEC
+                    | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(std::io::Error::from)?;
+            let stat = fstat(&fd).map_err(std::io::Error::from)?;
+            if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
+                || stat.st_uid != geteuid().as_raw()
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "jsonl source rejected",
+                ));
+            }
+            Ok(std::fs::File::from(fd))
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::File::open(url)
+        }
     }
 
     fn read_up_to(handle: &mut std::fs::File, buf: &mut [u8]) -> Result<usize, ()> {
