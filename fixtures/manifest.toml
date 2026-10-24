@@ -1540,7 +1540,21 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/src/providers/codex/cli_backend_config.rs"
-sources = ["Sources/CodexBarCore/Providers/Codex/CodexCLIBackendConfiguration.swift"]
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexCLIBackendConfiguration.swift",
+    "Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/status_probe.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexStatusProbe.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexCLISession.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexStatusMarkers.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexStatusProbeIsolation.swift",
+    "Sources/CodexBarCore/TextParsing.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -1721,6 +1735,16 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 [[ported]]
 path = "crates/ariadusage-engine/tests/codex_rpc_cases.rs"
 sources = ["Tests/CodexBarTests/CodexUsageFetcherFallbackTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_pty_status_cases.rs"
+sources = [
+    "Tests/CodexBarTests/StatusProbeTests.swift",
+    "Tests/CodexBarTests/TTYCommandRunnerTests.swift",
+    "Tests/CodexBarTests/CodexCLIDiscoveryTests.swift",
+    "Tests/CodexBarTests/CodexUserFacingErrorTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
