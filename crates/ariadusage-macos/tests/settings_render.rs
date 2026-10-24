@@ -1,8 +1,8 @@
 // Ported from CodexBar Tests/CodexBarTests/SettingsWindowBehaviorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-//! Renders all 14 Settings window panes (`General`, `iCloud Sync`, `Usage & Spend`,
+//! Renders all 13 Settings window panes (`General`, `iCloud Sync`, `Usage & Spend`,
 //! `Notifications`, `Menu Bar`, `Menu`, `Advanced`, `Hooks`, `Plugins`, `About`,
-//! and provider detail pages `Codex`, `Claude`, `Cursor`, `Antigravity`) on the
+//! and provider detail pages `Codex`, `Claude`, `Antigravity`) on the
 //! main thread in both Light and Dark appearances, verifies native AppKit control
 //! subviews (`NSSearchField`, `NSOutlineView`, `NSScrollView`, `NSSwitch`,
 //! `NSPopUpButton`, `NSButton`, `NSSegmentedControl`, `NSColorWell`, `NSSlider`,
@@ -37,6 +37,7 @@ fn main() {}
 mod macos {
     use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::rc::Rc;
     use std::time::{Duration, Instant};
 
     use ariadusage_macos::appkit::{SettingsWindowController, png_bytes};
@@ -44,17 +45,13 @@ mod macos {
         SettingsPane, WINDOW_AUTOSAVE_NAME, WINDOW_HEIGHT, WINDOW_MIN_HEIGHT, WINDOW_MIN_WIDTH,
         WINDOW_WIDTH,
     };
+    use ariadusage_protocol::fixture::generate_scenario_snapshot;
     use ariadusage_protocol::ids::{ProviderId, SettingId};
-    use ariadusage_protocol::metric::{Confidence, Metric};
     use ariadusage_protocol::settings::{
         ChoiceOption, DescriptorKind, NumberConfig, SettingDescriptor, SettingsPage, SettingsScope,
         SettingsSection,
     };
-    use ariadusage_protocol::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot};
-    use ariadusage_protocol::usage::{
-        CostHistory, Credits, Identity, ProviderStatus, RateWindow, StatusIndicator,
-    };
-    use jiff::Timestamp;
+    use ariadusage_protocol::snapshot::EngineSnapshot;
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSApplication};
     use objc2_foundation::{NSDate, NSRunLoop, NSString};
@@ -145,182 +142,9 @@ mod macos {
     }
 
     fn sample_snapshot() -> EngineSnapshot {
-        let mut codex =
-            ProviderSnapshot::new(ProviderId::new("codex").unwrap(), "Codex", true, "oauth");
-        codex.windows.primary = Some(Metric::value(
-            RateWindow {
-                used_percent: 15.0,
-                window_minutes: Some(300),
-                reset_description: Some("Resets in 4h 57m".to_string()),
-                ..RateWindow::new(15.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        codex.windows.secondary = Some(Metric::value(
-            RateWindow {
-                used_percent: 34.0,
-                window_minutes: Some(10080),
-                reset_description: Some("Resets in 6d 2h".to_string()),
-                ..RateWindow::new(34.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        codex.credits = Some(Metric::value(
-            Credits::new(60493.99),
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        codex.identity = Some(Metric::value(
-            Identity {
-                provider_id: ProviderId::new("codex").unwrap(),
-                account_email: Some("alex@example.com".to_string()),
-                account_organization: None,
-                login_method: None,
-                account_id: None,
-                plan: Some("Plus".to_string()),
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        codex.status = Some(Metric::value(
-            ProviderStatus {
-                indicator: StatusIndicator::None,
-                description: Some("All Systems Operational".to_string()),
-                updated_at: None,
-                page_url: None,
-                components: Vec::new(),
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        codex.cost_history = Some(Metric::value(
-            CostHistory {
-                session_cost_usd: Some(14.62),
-                session_tokens: Some(78_000_000),
-                last_30_days_cost_usd: Some(285.81),
-                last_30_days_tokens: Some(72_000_000),
-                history_days: Some(30),
-                currency_code: Some("USD".to_string()),
-                ..CostHistory::default()
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-
-        let mut claude =
-            ProviderSnapshot::new(ProviderId::new("claude").unwrap(), "Claude", true, "oauth");
-        claude.windows.primary = Some(Metric::value(
-            RateWindow {
-                used_percent: 22.0,
-                window_minutes: Some(300),
-                reset_description: Some("Resets in 3h 14m".to_string()),
-                ..RateWindow::new(22.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        claude.windows.secondary = Some(Metric::value(
-            RateWindow {
-                used_percent: 41.0,
-                window_minutes: Some(10080),
-                reset_description: Some("Resets in 4d 8h".to_string()),
-                ..RateWindow::new(41.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        claude.identity = Some(Metric::value(
-            Identity {
-                provider_id: ProviderId::new("claude").unwrap(),
-                account_email: Some("alex@example.com".to_string()),
-                account_organization: None,
-                login_method: None,
-                account_id: None,
-                plan: Some("Max".to_string()),
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        claude.status = codex.status.clone();
-        claude.cost_history = Some(Metric::value(
-            CostHistory {
-                session_cost_usd: Some(1.42),
-                session_tokens: Some(890_000),
-                last_30_days_cost_usd: Some(254.09),
-                last_30_days_tokens: Some(61_000_000),
-                history_days: Some(30),
-                currency_code: Some("USD".to_string()),
-                ..CostHistory::default()
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-
-        let mut antigravity = ProviderSnapshot::new(
-            ProviderId::new("antigravity").unwrap(),
-            "Antigravity",
-            true,
-            "local",
-        );
-        antigravity.windows.primary = Some(Metric::value(
-            RateWindow {
-                used_percent: 12.0,
-                window_minutes: Some(300),
-                reset_description: Some("Resets in 2h 40m".to_string()),
-                ..RateWindow::new(12.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        antigravity.windows.secondary = Some(Metric::value(
-            RateWindow {
-                used_percent: 18.0,
-                window_minutes: Some(10080),
-                reset_description: Some("Resets in 5d 11h".to_string()),
-                ..RateWindow::new(18.0)
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        antigravity.identity = Some(Metric::value(
-            Identity {
-                provider_id: ProviderId::new("antigravity").unwrap(),
-                account_email: Some("alex@example.com".to_string()),
-                account_organization: None,
-                login_method: None,
-                account_id: None,
-                plan: Some("Pro".to_string()),
-            },
-            None,
-            None,
-            Confidence::Exact,
-        ));
-        antigravity.status = codex.status.clone();
-
-        EngineSnapshot {
-            schema_version: 1,
-            generated_at: Timestamp::now(),
-            stale_after_seconds: 900,
-            engine: EngineInfo {
-                version: "0.0.0".to_string(),
-                refreshing: false,
-            },
-            providers: vec![codex, claude, antigravity],
-        }
+        let mut snap = generate_scenario_snapshot(0);
+        snap.generated_at = "2026-10-06T12:48:05Z".parse().unwrap();
+        snap
     }
 
     fn pump_runloop(duration: Duration) {
@@ -365,6 +189,7 @@ mod macos {
         assert_eq!(min_size.height, WINDOW_MIN_HEIGHT);
 
         let view = controller.view();
+        view.set_terminal_launcher(Rc::new(|_args| {}));
         view.apply_settings_page(&sample_app_settings());
         view.apply_settings_page(&sample_provider_settings("codex", "auto", false));
         view.apply_settings_page(&sample_provider_settings("claude", "auto", true));
@@ -377,8 +202,8 @@ mod macos {
 
         // Verify live search field filtering and NSOutlineView row counts.
         let outline = view.sidebar_outline_view().expect("sidebar NSOutlineView");
-        // 10 app panes + 1 Providers header + 4 providers (Codex, Claude, Antigravity, Cursor) = 15 rows
-        assert_eq!(outline.numberOfRows(), 15);
+        // 10 app panes + 1 Providers header + 3 providers (Claude, Codex, Antigravity) = 14 rows
+        assert_eq!(outline.numberOfRows(), 14);
         view.set_search_text("claude");
         // 10 app panes + 1 Providers header + 1 matching provider = 12 rows
         assert_eq!(outline.numberOfRows(), 12);
@@ -386,7 +211,7 @@ mod macos {
         // 10 app panes + 1 Providers header + 1 empty filter state row = 12 rows
         assert_eq!(outline.numberOfRows(), 12);
         view.set_search_text("");
-        assert_eq!(outline.numberOfRows(), 15);
+        assert_eq!(outline.numberOfRows(), 14);
 
         // Verify native AppKit controls across Menu and Provider panes.
         view.select_pane(SettingsPane::Menu);
@@ -444,12 +269,19 @@ mod macos {
             (SettingsPane::About, "about"),
             (SettingsPane::Provider("codex".to_string()), "codex"),
             (SettingsPane::Provider("claude".to_string()), "claude"),
-            (SettingsPane::Provider("cursor".to_string()), "cursor"),
             (
                 SettingsPane::Provider("antigravity".to_string()),
                 "antigravity",
             ),
         ];
+
+        if let Some(base) = &capture_dir {
+            let _ = std::fs::remove_file(base.join("cursor.png"));
+            for mode in ["dark", "light"] {
+                let _ = std::fs::remove_file(base.join(mode).join("cursor.png"));
+                let _ = std::fs::remove_file(base.join(mode).join("cursor-ax.txt"));
+            }
+        }
 
         for (dark, mode_name, appearance_name) in [
             (false, "light", "NSAppearanceNameAqua"),

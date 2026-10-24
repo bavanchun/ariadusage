@@ -210,8 +210,8 @@ fn sidebar_model_filters_sorts_and_computes_accessibility_labels() {
             status_indicator: Some(StatusIndicator::Minor),
         },
         SidebarProviderInput {
-            id: "cursor".to_string(),
-            display_name: "Cursor".to_string(),
+            id: "claude".to_string(),
+            display_name: "Claude".to_string(),
             enabled: false,
             refreshing: false,
             status_indicator: Some(StatusIndicator::None),
@@ -236,7 +236,7 @@ fn sidebar_model_filters_sorts_and_computes_accessibility_labels() {
         model.providers[0].accessibility_label,
         "Codex — Provider service status: Operational"
     );
-    assert_eq!(model.providers[2].accessibility_label, "Cursor — Disabled");
+    assert_eq!(model.providers[2].accessibility_label, "Claude — Disabled");
     assert_eq!(
         provider_accessibility_label("Codex", true, false, Some(StatusIndicator::None)),
         "Codex"
@@ -247,7 +247,7 @@ fn sidebar_model_filters_sorts_and_computes_accessibility_labels() {
     let sorted = SidebarModel::build(&filter, &providers, true);
     assert_eq!(sorted.providers[0].id, "antigravity");
     assert_eq!(sorted.providers[1].id, "codex");
-    assert_eq!(sorted.providers[2].id, "cursor");
+    assert_eq!(sorted.providers[2].id, "claude");
 
     // Enabled-only hides disabled providers.
     filter.enabled_only = true;
@@ -450,7 +450,6 @@ fn pane_models_expose_ariadusage_identity_and_keep_unbacked_controls_disabled() 
         SettingsPane::Plugins,
         SettingsPane::Provider("codex".to_string()),
         SettingsPane::Provider("claude".to_string()),
-        SettingsPane::Provider("cursor".to_string()),
         SettingsPane::Provider("antigravity".to_string()),
     ] {
         assert!(!populated.is_staged_empty_pane());
@@ -559,18 +558,10 @@ fn remaining_app_panes_and_provider_detail_respect_secret_and_header_contracts()
     let selection = SettingsSelection::new(codex_pane);
     let filter = SidebarFilterState::default();
     let sidebar_model = SidebarModel::from_snapshot(&filter, None, true);
-    // Sidebar includes Cursor as disabled alongside Codex, Claude, Antigravity.
-    assert_eq!(sidebar_model.providers.len(), 4);
+    // Sidebar includes only the 3 v1 providers (Codex, Claude, Antigravity).
+    assert_eq!(sidebar_model.providers.len(), 3);
     assert_eq!(sidebar_model.enabled_provider_count, 3);
-    assert_eq!(
-        sidebar_model
-            .providers
-            .iter()
-            .find(|p| p.id == "cursor")
-            .unwrap()
-            .accessibility_label,
-        "Cursor — Disabled"
-    );
+    assert!(!sidebar_model.providers.iter().any(|p| p.id == "cursor"));
 
     let codex_layout = layout_settings_window(
         Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
@@ -607,22 +598,167 @@ fn remaining_app_panes_and_provider_detail_respect_secret_and_header_contracts()
         }
         other => panic!("expected ProviderHeader on row 0, got {other:?}"),
     }
+}
 
-    // Unsupported Cursor provider detail has disabled controls.
-    let cursor_model = pane_model(&SettingsPane::Provider("cursor".to_string()), &state, None);
-    match &cursor_model.sections[0].rows[0].control {
-        FormControl::ProviderHeader {
-            enabled,
-            enable_toggle_supported,
-            enable_setting_id,
-            ..
-        } => {
-            assert!(!*enabled);
-            assert!(!*enable_toggle_supported);
-            assert!(enable_setting_id.is_none());
+#[test]
+fn panes_with_empty_snapshot_contain_no_invented_data_and_hide_empty_rows() {
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot};
+
+    let state = SettingsState::default();
+    let now: jiff::Timestamp = "2026-10-06T12:48:00Z".parse().unwrap();
+    let empty_snapshot = EngineSnapshot::new(
+        now,
+        15,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![
+            ProviderSnapshot::new(ProviderId::new("claude").unwrap(), "Claude", true, "cli"),
+            ProviderSnapshot::new(ProviderId::new("codex").unwrap(), "Codex", true, "web"),
+            ProviderSnapshot::new(
+                ProviderId::new("antigravity").unwrap(),
+                "Antigravity",
+                true,
+                "api",
+            ),
+        ],
+    );
+
+    let forbidden_literals = [
+        "$539.90",
+        "$285.81",
+        "$254.09",
+        "$42.10",
+        "133.0M",
+        "72.0M",
+        "61.0M",
+        "18.4M",
+        "4.2M",
+        "98.1M",
+        "12.3M",
+        "1.1M",
+        "Priced 428",
+        "alex@example.invalid",
+        "All Systems Operational",
+        "Updated just now",
+        "58% left",
+        "81% left",
+        "76% left",
+        "69% left",
+        "91% left",
+        "184.5 left",
+        "2 available",
+        "$38.20",
+        "May 1",
+        "Work Account",
+        "Personal Account",
+        "Cursor",
+    ];
+
+    let all_panes = [
+        SettingsPane::General,
+        SettingsPane::ICloudSync,
+        SettingsPane::UsageSpend,
+        SettingsPane::Notifications,
+        SettingsPane::MenuBar,
+        SettingsPane::Menu,
+        SettingsPane::Advanced,
+        SettingsPane::Hooks,
+        SettingsPane::Plugins,
+        SettingsPane::About,
+        SettingsPane::Provider("codex".to_string()),
+        SettingsPane::Provider("claude".to_string()),
+        SettingsPane::Provider("antigravity".to_string()),
+    ];
+
+    for snap_opt in [None, Some(&empty_snapshot)] {
+        let filter = SidebarFilterState::default();
+        let sidebar = SidebarModel::from_snapshot(&filter, snap_opt, true);
+        let sidebar_dbg = format!("{sidebar:?}");
+        for lit in forbidden_literals {
+            assert!(
+                !sidebar_dbg.contains(lit),
+                "sidebar with empty snapshot contained invented literal {lit:?}"
+            );
         }
-        other => panic!("expected ProviderHeader on Cursor row 0, got {other:?}"),
+
+        for pane in &all_panes {
+            let model = pane_model(pane, &state, snap_opt);
+            let dbg = format!("{model:?}");
+            for lit in forbidden_literals {
+                assert!(
+                    !dbg.contains(lit),
+                    "pane {pane:?} with empty snapshot contained invented literal {lit:?}"
+                );
+            }
+        }
+
+        for pid in ["codex", "claude", "antigravity"] {
+            let model = pane_model(&SettingsPane::Provider(pid.to_string()), &state, snap_opt);
+            let overview_titles: Vec<&str> = model.sections[0]
+                .rows
+                .iter()
+                .map(|r| r.title.as_str())
+                .collect();
+            assert!(!overview_titles.contains(&"Status"));
+            assert!(!overview_titles.contains(&"Account"));
+            assert!(!overview_titles.contains(&"Plan"));
+
+            let updated_row = model.sections[0]
+                .rows
+                .iter()
+                .find(|r| r.title == "Updated")
+                .expect("Updated row");
+            assert_eq!(
+                updated_row.control,
+                FormControl::ReadOnlyValue {
+                    value: "Not fetched yet".to_string()
+                }
+            );
+
+            let usage_rows = &model.sections[1].rows;
+            assert_eq!(usage_rows.len(), 1);
+            assert_eq!(usage_rows[0].title, "No usage yet");
+
+            let creds = model
+                .sections
+                .iter()
+                .find(|s| s.title.as_deref() == Some("Credentials & Accounts"))
+                .expect("Credentials & Accounts section");
+            let cred_titles: Vec<&str> = creds.rows.iter().map(|r| r.title.as_str()).collect();
+            assert!(!cred_titles.contains(&"AriadUsage follows"));
+            assert!(!cred_titles.contains(&"System"));
+        }
     }
+
+    // With the protocol fixture snapshot, provider detail and Usage & Spend panes populate from snapshot data.
+    let populated_snap = ariadusage_protocol::fixture::generate_scenario_snapshot(0);
+    let claude_populated = pane_model(
+        &SettingsPane::Provider("claude".to_string()),
+        &state,
+        Some(&populated_snap),
+    );
+    let claude_overview_titles: Vec<&str> = claude_populated.sections[0]
+        .rows
+        .iter()
+        .map(|r| r.title.as_str())
+        .collect();
+    assert!(claude_overview_titles.contains(&"Status"));
+    assert!(claude_overview_titles.contains(&"Account"));
+    assert!(claude_overview_titles.contains(&"Plan"));
+    let claude_usage_titles: Vec<&str> = claude_populated.sections[1]
+        .rows
+        .iter()
+        .map(|r| r.title.as_str())
+        .collect();
+    assert!(claude_usage_titles.contains(&"Session"));
+    assert!(claude_usage_titles.contains(&"Weekly"));
+    assert!(claude_usage_titles.contains(&"Sonnet"));
+    assert!(claude_usage_titles.contains(&"Plan renews"));
+    assert!(claude_usage_titles.contains(&"Cloud credits"));
+    assert!(claude_usage_titles.contains(&"Cost"));
 }
 
 #[test]
