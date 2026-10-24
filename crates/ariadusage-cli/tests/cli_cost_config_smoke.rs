@@ -36,6 +36,9 @@ fn config_round_trip_providers_toggle_and_set_source_in_temp_store() {
                         json: true,
                         ..HooksOutputArgs::default()
                     },
+                    verbose: true,
+                    json_output: true,
+                    log_level: Some("info".to_owned()),
                 },
             })),
         },
@@ -59,6 +62,7 @@ fn config_round_trip_providers_toggle_and_set_source_in_temp_store() {
                         json: true,
                         ..HooksOutputArgs::default()
                     },
+                    ..ConfigCommonArgs::default()
                 },
             })),
         },
@@ -80,6 +84,7 @@ fn config_round_trip_providers_toggle_and_set_source_in_temp_store() {
                     json: true,
                     ..HooksOutputArgs::default()
                 },
+                ..ConfigCommonArgs::default()
             })),
         },
         &store,
@@ -410,6 +415,51 @@ fn cost_default_roots_resolve_from_home_codex_home_and_claude_config_dir() {
     assert_eq!(custom_json[1]["provider"], "claude");
     assert_eq!(custom_json[1]["totals"]["totalTokens"], 3_700);
 
+    // Also verify Claude Desktop (.claude/projects) and claude-swap (<n>-*/projects) root resolution
+    let desktop_proj = home_dir.join(
+        "Library/Application Support/Claude/local-agent-mode-sessions/ws/.claude/projects/dt",
+    );
+    let swap_proj = home_dir.join(".claude-swap-backup/sessions/1-work/projects/sw");
+    std::fs::create_dir_all(&desktop_proj).expect("create desktop claude projects");
+    std::fs::create_dir_all(&swap_proj).expect("create claude-swap projects");
+    let desktop_line = format!(
+        r#"{{"type":"assistant","timestamp":"{today_ts}","message":{{"id":"msg-dt-1","model":"claude-sonnet-4-5","usage":{{"input_tokens":200,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+    );
+    let swap_line = format!(
+        r#"{{"type":"assistant","timestamp":"{today_ts}","message":{{"id":"msg-sw-1","model":"claude-sonnet-4-5","usage":{{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}}}}"#
+    );
+    std::fs::write(
+        desktop_proj.join("session.jsonl"),
+        format!("{desktop_line}\n"),
+    )
+    .expect("write desktop claude fixture");
+    std::fs::write(swap_proj.join("session.jsonl"), format!("{swap_line}\n"))
+        .expect("write swap claude fixture");
+
+    let claude_with_extras_out = assert_cmd::Command::new(env!("CARGO_BIN_EXE_ariadusage"))
+        .env_clear()
+        .env("HOME", &home_dir)
+        .args([
+            "cost",
+            "--provider",
+            "claude",
+            "--format",
+            "json",
+            "-v",
+            "--log-level",
+            "debug",
+            "--json-output",
+        ])
+        .output()
+        .expect("run ariadusage cost --provider claude with desktop and swap roots");
+    assert!(claude_with_extras_out.status.success());
+    let claude_extras_json: Vec<serde_json::Value> =
+        serde_json::from_slice(&claude_with_extras_out.stdout).expect("parse claude extras json");
+    assert_eq!(claude_extras_json.len(), 1);
+    assert_eq!(claude_extras_json[0]["provider"], "claude");
+    // 1_500 (home) + 500 (xdg) + 250 (desktop) + 150 (claude-swap) = 2_400
+    assert_eq!(claude_extras_json[0]["totals"]["totalTokens"], 2_400);
+
     // Also verify run_cost_command_with_env with only env map populated (no claude_projects_roots or codex_home)
     let mut env_map = BTreeMap::new();
     env_map.insert("HOME".to_owned(), empty_home.to_string_lossy().into_owned());
@@ -425,6 +475,9 @@ fn cost_default_roots_resolve_from_home_codex_home_and_claude_config_dir() {
         &CostCommandArgs {
             provider: Some("both".to_owned()),
             json: true,
+            verbose: true,
+            json_output: true,
+            log_level: Some("debug".to_owned()),
             ..CostCommandArgs::default()
         },
         &CostRunEnvironment {
@@ -433,4 +486,114 @@ fn cost_default_roots_resolve_from_home_codex_home_and_claude_config_dir() {
         },
     );
     assert_eq!(env_code, 0);
+    assert_eq!(
+        ariadusage_cli::config::current_cli_logging_configuration(),
+        Some(ariadusage_cli::config::CliLoggingConfiguration {
+            level: ariadusage_cli::config::CliLogLevel::Debug,
+            json: true,
+        })
+    );
+}
+
+fn proto_unsigned(mut value: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    while value >= 128 {
+        bytes.push(((value & 127) as u8) | 128);
+        value >>= 7;
+    }
+    bytes.push(value as u8);
+    bytes
+}
+
+fn proto_varint(field: u64, value: u64) -> Vec<u8> {
+    [proto_unsigned(field << 3), proto_unsigned(value)].concat()
+}
+
+fn proto_message(field: u64, bytes: &[u8]) -> Vec<u8> {
+    [
+        proto_unsigned((field << 3) | 2),
+        proto_unsigned(bytes.len() as u64),
+        bytes.to_vec(),
+    ]
+    .concat()
+}
+
+fn antigravity_turn_blob(
+    input: u64,
+    output: u64,
+    cache_read: u64,
+    reasoning: u64,
+    seconds: u64,
+) -> Vec<u8> {
+    let usage = [
+        proto_varint(1, 1298),
+        proto_varint(2, input),
+        proto_varint(5, cache_read),
+        proto_varint(9, reasoning),
+        proto_varint(10, output),
+    ]
+    .concat();
+    let mut chat = proto_message(4, &usage);
+    let ts = [proto_varint(1, seconds), proto_varint(2, 250_000_000)].concat();
+    chat.extend_from_slice(&proto_message(9, &proto_message(4, &ts)));
+    chat.extend_from_slice(&proto_message(19, b"fixture-model-a"));
+    chat.extend_from_slice(&proto_message(21, b"Fixture model"));
+    proto_message(1, &chat)
+}
+
+// Rust-added: smoke test driving the binary with a fixture ~/.gemini SQLite database (#73 fixture format) and asserting non-zero tokens
+#[test]
+fn antigravity_cost_binary_reads_gemini_sqlite_fixture() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let home_dir = dir.path().join("home");
+    let conversations_dir = home_dir.join(".gemini/antigravity-cli/conversations");
+    std::fs::create_dir_all(&conversations_dir).expect("create ~/.gemini conversations dir");
+
+    let db_path = conversations_dir.join("session-a.db");
+    let conn = rusqlite::Connection::open(&db_path).expect("open fixture db");
+    conn.execute_batch("CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)")
+        .expect("create gen_metadata table");
+    let now_secs = jiff::Timestamp::now().as_second().max(1) as u64;
+    let blob = antigravity_turn_blob(100, 30, 50, 7, now_secs);
+    conn.execute(
+        "INSERT INTO gen_metadata (idx, data) VALUES (?1, ?2)",
+        rusqlite::params![0i64, blob],
+    )
+    .expect("insert turn blob");
+    drop(conn);
+
+    // 1. JSON output from binary asserts non-zero tokens (100 + 30 + 50 + 7 = 187)
+    let json_out = assert_cmd::Command::new(env!("CARGO_BIN_EXE_ariadusage"))
+        .env_clear()
+        .env("HOME", &home_dir)
+        .args(["cost", "--provider", "antigravity", "--json"])
+        .output()
+        .expect("run ariadusage cost --provider antigravity --json");
+    assert!(
+        json_out.status.success(),
+        "stderr: {:?}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let payloads: Vec<serde_json::Value> =
+        serde_json::from_slice(&json_out.stdout).expect("parse antigravity cost json");
+    assert_eq!(payloads.len(), 1);
+    assert_eq!(payloads[0]["provider"], "antigravity");
+    assert_eq!(payloads[0]["source"], "local");
+    assert_eq!(payloads[0]["historyCoverageIsEstablished"], true);
+    assert_eq!(payloads[0]["sessionTokens"], 187);
+    assert_eq!(payloads[0]["last30DaysTokens"], 187);
+    assert_eq!(payloads[0]["totals"]["totalTokens"], 187);
+    assert!(payloads[0]["error"].is_null());
+
+    // 2. Text output from binary asserts token history header and 187 tokens
+    let text_out = assert_cmd::Command::new(env!("CARGO_BIN_EXE_ariadusage"))
+        .env_clear()
+        .env("HOME", &home_dir)
+        .args(["cost", "--provider", "antigravity", "--no-color"])
+        .output()
+        .expect("run ariadusage cost --provider antigravity --no-color");
+    assert!(text_out.status.success());
+    let text = String::from_utf8_lossy(&text_out.stdout);
+    assert!(text.contains("Antigravity Token History"), "text: {text}");
+    assert!(text.contains("187"), "text: {text}");
 }

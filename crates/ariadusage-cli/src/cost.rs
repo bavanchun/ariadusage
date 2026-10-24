@@ -4,6 +4,8 @@
 // Ported from CodexBar Sources/CodexBarCore/CostProvenance.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/CostUsageSessionBreakdown.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/UsageFormatter.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeConfigPaths.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +27,9 @@ use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 use crate::config::{self, EXIT_ARGS, OutputFormat, parse_output_format};
+
+/// Exit code for general provider/runtime failures (`ExitCode.failure`).
+pub const EXIT_FAILURE: i32 = 1;
 
 /// Exit code for unsupported remote/identified `cost` flags.
 pub const EXIT_COST_UNSUPPORTED: i32 = 21;
@@ -2358,6 +2363,18 @@ pub struct CostCommandArgs {
     #[arg(long = "pretty")]
     pub pretty: bool,
 
+    /// Enable verbose logging
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
+
+    /// Emit machine-readable logs
+    #[arg(long = "json-output")]
+    pub json_output: bool,
+
+    /// Set log level (trace|verbose|debug|info|warning|error|critical)
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+
     /// Disable ANSI colors in text output
     #[arg(long = "no-color")]
     pub no_color: bool,
@@ -2401,6 +2418,19 @@ pub struct CostCommandArgs {
     /// Identified subtotal window end, inclusive Unix milliseconds (UTC)
     #[arg(long = "identified-end")]
     pub identified_end: Option<i64>,
+}
+
+impl CostCommandArgs {
+    /// Returns the resolved [`config::CliLoggingConfiguration`] for these flags.
+    #[must_use]
+    pub fn logging_configuration(&self) -> config::CliLoggingConfiguration {
+        config::CliLoggingConfiguration::from_flags(
+            self.verbose,
+            self.json_output,
+            self.json_only,
+            self.log_level.as_deref(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2451,15 +2481,156 @@ fn resolve_effective_config_path(
     }
 }
 
+/// Discovers Claude Desktop `.claude/projects` roots under
+/// `~/Library/Application Support/Claude/{local-agent-mode-sessions,claude-code-sessions}`
+/// up to depth 4 (`ClaudeDesktopProjectsLocator.roots` in `ClaudeDesktopProjectsLocator.swift`).
+fn claude_desktop_projects_roots(home_directory: &Path) -> Vec<PathBuf> {
+    use std::collections::BTreeSet;
+
+    const SESSION_DIRECTORY_NAMES: &[&str] = &["local-agent-mode-sessions", "claude-code-sessions"];
+    const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
+        ".build",
+        ".git",
+        "build",
+        "DerivedData",
+        "node_modules",
+        "outputs",
+        "target",
+    ];
+    const MAX_DEPTH: usize = 4;
+
+    let claude_app_support = home_directory
+        .join("Library")
+        .join("Application Support")
+        .join("Claude");
+    let session_roots: Vec<PathBuf> = SESSION_DIRECTORY_NAMES
+        .iter()
+        .map(|name| claude_app_support.join(name))
+        .collect();
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    let mut queue: Vec<(PathBuf, usize)> =
+        session_roots.iter().cloned().map(|p| (p, 0usize)).collect();
+    let mut visited: BTreeSet<PathBuf> = session_roots.into_iter().collect();
+    let mut next_index = 0;
+
+    while next_index < queue.len() {
+        let (current, depth) = queue[next_index].clone();
+        next_index += 1;
+
+        let projects = current.join(".claude").join("projects");
+        if projects.is_dir() {
+            roots.push(projects);
+        }
+
+        let audit = current.join("audit.jsonl");
+        if let Ok(meta) = std::fs::symlink_metadata(&audit)
+            && meta.file_type().is_file()
+            && !meta.file_type().is_symlink()
+        {
+            roots.push(audit);
+        }
+
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        children.sort();
+        for child in children {
+            let Some(name) = child.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') || SKIPPED_DIRECTORY_NAMES.contains(&name) {
+                continue;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&child) else {
+                continue;
+            };
+            if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+                continue;
+            }
+            if visited.insert(child.clone()) {
+                queue.push((child, depth + 1));
+            }
+        }
+    }
+
+    roots
+}
+
+/// Discovers `claude-swap` session profile `projects` directories (`<n>-*/projects` where `n > 0`)
+/// under `~/.claude-swap-backup/sessions` (plus `$XDG_DATA_HOME/claude-swap/sessions` or
+/// `~/.local/share/claude-swap/sessions` on Linux), matching `ClaudeConfigPaths.costProjectsRoots`.
+fn claude_swap_projects_roots(owner_home: &Path, env: &BTreeMap<String, String>) -> Vec<PathBuf> {
+    let legacy = owner_home.join(".claude-swap-backup").join("sessions");
+    #[cfg(target_os = "linux")]
+    let swap_roots: Vec<PathBuf> = {
+        let xdg = env
+            .get("XDG_DATA_HOME")
+            .filter(|v| v.starts_with('/'))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| owner_home.join(".local").join("share"));
+        vec![legacy, xdg.join("claude-swap").join("sessions")]
+    };
+    #[cfg(not(target_os = "linux"))]
+    let swap_roots: Vec<PathBuf> = {
+        let _ = env;
+        vec![legacy]
+    };
+
+    let mut roots = Vec::new();
+    for root in swap_roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut slots: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        slots.sort();
+        for slot in slots {
+            let Some(name) = slot.file_name().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if name.starts_with('.') {
+                continue;
+            }
+            let mut parts = name.splitn(2, '-');
+            let Some(prefix) = parts.next() else {
+                continue;
+            };
+            if parts.next().is_none() {
+                continue;
+            }
+            let Ok(number) = prefix.parse::<i64>() else {
+                continue;
+            };
+            if number <= 0 {
+                continue;
+            }
+            let projects = slot.join("projects");
+            if projects.is_dir() {
+                roots.push(projects);
+            }
+        }
+    }
+    roots
+}
+
 /// Resolves default Claude Code `projects` directories using `ClaudeConfigPaths`, matching
 /// `ClaudeConfigPaths.costProjectsRoots`:
-/// - When `CLAUDE_CONFIG_DIR` is non-empty, returns `[<CLAUDE_CONFIG_DIR>/projects]`.
-/// - Otherwise returns `[<HOME>/.config/claude/projects, <HOME>/.claude/projects]`.
+/// - Starts with `<config_root>/projects` (`<CLAUDE_CONFIG_DIR>/projects` or `<HOME>/.claude/projects`).
+/// - When `CLAUDE_CONFIG_DIR` is empty/unset, prepends `<HOME>/.config/claude/projects` and appends
+///   `ClaudeDesktopProjectsLocator.roots` (`~/Library/Application Support/Claude/{local-agent-mode-sessions,claude-code-sessions}`).
+/// - Appends `claude-swap` session slots (`~/.claude-swap-backup/sessions/<n>-*/projects`, plus
+///   `$XDG_DATA_HOME/claude-swap/sessions/<n>-*/projects` on Linux) and deduplicates by resolved symlink.
 #[must_use]
 pub fn resolve_default_claude_projects_roots(
     env: &BTreeMap<String, String>,
     home: Option<&Path>,
 ) -> Vec<PathBuf> {
+    use std::collections::BTreeSet;
+
     use ariadusage_engine::providers::claude::{CLAUDE_CONFIG_DIR_ENV_KEY, ClaudeConfigPaths};
 
     let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
@@ -2467,27 +2638,39 @@ pub fn resolve_default_claude_projects_roots(
         .map(Path::to_path_buf)
         .or_else(|| resolve_effective_home(env))
         .unwrap_or_else(|| PathBuf::from("/"));
-    let config_root = ClaudeConfigPaths::config_root(env, &working_dir, &fallback_home);
-    if ClaudeConfigPaths::resolved_directory_path(
-        env.get(CLAUDE_CONFIG_DIR_ENV_KEY).map(String::as_str),
-        &working_dir,
-    )
-    .is_some()
-    {
-        return vec![config_root.join("projects")];
-    }
     let owner_home = ClaudeConfigPaths::resolved_directory_path(
         env.get("HOME").map(String::as_str),
         &working_dir,
     )
-    .unwrap_or(fallback_home);
-    if owner_home == Path::new("/") {
+    .unwrap_or_else(|| fallback_home.clone());
+    let config_root = ClaudeConfigPaths::config_root(env, &working_dir, &fallback_home);
+    let has_custom_config_dir = ClaudeConfigPaths::resolved_directory_path(
+        env.get(CLAUDE_CONFIG_DIR_ENV_KEY).map(String::as_str),
+        &working_dir,
+    )
+    .is_some();
+
+    if !has_custom_config_dir && owner_home == Path::new("/") {
         return Vec::new();
     }
-    vec![
-        owner_home.join(".config/claude/projects"),
-        config_root.join("projects"),
-    ]
+
+    let mut roots = vec![config_root.join("projects")];
+    if !has_custom_config_dir {
+        roots.insert(0, owner_home.join(".config/claude/projects"));
+        roots.extend(claude_desktop_projects_roots(&owner_home));
+    }
+    if owner_home != Path::new("/") {
+        roots.extend(claude_swap_projects_roots(&owner_home, env));
+    }
+
+    let mut seen: BTreeSet<PathBuf> = BTreeSet::new();
+    roots
+        .into_iter()
+        .filter(|root| {
+            let resolved = std::fs::canonicalize(root).unwrap_or_else(|_| root.clone());
+            seen.insert(resolved)
+        })
+        .collect()
 }
 
 /// Resolves the default Codex home directory (`CODEX_HOME` or `<HOME>/.codex`) via
@@ -2511,6 +2694,7 @@ pub fn run_cost_command_with_env(
     args: &CostCommandArgs,
     env_overrides: &CostRunEnvironment,
 ) -> i32 {
+    config::bootstrap_cli_logging(args.logging_configuration());
     let format = match parse_output_format(args.format.as_deref(), args.json, args.json_only) {
         Ok(f) => f,
         Err(msg) => {
@@ -2624,9 +2808,10 @@ pub fn run_cost_command_with_env(
 
     let mut sections: Vec<String> = Vec::new();
     let mut payloads: Vec<CostPayload> = Vec::new();
+    let mut exit_code: i32 = 0;
 
     for provider in &output_providers {
-        let snapshot = load_local_provider_snapshot(
+        match load_local_provider_snapshot(
             *provider,
             period,
             history_days,
@@ -2634,25 +2819,39 @@ pub fn run_cost_command_with_env(
             &timezone,
             args.refresh,
             env_overrides,
-        );
-        match format {
-            OutputFormat::Text => {
-                sections.push(render_cost_text(
-                    *provider,
-                    &snapshot,
-                    group_by,
-                    use_color,
-                    &timezone,
-                    args.breakdown,
-                ));
-            }
-            OutputFormat::Json => {
-                payloads.push(make_cost_payload(
-                    *provider,
-                    Some(&snapshot),
-                    None,
-                    &timezone,
-                ));
+        ) {
+            Ok(snapshot) => match format {
+                OutputFormat::Text => {
+                    sections.push(render_cost_text(
+                        *provider,
+                        &snapshot,
+                        group_by,
+                        use_color,
+                        &timezone,
+                        args.breakdown,
+                    ));
+                }
+                OutputFormat::Json => {
+                    payloads.push(make_cost_payload(
+                        *provider,
+                        Some(&snapshot),
+                        None,
+                        &timezone,
+                    ));
+                }
+            },
+            Err(err_msg) => {
+                exit_code = EXIT_FAILURE;
+                if format == OutputFormat::Json {
+                    payloads.push(make_cost_payload(
+                        *provider,
+                        None,
+                        Some(&err_msg),
+                        &timezone,
+                    ));
+                } else if !json_only {
+                    eprintln!("Error: {err_msg}");
+                }
             }
         }
     }
@@ -2676,7 +2875,7 @@ pub fn run_cost_command_with_env(
         }
     }
 
-    0
+    exit_code
 }
 
 fn resolve_cost_provider_selection(
@@ -2805,7 +3004,7 @@ fn load_local_provider_snapshot(
     timezone: &TimeZone,
     force_refresh: bool,
     env_overrides: &CostRunEnvironment,
-) -> CostUsageTokenSnapshot {
+) -> Result<CostUsageTokenSnapshot, String> {
     let (since_key, until_key) = period.bounds(now, timezone, None);
     let range = DayRange::from_day_keys(
         since_key.as_str(),
@@ -2841,7 +3040,7 @@ fn load_local_provider_snapshot(
             let engine_report = ledger::build_claude_daily_report(&rows, &range);
             let mut store = CostUsageStore::new(Some(&cache_root));
             let _ = store.save_provider_report("claude", &engine_report, now.as_millisecond());
-            snapshot_from_engine_report(
+            Ok(snapshot_from_engine_report(
                 &engine_report,
                 Vec::new(),
                 Vec::new(),
@@ -2849,7 +3048,7 @@ fn load_local_provider_snapshot(
                 history_days,
                 now,
                 timezone,
-            )
+            ))
         }
         CostProvider::Codex => {
             let persisted_cursor = if force_refresh {
@@ -2878,7 +3077,7 @@ fn load_local_provider_snapshot(
             let mut store = CostUsageStore::new(Some(&cache_root));
             let engine_report = store.save_codex_scan(&scan, &range, now.as_millisecond());
             let (projects, sessions) = build_codex_projects_and_sessions(&scan, &range, timezone);
-            snapshot_from_engine_report(
+            Ok(snapshot_from_engine_report(
                 &engine_report,
                 projects,
                 sessions,
@@ -2886,7 +3085,7 @@ fn load_local_provider_snapshot(
                 history_days,
                 now,
                 timezone,
-            )
+            ))
         }
         CostProvider::Antigravity => {
             use ariadusage_engine::providers::antigravity::{
@@ -2912,23 +3111,16 @@ fn load_local_provider_snapshot(
                 context = context.with_provider_config(provider_cfg);
             }
             let tz_offset_seconds = now.to_zoned(timezone.clone()).offset().seconds();
-            match AntigravityLocalReader::load_token_snapshot(
+            AntigravityLocalReader::load_token_snapshot(
                 &context,
                 now,
                 history_days,
                 tz_offset_seconds,
                 Some(&cache_root),
                 || Ok(()),
-            ) {
-                Ok(ag_snap) => snapshot_from_antigravity_snapshot(ag_snap, period),
-                Err(_) => CostUsageTokenSnapshot {
-                    updated_at: now,
-                    history_days,
-                    history_coverage_is_established: false,
-                    ..CostUsageTokenSnapshot::default()
-                }
-                .reporting(period),
-            }
+            )
+            .map(|ag_snap| snapshot_from_antigravity_snapshot(ag_snap, period))
+            .map_err(|err| err.to_string())
         }
     }
 }

@@ -105,6 +105,7 @@ dependencies = [
  "etcetera",
  "jiff",
  "rpassword",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",

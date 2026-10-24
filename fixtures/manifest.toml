@@ -2561,5 +2561,7 @@ sources = [
     "Sources/CodexBarCore/CostProvenance.swift",
     "Sources/CodexBarCore/CostUsageSessionBreakdown.swift",
     "Sources/CodexBarCore/UsageFormatter.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeConfigPaths.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
