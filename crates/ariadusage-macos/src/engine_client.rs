@@ -149,6 +149,44 @@ fn run<F>(
     }
 }
 
+/// Verifies that `peer_uid` matches `expected_euid`.
+pub fn verify_peer_uid(peer_uid: u32, expected_euid: u32) -> io::Result<()> {
+    if peer_uid == expected_euid {
+        Ok(())
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("untrusted engine socket peer UID {peer_uid} (expected {expected_euid})"),
+        ))
+    }
+}
+
+/// Queries OS-level peer credentials on `stream` and verifies that the server's UID matches
+/// `expected_euid`.
+#[cfg(unix)]
+pub fn verify_server_peer_with_euid(stream: &UnixStream, expected_euid: u32) -> io::Result<u32> {
+    #[cfg(target_os = "macos")]
+    let peer_uid = {
+        let (uid, _) = nix::unistd::getpeereid(stream).map_err(io::Error::other)?;
+        uid.as_raw()
+    };
+
+    #[cfg(target_os = "linux")]
+    let peer_uid = {
+        let cred = rustix::net::sockopt::socket_peercred(stream).map_err(io::Error::other)?;
+        cred.uid.as_raw()
+    };
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    let peer_uid = {
+        let _ = stream;
+        expected_euid
+    };
+
+    verify_peer_uid(peer_uid, expected_euid)?;
+    Ok(peer_uid)
+}
+
 /// Runs one connection until it closes. Sets `*got_snapshot` when any
 /// snapshot arrives.
 fn session<F>(
@@ -161,6 +199,8 @@ where
     F: Fn(EngineEvent),
 {
     let stream = UnixStream::connect(socket_path)?;
+    #[cfg(unix)]
+    verify_server_peer_with_euid(&stream, rustix::process::geteuid().as_raw())?;
     let mut write_half = stream.try_clone()?;
     write_half.set_write_timeout(Some(WRITE_TIMEOUT))?;
     write_message(&mut write_half, &hello())?;
@@ -323,11 +363,55 @@ pub fn resolve_default_socket_path_with(
     Ok(sock)
 }
 
+/// Verifies that `runtime_dir` is an absolute path with no symlink ancestors and that the leaf
+/// directory is owned by `expected_euid` with mode `0700`.
+#[cfg(unix)]
+pub fn verify_trusted_runtime_dir_with_euid(
+    runtime_dir: &std::path::Path,
+    expected_euid: u32,
+) -> Result<(), String> {
+    if !runtime_dir.is_absolute() {
+        return Err("untrusted runtime directory: must be absolute".to_string());
+    }
+    let mut cursor = PathBuf::new();
+    for component in runtime_dir.components() {
+        match component {
+            std::path::Component::RootDir => {
+                cursor.push("/");
+                continue;
+            }
+            std::path::Component::Normal(seg) => cursor.push(seg),
+            std::path::Component::CurDir
+            | std::path::Component::ParentDir
+            | std::path::Component::Prefix(_) => {
+                return Err("untrusted runtime directory: contains relative component".to_string());
+            }
+        }
+        let stat = rustix::fs::lstat(&cursor)
+            .map_err(|_| format!("untrusted runtime directory: {}", cursor.display()))?;
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory {
+            return Err(format!(
+                "untrusted runtime directory (ancestor is not a directory): {}",
+                cursor.display()
+            ));
+        }
+    }
+    let stat = rustix::fs::lstat(runtime_dir)
+        .map_err(|_| format!("untrusted runtime directory: {}", runtime_dir.display()))?;
+    if stat.st_uid != expected_euid || (stat.st_mode & 0o777) != 0o700 {
+        return Err(format!(
+            "untrusted runtime directory ownership or mode: {}",
+            runtime_dir.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Resolves the default macOS engine socket path using `XDG_RUNTIME_DIR` or
 /// `confstr(_CS_DARWIN_USER_TEMP_DIR)` (via `/usr/bin/getconf DARWIN_USER_TEMP_DIR`).
 pub fn default_socket_path() -> Result<PathBuf, String> {
     let xdg = std::env::var("XDG_RUNTIME_DIR").ok();
-    resolve_default_socket_path_with(xdg.as_deref(), || {
+    let sock = resolve_default_socket_path_with(xdg.as_deref(), || {
         let output = std::process::Command::new("/usr/bin/getconf")
             .arg("DARWIN_USER_TEMP_DIR")
             .env_clear()
@@ -342,7 +426,12 @@ pub fn default_socket_path() -> Result<PathBuf, String> {
             return None;
         }
         Some(PathBuf::from(trimmed))
-    })
+    })?;
+    #[cfg(unix)]
+    if let Some(runtime_dir) = sock.parent().and_then(|p| p.parent()) {
+        verify_trusted_runtime_dir_with_euid(runtime_dir, rustix::process::geteuid().as_raw())?;
+    }
+    Ok(sock)
 }
 
 #[cfg(test)]
@@ -370,5 +459,41 @@ mod tests {
         let err = resolve_default_socket_path_with(Some(&long_dir), || None)
             .expect_err("oversized socket path must fail");
         assert!(err.contains("sun_path limit"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_server_peer_checks_uid() {
+        assert!(verify_peer_uid(501, 501).is_ok());
+        assert!(verify_peer_uid(502, 501).is_err());
+
+        let (a, _b) = UnixStream::pair().expect("unix stream pair");
+        let euid = rustix::process::geteuid().as_raw();
+        assert_eq!(
+            verify_server_peer_with_euid(&a, euid).expect("same uid"),
+            euid
+        );
+        assert!(verify_server_peer_with_euid(&a, euid.wrapping_add(1)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_trusted_runtime_dir_checks_ancestors_and_leaf_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let base = std::fs::canonicalize(temp_dir.path()).expect("canonicalize tempdir");
+        let run_dir = base.join("run");
+        std::fs::create_dir_all(&run_dir).expect("create run_dir");
+        std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("set 0700");
+
+        let euid = rustix::process::geteuid().as_raw();
+        assert!(verify_trusted_runtime_dir_with_euid(&run_dir, euid).is_ok());
+        assert!(verify_trusted_runtime_dir_with_euid(&run_dir, euid.wrapping_add(1)).is_err());
+
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&run_dir, &link).expect("symlink");
+        assert!(verify_trusted_runtime_dir_with_euid(&link, euid).is_err());
     }
 }

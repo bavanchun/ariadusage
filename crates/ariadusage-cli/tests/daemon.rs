@@ -130,4 +130,15 @@ mod unix_tests {
         assert!(contents.contains("<string>daemon</string>"));
         assert!(!contents.contains("EnvironmentVariables"));
     }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn launch_agent_commands_return_exit_code_19_on_non_macos() {
+        let bin = cargo_bin("ariadusage");
+        let out = Command::new(&bin)
+            .args(["daemon", "write"])
+            .output()
+            .expect("daemon write on non-macos");
+        assert_eq!(out.status.code(), Some(19));
+    }
 }

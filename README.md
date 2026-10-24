@@ -16,8 +16,9 @@ AriadUsage is in development; there is nothing to install yet. Milestones M1 (Co
 - [System architecture](ARCHITECTURE.md): design, roadmap, decision log and open questions
 - [Contributor rules](AGENTS.md): agent instructions, security rules, brand assets and command reference
 - [IPC v1 protocol](docs/protocol.md): draft wire specification, framing, limits and message definitions
+- [Engine daemon and status CLI](docs/daemon.md): foreground daemon, `status`, LaunchAgent commands and socket path
 - [Privacy](docs/privacy.md): what AriadUsage reads, writes and sends
-- [CLI exit codes](docs/cli-exit-codes.md): stable `ariadusage secret set` exit status meanings
+- [CLI exit codes](docs/cli-exit-codes.md): stable `ariadusage` CLI exit status meanings
 - [Porting rules](docs/porting.md): how CodexBar behavior is carried over and deliberate divergences
 - [Git workflow](docs/git-workflow.md): branch model, commit conventions and release procedures
 - [Brand direction](docs/brand/design-direction.md): design-as-code principles, color tokens and geometry
