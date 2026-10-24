@@ -812,7 +812,7 @@ fn token_refresher_failure_classification_and_login_guidance() {
     );
     assert_eq!(
         invalid_req,
-        CodexRefreshError::InvalidResponse("HTTP 400".to_owned())
+        CodexRefreshError::InvalidResponse("Status 400".to_owned())
     );
 
     let expired = CodexTokenRefresher::refresh_failure_error_for_testing(
