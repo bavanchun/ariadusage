@@ -1991,3 +1991,53 @@ sources = [
     "Tests/CodexBarTests/UsageStoreHighestUsageTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/src/notifications.rs"
+sources = [
+    "Sources/CodexBar/SessionQuotaNotifications.swift",
+    "Sources/CodexBar/UsageStore+SessionQuotaTransition.swift",
+    "Sources/CodexBar/UsageStore+QuotaWarnings.swift",
+    "Sources/CodexBar/LimitResetNotifications.swift",
+    "Sources/CodexBar/UsageStore+LimitResetBoundary.swift",
+    "Sources/CodexBar/UsageStore+LimitResetIdentity.swift",
+    "Sources/CodexBar/UsageStore+LimitResetCelebration.swift",
+    "Sources/CodexBar/Providers/Codex/CodexLimitResetOwnerKey.swift",
+    "Sources/CodexBar/UsageStore+CredentialNotifications.swift",
+    "Sources/CodexBar/ProviderCredentialFailure.swift",
+    "Sources/CodexBar/CodexResetCreditExpiryNotifier.swift",
+    "Sources/CodexBar/MenuCardView+CodexResetCredits.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/tests/notifications.rs"
+sources = [
+    "Tests/CodexBarTests/CodexSessionQuotaFalseRestoreTests.swift",
+    "Tests/CodexBarTests/CodexLimitResetOwnerKeyTests.swift",
+    "Tests/CodexBarTests/LimitResetNotificationTests.swift",
+    "Tests/CodexBarTests/ClaudeExtraWindowQuotaWarningTests.swift",
+    "Tests/CodexBarTests/UsageStoreAccountQuotaWarningTests.swift",
+    "Tests/CodexBarTests/ClaudeCredentialQuotaWarningTests.swift",
+    "Tests/CodexBarTests/ClaudeSyntheticPlaceholderNotificationTests.swift",
+    "Tests/CodexBarTests/CredentialNotificationTests.swift",
+    "Tests/CodexBarTests/UsageStoreSessionQuotaTransitionTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/hooks.rs"
+sources = [
+    "Sources/CodexBarCore/Hooks/HookRunner.swift",
+    "Tests/CodexBarTests/HookRunnerTests.swift",
+    "Tests/CodexBarTests/HookRateLimiterTests.swift",
+    "Tests/CodexBarTests/HookEditorValidationTests.swift",
+    "Tests/CodexBarTests/CLIHookExecutionHelpersTests.swift",
+    "Tests/CodexBarTests/UsageStoreUsageUpdatedHookTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/appkit/notifications.rs"
+sources = ["Sources/CodexBar/AppNotifications.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
