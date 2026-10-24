@@ -33,6 +33,7 @@ use super::credits::{CodexCreditLimitSnapshot, CreditsSnapshot};
 use super::identity::CodexAuthBackedAccount;
 use super::normalizer::WindowSnapshot;
 use super::reconciled::CodexReconciledState;
+use super::status_probe::CodexStatusProbe;
 use super::usage_fetcher::{CodexSpendControlNumber, CreditDetails, RateLimitDetails};
 
 pub const DEFAULT_CODEX_APP_SERVER_ARGS: &[&str] =
@@ -500,6 +501,25 @@ pub struct CodexCLIUsageFetcher {
     pub cancel: CancellationToken,
 }
 
+impl std::fmt::Debug for CodexCLIUsageFetcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexCLIUsageFetcher")
+            .field(
+                "environment",
+                &format!(
+                    "ProcessEnvironment({} entries; redacted)",
+                    self.environment.len()
+                ),
+            )
+            .field("home_dir", &self.home_dir)
+            .field("working_directory", &self.working_directory)
+            .field("initialize_timeout", &self.initialize_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .field("codex_arguments", &self.codex_arguments)
+            .finish()
+    }
+}
+
 impl CodexCLIUsageFetcher {
     pub fn new(
         environment: BTreeMap<String, String>,
@@ -628,6 +648,37 @@ impl CodexCLIUsageFetcher {
         snapshot
             .credits
             .ok_or(CodexCLIFetchError::Usage(UsageError::NoRateLimitsFound))
+    }
+
+    #[must_use]
+    pub fn status_probe(&self, keep_cli_sessions_alive: bool) -> CodexStatusProbe {
+        let mut probe = CodexStatusProbe::new()
+            .with_environment(self.environment.clone())
+            .with_home_dir(self.home_dir.clone())
+            .with_timeout(self.initialize_timeout)
+            .with_keep_cli_sessions_alive(keep_cli_sessions_alive)
+            .with_process_registry(Arc::clone(&self.process_registry))
+            .with_core_launch_gate(Arc::clone(&self.core_launch_gate))
+            .with_cli_launch_gate(Arc::clone(&self.cli_launch_gate));
+        if let Some(exec) = &self.resolved_executable {
+            probe = probe.with_executable(exec.clone());
+        }
+        probe
+    }
+
+    pub async fn load_latest_status(
+        &self,
+        now: Timestamp,
+        keep_cli_sessions_alive: bool,
+    ) -> Result<CodexStatusSnapshot, CodexStatusProbeError> {
+        let call = BrokerCall {
+            interaction: self.interaction,
+            cancel: self.cancel.clone(),
+            request_id: "codex.pty.status".to_owned(),
+        };
+        self.status_probe(keep_cli_sessions_alive)
+            .fetch_with_call(now, call)
+            .await
     }
 
     pub async fn load_latest_cli_account_snapshot(

@@ -78,6 +78,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ if remaining.iter().any(|arg| arg == "app-server") => {
             run_codex_app_server(&mode, &remaining)?
         }
+        "codex-pty-status" => run_codex_pty_status(&mode, &remaining)?,
+        _ if remaining.iter().any(|arg| {
+            arg.to_string_lossy()
+                .contains("experimental_thread_store={type=\"in_memory\",id=\"codexbar-status\"}")
+        }) =>
+        {
+            run_codex_pty_status(&mode, &remaining)?
+        }
         "fake-shell" => run_fake_shell(&mode, remaining).await?,
         _ if mode.starts_with('-') => run_fake_shell(&mode, remaining).await?,
         "print-sid" => {
@@ -1107,5 +1115,195 @@ fn run_codex_app_server(
         eprintln!("unexpected RPC method");
         std::process::exit(65);
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_codex_pty_status(
+    mode: &str,
+    remaining: &[std::ffi::OsString],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs::OpenOptions;
+    use std::io::{Read, Write};
+    use std::path::PathBuf;
+
+    if std::env::var_os("ARIADUSAGE_PROCESS_MARKER").is_none_or(|v| v.is_empty()) {
+        eprintln!("missing ARIADUSAGE_PROCESS_MARKER");
+        std::process::exit(66);
+    }
+
+    let mut all_args = vec![mode.to_owned()];
+    all_args.extend(
+        remaining
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned()),
+    );
+
+    let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+    let fixture: serde_json::Value = codex_home
+        .as_ref()
+        .map(|dir| dir.join("test-pty-status.json"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|raw| serde_json::from_str(&raw).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+
+    let invocation_index = if let Some(dir) = &codex_home {
+        let log_path = fixture
+            .get("record_invocation_path")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| dir.join("test-pty-invocations.jsonl"));
+        let existing_count = std::fs::read_to_string(&log_path)
+            .map(|s| s.lines().count())
+            .unwrap_or(0);
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let mut env_keys: Vec<String> = std::env::vars_os()
+                .map(|(k, _)| k.to_string_lossy().into_owned())
+                .collect();
+            env_keys.sort();
+            let entry = serde_json::json!({
+                "pid": std::process::id(),
+                "args": all_args,
+                "cwd": std::env::current_dir().ok().and_then(|p| p.to_str().map(str::to_owned)),
+                "env_keys": env_keys,
+            });
+            let _ = writeln!(file, "{entry}");
+            let _ = file.flush();
+        }
+        existing_count
+    } else {
+        0
+    };
+
+    if fixture
+        .get("exit_immediately")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        std::process::exit(1);
+    }
+
+    if fixture
+        .get("hang")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+    {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        return Ok(());
+    }
+
+    let mut stdin = std::io::stdin();
+    let mut stdout = std::io::stdout();
+
+    let send_cursor_query = fixture
+        .get("send_cursor_query")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    if send_cursor_query {
+        stdout.write_all(b"\x1b[6n")?;
+        stdout.flush()?;
+    }
+
+    let send_update_prompt = fixture
+        .get("send_update_prompt")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let ignore_update_skip = fixture
+        .get("ignore_update_skip")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+
+    if send_update_prompt {
+        stdout.write_all(
+            b"Update available! 0.60.1 -> 0.61.0\r\nRun bun install -g @openai/codex\r\n1) Update now\r\n2) Skip\r\n",
+        )?;
+        stdout.flush()?;
+    }
+
+    let mut answered_cursor = !send_cursor_query;
+    let mut dismissed_update = !send_update_prompt;
+    let mut status_call_count = 0usize;
+    let mut pending = Vec::new();
+    let mut buf = [0u8; 1024];
+
+    loop {
+        let n = stdin.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        pending.extend_from_slice(&buf[..n]);
+
+        if pending.windows(6).any(|w| w == b"\x1b[1;1R") {
+            answered_cursor = true;
+            if let Some(dir) = &codex_home {
+                let _ = std::fs::write(dir.join("cursor-reply.txt"), b"1;1R");
+            }
+        }
+
+        if !dismissed_update && pending.windows(3).any(|w| w == b"\x1b[B") {
+            if !ignore_update_skip {
+                dismissed_update = true;
+            }
+            if let Some(dir) = &codex_home {
+                let _ = std::fs::write(dir.join("update-skipped.txt"), b"skipped");
+            }
+        }
+
+        if pending.windows(5).any(|w| w == b"/exit") {
+            if let Some(dir) = &codex_home {
+                let _ = std::fs::write(dir.join("exited.txt"), b"exited");
+            }
+            break;
+        }
+
+        if let Some(pos) = pending.windows(7).position(|w| w == b"/status") {
+            if !answered_cursor {
+                stdout.write_all(b"\x1b[6n")?;
+                stdout.flush()?;
+                continue;
+            }
+            pending.drain(..pos + 7);
+            if !dismissed_update {
+                stdout.write_all(
+                    b"Update available! 0.60.1 -> 0.61.0\r\nRun bun install -g @openai/codex\r\n",
+                )?;
+                stdout.flush()?;
+                continue;
+            }
+
+            let default_output = "Model: gpt-5-codex\r\n\u{001b}[38;5;245mCredits:\u{001b}[0m 557 credits\r\n5h limit: [#####     ] 50% left (resets 09:01)\r\nWeekly limit: [########  ] 85% left (resets 04:01 on 27 Nov)\r\n";
+            let output_text = fixture
+                .get("status_outputs_by_invocation")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|arr| arr.get(invocation_index))
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| {
+                    fixture
+                        .get("status_outputs")
+                        .and_then(serde_json::Value::as_array)
+                        .and_then(|arr| arr.get(status_call_count))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .or_else(|| {
+                    fixture
+                        .get("status_output")
+                        .and_then(serde_json::Value::as_str)
+                })
+                .unwrap_or(default_output);
+            status_call_count += 1;
+
+            stdout.write_all(output_text.as_bytes())?;
+            stdout.flush()?;
+
+            if fixture
+                .get("exit_after_status")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+            {
+                break;
+            }
+        }
+    }
+
     Ok(())
 }

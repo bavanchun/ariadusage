@@ -1,4 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexCLIBackendConfiguration.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
@@ -264,27 +265,226 @@ impl CodexCLIBackendConfiguration {
 
 pub struct CodexUIErrorMapper;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CodexUserFacingErrors {
+    pub usage: Option<String>,
+    pub credits: Option<String>,
+    pub dashboard: Option<String>,
+}
+
+impl CodexUserFacingErrors {
+    #[must_use]
+    pub fn credits_hint_copy_text(&self) -> Option<&str> {
+        self.dashboard.as_deref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexProviderErrorDisplay {
+    pub preview: String,
+    pub full: String,
+}
+
 impl CodexUIErrorMapper {
+    pub const CODEX_CLI_NOT_SIGNED_IN_MESSAGE: &'static str =
+        "Codex CLI is not signed in. Run `codex login --device-auth`, then refresh.";
+    pub const CODEX_CLI_MISSING_MESSAGE: &'static str =
+        "Codex CLI missing. Install via `npm i -g @openai/codex` (or bun install) and restart.";
+    pub const CODEX_SESSION_EXPIRED_MESSAGE: &'static str = "Codex session expired. Sign in again.";
+    pub const OPENAI_WEB_INTERRUPTED_MESSAGE: &'static str =
+        "OpenAI web refresh was interrupted. Refresh OpenAI cookies and try again.";
+    pub const OPENAI_WEB_TIMEOUT_MESSAGE: &'static str =
+        "OpenAI web refresh timed out. Refresh OpenAI cookies and try again.";
+    pub const OPENAI_WEB_NETWORK_ERROR_MESSAGE: &'static str = "OpenAI web refresh hit a network error. Check your connection, then refresh OpenAI cookies and try again.";
+    pub const CODEX_TEMPORARILY_UNAVAILABLE_MESSAGE: &'static str =
+        "Codex usage is temporarily unavailable. Try refreshing.";
+
     pub fn user_facing_message(raw: Option<&str>) -> Option<String> {
-        let raw = raw?.trim();
-        if raw.is_empty() {
+        let trimmed = raw?.trim();
+        if trimmed.is_empty() {
             return None;
         }
-        let lower = raw.to_lowercase();
+        let lower = trimmed.to_lowercase();
         if lower.contains("data not available yet")
             || lower.contains("could not parse codex status")
         {
             return Some("Could not parse Codex status; will retry shortly.".to_owned());
         }
-        if lower.contains("codex account authentication required")
+        if Self::is_already_user_facing(&lower) {
+            return Some(trimmed.to_owned());
+        }
+        if let Some(cached) = Self::cached_message(trimmed, &lower) {
+            return Some(cached);
+        }
+        if Self::looks_codex_cli_missing(&lower) {
+            return Some(Self::CODEX_CLI_MISSING_MESSAGE.to_owned());
+        }
+        if Self::looks_codex_cli_login_required(&lower) {
+            return Some(Self::CODEX_CLI_NOT_SIGNED_IN_MESSAGE.to_owned());
+        }
+        if Self::looks_expired(&lower) {
+            return Some(Self::CODEX_SESSION_EXPIRED_MESSAGE.to_owned());
+        }
+        if lower.contains("frame load interrupted") {
+            return Some(Self::OPENAI_WEB_INTERRUPTED_MESSAGE.to_owned());
+        }
+        if Self::looks_openai_web_timeout(&lower) {
+            return Some(Self::OPENAI_WEB_TIMEOUT_MESSAGE.to_owned());
+        }
+        if Self::looks_openai_web_network_error(&lower) {
+            return Some(Self::OPENAI_WEB_NETWORK_ERROR_MESSAGE.to_owned());
+        }
+        if Self::looks_internal_transport(&lower) {
+            return Some(Self::CODEX_TEMPORARILY_UNAVAILABLE_MESSAGE.to_owned());
+        }
+        Some(trimmed.to_owned())
+    }
+
+    pub fn user_facing_error_for_provider(provider_id: &str, raw: Option<&str>) -> Option<String> {
+        if provider_id.eq_ignore_ascii_case("codex") {
+            Self::user_facing_message(raw)
+        } else {
+            raw.map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+        }
+    }
+
+    pub fn user_facing_errors(
+        raw_usage_error: Option<&str>,
+        raw_credits_error: Option<&str>,
+        raw_dashboard_error: Option<&str>,
+        allows_live_adjuncts: bool,
+    ) -> CodexUserFacingErrors {
+        CodexUserFacingErrors {
+            usage: Self::user_facing_message(raw_usage_error),
+            credits: allows_live_adjuncts
+                .then(|| Self::user_facing_message(raw_credits_error))
+                .flatten(),
+            dashboard: allows_live_adjuncts
+                .then(|| Self::user_facing_message(raw_dashboard_error))
+                .flatten(),
+        }
+    }
+
+    pub fn provider_error_display(
+        provider_id: &str,
+        raw: Option<&str>,
+    ) -> Option<CodexProviderErrorDisplay> {
+        let full = raw?.trim();
+        if full.is_empty() {
+            return None;
+        }
+        let preview = Self::user_facing_error_for_provider(provider_id, Some(full))
+            .unwrap_or_else(|| full.to_owned());
+        Some(CodexProviderErrorDisplay {
+            preview,
+            full: full.to_owned(),
+        })
+    }
+
+    fn cached_message(raw: &str, lower: &str) -> Option<String> {
+        const CACHED_MARKER: &str = " Cached values from ";
+        let suffix_idx = raw.find(CACHED_MARKER)?;
+        let raw_prefix = &raw[..suffix_idx];
+        let stamp = Self::cached_stamp(&raw[suffix_idx + CACHED_MARKER.len()..]);
+
+        if lower.starts_with("last codex credits refresh failed:") {
+            let base = Self::user_facing_message(Some(&Self::failure_message(
+                raw_prefix,
+                "Last Codex credits refresh failed:",
+            )))?;
+            return Some(format!("{base} Cached values from {stamp}."));
+        }
+        if lower.starts_with("last openai dashboard refresh failed:") {
+            let base = Self::user_facing_message(Some(&Self::failure_message(
+                raw_prefix,
+                "Last OpenAI dashboard refresh failed:",
+            )))?;
+            return Some(format!("{base} Cached values from {stamp}."));
+        }
+        None
+    }
+
+    fn failure_message(raw_prefix: &str, prefix: &str) -> String {
+        let dropped = if raw_prefix
+            .get(..prefix.len())
+            .is_some_and(|p| p.eq_ignore_ascii_case(prefix))
+        {
+            &raw_prefix[prefix.len()..]
+        } else {
+            raw_prefix
+        };
+        let trimmed = dropped.trim();
+        trimmed.strip_suffix('.').unwrap_or(trimmed).to_owned()
+    }
+
+    fn cached_stamp(after_marker: &str) -> &str {
+        let trimmed = after_marker.trim();
+        trimmed.strip_suffix('.').unwrap_or(trimmed)
+    }
+
+    fn is_already_user_facing(lower: &str) -> bool {
+        lower.contains("openai cookies are for")
+            || lower.contains("sign in to chatgpt.com")
+            || lower.contains("requires a signed-in chatgpt.com session")
+            || lower.contains("managed codex account data is unavailable")
+            || lower.contains("selected managed codex account is unavailable")
+            || lower.contains("codex credits are still loading")
+            || lower.contains("codex account changed; importing browser cookies")
+            || lower.contains("codex cli is not signed in.")
+            || lower.contains("chatgpt rate limits are unavailable.")
+            || lower.contains("codex session expired. sign in again.")
+            || lower.contains("openai web refresh timed out. refresh openai cookies and try again.")
+            || lower.contains(
+                "openai web refresh hit a network error. check your connection, then refresh openai cookies and try again.",
+            )
+            || lower.contains("codex usage is temporarily unavailable. try refreshing.")
+    }
+
+    fn looks_codex_cli_missing(lower: &str) -> bool {
+        lower.contains("codex cli missing")
+            || lower.contains("codex cli not found")
+            || lower.contains("missing cli codex")
+            || lower.contains("missing cli 'codex'")
+            || lower.contains("missing cli \"codex\"")
+            || (lower.contains("binary not found") && lower.contains("codex"))
+    }
+
+    fn looks_codex_cli_login_required(lower: &str) -> bool {
+        lower.contains("codex account authentication required")
             || lower.contains("account authentication required to read rate limits")
             || lower.contains("requiresopenaiauth")
-        {
-            return Some(
-                "Codex CLI is not signed in. Run `codex login --device-auth`, then refresh."
-                    .to_owned(),
-            );
-        }
-        Some(raw.to_owned())
+    }
+
+    fn looks_expired(lower: &str) -> bool {
+        lower.contains("token_expired")
+            || lower.contains("authentication token is expired")
+            || lower.contains("oauth token has expired")
+            || lower.contains("provided authentication token is expired")
+            || lower.contains("please try signing in again")
+            || lower.contains("please sign in again")
+            || (lower.contains("401") && lower.contains("unauthorized"))
+    }
+
+    fn looks_internal_transport(lower: &str) -> bool {
+        lower.contains("codex connection failed")
+            || lower.contains("failed to fetch codex rate limits")
+            || lower.contains("/backend-api/")
+            || lower.contains("content-type=")
+            || lower.contains("body={")
+            || lower.contains("body=")
+            || lower.contains("get https://")
+            || lower.contains("get http://")
+            || lower.contains("returned invalid data")
+    }
+
+    fn looks_openai_web_timeout(lower: &str) -> bool {
+        lower.contains("nsurlerrordomain")
+            && (lower.contains("timed out") || lower.contains("error -1001"))
+    }
+
+    fn looks_openai_web_network_error(lower: &str) -> bool {
+        lower.contains("nsurlerrordomain")
     }
 }
