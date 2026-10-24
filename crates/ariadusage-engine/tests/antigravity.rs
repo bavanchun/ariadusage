@@ -1,6 +1,9 @@
 // Ported from CodexBar Tests/CodexBarTests/AntigravityStatusProbeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AntigravityDeadlineTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/AntigravityLocalSnapshotSelectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/AntigravityPoolDeduplicationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AntigravityQuotaSummaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/AntigravityCLIUsageReportTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AntigravityQuotaSourceParityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AntigravityOAuthCredentialsStoreTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -20,6 +23,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use ariadusage_core::model::{NamedRateWindow, RateWindow, UsageSnapshot};
 use ariadusage_core::pipeline::{
     BoxFuture, FetchContext, FetchError, FetchInteraction, FetchPhase, FetchRuntime, ProviderPlan,
     Sleeper, fetch_outcome,
@@ -32,16 +36,17 @@ use ariadusage_engine::providers::antigravity::{
     ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID, ANTIGRAVITY_OAUTH_STRATEGY_ID,
     ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityConnectionEndpoint, AntigravityModelQuota,
     AntigravityOAuthClient, AntigravityOAuthConfig, AntigravityOAuthCredentials,
-    AntigravityOAuthCredentialsStore, AntigravityOAuthFetchStrategy,
-    AntigravityOfflinePlaceholderStrategy, AntigravityProcessKind, AntigravityProviderPlan,
-    AntigravityProviderPresentation, AntigravityQuotaSummary, AntigravityQuotaSummaryBucket,
-    AntigravityQuotaSummaryGroup, AntigravityRemoteFetchError, AntigravityRemoteUsageFetcher,
-    AntigravitySnapshotSource, AntigravityStatusProbe, AntigravityStatusProbeError,
-    AntigravityStatusSnapshot, AntigravityStrategyConfig, AntigravityUsageDataSource,
-    COMMAND_MODEL_CONFIG_PATH, EndpointRequestSender, EndpointSource, GET_USER_STATUS_PATH,
-    IconWindowsContext, KnownFamily, LocalhostTrustPolicy, MenuBarMetric, MenuBarWindowContext,
-    MenuBarWindowSelection, OperationDeadline, ProcessInfoResult, ProcessScope, RemoteHttpResponse,
-    RequestContext, RequestPayload, idle_window_ids, known_family,
+    AntigravityOAuthCredentialsStore, AntigravityProcessKind, AntigravityProviderPlan,
+    AntigravityProviderPresentation, AntigravityQuotaFamilyVisibility, AntigravityQuotaSummary,
+    AntigravityQuotaSummaryBucket, AntigravityQuotaSummaryGroup, AntigravityRemoteFetchError,
+    AntigravityRemoteUsageFetcher, AntigravitySnapshotSource, AntigravityStatusProbe,
+    AntigravityStatusProbeError, AntigravityStatusSnapshot, AntigravityStrategyConfig,
+    AntigravityUsageDataSource, AntigravityUsagePool, COMMAND_MODEL_CONFIG_PATH,
+    EndpointRequestSender, EndpointSource, GET_USER_STATUS_PATH, IconWindowsContext, KnownFamily,
+    LocalhostTrustPolicy, MenuBarMetric, MenuBarWindowContext, MenuBarWindowSelection,
+    OperationDeadline, ProcessInfoResult, ProcessScope, QUOTA_SUMMARY_PATH, RemoteHttpResponse,
+    RequestContext, RequestPayload, idle_window_ids, known_family_for_window,
+    parse_quota_summary_response_with_source,
 };
 use ariadusage_protocol::ProviderId;
 use ariadusage_protocol::secret::SecretString;
@@ -169,6 +174,7 @@ impl TestEnvironment {
         serde_json::from_slice(&data).unwrap()
     }
 
+    #[cfg(target_os = "linux")]
     fn write_gemini_credentials(&self, access_token: &str, expiry: Timestamp, id_token: &str) {
         let payload = json!({
             "access_token": access_token,
@@ -293,7 +299,7 @@ fn planner_resolves_strategies_across_source_modes() {
 fn planner_resolves_fallback_error_preserving_richer_previous_errors() {
     let not_running = AntigravityStatusProbeError::NotRunning;
     let missing_csrf = AntigravityStatusProbeError::MissingCSRFToken;
-    let api_err = AntigravityStatusProbeError::ApiError("HTTP 500: boom".to_owned());
+    let api_err = AntigravityStatusProbeError::ApiError("HTTP 500".to_owned());
     let parse_err = AntigravityStatusProbeError::ParseFailed("bad json".to_owned());
 
     // When previous is None -> current
@@ -364,12 +370,25 @@ async fn execute_fetch_plan_falls_back_from_app_to_ide_and_validates_selected_ac
     let selected_token =
         AntigravityOAuthCredentialsStore::token_account_value(&selected_creds).unwrap();
 
-    let config = AntigravityStrategyConfig::new(net, env.home(), env.home())
-        .with_selected_token_override(Some(selected_token))
+    // 1. In SourceMode::Auto with selected_token_account, local app returns mismatched email
+    // ("other@example.com") which is rejected by AntigravitySelectedAccountGuard, and IDE
+    // returns matching email ("selected@example.com") which succeeds with source_label "ide".
+    let config = AntigravityStrategyConfig::new(Arc::clone(&net), env.home(), env.home())
+        .with_selected_token_override(Some(selected_token.clone()))
         .with_status_probe_override(|scope, _cx| {
             Box::pin(async move {
                 match scope {
-                    ProcessScope::AppOnly => Err(AntigravityStatusProbeError::NotRunning),
+                    ProcessScope::AppOnly => Ok(AntigravityStatusSnapshot::new(
+                        vec![AntigravityModelQuota::new(
+                            "Gemini 3 Pro",
+                            "gemini-3-pro",
+                            Some(0.9),
+                            None,
+                            None,
+                        )],
+                        Some("other@example.com".to_owned()),
+                        Some("Pro".to_owned()),
+                    )),
                     ProcessScope::IdeOnly => Ok(AntigravityStatusSnapshot::new(
                         vec![AntigravityModelQuota::new(
                             "Gemini 3 Pro",
@@ -387,17 +406,18 @@ async fn execute_fetch_plan_falls_back_from_app_to_ide_and_validates_selected_ac
         });
 
     let plan = AntigravityProviderPlan::new(config);
-    let mut cx = make_fetch_context(SourceMode::Cli);
-    cx.selected_token_account = Some("selected@example.com".to_owned());
+    let mut auto_cx = make_fetch_context(SourceMode::Auto);
+    auto_cx.selected_token_account = Some("selected@example.com".to_owned());
     let outcome = fetch_outcome(
         &ProviderId::new("antigravity").unwrap(),
         &plan,
-        &cx,
+        &auto_cx,
         &NoopSleeper,
     )
     .await;
-    let res = outcome.result.expect("ide strategy should succeed");
+    let res = outcome.result.expect("ide strategy should succeed in Auto");
     assert_eq!(res.strategy_id, ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID);
+    assert_eq!(res.source_label, "ide");
     assert_eq!(
         res.usage
             .primary
@@ -406,6 +426,33 @@ async fn execute_fetch_plan_falls_back_from_app_to_ide_and_validates_selected_ac
             .remaining_percent()
             .round(),
         60.0
+    );
+
+    // 2. In SourceMode::Cli, selected_token_account is ignored by local strategies so AppOnly
+    // succeeds directly with source_label "app" even when its email differs.
+    let mut cli_cx = make_fetch_context(SourceMode::Cli);
+    cli_cx.selected_token_account = Some("selected@example.com".to_owned());
+    let cli_outcome = fetch_outcome(
+        &ProviderId::new("antigravity").unwrap(),
+        &plan,
+        &cli_cx,
+        &NoopSleeper,
+    )
+    .await;
+    let cli_res = cli_outcome
+        .result
+        .expect("app strategy should succeed in Cli");
+    assert_eq!(cli_res.strategy_id, ANTIGRAVITY_APP_LOCAL_STRATEGY_ID);
+    assert_eq!(cli_res.source_label, "app");
+    assert_eq!(
+        cli_res
+            .usage
+            .primary
+            .as_ref()
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        90.0
     );
 }
 
@@ -441,7 +488,7 @@ fn local_source_keeps_saved_oauth_accounts_passive_without_deleting_them() {
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift
+// CodexBar: Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift:10
 fn antigravity_descriptor_ignores_observed_quota_reset_boundaries_and_advertises_oauth() {
     let descriptor = find_by_id_str("antigravity").expect("antigravity descriptor");
     assert_eq!(
@@ -454,7 +501,7 @@ fn antigravity_descriptor_ignores_observed_quota_reset_boundaries_and_advertises
 }
 
 // ============================================================================
-// 2. Deadlines & Localhost Session Tests
+// 2. Deadlines & Localhost Session Tests (AntigravityDeadlineTests.swift)
 // ============================================================================
 
 #[test]
@@ -476,7 +523,7 @@ fn remaining_time_returns_none_when_expired_or_at_deadline() {
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:32
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:31
 fn bounded_step_timeout_caps_to_remaining() {
     let bounded1 = AntigravityStatusProbe::bounded_step_timeout(
         Duration::from_millis(1500),
@@ -492,7 +539,7 @@ fn bounded_step_timeout_caps_to_remaining() {
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:41
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:42
 fn bounded_step_timeout_returns_none_when_expired() {
     assert!(
         AntigravityStatusProbe::bounded_step_timeout(Duration::ZERO, Duration::from_secs(4))
@@ -500,17 +547,160 @@ fn bounded_step_timeout_returns_none_when_expired() {
     );
 }
 
+#[tokio::test]
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:49-161
+async fn process_snapshot_probing_concurrency_identity_and_cancellation() {
+    let processes = vec![
+        ProcessInfoResult {
+            pid: 101,
+            csrf_token: Some("first".to_owned()),
+            extension_port: None,
+            extension_csrf_token: None,
+            command: "language_server --csrf_token first".to_owned(),
+            identity: None,
+        },
+        ProcessInfoResult {
+            pid: 202,
+            csrf_token: Some("second".to_owned()),
+            extension_port: None,
+            extension_csrf_token: None,
+            command: "language_server --csrf_token second".to_owned(),
+            identity: None,
+        },
+    ];
+
+    // 1. Probes candidate processes concurrently while preserving input order (lines 49-83)
+    let started = Arc::new(AtomicUsize::new(0));
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let started_clone = Arc::clone(&started);
+    let notify_clone = Arc::clone(&notify);
+    let snapshots = AntigravityStatusProbe::fetch_process_snapshots(
+        &processes,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        move |process| {
+            let started = Arc::clone(&started_clone);
+            let notify = Arc::clone(&notify_clone);
+            async move {
+                if started.fetch_add(1, Ordering::SeqCst) + 1 == 2 {
+                    notify.notify_waiters();
+                } else {
+                    tokio::time::timeout(Duration::from_millis(250), notify.notified())
+                        .await
+                        .map_err(|_| AntigravityStatusProbeError::TimedOut)?;
+                }
+                if process.pid == 101 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                Ok(AntigravityStatusSnapshot::new(
+                    vec![AntigravityModelQuota::new(
+                        format!("Gemini {}", process.pid),
+                        format!("gemini-{}", process.pid),
+                        Some(0.5),
+                        None,
+                        None,
+                    )],
+                    Some(format!("pid-{}@example.com", process.pid)),
+                    Some("Pro".to_owned()),
+                ))
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        snapshots
+            .iter()
+            .map(|s| s.account_email.as_deref())
+            .collect::<Vec<_>>(),
+        vec![Some("pid-101@example.com"), Some("pid-202@example.com")]
+    );
+
+    // 2. Preserves process transport error identity when all candidates fail (lines 85-103)
+    let err = AntigravityStatusProbe::fetch_process_snapshots(
+        &processes,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        |process| async move {
+            if process.pid == 101 {
+                Err(AntigravityStatusProbeError::TimedOut)
+            } else {
+                Err(AntigravityStatusProbeError::ApiError("HTTP 503".to_owned()))
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        err,
+        AntigravityStatusProbeError::ApiError("HTTP 503".to_owned())
+    );
+
+    // 3. Rejects partial success when cancelled even if pid 101 finishes first (lines 105-133)
+    let err_cancel_1 = AntigravityStatusProbe::fetch_process_snapshots(
+        &processes,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        |process| async move {
+            if process.pid == 101 {
+                Ok(AntigravityStatusSnapshot::new(
+                    vec![AntigravityModelQuota::new(
+                        "Gemini 101",
+                        "gemini-101",
+                        Some(0.5),
+                        None,
+                        None,
+                    )],
+                    Some("pid-101@example.com".to_owned()),
+                    Some("Pro".to_owned()),
+                ))
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Err(AntigravityStatusProbeError::Cancelled)
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err_cancel_1, AntigravityStatusProbeError::Cancelled);
+
+    // 4. Rejects partial success when earlier pid cancels first (lines 135-161)
+    let err_cancel_2 = AntigravityStatusProbe::fetch_process_snapshots(
+        &processes,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        |process| async move {
+            if process.pid == 101 {
+                Err(AntigravityStatusProbeError::Cancelled)
+            } else {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                Ok(AntigravityStatusSnapshot::new(
+                    vec![AntigravityModelQuota::new(
+                        "Gemini 202",
+                        "gemini-202",
+                        Some(0.5),
+                        None,
+                        None,
+                    )],
+                    Some("pid-202@example.com".to_owned()),
+                    Some("Pro".to_owned()),
+                ))
+            }
+        },
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(err_cancel_2, AntigravityStatusProbeError::Cancelled);
+}
+
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:49, 57, 65
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:163, 171, 179
 fn should_abort_scan_when_expired_or_below_minimum_and_not_when_sufficient() {
     let now = Instant::now();
     let past = now.checked_sub(Duration::from_millis(100)).unwrap_or(now);
     assert!(AntigravityStatusProbe::should_abort_endpoint_scan(
         now, past
     ));
+    assert!(AntigravityStatusProbe::should_abort_endpoint_scan(now, now));
 
     let almost = now + Duration::from_millis(10);
-    assert!(AntigravityStatusProbe::should_abort_endpoint_scan(
+    assert!(!AntigravityStatusProbe::should_abort_endpoint_scan(
         now, almost
     ));
 
@@ -521,7 +711,7 @@ fn should_abort_scan_when_expired_or_below_minimum_and_not_when_sufficient() {
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:127, 151, 179
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:241, 265, 293
 fn operation_deadline_timeout_for_next_step_and_caps_step_timeout() {
     let base = Instant::now();
     let offset_ms = Arc::new(AtomicUsize::new(0));
@@ -553,15 +743,15 @@ fn operation_deadline_timeout_for_next_step_and_caps_step_timeout() {
 }
 
 #[tokio::test]
-// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:198
-async fn probe_fails_fast_when_already_past_deadline() {
+// CodexBar: Tests/CodexBarTests/AntigravityDeadlineTests.swift:312, 344
+async fn probe_fails_fast_when_past_deadline_and_reserves_time_for_later_endpoint_probes() {
     let base = Instant::now();
-    let offset_secs = Arc::new(AtomicUsize::new(0));
-    let offset_clone = Arc::clone(&offset_secs);
+    let offset_ms = Arc::new(AtomicUsize::new(0));
+    let offset_clone = Arc::clone(&offset_ms);
     let op = OperationDeadline::with_now_provider(Duration::from_secs(1), move || {
-        base + Duration::from_secs(offset_clone.load(Ordering::SeqCst) as u64)
+        base + Duration::from_millis(offset_clone.load(Ordering::SeqCst) as u64)
     });
-    offset_secs.store(2, Ordering::SeqCst);
+    offset_ms.store(2000, Ordering::SeqCst);
     assert!(op.has_expired());
 
     let calls = Arc::new(AtomicUsize::new(0));
@@ -582,10 +772,56 @@ async fn probe_fails_fast_when_already_past_deadline() {
     .await;
     assert_eq!(result, Err(AntigravityStatusProbeError::TimedOut));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    // Shared deadline reserves time for later endpoint probes (lines 344-396)
+    let shared_offset_ms = Arc::new(AtomicUsize::new(0));
+    let shared_offset_clone = Arc::clone(&shared_offset_ms);
+    let shared_deadline = OperationDeadline::with_now_provider(Duration::from_secs(8), move || {
+        base + Duration::from_millis(shared_offset_clone.load(Ordering::SeqCst) as u64)
+    });
+    shared_offset_ms.store(7200, Ordering::SeqCst); // 0.8s remaining
+
+    let three_candidates = vec![
+        AntigravityConnectionEndpoint::new("https", 62001, "tok", EndpointSource::LanguageServer),
+        AntigravityConnectionEndpoint::new("https", 62002, "tok", EndpointSource::LanguageServer),
+        AntigravityConnectionEndpoint::new("http", 62003, "tok", EndpointSource::ExtensionServer),
+    ];
+    let seen_timeouts = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen_timeouts);
+    let offset_step = Arc::clone(&shared_offset_ms);
+    let resolved = AntigravityStatusProbe::resolve_working_endpoint(
+        &three_candidates,
+        &shared_deadline,
+        move |endpoint, step_timeout| {
+            let seen = Arc::clone(&seen_clone);
+            let offset_step = Arc::clone(&offset_step);
+            async move {
+                seen.lock()
+                    .unwrap()
+                    .push((endpoint.port, step_timeout.as_secs_f64()));
+                offset_step.fetch_add(
+                    (step_timeout.as_secs_f64() * 1000.0) as usize,
+                    Ordering::SeqCst,
+                );
+                if endpoint.port == 62003 {
+                    Ok(())
+                } else {
+                    Err(AntigravityStatusProbeError::TimedOut)
+                }
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolved, three_candidates[2]);
+    let timeouts = seen_timeouts.lock().unwrap();
+    assert_eq!(timeouts.len(), 3);
+    assert!(timeouts[0].1 < 0.35);
+    assert!(timeouts[1].1 < 0.35);
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:318
+// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:307-343
 fn localhost_trust_policy_accepts_only_loopback_hosts() {
     assert!(LocalhostTrustPolicy::should_accept_server_trust(
         "127.0.0.1"
@@ -593,12 +829,51 @@ fn localhost_trust_policy_accepts_only_loopback_hosts() {
     assert!(LocalhostTrustPolicy::should_accept_server_trust(
         "localhost"
     ));
-    assert!(LocalhostTrustPolicy::should_accept_server_trust("::1"));
+    assert!(LocalhostTrustPolicy::should_accept_server_trust(
+        "LOCALHOST"
+    ));
     assert!(!LocalhostTrustPolicy::should_accept_server_trust(
         "example.com"
     ));
     assert!(!LocalhostTrustPolicy::should_accept_server_trust(
+        "192.168.1.1"
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust("::1"));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust(""));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust(
+        "127.0.0.2"
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust(
+        "localhost.evil.com"
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust(
         "127.0.0.1.evil.com"
+    ));
+
+    assert!(LocalhostTrustPolicy::should_accept_server_trust_challenge(
+        "NSURLAuthenticationMethodServerTrust",
+        "127.0.0.1",
+        true
+    ));
+    assert!(LocalhostTrustPolicy::should_accept_server_trust_challenge(
+        "NSURLAuthenticationMethodServerTrust",
+        "localhost",
+        true
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust_challenge(
+        "NSURLAuthenticationMethodHTTPBasic",
+        "127.0.0.1",
+        true
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust_challenge(
+        "NSURLAuthenticationMethodServerTrust",
+        "127.0.0.1",
+        false
+    ));
+    assert!(!LocalhostTrustPolicy::should_accept_server_trust_challenge(
+        "NSURLAuthenticationMethodServerTrust",
+        "example.com",
+        true
     ));
 }
 
@@ -652,7 +927,7 @@ async fn concurrent_requests_to_closed_localhost_port_all_throw_without_teardown
 // ============================================================================
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityGeminiRenameTests.swift:10-35
+// CodexBar: Tests/CodexBarTests/AntigravityGeminiRenameTests.swift:10-46
 fn gemini_rename_process_classification() {
     let gemini = "/applications/gemini.app/contents/resources/bin/language_server --csrf_token abc";
     assert_eq!(
@@ -715,26 +990,23 @@ fn antigravity_model_labels_and_retired_flash_canonicalization() {
         "Custom enterprise label"
     );
 
-    assert_eq!(
-        AntigravityStatusSnapshot::canonical_model_id("gemini-3.6-flash"),
-        "gemini-3.7-flash"
-    );
-    assert_eq!(
-        AntigravityStatusSnapshot::canonical_model_id("gemini-3.6-flash-high"),
-        "gemini-3.7-flash"
-    );
-    assert_eq!(
-        AntigravityStatusSnapshot::canonical_model_id("GEMINI-3.6-FLASH"),
-        "gemini-3.7-flash"
-    );
-    assert_eq!(
-        AntigravityStatusSnapshot::canonical_model_id("gemini-3.5-flash-mid"),
-        "gemini-3.7-flash"
-    );
-    assert_eq!(
-        AntigravityStatusSnapshot::canonical_model_id("gemini-3-flash-agent"),
-        "gemini-3.7-flash"
-    );
+    for retired in [
+        "gemini-3.6-flash",
+        "gemini-3.6-flash-low",
+        "gemini-3.6-flash-medium",
+        "gemini-3.6-flash-high",
+        "gemini-3.5-flash-extra-low",
+        "gemini-3.5-flash-low",
+        "gemini-3.5-flash-mid",
+        "gemini-3.5-flash-high",
+        "gemini-3-flash-agent",
+        "GEMINI-3.6-FLASH",
+    ] {
+        assert_eq!(
+            AntigravityStatusSnapshot::canonical_model_id(retired),
+            "gemini-3.7-flash"
+        );
+    }
     assert_eq!(
         AntigravityStatusSnapshot::canonical_model_id("gemini-3.7-flash"),
         "gemini-3.7-flash"
@@ -779,7 +1051,7 @@ fn antigravity_compact_fallback_and_reset_proximity() {
     assert_eq!(usage.primary.as_ref().unwrap().window_minutes, None);
     assert_eq!(usage.primary.as_ref().unwrap().resets_at, Some(reset_time));
 
-    // Local unclassified model remains available as compact fallback
+    // Local unclassified model remains available as compact fallback (lines 28-52)
     let local_unclassified = AntigravityStatusSnapshot::new(
         vec![AntigravityModelQuota::new(
             "Experimental Model",
@@ -819,7 +1091,7 @@ fn antigravity_compact_fallback_and_reset_proximity() {
         vec![64]
     );
 
-    // Remote unclassified model remains detail only
+    // Remote unclassified model remains detail only (lines 55-73)
     let remote_unclassified = local_unclassified
         .clone()
         .with_source(AntigravitySnapshotSource::Remote);
@@ -837,7 +1109,7 @@ fn antigravity_compact_fallback_and_reset_proximity() {
         vec!["MODEL_PLACEHOLDER_NEW"]
     );
 
-    // Fully unused local model remains available as compact fallback
+    // Fully unused local model remains available as compact fallback (lines 76-92)
     let unused_local = AntigravityStatusSnapshot::new(
         vec![AntigravityModelQuota::new(
             "Experimental Model",
@@ -864,12 +1136,12 @@ fn antigravity_compact_fallback_and_reset_proximity() {
 // ============================================================================
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:7-293
+// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:25-564
 fn status_probe_command_line_csrf_ports_and_candidate_endpoints() {
     let antigravity = "/applications/antigravity.app/contents/resources/app/extensions/antigravity/bin/language_server_macos_arm --app_data_dir antigravity --csrf_token abc";
     assert!(AntigravityStatusProbe::is_antigravity_language_server_command_line(antigravity));
 
-    let cli_daemon = "/users/test/.antigravity-cli/bin/language_server_macos_arm --server_port 50412 --random_port=false --workspace_id=file_users_test_workspace";
+    let cli_daemon = "node /Users/test/.gemini/antigravity-cli/build/mcp-server.cjs --app_data_dir /Users/test/.gemini/antigravity";
     assert!(AntigravityStatusProbe::is_antigravity_language_server_command_line(cli_daemon));
 
     let other_app = "/applications/cursor.app/contents/resources/app/extensions/cursor/bin/language_server_macos_arm --csrf_token abc";
@@ -900,11 +1172,13 @@ fn status_probe_command_line_csrf_ports_and_candidate_endpoints() {
         None
     );
 
-    // Scoped process matching
+    // Scoped process matching (lines 79-215)
     let ps_output = "\
 101 /Applications/Antigravity.app/Contents/Resources/bin/language_server --csrf_token app-token --extension_server_port 42100
 202 /Users/test/.vscode/extensions/antigravity/bin/language_server --app_data_dir antigravity --csrf_token ide-token
-303 /Users/test/.antigravity-cli/bin/language_server_macos_arm --server_port 51170 --csrf_token cli-token
+303 /Users/test/.gemini/antigravity-cli/bin/language_server_macos_arm --server_port 51170 --csrf_token cli-token
+404 /usr/bin/helper --workspace antigravity-cli
+505 /usr/bin/helper --workspace language_server
 ";
     let app_only = AntigravityStatusProbe::process_infos_from_process_list_output(
         ps_output,
@@ -941,7 +1215,7 @@ fn status_probe_command_line_csrf_ports_and_candidate_endpoints() {
 101 /Applications/Cursor.app/Contents/Resources/app/bin/language_server --csrf_token cursor-token
 202 /Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --app_data_dir antigravity
 303 /Applications/Antigravity.app/Contents/Resources/app/extensions/antigravity/bin/language_server_macos_arm --app_data_dir antigravity --csrf_token first-token --extension_server_port 42100 --extension_server_csrf_token ext-first
-404 /Users/test/.antigravity-cli/bin/language_server_macos_arm --server_port 51170 --csrf_token second-token
+404 /Users/test/.gemini/antigravity-cli/bin/language_server_macos_arm --server_port 51170 --csrf_token second-token
 ";
     let matches = AntigravityStatusProbe::process_infos_from_process_list_output(
         ps_multi,
@@ -972,51 +1246,63 @@ fn status_probe_command_line_csrf_ports_and_candidate_endpoints() {
         Err(AntigravityStatusProbeError::MissingCSRFToken)
     );
 
-    // Connection candidates
+    // Connection candidates (lines 346-470)
     let candidates = AntigravityStatusProbe::connection_candidates(
-        &[51170, 61775],
-        Some("lang-token"),
-        Some(61775),
-        Some("ext-token"),
+        &[64440, 64441],
+        Some("language-token"),
+        Some(64432),
+        Some("extension-token"),
     );
     assert_eq!(
         candidates,
         vec![
             AntigravityConnectionEndpoint::new(
                 "https",
-                51170,
-                "lang-token",
+                64440,
+                "language-token",
                 EndpointSource::LanguageServer
             ),
             AntigravityConnectionEndpoint::new(
                 "https",
-                61775,
-                "ext-token",
+                64441,
+                "language-token",
+                EndpointSource::LanguageServer
+            ),
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "extension-token",
+                EndpointSource::ExtensionServer
+            ),
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "language-token",
                 EndpointSource::ExtensionServer
             ),
         ]
     );
 
     let ext_only = AntigravityStatusProbe::connection_candidates(
-        &[51170],
+        &[64440],
         None,
-        Some(61775),
-        Some("ext-token"),
+        Some(64432),
+        Some("extension-token"),
     );
     assert_eq!(
         ext_only,
         vec![AntigravityConnectionEndpoint::new(
-            "https",
-            61775,
-            "ext-token",
+            "http",
+            64432,
+            "extension-token",
             EndpointSource::ExtensionServer
         )]
     );
 
     let reused_csrf = AntigravityStatusProbe::connection_candidates(
-        &[51170, 61775],
-        Some("lang-token"),
-        Some(61775),
+        &[64432, 64440],
+        Some("language-token"),
+        Some(64432),
         None,
     );
     assert_eq!(
@@ -1024,44 +1310,127 @@ fn status_probe_command_line_csrf_ports_and_candidate_endpoints() {
         vec![
             AntigravityConnectionEndpoint::new(
                 "https",
-                51170,
-                "lang-token",
+                64432,
+                "language-token",
                 EndpointSource::LanguageServer
             ),
             AntigravityConnectionEndpoint::new(
                 "https",
-                61775,
-                "lang-token",
+                64440,
+                "language-token",
+                EndpointSource::LanguageServer
+            ),
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "language-token",
                 EndpointSource::ExtensionServer
             ),
         ]
     );
 
     let empty_csrf =
-        AntigravityStatusProbe::connection_candidates(&[51170], Some(""), Some(61775), None);
+        AntigravityStatusProbe::connection_candidates(&[50412], Some(""), Some(64432), None);
     assert_eq!(
         empty_csrf,
         vec![AntigravityConnectionEndpoint::new(
             "https",
-            51170,
+            50412,
             "",
             EndpointSource::LanguageServer
         )]
     );
 
-    // request_endpoints deduplicates while keeping primary first
-    let primary = AntigravityConnectionEndpoint::new(
+    // request_endpoints deduplicates while keeping primary first (lines 473-564)
+    let resolved_lang = AntigravityConnectionEndpoint::new(
         "https",
-        51170,
-        "lang-token",
+        64440,
+        "language-token",
         EndpointSource::LanguageServer,
     );
-    let req_endpoints = AntigravityStatusProbe::request_endpoints(&primary, &candidates);
-    assert_eq!(req_endpoints, candidates);
+    let req_endpoints_1 = AntigravityStatusProbe::request_endpoints(
+        &resolved_lang,
+        &AntigravityStatusProbe::connection_candidates(
+            &[64440],
+            Some("language-token"),
+            Some(64432),
+            Some("extension-token"),
+        ),
+    );
+    assert_eq!(
+        req_endpoints_1,
+        vec![
+            resolved_lang.clone(),
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "extension-token",
+                EndpointSource::ExtensionServer
+            ),
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "language-token",
+                EndpointSource::ExtensionServer
+            ),
+        ]
+    );
+
+    let resolved_ext = AntigravityConnectionEndpoint::new(
+        "http",
+        64432,
+        "extension-token",
+        EndpointSource::ExtensionServer,
+    );
+    let req_endpoints_2 = AntigravityStatusProbe::request_endpoints(
+        &resolved_ext,
+        &AntigravityStatusProbe::connection_candidates(
+            &[64440],
+            Some("language-token"),
+            Some(64432),
+            Some("extension-token"),
+        ),
+    );
+    assert_eq!(
+        req_endpoints_2,
+        vec![
+            resolved_ext,
+            AntigravityConnectionEndpoint::new(
+                "http",
+                64432,
+                "language-token",
+                EndpointSource::ExtensionServer
+            ),
+            resolved_lang.clone(),
+        ]
+    );
+
+    let resolved_ext_reused = AntigravityConnectionEndpoint::new(
+        "http",
+        64432,
+        "language-token",
+        EndpointSource::ExtensionServer,
+    );
+    let req_endpoints_3 =
+        AntigravityStatusProbe::request_endpoints(&resolved_ext_reused, &reused_csrf);
+    assert_eq!(
+        req_endpoints_3,
+        vec![
+            resolved_ext_reused,
+            AntigravityConnectionEndpoint::new(
+                "https",
+                64432,
+                "language-token",
+                EndpointSource::LanguageServer
+            ),
+            resolved_lang,
+        ]
+    );
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:295-315, 1615-1642
+// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:267-305, 1615-1642
+// CodexBar: Tests/CodexBarTests/AntigravityLocalSnapshotSelectionTests.swift:5-53
 fn local_snapshot_selection_and_reachable_probe_errors() {
     let cli_snapshot = AntigravityStatusSnapshot::new(
         vec![AntigravityModelQuota::new(
@@ -1090,10 +1459,81 @@ fn local_snapshot_selection_and_reachable_probe_errors() {
     );
 
     let preferred =
-        AntigravityStatusProbe::preferred_local_snapshot(&[cli_snapshot, ide_snapshot]).unwrap();
+        AntigravityStatusProbe::preferred_local_snapshot(&[cli_snapshot, ide_snapshot.clone()])
+            .unwrap();
     assert_eq!(preferred.account_email.as_deref(), Some("user@example.com"));
     assert_eq!(preferred.account_plan.as_deref(), Some("Pro"));
     assert_eq!(preferred.model_quotas.len(), 2);
+
+    // Local snapshot score prefers quota summary over raw model rows (AntigravityStatusProbeTests.swift:267-305)
+    let summary_snapshot = AntigravityStatusSnapshot::new(
+        Vec::new(),
+        Some("user@example.com".to_owned()),
+        Some("Pro".to_owned()),
+    )
+    .with_quota_summary(Some(AntigravityQuotaSummary {
+        raw_description: None,
+        groups: vec![AntigravityQuotaSummaryGroup {
+            key: "gemini".to_owned(),
+            label: "Gemini Models".to_owned(),
+            buckets: vec![AntigravityQuotaSummaryBucket {
+                bucket_id: "gemini-5h".to_owned(),
+                display_name: Some("5-Hour".to_owned()),
+                window: Some("5h".to_owned()),
+                disabled: false,
+                remaining_fraction: Some(0.5),
+                reset_time: None,
+                reset_description: None,
+            }],
+        }],
+    }));
+    assert!(
+        AntigravityStatusProbe::local_snapshot_score(&summary_snapshot)
+            > AntigravityStatusProbe::local_snapshot_score(&ide_snapshot)
+    );
+
+    // AntigravityLocalSnapshotSelectionTests.swift:6-47: selected account wins before quota richness
+    let selected_account = AntigravityStatusSnapshot::new(
+        vec![AntigravityModelQuota::new(
+            "Gemini 3 Pro Low",
+            "gemini-3-pro-low",
+            Some(0.9),
+            None,
+            None,
+        )],
+        Some("selected@example.com".to_owned()),
+        Some("Pro".to_owned()),
+    );
+    let richer_other_account = AntigravityStatusSnapshot::new(
+        Vec::new(),
+        Some("other@example.com".to_owned()),
+        Some("Ultra".to_owned()),
+    )
+    .with_quota_summary(Some(AntigravityQuotaSummary {
+        raw_description: None,
+        groups: vec![AntigravityQuotaSummaryGroup {
+            key: "gemini".to_owned(),
+            label: "Gemini Models".to_owned(),
+            buckets: vec![AntigravityQuotaSummaryBucket {
+                bucket_id: "gemini-5h".to_owned(),
+                display_name: Some("Five Hour Limit".to_owned()),
+                window: None,
+                disabled: false,
+                remaining_fraction: Some(0.9),
+                reset_time: None,
+                reset_description: None,
+            }],
+        }],
+    }));
+    let selected_match = AntigravityStatusProbe::preferred_local_snapshot_matching(
+        &[richer_other_account, selected_account],
+        Some(" SELECTED@example.com "),
+    )
+    .unwrap();
+    assert_eq!(
+        selected_match.account_email.as_deref(),
+        Some("selected@example.com")
+    );
 
     assert!(AntigravityStatusProbe::is_reachable_probe_error(
         &AntigravityStatusProbeError::ApiError("HTTP 403: Forbidden".to_owned())
@@ -1123,191 +1563,162 @@ fn local_snapshot_selection_and_reachable_probe_errors() {
 }
 
 #[tokio::test]
-// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:326-795
+// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:567-790
 async fn probe_endpoint_resolution_process_snapshots_and_user_status_fallback() {
-    let candidates = vec![
-        AntigravityConnectionEndpoint::new(
-            "https",
-            51170,
-            "lang-token",
-            EndpointSource::LanguageServer,
-        ),
-        AntigravityConnectionEndpoint::new(
-            "https",
-            61775,
-            "ext-token",
-            EndpointSource::ExtensionServer,
-        ),
-    ];
-
-    // Working endpoint prefers reachable HTTP error over unreachable first candidate
+    let candidates = AntigravityStatusProbe::connection_candidates(
+        &[64440, 64441],
+        Some("language-token"),
+        Some(64432),
+        Some("extension-token"),
+    );
     let op = OperationDeadline::new(Duration::from_secs(4));
-    let resolved = AntigravityStatusProbe::resolve_working_endpoint(
+
+    // 1. Endpoint resolver prefers successful https language server candidate (lines 614-632)
+    let resolved_first = AntigravityStatusProbe::resolve_working_endpoint(
         &candidates,
         &op,
-        |candidate, _| async move {
-            if candidate.port == 51170 {
-                Err(AntigravityStatusProbeError::ApiError(
-                    "Connection refused".to_owned(),
-                ))
+        |endpoint, _| async move {
+            if endpoint.scheme == "https" && endpoint.port == 64440 {
+                Ok(())
             } else {
                 Err(AntigravityStatusProbeError::ApiError(
-                    "HTTP 403: Forbidden".to_owned(),
+                    "unreachable".to_owned(),
                 ))
             }
         },
     )
     .await
     .unwrap();
-    assert_eq!(resolved, candidates[1]);
+    assert_eq!(resolved_first, candidates[0]);
 
-    // Working endpoint propagates timeout when every candidate times out
-    let timed_out =
-        AntigravityStatusProbe::resolve_working_endpoint(&candidates, &op, |_, _| async move {
-            Err(AntigravityStatusProbeError::TimedOut)
-        })
-        .await;
-    assert_eq!(timed_out, Err(AntigravityStatusProbeError::TimedOut));
-
-    // fetch_process_snapshots continues after per-process timeout when overall deadline remains
-    let processes = vec![
-        ProcessInfoResult {
-            pid: 101,
-            csrf_token: Some("first".to_owned()),
-            extension_port: None,
-            extension_csrf_token: None,
-            command: "language_server --csrf_token first".to_owned(),
-            identity: None,
-        },
-        ProcessInfoResult {
-            pid: 202,
-            csrf_token: Some("second".to_owned()),
-            extension_port: None,
-            extension_csrf_token: None,
-            command: "language_server --csrf_token second".to_owned(),
-            identity: None,
-        },
-    ];
-    let snapshots = AntigravityStatusProbe::fetch_process_snapshots(
-        &processes,
-        &OperationDeadline::new(Duration::from_secs(4)),
-        |process| async move {
-            if process.pid == 101 {
-                Err(AntigravityStatusProbeError::TimedOut)
+    // 2. Endpoint resolver falls back to extension server after https candidates (lines 635-653)
+    let resolved_ext = AntigravityStatusProbe::resolve_working_endpoint(
+        &candidates,
+        &op,
+        |endpoint, _| async move {
+            if endpoint.scheme == "http"
+                && endpoint.port == 64432
+                && endpoint.source == EndpointSource::ExtensionServer
+            {
+                Ok(())
             } else {
-                Ok(AntigravityStatusSnapshot::new(
-                    vec![AntigravityModelQuota::new(
-                        "Gemini 3 Pro",
-                        "gemini-3-pro",
-                        Some(0.75),
-                        None,
-                        None,
-                    )],
-                    Some("user@example.com".to_owned()),
-                    Some("Pro".to_owned()),
+                Err(AntigravityStatusProbeError::ApiError(
+                    "unreachable".to_owned(),
                 ))
             }
         },
     )
     .await
     .unwrap();
-    assert_eq!(snapshots.len(), 1);
-    assert_eq!(
-        snapshots[0].account_email.as_deref(),
-        Some("user@example.com")
-    );
+    assert_eq!(resolved_ext, candidates[2]);
 
-    // make_parsed_request falls back to next endpoint when first payload fails parsing
+    // 3. Endpoint resolver falls back to alternate extension token after primary token fails (lines 655-675)
+    let resolved_alt = AntigravityStatusProbe::resolve_working_endpoint(
+        &candidates,
+        &op,
+        |endpoint, _| async move {
+            if endpoint.source == EndpointSource::ExtensionServer
+                && endpoint.csrf_token == "language-token"
+            {
+                Ok(())
+            } else {
+                Err(AntigravityStatusProbeError::ApiError(
+                    "unreachable".to_owned(),
+                ))
+            }
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(resolved_alt, candidates[3]);
+
+    // 4. Parsed request retries later endpoints after API-level error payload (lines 567-611)
     let context = RequestContext {
-        endpoints: candidates.clone(),
+        endpoints: vec![candidates[0].clone(), candidates[2].clone()],
         timeout: Duration::from_secs(4),
     };
-    let send_parse_fallback: EndpointRequestSender = Arc::new(|_payload, endpoint, _timeout| {
+    let send_api_retry: EndpointRequestSender = Arc::new(|_payload, endpoint, _timeout| {
         Box::pin(async move {
-            if endpoint.port == 51170 {
-                Ok(b"{}".to_vec())
+            if endpoint.port == 64440 {
+                Ok(br#"{"code":16}"#.to_vec())
             } else {
-                Ok(br#"{"userStatus":{"email":"user@example.com","cascadeModelConfigData":{"clientModelConfigs":[]}}}"#.to_vec())
+                Ok(br#"{"code":0,"userStatus":{"email":"test@example.com","cascadeModelConfigData":{"clientModelConfigs":[]}}}"#.to_vec())
             }
         })
     });
     let parsed_snap = AntigravityStatusProbe::make_parsed_request(
         RequestPayload::new(GET_USER_STATUS_PATH, json!({})),
         &context,
-        &OperationDeadline::new(Duration::from_secs(4)),
-        send_parse_fallback,
+        &op,
+        send_api_retry,
         AntigravityStatusProbe::parse_user_status_response,
     )
     .await
     .unwrap();
     assert_eq!(
         parsed_snap.account_email.as_deref(),
-        Some("user@example.com")
+        Some("test@example.com")
     );
 
-    // fetch_snapshot falls back to CommandModelConfigs when GetUserStatus fails
-    let seen_paths = Arc::new(Mutex::new(Vec::new()));
-    let seen_paths_clone = Arc::clone(&seen_paths);
-    let send_cmd_fallback: EndpointRequestSender = Arc::new(move |payload, _endpoint, _timeout| {
-        let seen = Arc::clone(&seen_paths_clone);
-        Box::pin(async move {
-            seen.lock().unwrap().push(payload.path.clone());
-            if payload.path == GET_USER_STATUS_PATH {
-                Ok(b"{}".to_vec())
-            } else {
-                Ok(br#"{"clientModelConfigs":[{"label":"Gemini 3 Pro","modelOrAlias":{"model":"gemini-3-pro"},"quotaInfo":{"remainingFraction":0.5}}]}"#.to_vec())
+    // 5. Parses user status response & prefers userTier name over generic planInfo (lines 678-790)
+    let user_tier_json = br#"{
+        "code": 0,
+        "userStatus": {
+            "email": "ultra@example.com",
+            "userTier": {
+                "id": "google_ai_ultra",
+                "name": "Google AI Ultra",
+                "description": "Ultra tier"
+            },
+            "planStatus": {
+                "planInfo": {
+                    "planName": "Pro"
+                }
+            },
+            "cascadeModelConfigData": {
+                "clientModelConfigs": []
             }
-        })
-    });
-    let single_ctx = RequestContext {
-        endpoints: vec![candidates[0].clone()],
-        timeout: Duration::from_secs(4),
-    };
-    let snap = AntigravityStatusProbe::fetch_snapshot(
-        &single_ctx,
-        &OperationDeadline::new(Duration::from_secs(4)),
-        send_cmd_fallback,
-    )
-    .await
-    .unwrap();
+        }
+    }"#;
+    let tier_snap = AntigravityStatusProbe::parse_user_status_response(user_tier_json).unwrap();
     assert_eq!(
-        *seen_paths.lock().unwrap(),
-        vec![
-            GET_USER_STATUS_PATH.to_owned(),
-            COMMAND_MODEL_CONFIG_PATH.to_owned()
-        ]
+        tier_snap.account_email.as_deref(),
+        Some("ultra@example.com")
     );
-    assert_eq!(snap.model_quotas.len(), 1);
+    assert_eq!(tier_snap.account_plan.as_deref(), Some("Google AI Ultra"));
 
-    // fetch_snapshot preserves GetUserStatus error when CommandModelConfig is unsupported (HTTP 404)
-    let send_404: EndpointRequestSender = Arc::new(|payload, _endpoint, _timeout| {
-        Box::pin(async move {
-            if payload.path == GET_USER_STATUS_PATH {
-                Ok(b"{}".to_vec())
-            } else {
-                Err(AntigravityStatusProbeError::ApiError(
-                    "HTTP 404: Not Found".to_owned(),
-                ))
+    let blank_tier_json = br#"{
+        "code": 0,
+        "userStatus": {
+            "email": "fallback@example.com",
+            "userTier": {
+                "id": "google_ai_ultra",
+                "name": "   ",
+                "description": "Ultra tier"
+            },
+            "planStatus": {
+                "planInfo": {
+                    "planName": "Pro"
+                }
+            },
+            "cascadeModelConfigData": {
+                "clientModelConfigs": []
             }
-        })
-    });
-    let err_404 = AntigravityStatusProbe::fetch_snapshot(
-        &single_ctx,
-        &OperationDeadline::new(Duration::from_secs(4)),
-        send_404,
-    )
-    .await
-    .unwrap_err();
+        }
+    }"#;
+    let fallback_snap =
+        AntigravityStatusProbe::parse_user_status_response(blank_tier_json).unwrap();
     assert_eq!(
-        err_404,
-        AntigravityStatusProbeError::ParseFailed("Missing userStatus".to_owned())
+        fallback_snap.account_email.as_deref(),
+        Some("fallback@example.com")
     );
+    assert_eq!(fallback_snap.account_plan.as_deref(), Some("Pro"));
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:797-1612
+// CodexBar: Tests/CodexBarTests/AntigravityStatusProbeTests.swift:792-1612
 fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
-    // Orders Gemini pool primary, Claude/GPT pool secondary, and omits tertiary
+    // 1. Orders Gemini pool primary, Claude/GPT pool secondary, and omits tertiary
     let snap1 = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1339,47 +1750,19 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     );
     assert!(usage1.tertiary.is_none());
 
-    // Uses Flash when Pro is missing
-    let snap2 = AntigravityStatusSnapshot::new(
+    // 2. Claude/GPT pool can use thinking variants (lines 792-839)
+    let snap_thinking = AntigravityStatusSnapshot::new(
         vec![
-            AntigravityModelQuota::new("Gemini 3 Flash", "gemini-3-flash", Some(0.1), None, None),
+            AntigravityModelQuota::new("Claude Thinking", "claude-thinking", Some(0.7), None, None),
             AntigravityModelQuota::new("Claude Sonnet 4", "claude-sonnet-4", Some(0.3), None, None),
         ],
         None,
         None,
     );
-    let usage2 = snap2.to_usage_snapshot().unwrap();
+    let usage_thinking = snap_thinking.to_usage_snapshot().unwrap();
+    assert!(usage_thinking.primary.is_none());
     assert_eq!(
-        usage2.primary.as_ref().unwrap().remaining_percent().round(),
-        10.0
-    );
-    assert_eq!(
-        usage2
-            .secondary
-            .as_ref()
-            .unwrap()
-            .remaining_percent()
-            .round(),
-        30.0
-    );
-    assert!(usage2.tertiary.is_none());
-
-    // Uses Claude when Gemini models are missing
-    let snap3 = AntigravityStatusSnapshot::new(
-        vec![AntigravityModelQuota::new(
-            "Claude Sonnet 4",
-            "claude-sonnet-4",
-            Some(0.3),
-            None,
-            None,
-        )],
-        None,
-        None,
-    );
-    let usage3 = snap3.to_usage_snapshot().unwrap();
-    assert!(usage3.primary.is_none());
-    assert_eq!(
-        usage3
+        usage_thinking
             .secondary
             .as_ref()
             .unwrap()
@@ -1388,34 +1771,70 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
         30.0
     );
 
-    // Gemini pool unavailable when only excluded Lite variants exist
-    let snap4 = AntigravityStatusSnapshot::new(
+    let snap_only_thinking = AntigravityStatusSnapshot::new(
         vec![
+            AntigravityModelQuota::new("Claude Thinking", "claude-thinking", Some(0.7), None, None),
             AntigravityModelQuota::new(
-                "Gemini Pro Lite",
-                "gemini-3-pro-lite",
-                Some(0.6),
+                "Gemini 3 Pro Low",
+                "gemini-3-pro-low",
+                Some(0.4),
                 None,
                 None,
             ),
-            AntigravityModelQuota::new("Claude Sonnet 4", "claude-sonnet-4", Some(0.3), None, None),
         ],
         None,
         None,
     );
-    let usage4 = snap4.to_usage_snapshot().unwrap();
-    assert!(usage4.primary.is_none());
+    let usage_only_thinking = snap_only_thinking.to_usage_snapshot().unwrap();
     assert_eq!(
-        usage4
+        usage_only_thinking
+            .primary
+            .as_ref()
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        40.0
+    );
+    assert_eq!(
+        usage_only_thinking
             .secondary
             .as_ref()
             .unwrap()
             .remaining_percent()
             .round(),
-        30.0
+        70.0
     );
 
-    // Gemini pool ignores reset-only placeholder when remaining data exists
+    // 3. Gemini pool unavailable when only excluded Lite variants exist (lines 842-864, 942-965)
+    for model_id in ["gemini-3-pro-lite", "gemini-2-flash-lite"] {
+        let snap_lite = AntigravityStatusSnapshot::new(
+            vec![
+                AntigravityModelQuota::new("Gemini Lite", model_id, Some(0.6), None, None),
+                AntigravityModelQuota::new(
+                    "Claude Sonnet 4",
+                    "claude-sonnet-4",
+                    Some(0.3),
+                    None,
+                    None,
+                ),
+            ],
+            None,
+            None,
+        );
+        let usage_lite = snap_lite.to_usage_snapshot().unwrap();
+        assert!(usage_lite.primary.is_none());
+        assert_eq!(
+            usage_lite
+                .secondary
+                .as_ref()
+                .unwrap()
+                .remaining_percent()
+                .round(),
+            30.0
+        );
+    }
+
+    // 4. Gemini pool chooses most constrained pro variant & ignores reset-only placeholder when remaining exists (lines 867-939)
     let snap5 = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1442,8 +1861,9 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
         100.0
     );
     assert!(usage5.secondary.is_none());
+    assert!(usage5.extra_rate_windows.is_none());
 
-    // Group without remaining fraction preserves reset metadata as unavailable grouped window
+    // 5. Group without remaining fraction preserves reset metadata as unavailable grouped window (lines 1122-1143)
     let reset_ts = Timestamp::from_second(1_735_000_000).unwrap();
     let snap_group_unknown = AntigravityStatusSnapshot::new(
         vec![AntigravityModelQuota::new(
@@ -1464,7 +1884,24 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     assert_eq!(model_win.window.resets_at, Some(reset_ts));
     assert!(!model_win.usage_known);
 
-    // Filtered variants stay out of summary but remain distinct extras
+    // 6. NamedRateWindow defaults legacy payloads to usageKnown=true (lines 1146-1164)
+    let legacy_named: NamedRateWindow = serde_json::from_str(
+        r#"{
+            "id": "legacy-window",
+            "title": "Legacy Window",
+            "window": {
+                "usedPercent": 42,
+                "windowMinutes": null,
+                "resetsAt": null,
+                "resetDescription": null,
+                "nextRegenPercent": null
+            }
+        }"#,
+    )
+    .unwrap();
+    assert!(legacy_named.usage_known);
+
+    // 7. Filtered variants stay out of summary but remain distinct extras (lines 1167-1204)
     let snap_filtered = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1496,6 +1933,7 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     let usage_filtered = snap_filtered.to_usage_snapshot().unwrap();
     assert!(usage_filtered.primary.is_none());
     assert!(usage_filtered.secondary.is_none());
+    assert!(usage_filtered.tertiary.is_none());
     assert_eq!(
         usage_filtered
             .extra_rate_windows
@@ -1505,13 +1943,13 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
             .map(|w| w.id.as_str())
             .collect::<Vec<_>>(),
         vec![
-            "antigravity-compact-fallback-gemini-3-pro-lite",
-            "antigravity-compact-fallback-gemini-3-flash-lite",
-            "antigravity-compact-fallback-tab_autocomplete_model",
+            "gemini-3-pro-lite",
+            "gemini-3-flash-lite",
+            "tab_autocomplete_model",
         ]
     );
 
-    // Remote source collapses recognized family models and hides unconsumed junk
+    // 8. Remote source collapses recognized family models and hides unconsumed junk (lines 1275-1380)
     let snap_remote_clean = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1553,7 +1991,7 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     );
     assert!(usage_remote_clean.extra_rate_windows.is_none());
 
-    // Remote source shows consumed junk models despite filter
+    // 9. Remote source shows consumed junk models despite filter (lines 1383-1430)
     let snap_remote_consumed = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1595,7 +2033,84 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     assert!(extra_ids.contains(&"gemini-3-pro-image"));
     assert!(!extra_ids.contains(&"tab_jump_flash_lite_vertex"));
 
-    // Nil version unknown family models sort deterministically by label
+    // 10. Remote source image models do not drive family summary bars (lines 1433-1471)
+    let snap_remote_image = AntigravityStatusSnapshot::new(
+        vec![
+            AntigravityModelQuota::new(
+                "Gemini 3 Pro Image",
+                "gemini-3-pro-image",
+                Some(0.2),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new(
+                "Gemini 3 Pro (High)",
+                "gemini-3-pro-high",
+                Some(0.9),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new(
+                "Gemini 3 Flash Image",
+                "gemini-3-flash-image",
+                Some(0.1),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new("Gemini 3 Flash", "gemini-3-flash", Some(0.8), None, None),
+        ],
+        None,
+        None,
+    )
+    .with_source(AntigravitySnapshotSource::Remote);
+    let usage_remote_image = snap_remote_image.to_usage_snapshot().unwrap();
+    assert_eq!(
+        usage_remote_image
+            .primary
+            .as_ref()
+            .unwrap()
+            .used_percent
+            .round(),
+        20.0
+    );
+    assert!(usage_remote_image.secondary.is_none());
+
+    // 11. Remote source yields nil extra windows when all models are unconsumed junk (lines 1474-1512)
+    let snap_remote_all_junk = AntigravityStatusSnapshot::new(
+        vec![
+            AntigravityModelQuota::new(
+                "Tab Flash Lite Vertex",
+                "tab_flash_lite_vertex",
+                Some(1.0),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new(
+                "Gemini 2.5 Flash Lite",
+                "gemini-2-5-flash-lite",
+                Some(1.0),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new(
+                "Gemini 3 Pro Image",
+                "gemini-3-pro-image",
+                Some(1.0),
+                None,
+                None,
+            ),
+            AntigravityModelQuota::new("Unknown Model X", "unknown-model-x", Some(1.0), None, None),
+        ],
+        None,
+        None,
+    )
+    .with_source(AntigravitySnapshotSource::Remote);
+    let usage_remote_all_junk = snap_remote_all_junk.to_usage_snapshot().unwrap();
+    assert!(usage_remote_all_junk.primary.is_none());
+    assert!(usage_remote_all_junk.secondary.is_none());
+    assert!(usage_remote_all_junk.extra_rate_windows.is_none());
+
+    // 12. Nil version unknown family models sort deterministically by label (lines 1556-1584)
     let snap_unknown_sort = AntigravityStatusSnapshot::new(
         vec![
             AntigravityModelQuota::new(
@@ -1628,13 +2143,189 @@ fn status_snapshot_to_usage_snapshot_pools_and_source_filtering() {
     assert_eq!(titles, vec!["Alpha Unknown Model", "Zebra Unknown Model"]);
 }
 
+#[test]
+// CodexBar: Tests/CodexBarTests/AntigravityPoolDeduplicationTests.swift:7-225
+fn antigravity_pool_deduplication_tests() {
+    let reset_time = Timestamp::from_second(1_775_000_000).unwrap();
+
+    // 1. pool.models selects matching text models and excludes image/lite/autocomplete (lines 8-67)
+    let quotas = vec![
+        AntigravityModelQuota::new(
+            "Gemini 3.1 Pro (High)",
+            "gemini-3-1-pro-high",
+            Some(0.9),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Gemini 3.1 Pro (Low)",
+            "gemini-3-1-pro-low",
+            Some(0.6),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Gemini 3 Flash",
+            "gemini-3-flash",
+            Some(0.8),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Claude Sonnet 4.6",
+            "claude-sonnet-4-6",
+            Some(0.75),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Claude Opus 4.6 (Thinking)",
+            "claude-opus-4-6-thinking",
+            Some(0.7),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "GPT-OSS 120B (Medium)",
+            "gpt-oss-120b-medium",
+            Some(0.25),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Gemini 3 Pro Image",
+            "gemini-3-pro-image",
+            Some(0.1),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Gemini 3 Flash Lite",
+            "gemini-3-flash-lite",
+            Some(0.1),
+            Some(reset_time),
+            None,
+        ),
+        AntigravityModelQuota::new(
+            "Tab Autocomplete",
+            "tab_autocomplete_model",
+            Some(0.1),
+            Some(reset_time),
+            None,
+        ),
+    ];
+    let snap = AntigravityStatusSnapshot::new(quotas, None, None);
+
+    assert_eq!(
+        snap.models_for_pool(AntigravityUsagePool::GeminiAi)
+            .iter()
+            .map(|q| q.model_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "gemini-3-1-pro-high",
+            "gemini-3-1-pro-low",
+            "gemini-3-flash"
+        ]
+    );
+    assert_eq!(
+        snap.models_for_pool(AntigravityUsagePool::ClaudeGpt)
+            .iter()
+            .map(|q| q.model_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "claude-sonnet-4-6",
+            "claude-opus-4-6-thinking",
+            "gpt-oss-120b-medium"
+        ]
+    );
+
+    // 2. representative chooses lowest remaining, then earliest reset, then label (lines 69-133)
+    assert_eq!(
+        snap.representative_for_pool(AntigravityUsagePool::GeminiAi)
+            .unwrap()
+            .model_id,
+        "gemini-3-1-pro-low"
+    );
+    assert_eq!(
+        snap.representative_for_pool(AntigravityUsagePool::ClaudeGpt)
+            .unwrap()
+            .model_id,
+        "gpt-oss-120b-medium"
+    );
+
+    let earlier = Timestamp::from_second(1_774_000_000).unwrap();
+    let later = Timestamp::from_second(1_776_000_000).unwrap();
+    let tie_reset_snap = AntigravityStatusSnapshot::new(
+        vec![
+            AntigravityModelQuota::new(
+                "Gemini 3 Pro High",
+                "gemini-3-pro-high",
+                Some(0.5),
+                Some(later),
+                None,
+            ),
+            AntigravityModelQuota::new(
+                "Gemini 3 Pro Low",
+                "gemini-3-pro-low",
+                Some(0.5),
+                Some(earlier),
+                None,
+            ),
+            AntigravityModelQuota::new("Gemini 3 Flash", "gemini-3-flash", Some(0.5), None, None),
+        ],
+        None,
+        None,
+    );
+    assert_eq!(
+        tie_reset_snap
+            .representative_for_pool(AntigravityUsagePool::GeminiAi)
+            .unwrap()
+            .model_id,
+        "gemini-3-pro-low"
+    );
+
+    // 3. Pooled models stay out of extraRateWindows while non-pooled consumed models appear (lines 135-225)
+    let usage = snap
+        .with_source(AntigravitySnapshotSource::Remote)
+        .to_usage_snapshot()
+        .unwrap();
+    assert_eq!(
+        usage.primary.as_ref().unwrap().remaining_percent().round(),
+        60.0
+    );
+    assert_eq!(
+        usage
+            .secondary
+            .as_ref()
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        25.0
+    );
+    assert_eq!(
+        usage
+            .extra_rate_windows
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|w| w.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "gemini-3-pro-image",
+            "gemini-3-flash-lite",
+            "tab_autocomplete_model"
+        ]
+    );
+}
+
 // ============================================================================
-// 5. Quota Summary, Representative Selection & Source Parity Tests
+// 5. Quota Summary, CLI Usage Report, Representative & Source Parity Tests
 // ============================================================================
 
-#[test]
+#[tokio::test]
 // CodexBar: Tests/CodexBarTests/AntigravityQuotaSummaryTests.swift:7-565
-fn quota_summary_parsing_and_presentation_selection() {
+// CodexBar: Tests/CodexBarTests/AntigravityCLIUsageReportTests.swift:20-118
+async fn quota_summary_parsing_fetch_snapshot_and_presentation_selection() {
     let raw = br#"{
         "status": "SUCCESS",
         "command": {
@@ -1698,11 +2389,9 @@ fn quota_summary_parsing_and_presentation_selection() {
         usage.secondary.as_ref().unwrap().window_minutes,
         Some(10_080)
     );
+    let extra_windows = usage.extra_rate_windows.as_ref().unwrap();
     assert_eq!(
-        usage
-            .extra_rate_windows
-            .as_ref()
-            .unwrap()
+        extra_windows
             .iter()
             .map(|w| w.id.as_str())
             .collect::<Vec<_>>(),
@@ -1711,6 +2400,13 @@ fn quota_summary_parsing_and_presentation_selection() {
             "antigravity-quota-summary-gemini-weekly",
             "antigravity-quota-summary-3p-weekly",
         ]
+    );
+    assert_eq!(
+        extra_windows
+            .iter()
+            .map(|w| w.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Gemini 5-hour", "Gemini weekly", "Claude/GPT weekly"]
     );
 
     let semantic = AntigravityProviderPresentation::semantic_windows(&usage);
@@ -1746,37 +2442,95 @@ fn quota_summary_parsing_and_presentation_selection() {
     assert_eq!(icons.primary, semantic.session);
     assert_eq!(icons.secondary, semantic.weekly);
 
-    // Exhausted quota prioritization in menuBarWindow
+    // CLI usage report parser rejects non-SUCCESS and missing groups (AntigravityCLIUsageReportTests.swift:72-118)
+    let err_non_success = AntigravityStatusProbe::parse_cli_usage_report(
+        br#"{"status":"ERROR","command":{"name":"usage","data":{"groups":[]}}}"#,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err_non_success,
+        AntigravityStatusProbeError::ParseFailed(_)
+    ));
+
+    let err_empty_groups = AntigravityStatusProbe::parse_cli_usage_report(
+        br#"{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[]}}}"#,
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err_empty_groups,
+        AntigravityStatusProbeError::ParseFailed(_)
+    ));
+
+    // Protobuf oneof remaining.{remainingFraction | {case: "remainingFraction", value: ...}} & code!=0 check
+    let oneof_json = br#"{
+        "groups": [{
+            "displayName": "Gemini Models",
+            "buckets": [{
+                "bucketId": "gemini-weekly",
+                "displayName": "Weekly Limit",
+                "remaining": {"case": "remainingFraction", "value": 0.5}
+            }]
+        }]
+    }"#;
+    let oneof_snap =
+        parse_quota_summary_response_with_source(oneof_json, AntigravitySnapshotSource::Remote)
+            .unwrap();
+    assert_eq!(oneof_snap.source, AntigravitySnapshotSource::Remote);
+    assert_eq!(
+        oneof_snap
+            .to_usage_snapshot()
+            .unwrap()
+            .extra_rate_windows
+            .unwrap()[0]
+            .window
+            .remaining_percent(),
+        50.0
+    );
+
+    let bad_code =
+        AntigravityStatusProbe::parse_quota_summary_response(br#"{"code": 13, "groups": []}"#)
+            .unwrap_err();
+    assert!(matches!(
+        bad_code,
+        AntigravityStatusProbeError::ApiError(ref m) if m.contains("13")
+    ));
+
+    // Exhausted quota prioritization in menuBarWindow (AntigravityQuotaSummaryTests.swift:190-296)
     let exhausted_snapshot = AntigravityStatusSnapshot::new(Vec::new(), None, None)
-        .with_quota_summary(Some(AntigravityQuotaSummary::new(vec![
-            AntigravityQuotaSummaryGroup::new(
-                "Gemini Models",
-                vec![AntigravityQuotaSummaryBucket::new(
-                    "gemini-5h",
-                    "5-Hour",
-                    Some("5h".to_owned()),
-                    Some(300),
-                    Some(0.6),
-                    None,
-                    false,
-                )],
-            ),
-            AntigravityQuotaSummaryGroup::new(
-                "Claude and GPT",
-                vec![AntigravityQuotaSummaryBucket::new(
-                    "3p-weekly",
-                    "Weekly",
-                    Some("weekly".to_owned()),
-                    Some(10_080),
-                    Some(0.0),
-                    None,
-                    false,
-                )],
-            ),
-        ])));
+        .with_quota_summary(Some(AntigravityQuotaSummary {
+            raw_description: None,
+            groups: vec![
+                AntigravityQuotaSummaryGroup {
+                    key: "gemini".to_owned(),
+                    label: "Gemini Models".to_owned(),
+                    buckets: vec![AntigravityQuotaSummaryBucket {
+                        bucket_id: "gemini-5h".to_owned(),
+                        display_name: Some("5-Hour".to_owned()),
+                        window: Some("5h".to_owned()),
+                        disabled: false,
+                        remaining_fraction: Some(0.6),
+                        reset_time: None,
+                        reset_description: None,
+                    }],
+                },
+                AntigravityQuotaSummaryGroup {
+                    key: "3p".to_owned(),
+                    label: "Claude and GPT".to_owned(),
+                    buckets: vec![AntigravityQuotaSummaryBucket {
+                        bucket_id: "3p-weekly".to_owned(),
+                        display_name: Some("Weekly".to_owned()),
+                        window: Some("weekly".to_owned()),
+                        disabled: false,
+                        remaining_fraction: Some(0.0),
+                        reset_time: None,
+                        reset_description: None,
+                    }],
+                },
+            ],
+        }));
     let exhausted_usage = exhausted_snapshot.to_usage_snapshot().unwrap();
     let sel = AntigravityProviderPresentation::menu_bar_window(MenuBarWindowContext {
-        metric: MenuBarMetric::Primary,
+        metric: MenuBarMetric::Automatic,
         snapshot: &exhausted_usage,
         supports_average: false,
         prioritizes_exhausted_quotas: true,
@@ -1784,8 +2538,111 @@ fn quota_summary_parsing_and_presentation_selection() {
     });
     assert_eq!(
         sel,
-        MenuBarWindowSelection::Resolved(exhausted_usage.secondary.unwrap())
+        MenuBarWindowSelection::Resolved(exhausted_usage.secondary.clone().unwrap())
     );
+    let sel_usable = AntigravityProviderPresentation::menu_bar_window(MenuBarWindowContext {
+        metric: MenuBarMetric::Automatic,
+        snapshot: &exhausted_usage,
+        supports_average: false,
+        prioritizes_exhausted_quotas: false,
+        now: exhausted_usage.updated_at,
+    });
+    assert_eq!(
+        sel_usable,
+        MenuBarWindowSelection::Resolved(exhausted_usage.primary.unwrap())
+    );
+
+    // fetch_snapshot prefers RetrieveUserQuotaSummary and enriches identity from GetUserStatus (lines 364-565)
+    let endpoint = AntigravityConnectionEndpoint::new(
+        "https",
+        51170,
+        "lang-token",
+        EndpointSource::LanguageServer,
+    );
+    let single_ctx = RequestContext {
+        endpoints: vec![endpoint],
+        timeout: Duration::from_secs(4),
+    };
+    let seen_paths = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen_paths);
+    let send_summary_and_identity: EndpointRequestSender = Arc::new(
+        move |payload, _endpoint, _timeout| {
+            let seen = Arc::clone(&seen_clone);
+            Box::pin(async move {
+                seen.lock().unwrap().push(payload.path.clone());
+                match payload.path.as_str() {
+                    QUOTA_SUMMARY_PATH => Ok(br#"{
+                        "groups": [{
+                            "name": "Gemini Models",
+                            "buckets": [{"id": "gemini-5h", "name": "5-Hour", "window": "5h", "remaining_fraction": 0.7}]
+                        }]
+                    }"#.to_vec()),
+                    GET_USER_STATUS_PATH => Ok(br#"{
+                        "userStatus": {
+                            "email": "summary@example.com",
+                            "planStatus": {"planInfo": {"planName": "Pro"}},
+                            "cascadeModelConfigData": {"clientModelConfigs": []}
+                        }
+                    }"#.to_vec()),
+                    other => panic!("unexpected path {other}"),
+                }
+            })
+        },
+    );
+    let summary_with_id = AntigravityStatusProbe::fetch_snapshot(
+        &single_ctx,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        send_summary_and_identity,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *seen_paths.lock().unwrap(),
+        vec![
+            QUOTA_SUMMARY_PATH.to_owned(),
+            GET_USER_STATUS_PATH.to_owned()
+        ]
+    );
+    assert!(summary_with_id.has_known_quota_summary());
+    assert_eq!(
+        summary_with_id.account_email.as_deref(),
+        Some("summary@example.com")
+    );
+    assert_eq!(summary_with_id.account_plan.as_deref(), Some("Pro"));
+
+    // fetch_snapshot falls back to GetUserStatus then CommandModelConfig when QuotaSummary fails
+    let seen_fallback = Arc::new(Mutex::new(Vec::new()));
+    let seen_fb_clone = Arc::clone(&seen_fallback);
+    let send_cmd_fallback: EndpointRequestSender = Arc::new(move |payload, _endpoint, _timeout| {
+        let seen = Arc::clone(&seen_fb_clone);
+        Box::pin(async move {
+            seen.lock().unwrap().push(payload.path.clone());
+            match payload.path.as_str() {
+                QUOTA_SUMMARY_PATH => Err(AntigravityStatusProbeError::ApiError(
+                    "HTTP 404".to_owned(),
+                )),
+                GET_USER_STATUS_PATH => Ok(b"{}".to_vec()),
+                COMMAND_MODEL_CONFIG_PATH => Ok(br#"{"clientModelConfigs":[{"label":"Gemini 3 Pro","modelOrAlias":{"model":"gemini-3-pro"},"quotaInfo":{"remainingFraction":0.5}}]}"#.to_vec()),
+                other => panic!("unexpected path {other}"),
+            }
+        })
+    });
+    let snap_fb = AntigravityStatusProbe::fetch_snapshot(
+        &single_ctx,
+        &OperationDeadline::new(Duration::from_secs(4)),
+        send_cmd_fallback,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        *seen_fallback.lock().unwrap(),
+        vec![
+            QUOTA_SUMMARY_PATH.to_owned(),
+            GET_USER_STATUS_PATH.to_owned(),
+            COMMAND_MODEL_CONFIG_PATH.to_owned()
+        ]
+    );
+    assert_eq!(snap_fb.model_quotas.len(), 1);
 }
 
 #[test]
@@ -1824,7 +2681,65 @@ fn quota_representative_selection_cases() {
         assert_eq!(semantic.weekly.as_ref().unwrap().used_percent, 100.0);
     }
 
-    // Unknown quota never becomes a measured zero
+    // Suffixed alias ids ("gemini-pro-weekly", "claude-sonnet-5h") still count as ordinary (lines 58-97)
+    let suffixed_report = json!({
+        "groups": [
+            {
+                "name": "Gemini Models",
+                "buckets": [
+                    {"id": "gemini-pro-weekly", "name": "Gemini Pro Weekly", "window": "weekly", "remaining_fraction": 0.8},
+                    {"id": "gemini-flash-weekly", "name": "Gemini Flash Weekly", "window": "weekly", "remaining_fraction": 0.4}
+                ]
+            },
+            {
+                "name": "Claude and GPT",
+                "buckets": [
+                    {"id": "claude-sonnet-5h", "name": "Claude Sonnet 5h", "window": "5h", "remaining_fraction": 0.7}
+                ]
+            }
+        ]
+    });
+    let suffixed_usage = AntigravityStatusProbe::parse_quota_summary_response(
+        &serde_json::to_vec(&suffixed_report).unwrap(),
+    )
+    .unwrap()
+    .to_usage_snapshot()
+    .unwrap();
+    assert_eq!(
+        suffixed_usage
+            .primary
+            .as_ref()
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        40.0
+    );
+    assert_eq!(
+        suffixed_usage
+            .secondary
+            .as_ref()
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        70.0
+    );
+    // Preserves source order for equal cadence buckets
+    assert_eq!(
+        suffixed_usage
+            .extra_rate_windows
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|w| w.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "antigravity-quota-summary-gemini-pro-weekly",
+            "antigravity-quota-summary-gemini-flash-weekly",
+            "antigravity-quota-summary-claude-sonnet-5h",
+        ]
+    );
+
+    // Unknown quota never becomes a measured zero (lines 100-133)
     let unknown_quota = json!({
         "groups": [{
             "name": "Gemini Models",
@@ -1930,17 +2845,49 @@ fn quota_source_parity_and_family_visibility() {
         remote_usage.extra_rate_windows
     );
 
-    // idle_window_ids marks only unconsumed families as idle
-    let quotas = vec![
-        AntigravityModelQuota::new("Gemini 3 Pro", "gemini-3-pro", Some(1.0), None, None),
-        AntigravityModelQuota::new("Claude Sonnet 4", "claude-sonnet-4", Some(0.5), None, None),
-    ];
-    let idle = idle_window_ids(&quotas);
+    // idle_window_ids marks only unconsumed families as idle & AntigravityQuotaFamilyVisibility (lines 89-155)
+    let win_gemini = NamedRateWindow {
+        id: "antigravity-quota-summary-gemini-5h".to_owned(),
+        title: "Gemini".to_owned(),
+        window: RateWindow::new(0.0, None, None, None, None, false).unwrap(),
+        usage_known: true,
+    };
+    let win_claude = NamedRateWindow {
+        id: "antigravity-quota-summary-3p-5h".to_owned(),
+        title: "Claude/GPT".to_owned(),
+        window: RateWindow::new(50.0, None, None, None, None, false).unwrap(),
+        usage_known: true,
+    };
+    assert_eq!(
+        known_family_for_window(&win_gemini),
+        Some(KnownFamily::Gemini)
+    );
+    assert_eq!(
+        known_family_for_window(&win_claude),
+        Some(KnownFamily::ClaudeGpt)
+    );
+
+    let usage_with_idle = UsageSnapshot::new(
+        Some(win_gemini.window.clone()),
+        Some(win_claude.window.clone()),
+        None,
+        Some(vec![win_gemini, win_claude]),
+        None,
+        Vec::new(),
+        None,
+        None,
+        reset_time,
+        None,
+        ariadusage_protocol::Confidence::Exact,
+    )
+    .unwrap();
     let mut expected = BTreeSet::new();
-    expected.insert(KnownFamily::Gemini.window_id().to_owned());
-    assert_eq!(idle, expected);
-    assert_eq!(known_family(&quotas[0]), Some(KnownFamily::Gemini));
-    assert_eq!(known_family(&quotas[1]), Some(KnownFamily::ClaudeGpt));
+    expected.insert("antigravity-quota-summary-gemini-5h".to_owned());
+    assert_eq!(idle_window_ids(&usage_with_idle), expected);
+    assert_eq!(
+        AntigravityQuotaFamilyVisibility::idle_window_ids(&usage_with_idle),
+        expected
+    );
 }
 
 // ============================================================================
@@ -2094,8 +3041,11 @@ fn oauth_credentials_store_and_client_artifact_extraction() {
         let mode = fs::metadata(&store_url).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
     }
-    let loaded = AntigravityOAuthCredentialsStore::load(&store_url).unwrap();
-    assert_eq!(loaded, creds);
+    #[cfg(target_os = "linux")]
+    {
+        let loaded = AntigravityOAuthCredentialsStore::load(&store_url).unwrap();
+        assert_eq!(loaded, creds);
+    }
     AntigravityOAuthCredentialsStore::delete(&store_url).unwrap();
     assert!(!AntigravityOAuthCredentialsStore::exists(&store_url));
 
@@ -2163,6 +3113,46 @@ fn oauth_credentials_store_and_client_artifact_extraction() {
     assert_eq!(
         AntigravityOAuthConfig::parse_client_from_installed_artifact_data(beyond_window.as_bytes()),
         Some(go_client)
+    );
+
+    // 10. CamelCase keys, optional access_token, resolved_account_email, and DEFAULT_SCOPES
+    assert_eq!(
+        AntigravityOAuthConfig::DEFAULT_SCOPES,
+        &[
+            "https://www.googleapis.com/auth/cloud-platform",
+            "https://www.googleapis.com/auth/userinfo.email",
+        ]
+    );
+    let camel_json = r#"{
+        "refreshToken": "camel-refresh",
+        "expiryDate": 1700000000000,
+        "idToken": null,
+        "email": "stored@example.com",
+        "projectId": "camel-proj",
+        "clientId": "camel-cid",
+        "clientSecret": "camel-csec"
+    }"#;
+    let camel_creds =
+        AntigravityOAuthCredentialsStore::credentials_from_token_account_value(camel_json).unwrap();
+    assert_eq!(camel_creds.access_token, "");
+    assert_eq!(camel_creds.refresh_token.as_deref(), Some("camel-refresh"));
+    assert_eq!(camel_creds.project_id.as_deref(), Some("camel-proj"));
+    assert_eq!(camel_creds.client_id.as_deref(), Some("camel-cid"));
+    assert_eq!(camel_creds.client_secret.as_deref(), Some("camel-csec"));
+
+    let id_token_wins = AntigravityOAuthCredentials::new(
+        "tok",
+        None,
+        None,
+        Some(make_id_token("jwt@example.com", None)),
+        Some("stored@example.com".to_owned()),
+        None,
+        None,
+        None,
+    );
+    assert_eq!(
+        AntigravityOAuthCredentialsStore::resolved_account_email(&id_token_wins).as_deref(),
+        Some("jwt@example.com")
     );
 }
 
@@ -2385,6 +3375,7 @@ fn available_models_response() -> Vec<u8> {
     .unwrap()
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 // CodexBar: Tests/CodexBarTests/AntigravityRemoteUsageFetcherTests.swift:20-73
 async fn remote_plan_respects_paid_metadata_and_measured_five_hour_quotas() {
@@ -2631,7 +3622,10 @@ async fn remote_fetch_selected_account_precedence_refresh_and_error_handling() {
                                 body: Vec::new(),
                             })
                         }
-                        other => panic!("unexpected host {other}"),
+                        _ => Ok(RemoteHttpResponse {
+                            status: 404,
+                            body: Vec::new(),
+                        }),
                     }
                 })
             });
@@ -2669,10 +3663,14 @@ async fn remote_fetch_selected_account_precedence_refresh_and_error_handling() {
     ));
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 // CodexBar: Tests/CodexBarTests/AntigravityRemoteUsageFetcherTests.swift:348-1388
 async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() {
-    // 1. Verifies full model quotas with retrieveUserQuota and drops rows absent from partial verification
+    use ariadusage_engine::providers::antigravity::{
+        AntigravityOAuthFetchStrategy, AntigravityOfflinePlaceholderStrategy,
+    };
+    // 1. Verifies full model quotas with retrieveUserQuota and drops rows absent from partial verification (lines 405-510, 731-794)
     let env = TestEnvironment::new();
     env.write_antigravity_credentials(
         "token",
@@ -2755,7 +3753,96 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         vec![Some(0.5)]
     );
 
-    // 2. Propagates quota verification server errors (HTTP 503)
+    // 1b. Ignores full model availability when verification has no quota data (lines 513-575)
+    let fetcher_empty_verified =
+        AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env.home()).with_data_loader(
+            |req| {
+                Box::pin(async move {
+                    match req.url.path() {
+                        "/v1internal:loadCodeAssist" => Ok(RemoteHttpResponse {
+                            status: 200,
+                            body: serde_json::to_vec(&json!({
+                                "currentTier": {"id": "standard-tier"},
+                                "cloudaicompanionProject": "managed-project-123"
+                            }))
+                            .unwrap(),
+                        }),
+                        "/v1internal:fetchAvailableModels" => Ok(RemoteHttpResponse {
+                            status: 200,
+                            body: serde_json::to_vec(&json!({
+                                "models": {
+                                    "claude-sonnet-4": {"displayName": "Claude Sonnet 4", "quotaInfo": {"remainingFraction": 1}},
+                                    "gemini-2.5-pro": {"displayName": "Gemini 2.5 Pro", "quotaInfo": {"remainingFraction": 1}}
+                                }
+                            }))
+                            .unwrap(),
+                        }),
+                        "/v1internal:retrieveUserQuota" => Ok(RemoteHttpResponse {
+                            status: 200,
+                            body: serde_json::to_vec(&json!({"buckets": []})).unwrap(),
+                        }),
+                        _ => Ok(RemoteHttpResponse {
+                            status: 404,
+                            body: Vec::new(),
+                        }),
+                    }
+                })
+            },
+        );
+    let snap_empty_verified = fetcher_empty_verified.fetch().await.unwrap();
+    assert!(snap_empty_verified.model_quotas.is_empty());
+    assert_eq!(
+        snap_empty_verified.account_email.as_deref(),
+        Some("user@example.com")
+    );
+
+    // 1c. Falls back to retrieveUserQuota when fetchAvailableModels is 403 (lines 1038-1118)
+    let fetcher_models_403 = AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env.home())
+        .with_data_loader(|req| {
+            Box::pin(async move {
+                match req.url.path() {
+                    "/v1internal:loadCodeAssist" => Ok(RemoteHttpResponse {
+                        status: 200,
+                        body: serde_json::to_vec(&json!({
+                            "currentTier": {"id": "standard-tier", "name": "standard"},
+                            "cloudaicompanionProject": "managed-project-123"
+                        }))
+                        .unwrap(),
+                    }),
+                    "/v1internal:fetchAvailableModels" => Ok(RemoteHttpResponse {
+                        status: 403,
+                        body: b"forbidden".to_vec(),
+                    }),
+                    "/v1internal:retrieveUserQuota" => Ok(RemoteHttpResponse {
+                        status: 200,
+                        body: serde_json::to_vec(&json!({
+                            "buckets": [
+                                {"modelId": "gemini-3-pro", "remainingFraction": 0.8},
+                                {"modelId": "gemini-3-pro", "remainingFraction": 0.6}
+                            ]
+                        }))
+                        .unwrap(),
+                    }),
+                    _ => Ok(RemoteHttpResponse {
+                        status: 404,
+                        body: Vec::new(),
+                    }),
+                }
+            })
+        });
+    let snap_models_403 = fetcher_models_403.fetch().await.unwrap();
+    assert_eq!(
+        snap_models_403
+            .to_usage_snapshot()
+            .unwrap()
+            .primary
+            .unwrap()
+            .remaining_percent()
+            .round(),
+        60.0
+    );
+
+    // 2. Propagates quota verification server errors (HTTP 503) (lines 578-648)
     let fetcher_503 = AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env.home())
         .with_data_loader(|req| {
             Box::pin(async move {
@@ -2794,7 +3881,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         AntigravityRemoteFetchError::ApiError(ref msg) if msg.contains("HTTP 503")
     ));
 
-    // 3. Refreshes expired shared Google token and persists updated access_token
+    // 3. Refreshes expired shared Google token and persists updated access_token, preserving client_id/client_secret (lines 797-920)
     let env_refresh = TestEnvironment::new();
     env_refresh.write_antigravity_credentials(
         "old-token",
@@ -2845,19 +3932,56 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
                                 body: Vec::new(),
                             })
                         }
-                        other => panic!("unexpected host {other}"),
+                        _ => Ok(RemoteHttpResponse {
+                            status: 404,
+                            body: Vec::new(),
+                        }),
                     }
                 })
             });
     let refreshed_snap = fetcher_refresh.fetch().await.unwrap();
     let updated_json = env_refresh.read_antigravity_credentials_json();
     assert_eq!(updated_json.get("access_token").unwrap(), "new-token");
+    assert_eq!(updated_json.get("client_id").unwrap(), "test-client-id");
+    assert_eq!(
+        updated_json.get("client_secret").unwrap(),
+        "test-client-secret"
+    );
     assert_eq!(
         refreshed_snap.account_email.as_deref(),
         Some("refreshed@example.com")
     );
 
-    // 4. Remote refresh requires configured OAuth client
+    // 3b. Refresh non-200 maps to NotLoggedIn
+    let env_refresh_fail = TestEnvironment::new();
+    env_refresh_fail.write_antigravity_credentials(
+        "old-token",
+        Some("refresh-token"),
+        Timestamp::now()
+            .saturating_sub(jiff::Span::new().seconds(3600))
+            .unwrap(),
+        None,
+        Some("stale@example.com"),
+        None,
+        Some("test-client-id"),
+        Some("test-client-secret"),
+    );
+    let err_refresh_400 =
+        AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env_refresh_fail.home())
+            .with_data_loader(|_req| {
+                Box::pin(async move {
+                    Ok(RemoteHttpResponse {
+                        status: 400,
+                        body: b"invalid_grant".to_vec(),
+                    })
+                })
+            })
+            .fetch()
+            .await
+            .unwrap_err();
+    assert_eq!(err_refresh_400, AntigravityRemoteFetchError::NotLoggedIn);
+
+    // 4. Remote refresh requires configured OAuth client (lines 922-952)
     let env_no_client = TestEnvironment::new();
     env_no_client.write_antigravity_credentials(
         "old-token",
@@ -2882,7 +4006,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         AntigravityRemoteFetchError::ApiError(ref msg) if msg.contains("ANTIGRAVITY_OAUTH_CLIENT_ID")
     ));
 
-    // 5. Onboards project before fetching models & prefers stored project ID
+    // 5. Onboards project before fetching models (including poll loop) & prefers stored project ID (lines 955-1035, 1320-1388)
     let env_onboard = TestEnvironment::new();
     env_onboard.write_antigravity_credentials(
         "token",
@@ -2896,30 +4020,43 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         None,
         None,
     );
+    let load_calls = Arc::new(AtomicUsize::new(0));
+    let load_calls_clone = Arc::clone(&load_calls);
     let recorded_projects = Arc::new(Mutex::new(Vec::new()));
     let recorded_clone = Arc::clone(&recorded_projects);
     let fetcher_onboard =
         AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env_onboard.home())
+            .with_sleeper(|_dur| Box::pin(async move {}))
             .with_data_loader(move |req| {
                 let recorded = Arc::clone(&recorded_clone);
+                let load_calls = Arc::clone(&load_calls_clone);
                 Box::pin(async move {
                     match req.url.path() {
-                        "/v1internal:loadCodeAssist" => Ok(RemoteHttpResponse {
-                            status: 200,
-                            body: serde_json::to_vec(&json!({
-                                "currentTier": {"id": "standard-tier", "name": "standard"},
-                                "allowedTiers": [{"id": "standard-tier", "isDefault": true}]
-                            }))
-                            .unwrap(),
-                        }),
+                        "/v1internal:loadCodeAssist" => {
+                            let call_idx = load_calls.fetch_add(1, Ordering::SeqCst);
+                            if call_idx == 0 {
+                                Ok(RemoteHttpResponse {
+                                    status: 200,
+                                    body: serde_json::to_vec(&json!({
+                                        "currentTier": {"id": "standard-tier", "name": "standard"},
+                                        "allowedTiers": [{"id": "standard-tier", "isDefault": true}]
+                                    }))
+                                    .unwrap(),
+                                })
+                            } else {
+                                Ok(RemoteHttpResponse {
+                                    status: 200,
+                                    body: serde_json::to_vec(&json!({
+                                        "currentTier": {"id": "standard-tier", "name": "standard"},
+                                        "cloudaicompanionProject": "onboarded-project-456"
+                                    }))
+                                    .unwrap(),
+                                })
+                            }
+                        }
                         "/v1internal:onboardUser" => Ok(RemoteHttpResponse {
                             status: 200,
-                            body: serde_json::to_vec(&json!({
-                                "response": {
-                                    "cloudaicompanionProject": {"id": "onboarded-project-456"}
-                                }
-                            }))
-                            .unwrap(),
+                            body: b"{}".to_vec(),
                         }),
                         "/v1internal:fetchAvailableModels" => {
                             let body: serde_json::Map<String, Value> =
@@ -2945,7 +4082,62 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         Some("onboarded-project-456")
     );
 
-    // 6. Returns identity when both remote quota endpoints are forbidden (403)
+    // 5b. Prefers stored project ID from credentials over initial loadCodeAssist response (lines 1320-1388)
+    let env_stored_proj = TestEnvironment::new();
+    env_stored_proj.write_antigravity_credentials(
+        "token",
+        None,
+        Timestamp::now()
+            .saturating_add(jiff::Span::new().seconds(3600))
+            .unwrap(),
+        Some(&make_id_token("user@example.com", None)),
+        Some("user@example.com"),
+        Some("stored-project-789"),
+        None,
+        None,
+    );
+    let stored_recorded = Arc::new(Mutex::new(Vec::new()));
+    let stored_recorded_clone = Arc::clone(&stored_recorded);
+    AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env_stored_proj.home())
+        .with_data_loader(move |req| {
+            let recorded = Arc::clone(&stored_recorded_clone);
+            Box::pin(async move {
+                match req.url.path() {
+                    "/v1internal:loadCodeAssist" => Ok(RemoteHttpResponse {
+                        status: 200,
+                        body: serde_json::to_vec(&json!({
+                            "currentTier": {"id": "standard-tier", "name": "standard"},
+                            "cloudaicompanionProject": "server-project-000"
+                        }))
+                        .unwrap(),
+                    }),
+                    "/v1internal:fetchAvailableModels" => {
+                        let body: serde_json::Map<String, Value> =
+                            serde_json::from_slice(req.body.as_ref().unwrap()).unwrap();
+                        if let Some(p) = body.get("project").and_then(Value::as_str) {
+                            recorded.lock().unwrap().push(p.to_owned());
+                        }
+                        Ok(RemoteHttpResponse {
+                            status: 200,
+                            body: available_models_response(),
+                        })
+                    }
+                    _ => Ok(RemoteHttpResponse {
+                        status: 404,
+                        body: Vec::new(),
+                    }),
+                }
+            })
+        })
+        .fetch()
+        .await
+        .unwrap();
+    assert_eq!(
+        stored_recorded.lock().unwrap().last().map(String::as_str),
+        Some("stored-project-789")
+    );
+
+    // 6. Returns identity when both remote quota endpoints are forbidden (403) (lines 1127-1182)
     let fetcher_both_403 =
         AntigravityRemoteUsageFetcher::new(Duration::from_secs(1), env_onboard.home())
             .with_data_loader(|req| {
@@ -2988,7 +4180,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         &usage_403
     ));
 
-    // 7. Ignores Gemini credentials when Antigravity auth is missing
+    // 7. Ignores Gemini credentials when Antigravity auth is missing (lines 1185-1204)
     let env_gemini_only = TestEnvironment::new();
     env_gemini_only.write_gemini_credentials(
         "gemini-token",
@@ -3004,7 +4196,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
             .unwrap_err();
     assert_eq!(err_missing, AntigravityRemoteFetchError::NotLoggedIn);
 
-    // 8. Asks for sign-in again when OAuth client cannot read consumer quota (GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT)
+    // 8. Asks for sign-in again when OAuth client cannot read consumer quota (GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT) (lines 1207-1278)
     let env_tos = TestEnvironment::new();
     env_tos.write_antigravity_credentials(
         "token",
@@ -3057,7 +4249,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
     );
     assert!(diag.unwrap().contains("Sign in to it again."));
 
-    // 9. Consumer client recovery preserves onboarded and unrelated eligibility responses
+    // 9. Consumer client recovery preserves onboarded and unrelated eligibility responses (lines 1280-1317)
     for case_name in [
         "stored-project",
         "returned-project",

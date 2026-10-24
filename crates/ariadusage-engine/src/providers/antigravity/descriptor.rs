@@ -1,6 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,7 +10,7 @@ use ariadusage_core::model::{
     NamedRateWindow, ProviderIdentitySnapshot, RateWindow, UsageSnapshot,
 };
 use ariadusage_core::pipeline::{
-    BoxFuture, FetchContext, FetchError, FetchResult, FetchStrategy, ProviderPlan,
+    BoxFuture, ClassifiedError, FetchContext, FetchError, FetchResult, FetchStrategy, ProviderPlan,
 };
 use ariadusage_core::providers::SourceMode;
 use ariadusage_protocol::metric::SourceKind;
@@ -25,9 +24,7 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::local_probe::LocalProbe;
 use crate::brokers::net::NetBroker;
 
-use super::family_visibility::contains_token;
-use super::oauth_store::AntigravityOAuthCredentialsStore;
-use super::quota_summary::parse_quota_summary_window_minutes;
+use super::oauth_store::{AntigravityOAuthCredentialsStore, EnvValue};
 use super::remote_fetcher::{
     AntigravityRemoteFetchError, AntigravityRemoteUsageFetcher, CredentialsUpdateHandler,
     OAuthClientResolver, RemoteDataLoader,
@@ -47,34 +44,34 @@ pub const ANTIGRAVITY_OFFLINE_STRATEGY_ID: &str = "antigravity.offline";
 #[serde(rename_all = "lowercase")]
 pub enum AntigravityUsageDataSource {
     Auto,
-    Cli,
     Oauth,
+    Cli,
 }
 
 impl AntigravityUsageDataSource {
-    pub const ALL: [Self; 3] = [Self::Auto, Self::Cli, Self::Oauth];
+    pub const ALL: [Self; 3] = [Self::Auto, Self::Oauth, Self::Cli];
 
     pub const fn source_name(self) -> &'static str {
         match self {
             Self::Auto => "auto",
-            Self::Cli => "cli",
             Self::Oauth => "oauth",
+            Self::Cli => "cli",
         }
     }
 
     pub const fn display_name(self) -> &'static str {
         match self {
             Self::Auto => "Auto",
-            Self::Cli => "CLI",
-            Self::Oauth => "OAuth",
+            Self::Oauth => "Google OAuth",
+            Self::Cli => "Local API / agy CLI",
         }
     }
 
     pub const fn to_source_mode(self) -> SourceMode {
         match self {
             Self::Auto => SourceMode::Auto,
-            Self::Cli => SourceMode::Cli,
             Self::Oauth => SourceMode::Oauth,
+            Self::Cli => SourceMode::Cli,
         }
     }
 
@@ -112,15 +109,6 @@ impl AntigravityUsageDataSource {
     }
 }
 
-pub struct AntigravityProviderConfig;
-
-impl AntigravityProviderConfig {
-    pub const DEFAULT_COMMAND_NAME: &str = "agy";
-    pub const CLI_ALIASES: &[&str] = &["agy", "antigravity"];
-    pub const COMMAND_NAME_ENV_KEYS: &[&str] =
-        &["ARIADUSAGE_ANTIGRAVITY_CLI_NAME", "ANTIGRAVITY_CLI_NAME"];
-}
-
 // MARK: - Presentation & Window Selection (AntigravityProviderDescriptor.swift)
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +136,7 @@ pub enum MenuBarMetric {
     Secondary,
     Tertiary,
     Average,
+    Automatic,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -183,104 +172,154 @@ impl AntigravityProviderPresentation {
     }
 
     pub fn semantic_windows(snapshot: &UsageSnapshot) -> SemanticWindows {
-        let summary_session = Self::most_constrained_extra_window(snapshot, |window| {
-            Self::is_quota_summary_window(window)
-                && Self::quota_summary_window_minutes(window) == Some(300)
-        });
-        let summary_weekly = Self::most_constrained_extra_window(snapshot, |window| {
-            Self::is_quota_summary_window(window)
-                && Self::quota_summary_window_minutes(window) == Some(10_080)
-        });
-        let summary_fallback =
-            Self::most_constrained_extra_window(snapshot, Self::is_quota_summary_window);
-        let compact_fallback =
-            Self::most_constrained_extra_window(snapshot, Self::is_compact_fallback_window);
-
-        if summary_session.is_some() || summary_weekly.is_some() {
+        let rows: Vec<&NamedRateWindow> = snapshot
+            .extra_rate_windows
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|w| w.id.starts_with(QUOTA_SUMMARY_WINDOW_ID_PREFIX))
+            .collect();
+        if rows.is_empty() {
             return SemanticWindows {
-                session: summary_session
-                    .clone()
-                    .or(summary_weekly.clone())
-                    .or(summary_fallback.clone()),
-                weekly: summary_weekly.or(summary_session).or(summary_fallback),
+                session: snapshot.primary.clone(),
+                weekly: snapshot.secondary.clone(),
             };
         }
-
+        let known: Vec<&NamedRateWindow> = rows.into_iter().filter(|w| w.usage_known).collect();
         SemanticWindows {
-            session: snapshot
-                .primary
-                .clone()
-                .or(summary_fallback)
-                .or(compact_fallback)
-                .or_else(|| snapshot.secondary.clone())
-                .or_else(|| snapshot.tertiary.clone()),
-            weekly: snapshot.secondary.clone(),
+            session: Self::most_constrained_by_minutes(&known, 300),
+            weekly: Self::most_constrained_by_minutes(&known, 10_080),
         }
     }
 
     pub fn icon_windows(context: IconWindowsContext<'_>) -> IconWindowsPair {
-        let windows = Self::semantic_windows(context.snapshot);
+        let windows: Vec<&NamedRateWindow> = context
+            .snapshot
+            .extra_rate_windows
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|w| w.usage_known && w.id.starts_with(QUOTA_SUMMARY_WINDOW_ID_PREFIX))
+            .collect();
+        if windows.is_empty() {
+            return IconWindowsPair {
+                primary: None,
+                secondary: None,
+            };
+        }
         IconWindowsPair {
-            primary: windows.session.clone(),
-            secondary: windows.weekly.or(windows.session),
+            primary: Self::most_constrained_by_minutes(&windows, 300),
+            secondary: Self::most_constrained_by_minutes(&windows, 10_080),
         }
     }
 
-    pub fn menu_bar_window(context: MenuBarWindowContext<'_>) -> MenuBarWindowSelection {
-        let primary_summary = Self::ranked_quota_summary_window(context.snapshot, |window| {
-            !Self::is_third_party_quota_summary_window(window)
-        });
-        let secondary_summary = Self::ranked_quota_summary_window(
-            context.snapshot,
-            Self::is_third_party_quota_summary_window,
-        );
-        let fallback_summary =
-            Self::most_constrained_extra_window(context.snapshot, Self::is_quota_summary_window);
-        let compact_fallback =
-            Self::most_constrained_extra_window(context.snapshot, Self::is_compact_fallback_window);
-
-        let primary = context
-            .snapshot
-            .primary
-            .clone()
-            .or(primary_summary)
-            .or(fallback_summary)
-            .or(compact_fallback);
-        let secondary = context.snapshot.secondary.clone().or(secondary_summary);
-        let tertiary = context.snapshot.tertiary.clone();
-
-        if context.prioritizes_exhausted_quotas
-            && let Some(exhausted) = [primary.as_ref(), secondary.as_ref(), tertiary.as_ref()]
-                .into_iter()
-                .flatten()
-                .find(|w| w.remaining_percent() <= 0.0)
-        {
-            return MenuBarWindowSelection::Resolved(exhausted.clone());
-        }
-
-        match context.metric {
-            MenuBarMetric::Primary => primary.or(secondary).or(tertiary).map_or(
-                MenuBarWindowSelection::Unresolved,
-                MenuBarWindowSelection::Resolved,
-            ),
-            MenuBarMetric::Secondary => secondary.or(primary).or(tertiary).map_or(
-                MenuBarWindowSelection::Unresolved,
-                MenuBarWindowSelection::Resolved,
-            ),
-            MenuBarMetric::Tertiary => tertiary.or(primary).or(secondary).map_or(
-                MenuBarWindowSelection::Unresolved,
-                MenuBarWindowSelection::Resolved,
-            ),
-            MenuBarMetric::Average => {
-                if context.supports_average
-                    && let (Some(p), Some(s)) = (&primary, &secondary)
-                {
-                    let avg_used = (p.used_percent + s.used_percent) / 2.0;
-                    if let Ok(avg_win) = RateWindow::new(avg_used, None, None, None, None, false) {
-                        return MenuBarWindowSelection::Average(avg_win);
-                    }
+    fn most_constrained_by_minutes(
+        windows: &[&NamedRateWindow],
+        minutes: i64,
+    ) -> Option<RateWindow> {
+        windows
+            .iter()
+            .copied()
+            .filter(|w| w.window.window_minutes == Some(minutes))
+            .max_by(|lhs, rhs| {
+                if lhs.window.used_percent != rhs.window.used_percent {
+                    return lhs.window.used_percent.total_cmp(&rhs.window.used_percent);
                 }
-                Self::most_constrained(&[primary, secondary, tertiary]).map_or(
+                rhs.id.cmp(&lhs.id)
+            })
+            .map(|w| w.window.clone())
+    }
+
+    pub fn menu_bar_window(context: MenuBarWindowContext<'_>) -> MenuBarWindowSelection {
+        match context.metric {
+            MenuBarMetric::Primary => context
+                .snapshot
+                .primary
+                .clone()
+                .or_else(|| context.snapshot.secondary.clone())
+                .or_else(|| context.snapshot.tertiary.clone())
+                .or_else(|| {
+                    Self::most_constrained_extra_window_by_prefix(
+                        context.snapshot,
+                        COMPACT_FALLBACK_WINDOW_ID_PREFIX,
+                    )
+                })
+                .map_or(
+                    MenuBarWindowSelection::Unresolved,
+                    MenuBarWindowSelection::Resolved,
+                ),
+            MenuBarMetric::Secondary => context
+                .snapshot
+                .secondary
+                .clone()
+                .or_else(|| context.snapshot.primary.clone())
+                .or_else(|| context.snapshot.tertiary.clone())
+                .or_else(|| {
+                    Self::most_constrained_extra_window_by_prefix(
+                        context.snapshot,
+                        COMPACT_FALLBACK_WINDOW_ID_PREFIX,
+                    )
+                })
+                .map_or(
+                    MenuBarWindowSelection::Unresolved,
+                    MenuBarWindowSelection::Resolved,
+                ),
+            MenuBarMetric::Tertiary => context
+                .snapshot
+                .tertiary
+                .clone()
+                .or_else(|| context.snapshot.primary.clone())
+                .or_else(|| context.snapshot.secondary.clone())
+                .or_else(|| {
+                    Self::most_constrained_extra_window_by_prefix(
+                        context.snapshot,
+                        COMPACT_FALLBACK_WINDOW_ID_PREFIX,
+                    )
+                })
+                .map_or(
+                    MenuBarWindowSelection::Unresolved,
+                    MenuBarWindowSelection::Resolved,
+                ),
+            MenuBarMetric::Average => {
+                if !context.supports_average {
+                    return context
+                        .snapshot
+                        .primary
+                        .clone()
+                        .or_else(|| context.snapshot.secondary.clone())
+                        .or_else(|| context.snapshot.tertiary.clone())
+                        .map_or(
+                            MenuBarWindowSelection::Unresolved,
+                            MenuBarWindowSelection::Resolved,
+                        );
+                }
+                MenuBarWindowSelection::Unresolved
+            }
+            MenuBarMetric::Automatic => {
+                if context.prioritizes_exhausted_quotas
+                    && let Some(ranked) =
+                        Self::ranked_quota_summary_window(context.snapshot, context.now)
+                {
+                    return MenuBarWindowSelection::Resolved(ranked);
+                }
+                Self::most_constrained_extra_window_by_prefix(
+                    context.snapshot,
+                    QUOTA_SUMMARY_WINDOW_ID_PREFIX,
+                )
+                .or_else(|| {
+                    Self::most_constrained(&[
+                        context.snapshot.primary.clone(),
+                        context.snapshot.secondary.clone(),
+                        context.snapshot.tertiary.clone(),
+                    ])
+                })
+                .or_else(|| {
+                    Self::most_constrained_extra_window_by_prefix(
+                        context.snapshot,
+                        COMPACT_FALLBACK_WINDOW_ID_PREFIX,
+                    )
+                })
+                .map_or(
                     MenuBarWindowSelection::Unresolved,
                     MenuBarWindowSelection::Resolved,
                 )
@@ -290,150 +329,77 @@ impl AntigravityProviderPresentation {
 
     pub fn most_constrained(windows: &[Option<RateWindow>]) -> Option<RateWindow> {
         let available: Vec<&RateWindow> = windows.iter().filter_map(Option::as_ref).collect();
-        let most_constrained = available
+        let usable: Vec<&RateWindow> = available
             .iter()
             .copied()
-            .min_by(|lhs, rhs| lhs.remaining_percent().total_cmp(&rhs.remaining_percent()))?;
-        if most_constrained.remaining_percent() < 100.0 {
-            return Some(most_constrained.clone());
-        }
-        available.first().copied().cloned()
-    }
-
-    pub fn most_constrained_extra_window<F>(
-        snapshot: &UsageSnapshot,
-        matching: F,
-    ) -> Option<RateWindow>
-    where
-        F: Fn(&NamedRateWindow) -> bool,
-    {
-        let extras = snapshot.extra_rate_windows.as_deref()?;
-        let available: Vec<&RateWindow> = extras
-            .iter()
-            .filter(|w| w.usage_known && matching(w))
-            .map(|w| &w.window)
+            .filter(|w| w.used_percent < 100.0)
             .collect();
-        let most_constrained = available
-            .iter()
-            .copied()
-            .min_by(|lhs, rhs| lhs.remaining_percent().total_cmp(&rhs.remaining_percent()))?;
-        if most_constrained.remaining_percent() < 100.0 {
-            return Some(most_constrained.clone());
-        }
-        available.first().copied().cloned()
-    }
-
-    pub fn ranked_quota_summary_window<F>(
-        snapshot: &UsageSnapshot,
-        matching: F,
-    ) -> Option<RateWindow>
-    where
-        F: Fn(&NamedRateWindow) -> bool,
-    {
-        let extras = snapshot.extra_rate_windows.as_deref()?;
-        let candidates: Vec<&NamedRateWindow> = extras
-            .iter()
-            .filter(|w| w.usage_known && Self::is_quota_summary_window(w) && matching(w))
-            .collect();
-        let ordinary: Vec<&NamedRateWindow> = candidates
-            .iter()
-            .copied()
-            .filter(|w| Self::is_ordinary_gemini_quota_summary_window(w))
-            .collect();
-        let effective = if ordinary.is_empty() {
-            &candidates
-        } else {
-            &ordinary
-        };
-
-        effective
-            .iter()
-            .copied()
-            .min_by(|lhs, rhs| {
-                let l_rem = lhs.window.remaining_percent();
-                let r_rem = rhs.window.remaining_percent();
-                if (l_rem - r_rem).abs() > 0.01 {
-                    return l_rem.total_cmp(&r_rem);
-                }
-                Self::quota_summary_window_precedence(lhs)
-                    .cmp(&Self::quota_summary_window_precedence(rhs))
-            })
-            .map(|w| w.window.clone())
-    }
-
-    pub fn quota_summary_window_precedence(window: &NamedRateWindow) -> i32 {
-        match Self::quota_summary_window_minutes(window) {
-            Some(300) => 0,
-            Some(10_080) => 1,
-            Some(minutes) if minutes > 0 => 2,
-            _ => 3,
-        }
-    }
-
-    pub fn quota_summary_window_minutes(window: &NamedRateWindow) -> Option<i64> {
-        if let Some(minutes) = window.window.window_minutes
-            && minutes > 0
-        {
-            return Some(minutes);
-        }
-        let text = format!("{} {}", window.id, window.title).to_lowercase();
-        for token in text.split(|c: char| !c.is_alphanumeric()) {
-            if let Some(minutes) = parse_quota_summary_window_minutes(token) {
-                return Some(i64::from(minutes));
+        let pool = if usable.is_empty() { available } else { usable };
+        let mut best: Option<&RateWindow> = None;
+        for w in pool {
+            if best.is_none_or(|b| w.used_percent >= b.used_percent) {
+                best = Some(w);
             }
         }
-        None
+        best.cloned()
     }
 
-    pub fn is_quota_summary_window(window: &NamedRateWindow) -> bool {
-        window.id.starts_with(QUOTA_SUMMARY_WINDOW_ID_PREFIX)
-    }
-
-    pub fn is_ordinary_gemini_quota_summary_window(window: &NamedRateWindow) -> bool {
-        if !Self::is_quota_summary_window(window) {
-            return false;
-        }
-        let raw_id = window
-            .id
-            .strip_prefix(QUOTA_SUMMARY_WINDOW_ID_PREFIX)
-            .unwrap_or(&window.id);
-        let id = raw_id.split('#').next().unwrap_or(raw_id);
-        let lower_id = id.to_lowercase();
-        let tokens: Vec<&str> = lower_id
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|part| !part.is_empty())
+    pub fn most_constrained_extra_window_by_prefix(
+        snapshot: &UsageSnapshot,
+        prefix: &str,
+    ) -> Option<RateWindow> {
+        let windows: Vec<&RateWindow> = snapshot
+            .extra_rate_windows
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|w| w.usage_known && w.id.starts_with(prefix))
+            .map(|w| &w.window)
             .collect();
-        if tokens.first().copied() != Some("gemini") || tokens.len() < 2 {
-            return false;
-        }
-        const ALLOWED: &[&str] = &[
-            "5h", "5hr", "5hrs", "hour", "hours", "session", "weekly", "week", "1w", "7d", "day",
-            "daily", "1d", "24h", "quota", "limit",
-        ];
-        tokens[1..].iter().all(|q| ALLOWED.contains(q))
-    }
-
-    pub fn is_third_party_quota_summary_window(window: &NamedRateWindow) -> bool {
-        let text = format!("{} {}", window.id, window.title).to_lowercase();
-        let tokens: Vec<&str> = text
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|part| !part.is_empty())
+        let usable: Vec<&RateWindow> = windows
+            .iter()
+            .copied()
+            .filter(|w| w.used_percent < 100.0)
             .collect();
-        text.contains("claude")
-            || text.contains("gpt")
-            || text.contains("third-party")
-            || text.contains("third party")
-            || tokens.contains(&"3p")
+        let pool = if usable.is_empty() { windows } else { usable };
+        let mut best: Option<&RateWindow> = None;
+        for w in pool {
+            if best.is_none_or(|b| w.used_percent >= b.used_percent) {
+                best = Some(w);
+            }
+        }
+        best.cloned()
     }
 
-    pub fn is_compact_fallback_window(window: &NamedRateWindow) -> bool {
-        if window.id.starts_with(COMPACT_FALLBACK_WINDOW_ID_PREFIX) {
-            let text = format!("{} {}", window.id, window.title).to_lowercase();
-            return !text.contains("tab")
-                && !contains_token("image", &text)
-                && !text.contains("lite");
-        }
-        false
+    pub fn ranked_quota_summary_window(
+        snapshot: &UsageSnapshot,
+        now: Timestamp,
+    ) -> Option<RateWindow> {
+        snapshot
+            .extra_rate_windows
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .filter(|w| {
+                w.usage_known
+                    && w.id.starts_with(QUOTA_SUMMARY_WINDOW_ID_PREFIX)
+                    && w.window.used_percent.is_finite()
+                    && matches!(w.window.window_minutes, Some(300 | 10_080))
+            })
+            .max_by(|lhs, rhs| {
+                if lhs.window.used_percent != rhs.window.used_percent {
+                    return lhs.window.used_percent.total_cmp(&rhs.window.used_percent);
+                }
+                let lhs_reset = lhs.window.resets_at.filter(|&r| r > now);
+                let rhs_reset = rhs.window.resets_at.filter(|&r| r > now);
+                match (lhs_reset, rhs_reset) {
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (Some(l), Some(r)) if l != r => r.cmp(&l),
+                    _ => lhs.id.cmp(&rhs.id),
+                }
+            })
+            .map(|w| w.window.clone())
     }
 }
 
@@ -459,7 +425,69 @@ impl AntigravitySelectedAccountGuard {
         updated
     }
 
-    pub fn validate_selected_account_email<V: super::oauth_store::EnvValue>(
+    pub fn matches(
+        snapshot_account_email: Option<&str>,
+        expected_account_email: Option<&str>,
+    ) -> bool {
+        let Some(expected) = expected_account_email
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return true;
+        };
+        let Some(found) = snapshot_account_email
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return false;
+        };
+        found.eq_ignore_ascii_case(expected)
+    }
+
+    pub fn selected_account_email(cx: &FetchContext) -> Option<String> {
+        let creds =
+            AntigravityOAuthCredentialsStore::load_selected_account_credentials(&cx.env).ok()??;
+        creds.resolved_account_email()
+    }
+
+    pub fn validate(usage: &UsageSnapshot, cx: &FetchContext) -> Result<(), FetchError> {
+        if cx.source_mode != SourceMode::Auto || cx.selected_token_account.is_none() {
+            return Ok(());
+        }
+        let expected = Self::selected_account_email(cx);
+        let found = usage
+            .identity
+            .as_ref()
+            .and_then(|id| id.account_email.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        if let (Some(expected_email), Some(found_email)) = (&expected, &found)
+            && found_email.eq_ignore_ascii_case(expected_email)
+        {
+            return Ok(());
+        }
+        Err(FetchError::Classified(Self::account_mismatch_error(
+            expected.as_deref(),
+            found.as_deref(),
+        )))
+    }
+
+    pub fn account_mismatch_error(expected: Option<&str>, found: Option<&str>) -> ClassifiedError {
+        let selected = expected.unwrap_or("the selected account");
+        let message = if let Some(found) = found {
+            format!(
+                "Antigravity local session is signed in as {found}, not {selected}; local usage cannot be used for the selected account."
+            )
+        } else {
+            format!(
+                "Antigravity local session did not report an account matching {selected}; local usage cannot be used for the selected account."
+            )
+        };
+        ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, message)
+    }
+
+    pub fn validate_selected_account_email<V: EnvValue>(
         actual_email: Option<&str>,
         env: &BTreeMap<String, V>,
     ) -> Result<(), AntigravityStatusProbeError> {
@@ -469,26 +497,22 @@ impl AntigravitySelectedAccountGuard {
                 Ok(None) => return Ok(()),
                 Err(err) => return Err(AntigravityStatusProbeError::ParseFailed(err.to_string())),
             };
-        let Some(expected) = selected
-            .email
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        else {
-            return Ok(());
-        };
-        let Some(actual) = actual_email.map(str::trim).filter(|s| !s.is_empty()) else {
+        let Some(expected) = selected.resolved_account_email() else {
             return Err(AntigravityStatusProbeError::ParseFailed(
-                "Antigravity local source did not report the selected account email.".to_owned(),
+                "Antigravity local session did not report an account matching the selected account; local usage cannot be used for the selected account.".to_owned(),
             ));
         };
-        if actual.eq_ignore_ascii_case(expected) {
+        let Some(actual) = actual_email.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Err(AntigravityStatusProbeError::ParseFailed(format!(
+                "Antigravity local session did not report an account matching {expected}; local usage cannot be used for the selected account."
+            )));
+        };
+        if actual.eq_ignore_ascii_case(&expected) {
             Ok(())
         } else {
-            Err(AntigravityStatusProbeError::ParseFailed(
-                "Antigravity local source is signed into a different account than the selected account."
-                    .to_owned(),
-            ))
+            Err(AntigravityStatusProbeError::ParseFailed(format!(
+                "Antigravity local session is signed in as {actual}, not {expected}; local usage cannot be used for the selected account."
+            )))
         }
     }
 }
@@ -653,40 +677,51 @@ impl FetchStrategy for AntigravityStatusFetchStrategy {
                 cx,
                 self.config.selected_token_override.as_deref(),
             );
+            let selected_account_email = if resolved_cx.source_mode == SourceMode::Auto
+                && resolved_cx.selected_token_account.is_some()
+            {
+                AntigravitySelectedAccountGuard::selected_account_email(&resolved_cx)
+            } else {
+                None
+            };
+
             let snapshot = if let Some(probe_override) = &self.config.status_probe_override {
                 probe_override(self.scope, &resolved_cx)
                     .await
-                    .map_err(|e| FetchError::Classified(e.into_classified_error()))?
+                    .map_err(|e| match e {
+                        AntigravityStatusProbeError::Cancelled => FetchError::Cancelled,
+                        other => FetchError::Classified(other.into_classified_error()),
+                    })?
             } else {
                 let call = BrokerCall {
                     interaction: resolved_cx.interaction,
                     cancel: resolved_cx.cancel.clone(),
                     request_id: resolved_cx.request_id.clone(),
                 };
-                AntigravityStatusProbe::fetch(
+                AntigravityStatusProbe::fetch_with_expected_account(
                     &self.config.local_probe,
                     &self.config.net,
                     &call,
                     self.config.probe_timeout,
                     self.scope,
+                    selected_account_email.as_deref(),
                 )
                 .await
-                .map_err(|e| FetchError::Classified(e.into_classified_error()))?
+                .map_err(|e| match e {
+                    AntigravityStatusProbeError::Cancelled => FetchError::Cancelled,
+                    other => FetchError::Classified(other.into_classified_error()),
+                })?
             };
-
-            AntigravitySelectedAccountGuard::validate_selected_account_email(
-                snapshot.account_email.as_deref(),
-                &resolved_cx.env,
-            )
-            .map_err(|e| FetchError::Classified(e.into_classified_error()))?;
 
             let now = (self.config.clock)();
             let usage = snapshot
                 .to_usage_snapshot_at(now)
                 .map_err(|e| FetchError::Classified(e.into_classified_error()))?;
 
+            AntigravitySelectedAccountGuard::validate(&usage, &resolved_cx)?;
+
             let source_label = match self.scope {
-                ProcessScope::AppOnly | ProcessScope::IdeAndCli => "local",
+                ProcessScope::AppOnly | ProcessScope::IdeAndCli => "app",
                 ProcessScope::IdeOnly => "ide",
             };
             Ok(FetchResult::new(
@@ -698,8 +733,8 @@ impl FetchStrategy for AntigravityStatusFetchStrategy {
         })
     }
 
-    fn should_fallback(&self, _error: &FetchError, _cx: &FetchContext) -> bool {
-        true
+    fn should_fallback(&self, _error: &FetchError, cx: &FetchContext) -> bool {
+        cx.source_mode == SourceMode::Auto || cx.source_mode == SourceMode::Cli
     }
 }
 
@@ -722,10 +757,7 @@ impl AntigravityOAuthFetchStrategy {
         snapshot: &AntigravityStatusSnapshot,
         now: Timestamp,
     ) -> Result<UsageSnapshot, AntigravityStatusProbeError> {
-        if snapshot.model_quotas.is_empty()
-            && !snapshot.has_known_quota_summary()
-            && !snapshot.has_quota_summary_buckets()
-        {
+        if snapshot.model_quotas.is_empty() && snapshot.quota_summary.is_none() {
             let identity = ProviderIdentitySnapshot::new(
                 Some(ProviderId::new("antigravity").expect("valid provider id")),
                 snapshot.account_email.clone(),
@@ -821,6 +853,12 @@ impl FetchStrategy for AntigravityOAuthFetchStrategy {
                 move || clock()
             });
 
+            if self.config.oauth_client_resolver.is_none()
+                && self.config.remote_data_loader.is_none()
+            {
+                fetcher = fetcher.with_installed_client_discovery();
+            }
+
             if let Some(loader) = &self.config.remote_data_loader {
                 let loader = Arc::clone(loader);
                 fetcher = fetcher.with_data_loader(move |req| loader(req));
@@ -900,11 +938,50 @@ pub struct AntigravityOfflinePlaceholderStrategy;
 
 impl AntigravityOfflinePlaceholderStrategy {
     pub fn diagnostic_for_prior_failure(error: &AntigravityRemoteFetchError) -> Option<String> {
-        if matches!(error, AntigravityRemoteFetchError::ReauthenticationRequired) {
-            Some("Antigravity OAuth needs a new sign-in. Sign in to it again.".to_owned())
-        } else {
-            None
-        }
+        let reason = match error {
+            AntigravityRemoteFetchError::NotLoggedIn
+            | AntigravityRemoteFetchError::ReauthenticationRequired => error.to_string(),
+            AntigravityRemoteFetchError::PermissionDenied(_)
+            | AntigravityRemoteFetchError::RefreshFailed(_)
+            | AntigravityRemoteFetchError::ApiError(_)
+            | AntigravityRemoteFetchError::ParseFailed(_)
+            | AntigravityRemoteFetchError::NetworkError(_) => {
+                "the Antigravity API request failed".to_owned()
+            }
+        };
+        Some(format!(
+            "Live Antigravity usage is unavailable; showing offline data. {reason}"
+        ))
+    }
+
+    pub fn diagnostic_for_prior_probe_failure(
+        error: &AntigravityStatusProbeError,
+    ) -> Option<String> {
+        let reason = match error {
+            AntigravityStatusProbeError::ApiError(msg) => {
+                if msg.contains("HTTP 401") || msg.contains("HTTP 403") {
+                    error.to_string()
+                } else if let Some(idx) = msg.find("HTTP ")
+                    && msg.len() >= idx + 8
+                    && msg[idx + 5..idx + 8].chars().all(|c| c.is_ascii_digit())
+                {
+                    format!("the usage request failed ({})", &msg[idx..idx + 8])
+                } else {
+                    "the usage request failed".to_owned()
+                }
+            }
+            AntigravityStatusProbeError::NotRunning
+            | AntigravityStatusProbeError::MissingCSRFToken
+            | AntigravityStatusProbeError::TimedOut => error.to_string(),
+            AntigravityStatusProbeError::Cancelled => return None,
+            AntigravityStatusProbeError::ParseFailed(_)
+            | AntigravityStatusProbeError::PortDetectionFailed(_) => {
+                "check Diagnostics for per-source details".to_owned()
+            }
+        };
+        Some(format!(
+            "Live Antigravity usage is unavailable; showing offline data. {reason}"
+        ))
     }
 }
 
@@ -914,7 +991,7 @@ impl FetchStrategy for AntigravityOfflinePlaceholderStrategy {
     }
 
     fn kind(&self) -> SourceKind {
-        SourceKind::Cli
+        SourceKind::LocalProbe
     }
 
     fn is_available<'a>(&'a self, _cx: &'a FetchContext) -> BoxFuture<'a, bool> {

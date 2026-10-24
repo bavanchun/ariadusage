@@ -11,22 +11,23 @@ pub use descriptor::{
     ANTIGRAVITY_APP_LOCAL_STRATEGY_ID, ANTIGRAVITY_CLI_HTTPS_STRATEGY_ID,
     ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID, ANTIGRAVITY_OAUTH_STRATEGY_ID,
     ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityCLIHTTPSPlaceholderStrategy,
-    AntigravityOAuthFetchStrategy, AntigravityOfflinePlaceholderStrategy,
-    AntigravityProviderConfig, AntigravityProviderPlan, AntigravityProviderPresentation,
-    AntigravitySelectedAccountGuard, AntigravityStatusFetchStrategy,
-    AntigravityStatusProbeOverride, AntigravityStrategyConfig, AntigravityUsageDataSource,
-    IconWindowsContext, IconWindowsPair, MenuBarMetric, MenuBarWindowContext,
-    MenuBarWindowSelection, SemanticWindows,
+    AntigravityOAuthFetchStrategy, AntigravityOfflinePlaceholderStrategy, AntigravityProviderPlan,
+    AntigravityProviderPresentation, AntigravitySelectedAccountGuard,
+    AntigravityStatusFetchStrategy, AntigravityStatusProbeOverride, AntigravityStrategyConfig,
+    AntigravityUsageDataSource, IconWindowsContext, IconWindowsPair, MenuBarMetric,
+    MenuBarWindowContext, MenuBarWindowSelection, SemanticWindows,
 };
-pub use family_visibility::{KnownFamily, idle_window_ids, known_family};
+pub use family_visibility::{
+    AntigravityQuotaFamilyVisibility, KnownFamily, idle_window_ids, known_family,
+    known_family_for_window,
+};
 pub use oauth_store::{
     AntigravityOAuthClient, AntigravityOAuthConfig, AntigravityOAuthCredentials,
     AntigravityOAuthCredentialsStore,
 };
 pub use quota_summary::{
     AntigravityQuotaSummary, AntigravityQuotaSummaryBucket, AntigravityQuotaSummaryGroup,
-    AntigravityQuotaSummaryResponse, decode_quota_summary_date, parse_cli_usage_report,
-    parse_quota_summary_response, parse_quota_summary_window_minutes, quota_summary_from_response,
+    parse_cli_usage_report, parse_quota_summary_response, parse_quota_summary_response_with_source,
 };
 pub use remote_fetcher::{
     ANTIGRAVITY_GOOGLE_ORIGINS, AllowedTier, AntigravityRemoteFetchError,
@@ -39,9 +40,9 @@ pub use remote_fetcher::{
 pub use status_probe::{
     AntigravityConnectionEndpoint, AntigravityModelQuota, AntigravityPlanInfoSummary,
     AntigravityProcessKind, AntigravitySnapshotSource, AntigravityStatusProbe,
-    AntigravityStatusProbeError, AntigravityStatusSnapshot, COMMAND_MODEL_CONFIG_PATH,
-    COMPACT_FALLBACK_WINDOW_ID_PREFIX, CURRENT_FLASH_CANONICAL_ID, EndpointRequestSender,
-    EndpointSource, GET_USER_STATUS_PATH, LocalhostTrustPolicy, OperationDeadline, ProcessEntry,
-    ProcessInfoResult, ProcessScope, QUOTA_SUMMARY_WINDOW_ID_PREFIX, RequestContext,
-    RequestPayload, ResponseSummary, UNLEASH_PATH,
+    AntigravityStatusProbeError, AntigravityStatusSnapshot, AntigravityUsagePool,
+    COMMAND_MODEL_CONFIG_PATH, COMPACT_FALLBACK_WINDOW_ID_PREFIX, CURRENT_FLASH_CANONICAL_ID,
+    EndpointRequestSender, EndpointSource, GET_USER_STATUS_PATH, LocalhostTrustPolicy,
+    OperationDeadline, ProcessEntry, ProcessInfoResult, ProcessScope, QUOTA_SUMMARY_PATH,
+    QUOTA_SUMMARY_WINDOW_ID_PREFIX, RequestContext, RequestPayload, ResponseSummary, UNLEASH_PATH,
 };

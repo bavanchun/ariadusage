@@ -22,9 +22,7 @@ use super::oauth_store::{
     AntigravityOAuthClient, AntigravityOAuthConfig, AntigravityOAuthCredentials,
     AntigravityOAuthCredentialsStore,
 };
-use super::quota_summary::{
-    AntigravityQuotaSummary, AntigravityQuotaSummaryResponse, quota_summary_from_response,
-};
+use super::quota_summary::{AntigravityQuotaSummary, parse_quota_summary_response_with_source};
 use super::status_probe::{
     AntigravityModelQuota, AntigravitySnapshotSource, AntigravityStatusSnapshot,
 };
@@ -34,7 +32,7 @@ pub const LOAD_CODE_ASSIST_ENDPOINT: &str =
 pub const ONBOARD_USER_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 pub const RETRIEVE_USER_QUOTA_SUMMARY_ENDPOINT: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
+    "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary";
 pub const FETCH_AVAILABLE_MODELS_ENDPOINT: &str =
     "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 pub const RETRIEVE_USER_QUOTA_ENDPOINT: &str =
@@ -51,17 +49,19 @@ pub const ANTIGRAVITY_GOOGLE_ORIGINS: &[&str] = &[
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AntigravityRemoteFetchError {
-    #[error("Not logged in to Antigravity OAuth. Click \"Sign in to Antigravity...\" in the menu.")]
+    #[error("Antigravity Google auth not found. Use Antigravity login to authenticate.")]
     NotLoggedIn,
     #[error(
-        "Antigravity OAuth needs a new sign-in. Click \"Sign in to Antigravity...\" in the menu."
+        "This Antigravity account was signed in with an OAuth client that cannot read its quota. Sign in to it again."
     )]
     ReauthenticationRequired,
+    #[error("Antigravity remote API permission denied: {0}")]
+    PermissionDenied(String),
     #[error("Antigravity OAuth token refresh failed: {0}")]
     RefreshFailed(String),
     #[error("Antigravity remote API error: {0}")]
     ApiError(String),
-    #[error("Could not parse Antigravity remote quota: {0}")]
+    #[error("Could not parse Antigravity remote usage: {0}")]
     ParseFailed(String),
     #[error("Antigravity remote network error: {0}")]
     NetworkError(String),
@@ -74,7 +74,7 @@ impl AntigravityRemoteFetchError {
             Self::ReauthenticationRequired | Self::RefreshFailed(_) => {
                 ProviderErrorKind::AuthenticationExpired
             }
-            Self::ApiError(_) => ProviderErrorKind::ApiFailure,
+            Self::PermissionDenied(_) | Self::ApiError(_) => ProviderErrorKind::ApiFailure,
             Self::ParseFailed(_) => ProviderErrorKind::ParseFailure,
             Self::NetworkError(_) => ProviderErrorKind::NetworkFailure,
         };
@@ -146,6 +146,8 @@ pub type CredentialsUpdateHandler = Arc<
 
 pub type OAuthClientResolver = Arc<dyn Fn() -> Option<AntigravityOAuthClient> + Send + Sync>;
 
+pub type AsyncSleeper = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CredentialSource {
     SharedFile,
@@ -162,13 +164,13 @@ pub struct AntigravityRemoteUsageFetcher {
     credentials_update_handler: Option<CredentialsUpdateHandler>,
     oauth_client_resolver: OAuthClientResolver,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
+    sleeper: AsyncSleeper,
 }
 
 impl AntigravityRemoteUsageFetcher {
     pub fn new(timeout: Duration, home_directory: impl Into<PathBuf>) -> Self {
         let home_directory = home_directory.into();
         let env = BTreeMap::new();
-        let resolver_home = home_directory.clone();
         let resolver_env = env.clone();
         Self {
             timeout,
@@ -178,10 +180,21 @@ impl AntigravityRemoteUsageFetcher {
             data_loader: None,
             credentials_update_handler: None,
             oauth_client_resolver: Arc::new(move || {
-                AntigravityOAuthConfig::resolve_client(&resolver_env, None, Some(&resolver_home))
+                AntigravityOAuthConfig::resolve_client_from_env(&resolver_env)
             }),
             clock: Arc::new(Timestamp::now),
+            sleeper: Arc::new(|d| Box::pin(tokio::time::sleep(d))),
         }
+    }
+
+    pub fn with_installed_client_discovery(mut self) -> Self {
+        let resolver_home = self.home_directory.clone();
+        let resolver_env = self.environment.clone();
+        self.oauth_client_resolver = Arc::new(move || {
+            AntigravityOAuthConfig::resolve_client_from_env(&resolver_env)
+                .or_else(|| AntigravityOAuthConfig::installed_client_cached(Some(&resolver_home)))
+        });
+        self
     }
 
     pub fn with_net(mut self, net: Arc<NetBroker>) -> Self {
@@ -190,12 +203,10 @@ impl AntigravityRemoteUsageFetcher {
     }
 
     pub fn with_environment(mut self, environment: BTreeMap<String, String>) -> Self {
-        let resolver_home = self.home_directory.clone();
         let resolver_env = environment.clone();
         self.environment = environment;
-        self.oauth_client_resolver = Arc::new(move || {
-            AntigravityOAuthConfig::resolve_client(&resolver_env, None, Some(&resolver_home))
-        });
+        self.oauth_client_resolver =
+            Arc::new(move || AntigravityOAuthConfig::resolve_client_from_env(&resolver_env));
         self
     }
 
@@ -218,6 +229,15 @@ impl AntigravityRemoteUsageFetcher {
             + 'static,
     {
         self.data_loader = Some(Arc::new(loader));
+        self.sleeper = Arc::new(|_| Box::pin(async {}));
+        self
+    }
+
+    pub fn with_sleeper<F>(mut self, sleeper: F) -> Self
+    where
+        F: Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    {
+        self.sleeper = Arc::new(sleeper);
         self
     }
 
@@ -250,6 +270,25 @@ impl AntigravityRemoteUsageFetcher {
         self
     }
 
+    pub fn user_agent() -> &'static str {
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            "antigravity/hub/2.9.1 linux/arm64"
+        }
+        #[cfg(all(target_os = "linux", not(target_arch = "aarch64")))]
+        {
+            "antigravity/hub/2.9.1 linux/amd64"
+        }
+        #[cfg(all(not(target_os = "linux"), target_arch = "aarch64"))]
+        {
+            "antigravity/hub/2.9.1 darwin/arm64"
+        }
+        #[cfg(all(not(target_os = "linux"), not(target_arch = "aarch64")))]
+        {
+            "antigravity/hub/2.9.1 darwin/amd64"
+        }
+    }
+
     pub async fn fetch(&self) -> Result<AntigravityStatusSnapshot, AntigravityRemoteFetchError> {
         let call = BrokerCall {
             interaction: FetchInteraction::UserInitiated,
@@ -264,6 +303,10 @@ impl AntigravityRemoteUsageFetcher {
         call: &BrokerCall,
     ) -> Result<AntigravityStatusSnapshot, AntigravityRemoteFetchError> {
         let (mut credentials, credential_source) = self.resolve_active_credentials(call)?;
+        if credentials.access_token.trim().is_empty() {
+            return Err(AntigravityRemoteFetchError::NotLoggedIn);
+        }
+
         let now = (self.clock)();
         if credentials.needs_refresh_at(now) {
             let Some(refresh_token) = credentials
@@ -276,46 +319,92 @@ impl AntigravityRemoteUsageFetcher {
             credentials = self
                 .refresh_token(call, &credentials, &refresh_token, credential_source)
                 .await?;
+            if credential_source == CredentialSource::SharedFile {
+                let cred_url =
+                    AntigravityOAuthCredentialsStore::credentials_url(&self.home_directory);
+                if let Ok(reloaded) =
+                    AntigravityOAuthCredentialsStore::load_with_call(&cred_url, call)
+                    && !reloaded.access_token.trim().is_empty()
+                {
+                    credentials = reloaded;
+                }
+            }
         }
+
+        let email = credentials.resolved_account_email();
+        let hosted_domain = AntigravityOAuthConfig::extract_hosted_domain_from_id_token(
+            credentials.id_token.as_deref(),
+        );
 
         let load_response = self
             .load_code_assist(call, &credentials.access_token)
             .await?;
+
+        let stored_project_id = credentials
+            .project_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+
+        if stored_project_id.is_none() && Self::should_require_reauthentication(&load_response) {
+            return Err(AntigravityRemoteFetchError::ReauthenticationRequired);
+        }
+
         let project_id = self
-            .resolve_project_id(call, &load_response, &credentials, credential_source)
-            .await?;
-        let quota_summary = self
-            .retrieve_user_quota_summary(call, &credentials.access_token, project_id.as_deref())
+            .resolve_project_id(
+                call,
+                &credentials.access_token,
+                stored_project_id.as_deref(),
+                &load_response,
+            )
             .await?;
 
-        let model_quotas = if quota_summary
-            .as_ref()
-            .is_some_and(Self::quota_summary_has_known_usage)
+        if let Some(pid) = &project_id
+            && stored_project_id.as_deref() != Some(pid.as_str())
         {
-            Vec::new()
-        } else {
-            self.fetch_remote_model_quotas(call, &credentials.access_token, project_id.as_deref())
-                .await?
-        };
+            credentials.project_id = Some(pid.clone());
+            let _ = self
+                .persist_updated_credentials(&credentials, credential_source)
+                .await;
+        }
 
-        let email = credentials.email.clone().or_else(|| {
-            AntigravityOAuthConfig::extract_email_from_id_token(credentials.id_token.as_deref())
-        });
-        let hosted_domain = AntigravityOAuthConfig::extract_hosted_domain_from_id_token(
-            credentials.id_token.as_deref(),
-        );
-        let plan = Self::resolve_plan(
-            &load_response,
-            hosted_domain.as_deref(),
-            quota_summary.as_ref(),
-        );
+        let plan = Self::resolve_plan(&load_response, hosted_domain.as_deref(), None);
+
+        match self
+            .retrieve_user_quota_summary(
+                call,
+                &credentials.access_token,
+                project_id.as_deref(),
+                email.clone(),
+                plan.clone(),
+            )
+            .await
+        {
+            Ok(Some(snapshot)) => return Ok(snapshot),
+            Ok(None) => {}
+            Err(AntigravityRemoteFetchError::NotLoggedIn) => {
+                return Err(AntigravityRemoteFetchError::NotLoggedIn);
+            }
+            Err(_) => {
+                if call.cancel.is_cancelled() {
+                    return Err(AntigravityRemoteFetchError::NetworkError(
+                        "Request cancelled".to_owned(),
+                    ));
+                }
+            }
+        }
+
+        let model_quotas = self
+            .fetch_remote_model_quotas(call, &credentials.access_token, project_id.as_deref())
+            .await?;
 
         Ok(AntigravityStatusSnapshot {
             model_quotas,
             account_email: email,
             account_plan: plan,
             source: AntigravitySnapshotSource::Remote,
-            quota_summary,
+            quota_summary: None,
         })
     }
 
@@ -372,35 +461,37 @@ impl AntigravityRemoteUsageFetcher {
             .await?;
 
         if response.status != 200 {
-            return Err(AntigravityRemoteFetchError::RefreshFailed(format!(
-                "HTTP {}",
-                response.status
-            )));
+            return Err(AntigravityRemoteFetchError::NotLoggedIn);
         }
 
         let refresh_response: TokenRefreshResponse = serde_json::from_slice(&response.body)
-            .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
+            .map_err(|_| {
+                AntigravityRemoteFetchError::ParseFailed(
+                    "Could not parse refresh response".to_owned(),
+                )
+            })?;
 
         let now = (self.clock)();
-        let expires_in_secs = refresh_response.expires_in.unwrap_or(3600.0).round() as i64;
-        let expiry_date = now
-            .saturating_add(jiff::Span::new().seconds(expires_in_secs))
-            .ok();
+        let expiry_date = refresh_response
+            .expires_in
+            .and_then(|secs| {
+                let rounded = secs.round() as i64;
+                now.saturating_add(jiff::Span::new().seconds(rounded)).ok()
+            })
+            .or(credentials.expiry_date);
         let id_token = refresh_response
             .id_token
             .or_else(|| credentials.id_token.clone());
-        let email = AntigravityOAuthConfig::extract_email_from_id_token(id_token.as_deref())
-            .or_else(|| credentials.email.clone());
 
         let updated = AntigravityOAuthCredentials {
             access_token: refresh_response.access_token,
             refresh_token: credentials.refresh_token.clone(),
             expiry_date,
             id_token,
-            email,
+            email: credentials.email.clone(),
             project_id: credentials.project_id.clone(),
-            client_id: Some(client.client_id),
-            client_secret: Some(client.client_secret),
+            client_id: credentials.client_id.clone(),
+            client_secret: credentials.client_secret.clone(),
         };
 
         self.persist_updated_credentials(&updated, source).await?;
@@ -430,7 +521,7 @@ impl AntigravityRemoteUsageFetcher {
         }
 
         Err(AntigravityRemoteFetchError::ApiError(format!(
-            "Antigravity OAuth client is not configured. Ensure Antigravity.app is installed or set {} and {}.",
+            "Could not discover a matching Antigravity OAuth client. Update or install Antigravity.app, or set {} and {} before logging in.",
             AntigravityOAuthConfig::CLIENT_ID_ENV_KEY,
             AntigravityOAuthConfig::CLIENT_SECRET_ENV_KEY
         )))
@@ -456,35 +547,6 @@ impl AntigravityRemoteUsageFetcher {
         }
     }
 
-    async fn persist_project_id_if_needed(
-        &self,
-        project_id: Option<&str>,
-        credentials: &AntigravityOAuthCredentials,
-        source: CredentialSource,
-    ) {
-        let Some(trimmed_project_id) = project_id.map(str::trim).filter(|s| !s.is_empty()) else {
-            return;
-        };
-        if credentials.project_id.as_deref() == Some(trimmed_project_id) {
-            return;
-        }
-        let mut updated = credentials.clone();
-        updated.project_id = Some(trimmed_project_id.to_owned());
-
-        match source {
-            CredentialSource::SharedFile => {
-                let cred_url =
-                    AntigravityOAuthCredentialsStore::credentials_url(&self.home_directory);
-                let _ = AntigravityOAuthCredentialsStore::save(&updated, &cred_url);
-            }
-            CredentialSource::SelectedAccount => {
-                if let Some(handler) = &self.credentials_update_handler {
-                    let _ = handler(updated).await;
-                }
-            }
-        }
-    }
-
     async fn load_code_assist(
         &self,
         call: &BrokerCall,
@@ -498,7 +560,13 @@ impl AntigravityRemoteUsageFetcher {
             }
         });
         let data = self
-            .perform_json_post(call, LOAD_CODE_ASSIST_ENDPOINT, access_token, &body)
+            .perform_json_post(
+                call,
+                LOAD_CODE_ASSIST_ENDPOINT,
+                access_token,
+                &body,
+                self.timeout,
+            )
             .await?;
         serde_json::from_slice(&data)
             .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))
@@ -507,49 +575,38 @@ impl AntigravityRemoteUsageFetcher {
     async fn resolve_project_id(
         &self,
         call: &BrokerCall,
-        load_response: &LoadCodeAssistResponse,
-        credentials: &AntigravityOAuthCredentials,
-        source: CredentialSource,
+        access_token: &str,
+        stored_project_id: Option<&str>,
+        initial_response: &LoadCodeAssistResponse,
     ) -> Result<Option<String>, AntigravityRemoteFetchError> {
-        if let Some(project_id) = load_response
-            .cloudaicompanion_project
-            .as_ref()
-            .and_then(CloudAiCompanionProject::resolved_project_id)
+        if let Some(pid) = stored_project_id
+            .map(str::to_owned)
+            .or_else(|| initial_response.project_id())
         {
-            self.persist_project_id_if_needed(Some(&project_id), credentials, source)
-                .await;
-            return Ok(Some(project_id));
+            return Ok(Some(pid));
         }
-        if let Some(stored) = credentials
-            .project_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Ok(Some(stored.to_owned()));
+
+        let Some(tier_id) = Self::pick_onboard_tier_from_response(initial_response) else {
+            return Ok(None);
+        };
+
+        if let Ok(Some(onboarded)) = self.onboard_user(call, access_token, &tier_id).await {
+            return Ok(Some(onboarded));
         }
-        if Self::should_require_reauthentication(load_response) {
-            return Err(AntigravityRemoteFetchError::ReauthenticationRequired);
+
+        for _ in 0..5 {
+            (self.sleeper)(Duration::from_millis(2000)).await;
+            let refreshed = self.load_code_assist(call, access_token).await?;
+            if let Some(pid) = refreshed.project_id() {
+                return Ok(Some(pid));
+            }
         }
-        if let Some(tier_id) = Self::pick_onboard_tier(load_response.allowed_tiers.as_deref()) {
-            let onboarded = self
-                .onboard_user(call, &credentials.access_token, &tier_id)
-                .await?;
-            self.persist_project_id_if_needed(onboarded.as_deref(), credentials, source)
-                .await;
-            return Ok(onboarded);
-        }
+
         Ok(None)
     }
 
     pub fn should_require_reauthentication(load_response: &LoadCodeAssistResponse) -> bool {
-        if load_response.current_tier.is_some()
-            || load_response
-                .cloudaicompanion_project
-                .as_ref()
-                .and_then(CloudAiCompanionProject::resolved_project_id)
-                .is_some()
-        {
+        if load_response.current_tier.is_some() || load_response.project_id().is_some() {
             return false;
         }
         load_response
@@ -561,17 +618,12 @@ impl AntigravityRemoteUsageFetcher {
                 tier.reason_code
                     .as_deref()
                     .map(str::trim)
-                    .is_some_and(|code| {
-                        code.eq_ignore_ascii_case("GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT")
-                    })
+                    .is_some_and(|code| code == "GOOGLE_TOS_NOT_SUPPORTED_BY_CLIENT")
             })
     }
 
     pub fn pick_onboard_tier(allowed_tiers: Option<&[AllowedTier]>) -> Option<String> {
         let tiers = allowed_tiers?;
-        if tiers.is_empty() {
-            return None;
-        }
         if let Some(default_tier) = tiers.iter().find(|t| t.is_default == Some(true))
             && let Some(id) = default_tier
                 .id
@@ -581,14 +633,33 @@ impl AntigravityRemoteUsageFetcher {
         {
             return Some(id.to_owned());
         }
-        if let Some(first_id) = tiers
+        tiers
             .iter()
             .filter_map(|t| t.id.as_deref().map(str::trim).filter(|s| !s.is_empty()))
             .next()
-        {
-            return Some(first_id.to_owned());
-        }
-        Some("LEGACY".to_owned())
+            .map(str::to_owned)
+    }
+
+    pub fn pick_onboard_tier_from_response(response: &LoadCodeAssistResponse) -> Option<String> {
+        Self::pick_onboard_tier(response.allowed_tiers.as_deref())
+            .or_else(|| {
+                response
+                    .paid_tier
+                    .as_ref()
+                    .and_then(|t| t.id.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                response
+                    .current_tier
+                    .as_ref()
+                    .and_then(|t| t.id.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            })
     }
 
     async fn onboard_user(
@@ -606,7 +677,13 @@ impl AntigravityRemoteUsageFetcher {
             }
         });
         let data = self
-            .perform_json_post(call, ONBOARD_USER_ENDPOINT, access_token, &body)
+            .perform_json_post(
+                call,
+                ONBOARD_USER_ENDPOINT,
+                access_token,
+                &body,
+                self.timeout,
+            )
             .await?;
         let response: OnboardUserResponse = serde_json::from_slice(&data)
             .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
@@ -621,60 +698,43 @@ impl AntigravityRemoteUsageFetcher {
         call: &BrokerCall,
         access_token: &str,
         project_id: Option<&str>,
-    ) -> Result<Option<AntigravityQuotaSummary>, AntigravityRemoteFetchError> {
+        account_email: Option<String>,
+        account_plan: Option<String>,
+    ) -> Result<Option<AntigravityStatusSnapshot>, AntigravityRemoteFetchError> {
         let mut payload = Map::new();
         if let Some(pid) = project_id.map(str::trim).filter(|s| !s.is_empty()) {
             payload.insert("project".to_owned(), Value::String(pid.to_owned()));
         }
-        let body = serde_json::to_vec(&Value::Object(payload))
-            .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
-        let url = reqwest::Url::parse(RETRIEVE_USER_QUOTA_SUMMARY_ENDPOINT)
-            .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
-
-        let mut headers = BTreeMap::new();
-        headers.insert("Authorization".to_owned(), format!("Bearer {access_token}"));
-        headers.insert("Content-Type".to_owned(), "application/json".to_owned());
-
-        let response = self
-            .perform_request(
+        let data = self
+            .perform_json_post(
                 call,
-                RemoteHttpRequest {
-                    url,
-                    method: Method::POST,
-                    headers,
-                    body: Some(body),
-                    timeout: self.timeout,
-                },
-                Some(access_token),
+                RETRIEVE_USER_QUOTA_SUMMARY_ENDPOINT,
+                access_token,
+                &Value::Object(payload),
+                self.timeout.min(Duration::from_secs(2)),
             )
             .await?;
 
-        if matches!(response.status, 404 | 405 | 501 | 403) {
+        let mut summary =
+            parse_quota_summary_response_with_source(&data, AntigravitySnapshotSource::Remote)
+                .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
+
+        summary.account_email = account_email.clone();
+        summary.account_plan = account_plan.clone();
+
+        if !summary.has_known_quota_summary() {
             return Ok(None);
         }
-        if response.status == 401 {
-            return Err(AntigravityRemoteFetchError::NotLoggedIn);
-        }
-        if response.status != 200 {
-            return Err(AntigravityRemoteFetchError::ApiError(format!(
-                "HTTP {}",
-                response.status
-            )));
+
+        if account_plan
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("free"))
+            && Self::has_measured_five_hour_quota(summary.quota_summary.as_ref())
+        {
+            summary.account_plan = None;
         }
 
-        let Ok(decoded) = serde_json::from_slice::<AntigravityQuotaSummaryResponse>(&response.body)
-        else {
-            return Ok(None);
-        };
-        Ok(quota_summary_from_response(&decoded).ok())
-    }
-
-    fn quota_summary_has_known_usage(summary: &AntigravityQuotaSummary) -> bool {
-        summary
-            .groups
-            .iter()
-            .flat_map(|g| &g.buckets)
-            .any(|b| !b.disabled && b.remaining_fraction.is_some())
+        Ok(Some(summary))
     }
 
     async fn fetch_remote_model_quotas(
@@ -689,31 +749,46 @@ impl AntigravityRemoteUsageFetcher {
         {
             Ok(available_models) => {
                 if Self::should_verify_full_remote_quotas(&available_models) {
-                    match self
-                        .retrieve_user_quota(call, access_token, project_id)
-                        .await
+                    let verified_quotas = self
+                        .fetch_quota_buckets_if_permitted(call, access_token, project_id)
+                        .await?;
+                    let Some(verified_quotas) = verified_quotas else {
+                        return Ok(Vec::new());
+                    };
+                    if !verified_quotas
+                        .iter()
+                        .any(|q| q.remaining_fraction.is_some())
                     {
-                        Ok(verified_quotas) => Ok(Self::merge_verified_quotas(
-                            &available_models,
-                            &verified_quotas,
-                        )),
-                        Err(err) if Self::is_permission_denied(&err) => Ok(available_models),
-                        Err(err) => Err(err),
+                        return Ok(Vec::new());
                     }
+                    Ok(Self::merge_verified_quotas(
+                        &available_models,
+                        &verified_quotas,
+                    ))
                 } else {
                     Ok(available_models)
                 }
             }
-            Err(err) if Self::is_permission_denied(&err) => {
-                match self
-                    .retrieve_user_quota(call, access_token, project_id)
-                    .await
-                {
-                    Ok(quotas) => Ok(quotas),
-                    Err(quota_err) if Self::is_permission_denied(&quota_err) => Ok(Vec::new()),
-                    Err(quota_err) => Err(quota_err),
-                }
-            }
+            Err(AntigravityRemoteFetchError::PermissionDenied(_)) => Ok(self
+                .fetch_quota_buckets_if_permitted(call, access_token, project_id)
+                .await?
+                .unwrap_or_default()),
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn fetch_quota_buckets_if_permitted(
+        &self,
+        call: &BrokerCall,
+        access_token: &str,
+        project_id: Option<&str>,
+    ) -> Result<Option<Vec<AntigravityModelQuota>>, AntigravityRemoteFetchError> {
+        match self
+            .retrieve_user_quota(call, access_token, project_id)
+            .await
+        {
+            Ok(quotas) => Ok(Some(quotas)),
+            Err(AntigravityRemoteFetchError::PermissionDenied(_)) => Ok(None),
             Err(err) => Err(err),
         }
     }
@@ -734,6 +809,7 @@ impl AntigravityRemoteUsageFetcher {
                 FETCH_AVAILABLE_MODELS_ENDPOINT,
                 access_token,
                 &Value::Object(payload),
+                self.timeout,
             )
             .await?;
         let response: FetchAvailableModelsResponse = serde_json::from_slice(&data)
@@ -748,9 +824,6 @@ impl AntigravityRemoteUsageFetcher {
                 .reset_time
                 .as_deref()
                 .and_then(Self::parse_reset_date);
-            if quota_info.remaining_fraction.is_none() && reset_time.is_none() {
-                continue;
-            }
             let label = entry
                 .display_name
                 .as_deref()
@@ -792,13 +865,20 @@ impl AntigravityRemoteUsageFetcher {
                 RETRIEVE_USER_QUOTA_ENDPOINT,
                 access_token,
                 &Value::Object(payload),
+                self.timeout,
             )
             .await?;
         let response: RetrieveUserQuotaResponse = serde_json::from_slice(&data)
             .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
 
-        let mut quotas = Vec::new();
-        for bucket in response.buckets.unwrap_or_default() {
+        let Some(buckets) = response.buckets else {
+            return Err(AntigravityRemoteFetchError::ParseFailed(
+                "No quota buckets in response".to_owned(),
+            ));
+        };
+
+        let mut model_quota_map: BTreeMap<String, (Option<f64>, Option<String>)> = BTreeMap::new();
+        for bucket in buckets {
             let Some(model_id) = bucket
                 .model_id
                 .as_deref()
@@ -807,21 +887,30 @@ impl AntigravityRemoteUsageFetcher {
             else {
                 continue;
             };
-            let reset_time = bucket
-                .reset_time
-                .as_deref()
-                .and_then(Self::parse_reset_date);
-            if bucket.remaining_fraction.is_none() && reset_time.is_none() {
-                continue;
+            let next = (bucket.remaining_fraction, bucket.reset_time);
+            if let Some(existing) = model_quota_map.get(model_id) {
+                let existing_frac = existing.0.unwrap_or(f64::MAX);
+                let next_frac = next.0.unwrap_or(f64::MAX);
+                if existing_frac <= next_frac {
+                    continue;
+                }
             }
-            quotas.push(AntigravityModelQuota {
-                label: model_id.to_owned(),
-                model_id: model_id.to_owned(),
-                remaining_fraction: bucket.remaining_fraction,
-                reset_time,
-                reset_description: None,
-            });
+            model_quota_map.insert(model_id.to_owned(), next);
         }
+
+        let quotas = model_quota_map
+            .into_iter()
+            .map(|(model_id, (fraction, reset_raw))| {
+                let reset_time = reset_raw.as_deref().and_then(Self::parse_reset_date);
+                AntigravityModelQuota {
+                    label: model_id.clone(),
+                    model_id,
+                    remaining_fraction: fraction,
+                    reset_time,
+                    reset_description: None,
+                }
+            })
+            .collect();
         Ok(quotas)
     }
 
@@ -836,26 +925,16 @@ impl AntigravityRemoteUsageFetcher {
         models: &[AntigravityModelQuota],
         verified_quotas: &[AntigravityModelQuota],
     ) -> Vec<AntigravityModelQuota> {
-        if verified_quotas.is_empty() {
-            return Vec::new();
-        }
-        let mut verified_by_id = BTreeMap::new();
+        let mut verified_by_id: BTreeMap<String, AntigravityModelQuota> = BTreeMap::new();
         for quota in verified_quotas {
-            verified_by_id
-                .entry(quota.model_id.to_lowercase())
-                .or_insert_with(|| quota.clone());
-        }
-        if !verified_by_id
-            .values()
-            .any(|q| q.remaining_fraction.is_some())
-        {
-            return Vec::new();
+            verified_by_id.insert(quota.model_id.trim().to_lowercase(), quota.clone());
         }
 
-        models
+        let mut merged: Vec<AntigravityModelQuota> = models
             .iter()
             .filter_map(|model| {
-                let verified = verified_by_id.get(&model.model_id.to_lowercase())?;
+                let key = model.model_id.trim().to_lowercase();
+                let verified = verified_by_id.remove(&key)?;
                 Some(AntigravityModelQuota {
                     label: model.label.clone(),
                     model_id: model.model_id.clone(),
@@ -863,23 +942,22 @@ impl AntigravityRemoteUsageFetcher {
                     reset_time: verified.reset_time.or(model.reset_time),
                     reset_description: verified
                         .reset_description
-                        .clone()
                         .or_else(|| model.reset_description.clone()),
                 })
             })
-            .collect()
-    }
+            .collect();
 
-    fn is_permission_denied(error: &AntigravityRemoteFetchError) -> bool {
-        match error {
-            AntigravityRemoteFetchError::ApiError(msg) => {
-                let lower = msg.to_lowercase();
-                lower.contains("403")
-                    || lower.contains("permission_denied")
-                    || lower.contains("permission denied")
-            }
-            _ => false,
-        }
+        let mut unmatched: Vec<AntigravityModelQuota> = verified_by_id
+            .into_values()
+            .filter(|q| q.remaining_fraction.is_some())
+            .collect();
+        unmatched.sort_by(|lhs, rhs| {
+            lhs.model_id
+                .to_lowercase()
+                .cmp(&rhs.model_id.to_lowercase())
+        });
+        merged.extend(unmatched);
+        merged
     }
 
     pub fn resolve_plan(
@@ -887,27 +965,22 @@ impl AntigravityRemoteUsageFetcher {
         hosted_domain: Option<&str>,
         quota_summary: Option<&AntigravityQuotaSummary>,
     ) -> Option<String> {
-        if let Some(paid_name) = load_response
-            .paid_tier
-            .as_ref()
-            .and_then(|t| t.name.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(paid_name.to_owned());
-        }
-        if let Some(paid_id) = load_response
-            .paid_tier
-            .as_ref()
-            .and_then(|t| t.id.as_deref())
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            let lower = paid_id.to_lowercase();
-            if lower != "free" && lower != "free-tier" {
-                return Some("Paid".to_owned());
+        if let Some(paid_tier) = &load_response.paid_tier {
+            let name = paid_tier
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let id = paid_tier
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if name.is_some() || id.is_some() {
+                return Some(name.unwrap_or("Paid").to_owned());
             }
         }
+
         if let Some(plan_info) = &load_response.plan_info
             && let Some(preferred) = plan_info.preferred_name()
         {
@@ -924,8 +997,7 @@ impl AntigravityRemoteUsageFetcher {
             .as_ref()
             .and_then(|t| t.id.as_deref())
             .unwrap_or("")
-            .trim()
-            .to_lowercase();
+            .trim();
         let tier_name = load_response
             .current_tier
             .as_ref()
@@ -933,7 +1005,7 @@ impl AntigravityRemoteUsageFetcher {
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        match tier_id.as_str() {
+        match tier_id {
             "standard-tier" => Some("Paid".to_owned()),
             "free-tier" => {
                 if Self::has_measured_five_hour_quota(quota_summary) {
@@ -953,11 +1025,20 @@ impl AntigravityRemoteUsageFetcher {
         let Some(summary) = summary else {
             return false;
         };
-        summary
-            .groups
-            .iter()
-            .flat_map(|g| &g.buckets)
-            .any(|b| !b.disabled && b.remaining_fraction.is_some() && b.window_minutes == Some(300))
+        let snapshot = AntigravityStatusSnapshot::from_quota_summary(
+            summary.clone(),
+            None,
+            None,
+            AntigravitySnapshotSource::Remote,
+        );
+        snapshot
+            .to_usage_snapshot()
+            .ok()
+            .and_then(|u| u.extra_rate_windows)
+            .is_some_and(|ws| {
+                ws.iter()
+                    .any(|w| w.usage_known && w.window.window_minutes == Some(300))
+            })
     }
 
     pub fn parse_reset_date(raw: &str) -> Option<Timestamp> {
@@ -984,15 +1065,18 @@ impl AntigravityRemoteUsageFetcher {
         endpoint: &str,
         access_token: &str,
         body: &Value,
+        timeout: Duration,
     ) -> Result<Vec<u8>, AntigravityRemoteFetchError> {
-        let url = reqwest::Url::parse(endpoint)
-            .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
+        let url = reqwest::Url::parse(endpoint).map_err(|e| {
+            AntigravityRemoteFetchError::ApiError(format!("Invalid endpoint URL: {e}"))
+        })?;
         let body_bytes = serde_json::to_vec(body)
             .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
 
         let mut headers = BTreeMap::new();
         headers.insert("Authorization".to_owned(), format!("Bearer {access_token}"));
         headers.insert("Content-Type".to_owned(), "application/json".to_owned());
+        headers.insert("User-Agent".to_owned(), Self::user_agent().to_owned());
 
         let response = self
             .perform_request(
@@ -1002,34 +1086,22 @@ impl AntigravityRemoteUsageFetcher {
                     method: Method::POST,
                     headers,
                     body: Some(body_bytes),
-                    timeout: self.timeout,
+                    timeout,
                 },
                 Some(access_token),
             )
             .await?;
 
-        if response.status == 401 {
-            return Err(AntigravityRemoteFetchError::NotLoggedIn);
+        match response.status {
+            200 => Ok(response.body),
+            401 => Err(AntigravityRemoteFetchError::NotLoggedIn),
+            403 => Err(AntigravityRemoteFetchError::PermissionDenied(
+                "HTTP 403".to_owned(),
+            )),
+            status => Err(AntigravityRemoteFetchError::ApiError(format!(
+                "HTTP {status}"
+            ))),
         }
-        if response.status != 200 {
-            let body_text = String::from_utf8_lossy(&response.body);
-            let status_hint = if body_text.contains("PERMISSION_DENIED") {
-                "PERMISSION_DENIED"
-            } else {
-                ""
-            };
-            let suffix = if status_hint.is_empty() {
-                String::new()
-            } else {
-                format!(": {status_hint}")
-            };
-            return Err(AntigravityRemoteFetchError::ApiError(format!(
-                "HTTP {}{suffix}",
-                response.status
-            )));
-        }
-
-        Ok(response.body)
     }
 
     async fn perform_request(
@@ -1152,6 +1224,18 @@ pub struct LoadCodeAssistResponse {
     pub plan_info: Option<PlanInfo>,
 }
 
+impl LoadCodeAssistResponse {
+    pub fn project_id(&self) -> Option<String> {
+        self.cloudaicompanion_project
+            .as_ref()
+            .and_then(CloudAiCompanionProject::resolved_project_id)
+    }
+
+    pub fn rejects_client_for_consumer_tier(&self) -> bool {
+        AntigravityRemoteUsageFetcher::should_require_reauthentication(self)
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Tier {
     pub id: Option<String>,
@@ -1194,12 +1278,12 @@ pub struct PlanInfo {
 impl PlanInfo {
     pub fn preferred_name(&self) -> Option<String> {
         let candidates = [
+            self.plan_type.as_deref(),
             self.plan_display_name.as_deref(),
             self.display_name.as_deref(),
             self.product_name.as_deref(),
             self.plan_name.as_deref(),
             self.plan_short_name.as_deref(),
-            self.plan_type.as_deref(),
         ];
         for candidate in candidates.into_iter().flatten() {
             let trimmed = candidate.trim();
@@ -1215,14 +1299,18 @@ impl PlanInfo {
 #[serde(untagged)]
 pub enum CloudAiCompanionProject {
     Id(String),
-    Object { id: Option<String> },
+    Object {
+        id: Option<String>,
+        #[serde(rename = "projectId")]
+        project_id: Option<String>,
+    },
 }
 
 impl CloudAiCompanionProject {
     pub fn resolved_project_id(&self) -> Option<String> {
         let raw = match self {
             Self::Id(id) => Some(id.as_str()),
-            Self::Object { id } => id.as_deref(),
+            Self::Object { id, project_id } => id.as_deref().or(project_id.as_deref()),
         }?;
         let trimmed = raw.trim();
         if trimmed.is_empty() {
