@@ -1,3 +1,21 @@
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerCodexPriorityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerCodexPriorityCursorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerPriorityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageCodexRequestLedgerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageCodexRequestLedgerTests+MirrorWindow.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageCodexSourceRecoveryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageStoreFailureInjectionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageCodexSessionTierTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexForkAppendResumeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageOrphanForkTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerForkSplitTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexSubagentRolloutShapeTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexSubagentForkBaselineTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexSubagentOrdinalBoundaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexSubagentAccountingIntegrationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsagePriorityDayKeysTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write;
@@ -3729,12 +3747,11 @@ fn same_size_subagent_retry_is_free_and_a_retained_buffer_resumes_only_the_appen
     assert_eq!(resumed.rows[0].input + resumed.rows[0].output, 55);
 }
 
-fn run_orphan_fork_scenario(current_tokens: bool, byte_budget: u64, parent_day: &str) {
+fn run_orphan_fork_scenario(current_tokens: bool, parent_day: &str) {
     let tmp = TempDir::new().expect("tempdir");
     let codex_home = tmp.path().join("codex-home");
     let cache_root = tmp.path().join("cache");
     let tz = TimeZone::get("Asia/Shanghai").unwrap();
-    let old = utc_ymd_hms(2026, 8, 15, 4, 0, 0);
     let now = utc_ymd_hms(2026, 9, 30, 4, 0, 0);
     let archived_dir = codex_home.join("archived_sessions");
 
@@ -3813,25 +3830,20 @@ fn run_orphan_fork_scenario(current_tokens: bool, byte_budget: u64, parent_day: 
         .sum();
     // 60 (missing-a) + 3 * 40 (fork-b, fork-c, fork-d) + 30 (current) = 210
     assert_eq!(total_input, 60 + 3 * 40 + 30);
-    let _ = (old, byte_budget);
 }
 
-// upstream: CostUsageOrphanForkTests.swift:6 archived missing parent forks settle without hiding current gaps and recover their parent
+// partial-upstream: CostUsageOrphanForkTests.swift:6 archived missing parent forks settle without hiding current gaps and recover their parent — missing: byte-budget [0,512] and settled-scan loop, cache file count 4, complete/parsedBytes state, three buffered-retry files, catch-up counters 4/4, history coverage and pending/unmetered checks
 #[test]
 fn archived_missing_parent_forks_settle_without_hiding_current_gaps_and_recover_their_parent() {
     for current_tokens in [false, true] {
-        for byte_budget in [0, 512] {
-            run_orphan_fork_scenario(current_tokens, byte_budget, "2026-08-15");
-        }
+        run_orphan_fork_scenario(current_tokens, "2026-08-15");
     }
 }
 
-// upstream: CostUsageOrphanForkTests.swift:14 a parent restored outside the scan window stays pending until snapshots arrive
+// partial-upstream: CostUsageOrphanForkTests.swift:14 a parent restored outside the scan window stays pending until snapshots arrive — missing: byte-budget [0,512] and settled-scan loop, cache file count 4, complete/parsedBytes state, three buffered-retry files, catch-up counters 4/4, history coverage and pending/unmetered checks
 #[test]
 fn a_parent_restored_outside_the_scan_window_stays_pending_until_snapshots_arrive() {
-    for byte_budget in [0, 512] {
-        run_orphan_fork_scenario(false, byte_budget, "2026-08-10");
-    }
+    run_orphan_fork_scenario(false, "2026-08-10");
 }
 
 fn session_tier_cost_helper(service_tier: &str, usage_kind: &str) -> f64 {

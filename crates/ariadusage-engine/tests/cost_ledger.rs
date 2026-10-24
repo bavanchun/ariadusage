@@ -1,3 +1,7 @@
+// Ported from CodexBar Tests/CodexBarTests/CostUsageWindowSummaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageStoreTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CostUsageStoreCutoverTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::fs;
 use std::path::Path;
 

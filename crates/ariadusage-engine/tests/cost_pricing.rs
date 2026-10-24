@@ -1,3 +1,5 @@
+// Ported from CodexBar Tests/CodexBarTests/CostUsagePricingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::collections::BTreeMap;
 
 use ariadusage_engine::cost::pricing::{

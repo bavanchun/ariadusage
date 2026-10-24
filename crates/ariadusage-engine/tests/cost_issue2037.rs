@@ -1,4 +1,7 @@
 // Ported from CodexBar Tests/CodexBarTests/Issue2037FixtureSupport.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/Issue2037FixtureHarnessTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/Issue2037ProvenanceFixtureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/Issue2037ScannerIntegrationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeSet;
 use std::fs;
