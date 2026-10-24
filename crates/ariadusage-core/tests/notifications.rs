@@ -121,7 +121,7 @@ fn observe_codex(
 // CodexSessionQuotaFalseRestoreTests
 // =========================================================================
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:12 same future boundary suppresses restore and duplicate depletion
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:11 same future boundary suppresses restore and duplicate depletion
 #[test]
 fn codex_session_same_future_boundary_suppresses_restore_and_duplicate_depletion() {
     let owner = codex_owner("same-boundary");
@@ -170,7 +170,7 @@ fn codex_session_same_future_boundary_suppresses_restore_and_duplicate_depletion
     assert_eq!(engine.session_quota_states[&pid("codex")].remaining, 0.0);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:28 advanced boundary before trusted expiry stays suppressed
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:27 advanced boundary before trusted expiry stays suppressed
 #[test]
 fn codex_session_advanced_boundary_before_trusted_expiry_stays_suppressed() {
     let owner = codex_owner("early-advanced");
@@ -223,7 +223,7 @@ fn codex_session_advanced_boundary_before_trusted_expiry_stays_suppressed() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:45 depleted boundary stays frozen until its reset can be proven
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:44 depleted boundary stays frozen until its reset can be proven
 #[test]
 fn codex_session_depleted_boundary_stays_frozen_until_its_reset_can_be_proven() {
     let owner = codex_owner("depleted-advanced");
@@ -299,7 +299,7 @@ fn codex_session_depleted_boundary_stays_frozen_until_its_reset_can_be_proven() 
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:65 depleted observation recovers a missing trusted boundary
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:64 depleted observation recovers a missing trusted boundary
 #[test]
 fn codex_session_depleted_observation_recovers_missing_trusted_boundary() {
     let owner = codex_owner("depleted-recovered-boundary");
@@ -365,7 +365,7 @@ fn codex_session_depleted_observation_recovers_missing_trusted_boundary() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:84 expired baseline boundary cannot produce a single sample restore
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:83 expired baseline boundary cannot produce a single sample restore
 #[test]
 fn codex_session_expired_baseline_boundary_cannot_produce_single_sample_restore() {
     let owner = codex_owner("expired-baseline");
@@ -426,7 +426,7 @@ fn codex_session_expired_baseline_boundary_cannot_produce_single_sample_restore(
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:107 boundary expired before evaluation is not trusted
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:106 boundary expired before evaluation is not trusted
 #[test]
 fn codex_session_boundary_expired_before_evaluation_is_not_trusted() {
     let owner = codex_owner("expired-before-evaluation");
@@ -451,7 +451,7 @@ fn codex_session_boundary_expired_before_evaluation_is_not_trusted() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:126 depletion cannot advance a still future trusted boundary
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:125 depletion cannot advance a still future trusted boundary
 #[test]
 fn codex_session_depletion_cannot_advance_still_future_trusted_boundary() {
     let owner = codex_owner("depletion-advanced");
@@ -505,7 +505,7 @@ fn codex_session_depletion_cannot_advance_still_future_trusted_boundary() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:144 pre boundary observation cannot advance metadata when processed later
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:143 pre boundary observation cannot advance metadata when processed later
 #[test]
 fn codex_session_pre_boundary_observation_cannot_advance_metadata_when_processed_later() {
     let owner = codex_owner("delayed-observation");
@@ -538,7 +538,7 @@ fn codex_session_pre_boundary_observation_cannot_advance_metadata_when_processed
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:163 ambiguous post expiry restore requires two fresh observations
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:162 ambiguous post expiry restore requires two fresh observations
 #[test]
 fn codex_session_ambiguous_post_expiry_restore_requires_two_fresh_observations() {
     for boundary_present in [false, true] {
@@ -614,7 +614,7 @@ fn codex_session_ambiguous_post_expiry_restore_requires_two_fresh_observations()
     }
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:193 boundaryless restore requires two fresh observations
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:192 boundaryless restore requires two fresh observations
 #[test]
 fn codex_session_boundaryless_restore_requires_two_fresh_observations() {
     let owner = codex_owner("boundaryless");
@@ -673,7 +673,7 @@ fn codex_session_boundaryless_restore_requires_two_fresh_observations() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:210 advanced post expiry boundary restores exactly once
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:209 advanced post expiry boundary restores exactly once
 #[test]
 fn codex_session_advanced_post_expiry_boundary_restores_exactly_once() {
     let owner = codex_owner("post-expiry-advanced");
@@ -732,7 +732,7 @@ fn codex_session_advanced_post_expiry_boundary_restores_exactly_once() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:227 advanced boundary expired at observation time requires confirmation
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:226 advanced boundary expired at observation time requires confirmation
 #[test]
 fn codex_session_advanced_boundary_expired_at_observation_time_requires_confirmation() {
     let owner = codex_owner("advanced-expired-at-observation");
@@ -769,7 +769,7 @@ fn codex_session_advanced_boundary_expired_at_observation_time_requires_confirma
     assert_eq!(evaluation.state.trusted_reset_boundary, Some(boundary));
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:256 regressed post expiry boundary requires two fresh observations
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:255 regressed post expiry boundary requires two fresh observations
 #[test]
 fn codex_session_regressed_post_expiry_boundary_requires_two_fresh_observations() {
     let owner = codex_owner("regressed");
@@ -844,7 +844,7 @@ fn codex_session_regressed_post_expiry_boundary_requires_two_fresh_observations(
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:277 older and equal observations cannot change the depleted baseline
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:276 older and equal observations cannot change the depleted baseline
 #[test]
 fn codex_session_older_and_equal_observations_cannot_change_depleted_baseline() {
     let owner = codex_owner("observation-order");
@@ -896,7 +896,7 @@ fn codex_session_older_and_equal_observations_cannot_change_depleted_baseline() 
     assert_eq!(state.observed_at, depleted_at);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:295 owner change establishes a new baseline without restoring
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:294 owner change establishes a new baseline without restoring
 #[test]
 fn codex_session_owner_change_establishes_new_baseline_without_restoring() {
     let owner_a = codex_owner("owner-a");
@@ -942,7 +942,7 @@ fn codex_session_owner_change_establishes_new_baseline_without_restoring() {
     assert_eq!(state.remaining, 100.0);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:312 source change establishes a new reducer baseline
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:311 source change establishes a new reducer baseline
 #[test]
 fn codex_session_source_change_establishes_new_reducer_baseline() {
     let owner = codex_owner("source-change");
@@ -982,7 +982,7 @@ fn codex_session_source_change_establishes_new_reducer_baseline() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:341 missing owner fails closed and clears prior state
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:340 missing owner fails closed and clears prior state
 #[test]
 fn codex_session_missing_owner_fails_closed_and_clears_prior_state() {
     let owner = codex_owner("missing-owner");
@@ -1027,7 +1027,7 @@ fn codex_session_missing_owner_fails_closed_and_clears_prior_state() {
     assert!(!engine.codex_session_quota_baseline_required());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:373 missing owner keeps stale observations behind the fresh baseline barrier
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:372 missing owner keeps stale observations behind the fresh baseline barrier
 #[test]
 fn codex_session_missing_owner_keeps_stale_observations_behind_fresh_baseline_barrier() {
     let owner = codex_owner("missing-owner-watermark");
@@ -1106,7 +1106,7 @@ fn codex_session_missing_owner_keeps_stale_observations_behind_fresh_baseline_ba
     assert!(!engine.codex_session_quota_baseline_required());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:402 windowless Codex result advances a matching depleted baseline watermark
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:401 windowless Codex result advances a matching depleted baseline watermark
 #[test]
 fn codex_session_windowless_result_advances_matching_depleted_baseline_watermark() {
     let owner = codex_owner("windowless-partial");
@@ -1199,7 +1199,7 @@ fn codex_session_windowless_result_advances_matching_depleted_baseline_watermark
     assert_eq!(transitions, vec![SessionQuotaTransition::Depleted]);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:438 windowless Codex result blocks stale boundaryless restore confirmation
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:437 windowless Codex result blocks stale boundaryless restore confirmation
 #[test]
 fn codex_session_windowless_result_blocks_stale_boundaryless_restore_confirmation() {
     let owner = codex_owner("windowless-boundaryless");
@@ -1291,7 +1291,7 @@ fn codex_session_windowless_result_blocks_stale_boundaryless_restore_confirmatio
     assert_eq!(transitions, vec![SessionQuotaTransition::Depleted]);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:473 disabled provider cleanup does not refire Codex depletion
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:472 disabled provider cleanup does not refire Codex depletion
 #[test]
 fn codex_session_disabled_provider_cleanup_does_not_refire_depletion() {
     let owner = codex_owner("disabled-provider-cleanup");
@@ -1337,7 +1337,7 @@ fn codex_session_disabled_provider_cleanup_does_not_refire_depletion() {
     assert!(!engine.codex_session_quota_baseline_required());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:494 unavailable provider cleanup does not refire Codex depletion
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:493 unavailable provider cleanup does not refire Codex depletion
 #[test]
 fn codex_session_unavailable_provider_cleanup_does_not_refire_depletion() {
     let owner = codex_owner("unavailable-provider-cleanup");
@@ -1383,7 +1383,7 @@ fn codex_session_unavailable_provider_cleanup_does_not_refire_depletion() {
     assert!(!engine.codex_session_quota_baseline_required());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:517 cleanup after a positive Codex baseline still reports depletion on recovery
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:516 cleanup after a positive Codex baseline still reports depletion on recovery
 #[test]
 fn codex_session_cleanup_after_positive_baseline_still_reports_depletion_on_recovery() {
     let owner = codex_owner("positive-provider-cleanup");
@@ -1419,7 +1419,7 @@ fn codex_session_cleanup_after_positive_baseline_still_reports_depletion_on_reco
     assert_eq!(engine.session_quota_states[&codex].remaining, 0.0);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:536 cleanup without a prior Codex baseline keeps startup depletion semantics
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:535 cleanup without a prior Codex baseline keeps startup depletion semantics
 #[test]
 fn codex_session_cleanup_without_prior_baseline_keeps_startup_depletion_semantics() {
     let owner = codex_owner("startup-cleanup");
@@ -1443,7 +1443,7 @@ fn codex_session_cleanup_without_prior_baseline_keeps_startup_depletion_semantic
     assert_eq!(engine.session_quota_states[&codex].remaining, 0.0);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:552 notifications disabled keep stale observations behind the fresh baseline barrier
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:551 notifications disabled keep stale observations behind the fresh baseline barrier
 #[test]
 fn codex_session_notifications_disabled_keep_stale_observations_behind_fresh_baseline_barrier() {
     let owner = codex_owner("disabled-watermark");
@@ -1567,7 +1567,7 @@ fn codex_session_notifications_disabled_keep_stale_observations_behind_fresh_bas
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:594 non Codex providers preserve immediate restore semantics
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:593 non Codex providers preserve immediate restore semantics
 #[test]
 fn non_codex_providers_preserve_immediate_restore_semantics() {
     let boundary = Some(ts(START_SECS + 5 * 3600));
@@ -1605,7 +1605,7 @@ fn non_codex_providers_preserve_immediate_restore_semantics() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:619 non Codex providers preserve disabled baseline tracking
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:618 non Codex providers preserve disabled baseline tracking
 #[test]
 fn non_codex_providers_preserve_disabled_baseline_tracking() {
     let mut engine = NotificationPolicyEngine::default();
@@ -1657,7 +1657,7 @@ fn non_codex_providers_preserve_disabled_baseline_tracking() {
     assert_eq!(transitions, vec![SessionQuotaTransition::Restored]);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:646 selected Codex account caller forwards its stable owner
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:645 selected Codex account caller forwards its stable owner
 #[test]
 fn codex_session_selected_codex_account_caller_forwards_its_stable_owner() {
     let expected_owner = codex_owner("selected-caller");
@@ -1697,7 +1697,7 @@ fn codex_session_selected_codex_account_caller_forwards_its_stable_owner() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:686 selected Codex accounts keep independent quota warning episodes
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:685 selected Codex accounts keep independent quota warning episodes
 #[test]
 fn codex_session_selected_codex_accounts_keep_independent_quota_warning_episodes() {
     let codex = pid("codex");
@@ -1765,7 +1765,7 @@ fn codex_session_selected_codex_accounts_keep_independent_quota_warning_episodes
     assert_eq!(fired_thresholds, vec![50, 50]);
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:758 selected email only Codex account keeps session notifications
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:757 selected email only Codex account keeps session notifications
 #[test]
 fn codex_session_selected_email_only_codex_account_keeps_session_notifications() {
     let email = "email-only-session@example.test";
@@ -1819,7 +1819,7 @@ fn codex_session_selected_email_only_codex_account_keeps_session_notifications()
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:807 email only notification owners isolate source and credential rotation
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:806 email only notification owners isolate source and credential rotation
 #[test]
 fn codex_session_email_only_notification_owners_isolate_source_and_credential_rotation() {
     let email = "email-only-owner@example.test";
@@ -1889,7 +1889,7 @@ fn codex_session_email_only_notification_owners_isolate_source_and_credential_ro
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:849 email only credential rotation establishes a new baseline
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:848 email only credential rotation establishes a new baseline
 #[test]
 fn codex_session_email_only_credential_rotation_establishes_a_new_baseline() {
     let email = "rotating-email-only-owner@example.test";
@@ -1985,7 +1985,7 @@ fn codex_session_email_only_credential_rotation_establishes_a_new_baseline() {
     );
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:911 provider owner survives source and credential changes
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:910 provider owner survives source and credential changes
 #[test]
 fn codex_session_provider_owner_survives_source_and_credential_changes() {
     let email = "provider-source-owner@example.test";
@@ -2067,7 +2067,7 @@ fn codex_session_provider_owner_survives_source_and_credential_changes() {
     assert!(engine.codex_session_quota_baseline_required());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:966 regular refresh owner builder supports email only identity
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:965 regular refresh owner builder supports email only identity
 #[test]
 fn codex_session_regular_refresh_owner_builder_supports_email_only_identity() {
     let email = "regular-email-only-owner@example.test";
@@ -2083,7 +2083,7 @@ fn codex_session_regular_refresh_owner_builder_supports_email_only_identity() {
     assert!(!owner.raw_value.is_empty());
 }
 
-// upstream: CodexSessionQuotaFalseRestoreTests.swift:979 clearing published Codex usage clears typed transition state
+// upstream: CodexSessionQuotaFalseRestoreTests.swift:978 clearing published Codex usage clears typed transition state
 #[test]
 fn codex_session_clearing_published_codex_usage_clears_typed_transition_state() {
     let owner = codex_owner("cleanup");
@@ -2113,7 +2113,7 @@ fn codex_session_clearing_published_codex_usage_clears_typed_transition_state() 
 // =========================================================================
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:10 limit reset owner stays stable for the same provider workspace and email
+// upstream: CodexLimitResetOwnerKeyTests.swift:9 limit reset owner stays stable for the same provider workspace and email
 #[test]
 fn codex_limit_reset_owner_stays_stable_for_same_provider_workspace_and_email() {
     let original = CodexLimitResetOwnerKey::new(
@@ -2137,7 +2137,7 @@ fn codex_limit_reset_owner_stays_stable_for_same_provider_workspace_and_email() 
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:39 different emails in the same provider workspace use different owner keys
+// upstream: CodexLimitResetOwnerKeyTests.swift:38 different emails in the same provider workspace use different owner keys
 #[test]
 fn codex_limit_reset_different_emails_in_same_provider_workspace_use_different_owner_keys() {
     let member_1 = CodexLimitResetOwnerKey::new(
@@ -2158,7 +2158,7 @@ fn codex_limit_reset_different_emails_in_same_provider_workspace_use_different_o
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:61 different provider workspaces with the same email use different owner keys
+// upstream: CodexLimitResetOwnerKeyTests.swift:60 different provider workspaces with the same email use different owner keys
 #[test]
 fn codex_limit_reset_different_provider_workspaces_with_same_email_use_different_owner_keys() {
     let ws_1 = CodexLimitResetOwnerKey::new(
@@ -2183,7 +2183,7 @@ fn codex_limit_reset_different_provider_workspaces_with_same_email_use_different
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:88 email only owner fails closed even for one visible row
+// upstream: CodexLimitResetOwnerKeyTests.swift:87 email only owner fails closed even for one visible row
 #[test]
 fn codex_limit_reset_email_only_owner_fails_closed_even_for_one_visible_row() {
     assert_eq!(
@@ -2198,7 +2198,7 @@ fn codex_limit_reset_email_only_owner_fails_closed_even_for_one_visible_row() {
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:103 duplicate email only rows fail closed
+// upstream: CodexLimitResetOwnerKeyTests.swift:102 duplicate email only rows fail closed
 #[test]
 fn codex_limit_reset_duplicate_email_only_rows_fail_closed() {
     let identity = CodexIdentity::EmailOnly {
@@ -2215,7 +2215,7 @@ fn codex_limit_reset_duplicate_email_only_rows_fail_closed() {
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:118 provider row wins its own identity while same email fallback fails closed
+// upstream: CodexLimitResetOwnerKeyTests.swift:117 provider row wins its own identity while same email fallback fails closed
 #[test]
 fn codex_limit_reset_provider_row_wins_its_own_identity_while_same_email_fallback_fails_closed() {
     let provider_key = CodexLimitResetOwnerKey::new(
@@ -2237,7 +2237,7 @@ fn codex_limit_reset_provider_row_wins_its_own_identity_while_same_email_fallbac
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:140 guard and visible row normalize the same provider owner
+// upstream: CodexLimitResetOwnerKeyTests.swift:139 guard and visible row normalize the same provider owner
 #[test]
 fn codex_limit_reset_guard_and_visible_row_normalize_the_same_provider_owner() {
     let visible_key = CodexLimitResetOwnerKey::new(
@@ -2258,7 +2258,7 @@ fn codex_limit_reset_guard_and_visible_row_normalize_the_same_provider_owner() {
 }
 
 // partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
-// upstream: CodexLimitResetOwnerKeyTests.swift:162 unresolved owner identity fails closed
+// upstream: CodexLimitResetOwnerKeyTests.swift:161 unresolved owner identity fails closed
 #[test]
 fn codex_limit_reset_unresolved_owner_identity_fails_closed() {
     assert_eq!(
@@ -2304,7 +2304,7 @@ fn claude_snapshot(
     .unwrap()
 }
 
-// upstream: LimitResetNotificationTests.swift:50 limit reset notifications default off and persist when enabled
+// upstream: LimitResetNotificationTests.swift:49 limit reset notifications default off and persist when enabled
 #[test]
 fn limit_reset_notifications_default_off_and_persist_when_enabled() {
     let mut prefs = NotificationPreferences::default();
@@ -2320,7 +2320,7 @@ fn limit_reset_notifications_default_off_and_persist_when_enabled() {
     assert!(restored.preferences.limit_reset_notifications_enabled);
 }
 
-// upstream: LimitResetNotificationTests.swift:64 weekly reset notice names provider window and account
+// upstream: LimitResetNotificationTests.swift:63 weekly reset notice names provider window and account
 #[test]
 fn limit_reset_weekly_reset_notice_names_provider_window_and_account() {
     let claude = pid("claude");
@@ -2341,7 +2341,7 @@ fn limit_reset_weekly_reset_notice_names_provider_window_and_account() {
     assert_eq!(posts[0].body, "Fresh quota is available.");
 }
 
-// upstream: LimitResetNotificationTests.swift:78 session reset notice names the session window
+// upstream: LimitResetNotificationTests.swift:77 session reset notice names the session window
 #[test]
 fn limit_reset_session_reset_notice_names_the_session_window() {
     let claude = pid("claude");
@@ -2362,7 +2362,7 @@ fn limit_reset_session_reset_notice_names_the_session_window() {
     assert_eq!(posts[0].body, "Fresh quota is available.");
 }
 
-// upstream: LimitResetNotificationTests.swift:92 reset notices stay silent when disabled
+// upstream: LimitResetNotificationTests.swift:91 reset notices stay silent when disabled
 #[test]
 fn limit_reset_notices_stay_silent_when_disabled() {
     let claude = pid("claude");
@@ -2388,7 +2388,7 @@ fn limit_reset_notices_stay_silent_when_disabled() {
     );
 }
 
-// upstream: LimitResetNotificationTests.swift:106 hide personal info omits the account from reset notices
+// upstream: LimitResetNotificationTests.swift:105 hide personal info omits the account from reset notices
 #[test]
 fn limit_reset_hide_personal_info_omits_the_account_from_reset_notices() {
     let claude = pid("claude");
@@ -2406,7 +2406,7 @@ fn limit_reset_hide_personal_info_omits_the_account_from_reset_notices() {
     assert!(!posts[0].body.contains("limit-reset-notice@example.com"));
 }
 
-// upstream: LimitResetNotificationTests.swift:142 reset notice copy names provider and window
+// upstream: LimitResetNotificationTests.swift:141 reset notice copy names provider and window
 #[test]
 fn limit_reset_notice_copy_names_provider_and_window() {
     let (w_title, w_body) =
@@ -2420,7 +2420,7 @@ fn limit_reset_notice_copy_names_provider_and_window() {
     assert_eq!(s_body, "Fresh quota is available.");
 }
 
-// upstream: LimitResetNotificationTests.swift:172 portable preferences carry the reset toggle in both directions
+// upstream: LimitResetNotificationTests.swift:171 portable preferences carry the reset toggle in both directions
 #[test]
 fn limit_reset_portable_preferences_carry_the_reset_toggle_in_both_directions() {
     let mut source = NotificationPreferences::default();
@@ -2436,7 +2436,7 @@ fn limit_reset_portable_preferences_carry_the_reset_toggle_in_both_directions() 
     assert!(!decoded_off.limit_reset_notifications_enabled);
 }
 
-// upstream: LimitResetNotificationTests.swift:121 session restored notice covers the matching session reset notice
+// upstream: LimitResetNotificationTests.swift:120 session restored notice covers the matching session reset notice
 #[test]
 fn limit_reset_session_restored_notice_covers_the_matching_session_reset_notice() {
     let claude = pid("claude");
@@ -2477,7 +2477,7 @@ fn limit_reset_session_restored_notice_covers_the_matching_session_reset_notice(
     assert_eq!(reset_posts[1].id_prefix, "limit-reset-claude-weekly");
 }
 
-// upstream: LimitResetNotificationTests.swift:188 restored notice for one account does not suppress another account reset
+// upstream: LimitResetNotificationTests.swift:187 restored notice for one account does not suppress another account reset
 #[test]
 fn limit_reset_restored_notice_for_one_account_does_not_suppress_another_account_reset() {
     let claude = pid("claude");
@@ -2521,7 +2521,7 @@ fn limit_reset_restored_notice_for_one_account_does_not_suppress_another_account
     assert_eq!(other_posts[0].id_prefix, "limit-reset-claude-session");
 }
 
-// upstream: LimitResetNotificationTests.swift:210 weekly reset boundary is notified once across refreshes and restarts
+// upstream: LimitResetNotificationTests.swift:209 weekly reset boundary is notified once across refreshes and restarts
 #[test]
 fn limit_reset_weekly_reset_boundary_is_notified_once_across_refreshes_and_restarts() {
     let claude = pid("claude");
@@ -2551,7 +2551,7 @@ fn limit_reset_weekly_reset_boundary_is_notified_once_across_refreshes_and_resta
     assert_eq!(total_posts.len(), 1);
 }
 
-// upstream: LimitResetNotificationTests.swift:231 a restored confirmation after restart does not repeat a reset banner
+// upstream: LimitResetNotificationTests.swift:230 a restored confirmation after restart does not repeat a reset banner
 #[test]
 fn limit_reset_restored_confirmation_after_restart_does_not_repeat_a_reset_banner() {
     let claude = pid("claude");
@@ -2595,7 +2595,7 @@ fn limit_reset_restored_confirmation_after_restart_does_not_repeat_a_reset_banne
     assert!(after_restart_posts.is_empty());
 }
 
-// upstream: LimitResetNotificationTests.swift:251 reset notices recover when a provider stops reporting reset boundaries
+// upstream: LimitResetNotificationTests.swift:250 reset notices recover when a provider stops reporting reset boundaries
 #[test]
 fn limit_reset_notices_recover_when_a_provider_stops_reporting_reset_boundaries() {
     let claude = pid("claude");
@@ -2627,7 +2627,7 @@ fn limit_reset_notices_recover_when_a_provider_stops_reporting_reset_boundaries(
     }
 }
 
-// upstream: LimitResetNotificationTests.swift:272 partial restored notice also covers the later confirmed reset
+// upstream: LimitResetNotificationTests.swift:271 partial restored notice also covers the later confirmed reset
 #[test]
 fn limit_reset_partial_restored_notice_also_covers_the_later_confirmed_reset() {
     let claude = pid("claude");
@@ -2683,7 +2683,7 @@ fn limit_reset_partial_restored_notice_also_covers_the_later_confirmed_reset() {
     assert_eq!(reset_posts.len(), 1);
 }
 
-// upstream: LimitResetNotificationTests.swift:296 known reset boundaries remain deduplicated after a metadata gap
+// upstream: LimitResetNotificationTests.swift:295 known reset boundaries remain deduplicated after a metadata gap
 #[test]
 fn limit_reset_known_reset_boundaries_remain_deduplicated_after_a_metadata_gap() {
     let claude = pid("claude");
@@ -2714,7 +2714,7 @@ fn limit_reset_known_reset_boundaries_remain_deduplicated_after_a_metadata_gap()
     assert_eq!(reset_posts.len(), 2);
 }
 
-// upstream: LimitResetNotificationTests.swift:316 new depleted episodes still deliver restored notices without full resets
+// upstream: LimitResetNotificationTests.swift:315 new depleted episodes still deliver restored notices without full resets
 #[test]
 fn limit_reset_new_depleted_episodes_still_deliver_restored_notices_without_full_resets() {
     let claude = pid("claude");
@@ -2767,7 +2767,7 @@ fn limit_reset_new_depleted_episodes_still_deliver_restored_notices_without_full
     }
 }
 
-// upstream: LimitResetNotificationTests.swift:340 advanced boundaries and independent windows notify separately
+// upstream: LimitResetNotificationTests.swift:339 advanced boundaries and independent windows notify separately
 #[test]
 fn limit_reset_advanced_boundaries_and_independent_windows_notify_separately() {
     let claude = pid("claude");
@@ -2799,7 +2799,7 @@ fn limit_reset_advanced_boundaries_and_independent_windows_notify_separately() {
     );
 }
 
-// upstream: LimitResetNotificationTests.swift:357 pending reset delivery rechecks opt in and personal info
+// upstream: LimitResetNotificationTests.swift:356 pending reset delivery rechecks opt in and personal info
 #[test]
 fn limit_reset_pending_reset_delivery_rechecks_opt_in_and_personal_info() {
     let claude = pid("claude");
@@ -2824,7 +2824,7 @@ fn limit_reset_pending_reset_delivery_rechecks_opt_in_and_personal_info() {
     assert!(!is_current(&engine.preferences));
 }
 
-// upstream: LimitResetNotificationTests.swift:373 a later restored confirmation does not repeat an announced reset
+// upstream: LimitResetNotificationTests.swift:372 a later restored confirmation does not repeat an announced reset
 #[test]
 fn limit_reset_later_restored_confirmation_does_not_repeat_an_announced_reset() {
     let claude = pid("claude");
@@ -2857,7 +2857,7 @@ fn limit_reset_later_restored_confirmation_does_not_repeat_an_announced_reset() 
     assert_eq!(posts.len(), 2);
 }
 
-// upstream: LimitResetNotificationTests.swift:393 switching from a depleted account does not cover another accounts reset
+// upstream: LimitResetNotificationTests.swift:392 switching from a depleted account does not cover another accounts reset
 #[test]
 fn limit_reset_switching_from_a_depleted_account_does_not_cover_another_accounts_reset() {
     let claude = pid("claude");
@@ -2894,7 +2894,7 @@ fn limit_reset_switching_from_a_depleted_account_does_not_cover_another_accounts
     assert_eq!(limit_reset_posts[0].id_prefix, "limit-reset-claude-session");
 }
 
-// upstream: LimitResetNotificationTests.swift:419 delayed restored confirmation stays covered when usage has resumed
+// upstream: LimitResetNotificationTests.swift:418 delayed restored confirmation stays covered when usage has resumed
 #[test]
 fn limit_reset_delayed_restored_confirmation_stays_covered_when_usage_has_resumed() {
     let previous = LimitResetDetectorState {
@@ -2985,7 +2985,7 @@ fn claude_extra_window_snapshot(
     .unwrap()
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:43 claude scoped weekly and routines extra windows fire independent weekly warnings
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:42 claude scoped weekly and routines extra windows fire independent weekly warnings
 #[test]
 fn claude_extra_windows_scoped_weekly_and_routines_fire_independent_weekly_warnings() {
     let claude = pid("claude");
@@ -3053,7 +3053,7 @@ fn claude_extra_windows_scoped_weekly_and_routines_fire_independent_weekly_warni
     );
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:93 antigravity summary extra windows do not trigger the claude extra-window lane
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:92 antigravity summary extra windows do not trigger the claude extra-window lane
 #[test]
 fn claude_extra_windows_antigravity_summary_extra_windows_do_not_trigger_claude_lane() {
     let claude = pid("claude");
@@ -3088,7 +3088,7 @@ fn claude_extra_windows_antigravity_summary_extra_windows_do_not_trigger_claude_
     }
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:131 claude scoped weekly window refires after recovering above threshold
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:130 claude scoped weekly window refires after recovering above threshold
 #[test]
 fn claude_extra_windows_scoped_weekly_window_refires_after_recovering_above_threshold() {
     let claude = pid("claude");
@@ -3117,7 +3117,7 @@ fn claude_extra_windows_scoped_weekly_window_refires_after_recovering_above_thre
     );
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:161 claude extra-window fired state is pruned when a window disappears but others remain
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:160 claude extra-window fired state is pruned when a window disappears but others remain
 #[test]
 fn claude_extra_windows_fired_state_is_pruned_when_window_disappears_but_others_remain() {
     let claude = pid("claude");
@@ -3165,7 +3165,7 @@ fn claude_extra_windows_fired_state_is_pruned_when_window_disappears_but_others_
     assert!(engine.quota_warning_states.contains_key(&routines_key));
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:202 claude extra-window reconciliation preserves sibling account state
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:201 claude extra-window reconciliation preserves sibling account state
 #[test]
 fn claude_extra_windows_reconciliation_preserves_sibling_account_state() {
     let claude = pid("claude");
@@ -3222,7 +3222,7 @@ fn claude_extra_windows_reconciliation_preserves_sibling_account_state() {
     assert!(events2.is_empty());
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:249 disabling weekly warnings clears all account-scoped claude extra-window state
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:248 disabling weekly warnings clears all account-scoped claude extra-window state
 #[test]
 fn claude_extra_windows_disabling_weekly_warnings_clears_all_account_scoped_state() {
     let claude = pid("claude");
@@ -3292,7 +3292,7 @@ fn claude_extra_windows_disabling_weekly_warnings_clears_all_account_scoped_stat
     );
 }
 
-// upstream: ClaudeExtraWindowQuotaWarningTests.swift:296 claude extra-window state survives a transient extras miss without re-posting
+// upstream: ClaudeExtraWindowQuotaWarningTests.swift:295 claude extra-window state survives a transient extras miss without re-posting
 #[test]
 fn claude_extra_windows_state_survives_transient_extras_miss_without_reposting() {
     let claude = pid("claude");
@@ -3349,7 +3349,7 @@ fn claude_extra_windows_state_survives_transient_extras_miss_without_reposting()
     assert!(events2.is_empty());
 }
 
-// upstream: UsageStoreAccountQuotaWarningTests.swift:25 ordinary refresh keeps selected token account warning episodes independent
+// upstream: UsageStoreAccountQuotaWarningTests.swift:24 ordinary refresh keeps selected token account warning episodes independent
 #[test]
 fn usage_store_ordinary_refresh_keeps_selected_token_account_warning_episodes_independent() {
     let claude = pid("claude");
@@ -3400,7 +3400,7 @@ fn usage_store_ordinary_refresh_keeps_selected_token_account_warning_episodes_in
     assert_eq!(fired_thresholds, vec![50, 50]);
 }
 
-// upstream: UsageStoreAccountQuotaWarningTests.swift:71 selected outcome keeps token account warning episodes independent
+// upstream: UsageStoreAccountQuotaWarningTests.swift:70 selected outcome keeps token account warning episodes independent
 #[test]
 fn usage_store_selected_outcome_keeps_token_account_warning_episodes_independent() {
     let claude = pid("claude");
@@ -3510,7 +3510,7 @@ fn check_claude_identity_samples(
     assert_eq!(fired_thresholds, expected_thresholds);
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:26 weekly OAuth fallback does not notify or rearm the session lane
+// upstream: ClaudeCredentialQuotaWarningTests.swift:25 weekly OAuth fallback does not notify or rearm the session lane
 #[test]
 fn claude_credential_weekly_oauth_fallback_does_not_notify_or_rearm_the_session_lane() {
     let claude = pid("claude");
@@ -3584,7 +3584,7 @@ fn claude_credential_weekly_oauth_fallback_does_not_notify_or_rearm_the_session_
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:58 credential rewrites preserve known account threshold episodes
+// upstream: ClaudeCredentialQuotaWarningTests.swift:57 credential rewrites preserve known account threshold episodes
 #[test]
 fn claude_credential_rewrites_preserve_known_account_threshold_episodes() {
     let claude = pid("claude");
@@ -3641,7 +3641,7 @@ fn claude_credential_rewrites_preserve_known_account_threshold_episodes() {
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:66 credential rewrites preserve unresolved account warnings
+// upstream: ClaudeCredentialQuotaWarningTests.swift:65 credential rewrites preserve unresolved account warnings
 #[test]
 fn claude_credential_rewrites_preserve_unresolved_account_warnings() {
     let claude = pid("claude");
@@ -3694,7 +3694,7 @@ fn claude_credential_rewrites_preserve_unresolved_account_warnings() {
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:79 unresolved history migrates to a stable account without repeating a threshold
+// upstream: ClaudeCredentialQuotaWarningTests.swift:78 unresolved history migrates to a stable account without repeating a threshold
 #[test]
 fn claude_credential_unresolved_history_migrates_to_stable_account_without_repeating_threshold() {
     let claude = pid("claude");
@@ -3774,7 +3774,7 @@ fn claude_credential_unresolved_history_migrates_to_stable_account_without_repea
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:125 verified OAuth owner and active identity share threshold episodes across CLI fallback
+// upstream: ClaudeCredentialQuotaWarningTests.swift:124 verified OAuth owner and active identity share threshold episodes across CLI fallback
 #[test]
 fn claude_credential_verified_oauth_owner_and_active_identity_share_threshold_episodes_across_cli_fallback()
  {
@@ -3932,7 +3932,7 @@ fn claude_credential_verified_oauth_owner_and_active_identity_share_threshold_ep
     );
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:184 verified owner migration preserves the latest recovery and other warning lanes
+// upstream: ClaudeCredentialQuotaWarningTests.swift:183 verified owner migration preserves the latest recovery and other warning lanes
 #[test]
 fn claude_credential_verified_owner_migration_preserves_latest_recovery_and_other_warning_lanes() {
     let claude = pid("claude");
@@ -4015,7 +4015,7 @@ fn claude_credential_verified_owner_migration_preserves_latest_recovery_and_othe
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:254 repeated CLI identity gaps preserve threshold history
+// upstream: ClaudeCredentialQuotaWarningTests.swift:253 repeated CLI identity gaps preserve threshold history
 #[test]
 fn claude_credential_repeated_cli_identity_gaps_preserve_threshold_history() {
     for has_reset in [true, false] {
@@ -4033,7 +4033,7 @@ fn claude_credential_repeated_cli_identity_gaps_preserve_threshold_history() {
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:264 later thresholds do not repeat across either identity key
+// upstream: ClaudeCredentialQuotaWarningTests.swift:263 later thresholds do not repeat across either identity key
 #[test]
 fn claude_credential_later_thresholds_do_not_repeat_across_either_identity_key() {
     for has_reset in [true, false] {
@@ -4055,7 +4055,7 @@ fn claude_credential_later_thresholds_do_not_repeat_across_either_identity_key()
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:274 discontinuous identity gaps start one independent fallback episode
+// upstream: ClaudeCredentialQuotaWarningTests.swift:273 discontinuous identity gaps start one independent fallback episode
 #[test]
 fn claude_credential_discontinuous_identity_gaps_start_one_independent_fallback_episode() {
     for discontinuity in ["reset", "increase", "missing"] {
@@ -4100,7 +4100,7 @@ fn claude_credential_discontinuous_identity_gaps_start_one_independent_fallback_
     }
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:289 identity gaps follow the most recently known account without merging known accounts
+// upstream: ClaudeCredentialQuotaWarningTests.swift:288 identity gaps follow the most recently known account without merging known accounts
 #[test]
 fn claude_credential_identity_gaps_follow_most_recently_known_account_without_merging_known_accounts()
  {
@@ -4116,7 +4116,7 @@ fn claude_credential_identity_gaps_follow_most_recently_known_account_without_me
     check_claude_identity_samples(&samples, &[50, 50], "session");
 }
 
-// upstream: ClaudeCredentialQuotaWarningTests.swift:304 initial unresolved history survives repeated resolution and quota recovery
+// upstream: ClaudeCredentialQuotaWarningTests.swift:303 initial unresolved history survives repeated resolution and quota recovery
 #[test]
 fn claude_credential_initial_unresolved_history_survives_repeated_resolution_and_quota_recovery() {
     for has_reset in [true, false] {
@@ -4175,7 +4175,7 @@ fn claude_placeholder_snapshot(
     .unwrap()
 }
 
-// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:12 placeholder preserves depleted state without a reset boundary
+// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:11 placeholder preserves depleted state without a reset boundary
 #[test]
 fn claude_placeholder_preserves_depleted_state_without_a_reset_boundary() {
     let claude = pid("claude");
@@ -4200,7 +4200,7 @@ fn claude_placeholder_preserves_depleted_state_without_a_reset_boundary() {
     assert_eq!(engine.session_quota_states[&claude].remaining, 0.0);
 }
 
-// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:30 placeholder stays non authoritative after the prior boundary elapses
+// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:29 placeholder stays non authoritative after the prior boundary elapses
 #[test]
 fn claude_placeholder_stays_non_authoritative_after_the_prior_boundary_elapses() {
     let claude = pid("claude");
@@ -4231,7 +4231,7 @@ fn claude_placeholder_stays_non_authoritative_after_the_prior_boundary_elapses()
     assert_eq!(engine.session_quota_states[&claude].remaining, 0.0);
 }
 
-// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:59 placeholder cannot rearm depletion while notifications are disabled
+// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:58 placeholder cannot rearm depletion while notifications are disabled
 #[test]
 fn claude_placeholder_cannot_rearm_depletion_while_notifications_are_disabled() {
     let claude = pid("claude");
@@ -4269,7 +4269,7 @@ fn claude_placeholder_cannot_rearm_depletion_while_notifications_are_disabled() 
     assert_eq!(engine.session_quota_states[&claude].remaining, 0.0);
 }
 
-// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:80 real zero usage remains an authoritative restore
+// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:79 real zero usage remains an authoritative restore
 #[test]
 fn claude_placeholder_real_zero_usage_remains_an_authoritative_restore() {
     let claude = pid("claude");
@@ -4300,7 +4300,7 @@ fn claude_placeholder_real_zero_usage_remains_an_authoritative_restore() {
     assert_eq!(engine.session_quota_states[&claude].remaining, 100.0);
 }
 
-// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:95 placeholder preserves threshold state while weekly warnings continue
+// upstream: ClaudeSyntheticPlaceholderNotificationTests.swift:94 placeholder preserves threshold state while weekly warnings continue
 #[test]
 fn claude_placeholder_preserves_threshold_state_while_weekly_warnings_continue() {
     let claude = pid("claude");
@@ -4343,7 +4343,7 @@ fn claude_placeholder_preserves_threshold_state_while_weekly_warnings_continue()
 // CredentialNotificationTests
 // =========================================================================
 
-// upstream: CredentialNotificationTests.swift:9 episodes survive network quota and cached data and recover only for the same account
+// upstream: CredentialNotificationTests.swift:8 episodes survive network quota and cached data and recover only for the same account
 #[test]
 fn credential_notification_episodes_survive_network_quota_and_cached_data_and_recover_only_for_same_account()
  {
@@ -4449,7 +4449,7 @@ fn credential_notification_episodes_survive_network_quota_and_cached_data_and_re
     assert_eq!(tracker.episodes.len(), 3);
 }
 
-// upstream: CredentialNotificationTests.swift:40 turning notifications off does not forget an unresolved episode
+// upstream: CredentialNotificationTests.swift:39 turning notifications off does not forget an unresolved episode
 #[test]
 fn credential_notification_turning_notifications_off_does_not_forget_an_unresolved_episode() {
     let claude = pid("claude");
@@ -4470,7 +4470,7 @@ fn credential_notification_turning_notifications_off_does_not_forget_an_unresolv
     assert!(tracker.episodes.is_empty());
 }
 
-// upstream: CredentialNotificationTests.swift:59 classified provider failures are authoritative
+// upstream: CredentialNotificationTests.swift:58 classified provider failures are authoritative
 #[test]
 fn credential_notification_classified_provider_failures_are_authoritative() {
     for kind in [
@@ -4498,7 +4498,7 @@ fn credential_notification_classified_provider_failures_are_authoritative() {
     }
 }
 
-// upstream: CredentialNotificationTests.swift:66 native credential errors exclude quota network permission and parse failures
+// upstream: CredentialNotificationTests.swift:65 native credential errors exclude quota network permission and parse failures
 #[test]
 fn credential_notification_native_credential_errors_exclude_quota_network_permission_and_parse_failures()
  {
@@ -4549,7 +4549,7 @@ fn credential_notification_native_credential_errors_exclude_quota_network_permis
     );
 }
 
-// upstream: CredentialNotificationTests.swift:94 ordinary and selected account outcomes share account-specific episodes
+// upstream: CredentialNotificationTests.swift:93 ordinary and selected account outcomes share account-specific episodes
 #[test]
 fn credential_notification_ordinary_and_selected_account_outcomes_share_account_specific_episodes()
 {
@@ -4577,7 +4577,7 @@ fn credential_notification_ordinary_and_selected_account_outcomes_share_account_
     }
 }
 
-// upstream: CredentialNotificationTests.swift:129 shared delivery retires notifications when consent or lifecycle changes
+// upstream: CredentialNotificationTests.swift:128 shared delivery retires notifications when consent or lifecycle changes
 #[test]
 fn credential_notification_shared_delivery_retires_notifications_when_consent_or_lifecycle_changes()
 {
@@ -4618,7 +4618,7 @@ fn credential_notification_shared_delivery_retires_notifications_when_consent_or
     }
 }
 
-// upstream: CredentialNotificationTests.swift:152 failed delivery retries while delivered episodes retire on recovery or shutdown
+// upstream: CredentialNotificationTests.swift:151 failed delivery retries while delivered episodes retire on recovery or shutdown
 #[test]
 fn credential_notification_failed_delivery_retries_while_delivered_episodes_retire_on_recovery_or_shutdown()
  {
@@ -4679,7 +4679,7 @@ fn credential_notification_failed_delivery_retries_while_delivered_episodes_reti
     assert_eq!(tracker.retire_provider(None), vec![fourth_id]);
 }
 
-// upstream: CredentialNotificationTests.swift:188 Claude identity gaps and later identity resolution preserve independent episodes
+// upstream: CredentialNotificationTests.swift:187 Claude identity gaps and later identity resolution preserve independent episodes
 #[test]
 fn credential_notification_claude_identity_gaps_and_later_identity_resolution_preserve_independent_episodes()
  {
@@ -4731,7 +4731,7 @@ fn credential_notification_claude_identity_gaps_and_later_identity_resolution_pr
     assert_eq!(tracker.episodes.len(), 1);
 }
 
-// upstream: CredentialNotificationTests.swift:213 disabling a provider retires only its delivered credential alerts
+// upstream: CredentialNotificationTests.swift:212 disabling a provider retires only its delivered credential alerts
 #[test]
 fn credential_notification_disabling_a_provider_retires_only_its_delivered_credential_alerts() {
     let claude = pid("claude");
@@ -4821,7 +4821,7 @@ fn antigravity_legacy_snapshot(gemini_used: f64, claude_used: f64) -> UsageSnaps
     .unwrap()
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:104 claude weekly primary fallback does not emit session quota notifications
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:103 claude weekly primary fallback does not emit session quota notifications
 #[test]
 fn usage_store_claude_weekly_primary_fallback_does_not_emit_session_quota_notifications() {
     let claude = pid("claude");
@@ -4875,7 +4875,7 @@ fn usage_store_claude_weekly_primary_fallback_does_not_emit_session_quota_notifi
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:133 claude spend limit fallback does not emit session or quota warning notifications
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:132 claude spend limit fallback does not emit session or quota warning notifications
 #[test]
 fn usage_store_claude_spend_limit_fallback_does_not_emit_session_or_quota_warning_notifications() {
     let claude = pid("claude");
@@ -4922,7 +4922,7 @@ fn usage_store_claude_spend_limit_fallback_does_not_emit_session_or_quota_warnin
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:212 claude five hour primary still emits session quota notifications
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:211 claude five hour primary still emits session quota notifications
 #[test]
 fn usage_store_claude_five_hour_primary_still_emits_session_quota_notifications() {
     let claude = pid("claude");
@@ -4973,7 +4973,7 @@ fn usage_store_claude_five_hour_primary_still_emits_session_quota_notifications(
     assert_eq!(transition, SessionQuotaTransition::Depleted);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:241 antigravity session notification uses quota summary duration instead of family representative
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:240 antigravity session notification uses quota summary duration instead of family representative
 #[test]
 fn usage_store_antigravity_session_notification_uses_quota_summary_duration_instead_of_family_representative()
  {
@@ -4999,7 +4999,7 @@ fn usage_store_antigravity_session_notification_uses_quota_summary_duration_inst
     assert_eq!(transition, SessionQuotaTransition::Depleted);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:266 antigravity preserves session notifications for durationless legacy family lanes
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:265 antigravity preserves session notifications for durationless legacy family lanes
 #[test]
 fn usage_store_antigravity_preserves_session_notifications_for_durationless_legacy_family_lanes() {
     let antigravity = pid("antigravity");
@@ -5024,7 +5024,7 @@ fn usage_store_antigravity_preserves_session_notifications_for_durationless_lega
     assert_eq!(transition, SessionQuotaTransition::Depleted);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:291 antigravity snapshot mode change resets session notification baseline
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:290 antigravity snapshot mode change resets session notification baseline
 #[test]
 fn usage_store_antigravity_snapshot_mode_change_resets_session_notification_baseline() {
     let antigravity = pid("antigravity");
@@ -5052,7 +5052,7 @@ fn usage_store_antigravity_snapshot_mode_change_resets_session_notification_base
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:315 quota warning disabled does not post
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:314 quota warning disabled does not post
 #[test]
 fn usage_store_quota_warning_disabled_does_not_post() {
     let codex = pid("codex");
@@ -5064,7 +5064,7 @@ fn usage_store_quota_warning_disabled_does_not_post() {
     assert!(posts.is_empty());
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:338 quota warning posts once per downward threshold crossing
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:337 quota warning posts once per downward threshold crossing
 #[test]
 fn usage_store_quota_warning_posts_once_per_downward_threshold_crossing() {
     let codex = pid("codex");
@@ -5099,7 +5099,7 @@ fn usage_store_quota_warning_posts_once_per_downward_threshold_crossing() {
     assert!(all_posts[0].on_screen_alert_enabled);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:397 quota warning omits account when personal info is hidden
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:396 quota warning omits account when personal info is hidden
 #[test]
 fn usage_store_quota_warning_omits_account_when_personal_info_is_hidden() {
     let codex = pid("codex");
@@ -5128,7 +5128,7 @@ fn usage_store_quota_warning_omits_account_when_personal_info_is_hidden() {
     assert!(!all_posts[0].body.contains("person@example.com"));
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:438 hidden quota warning markers do not disable warning notifications
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:437 hidden quota warning markers do not disable warning notifications
 #[test]
 fn usage_store_hidden_quota_warning_markers_do_not_disable_warning_notifications() {
     let codex = pid("codex");
@@ -5156,7 +5156,7 @@ fn usage_store_hidden_quota_warning_markers_do_not_disable_warning_notifications
     assert_eq!(events[0].threshold, 50);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:473 quota warning crossing multiple thresholds posts most severe only
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:472 quota warning crossing multiple thresholds posts most severe only
 #[test]
 fn usage_store_quota_warning_crossing_multiple_thresholds_posts_most_severe_only() {
     let codex = pid("codex");
@@ -5186,7 +5186,7 @@ fn usage_store_quota_warning_crossing_multiple_thresholds_posts_most_severe_only
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:506 quota warning recovers and can fire again
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:505 quota warning recovers and can fire again
 #[test]
 fn usage_store_quota_warning_recovers_and_can_fire_again() {
     let codex = pid("codex");
@@ -5215,7 +5215,7 @@ fn usage_store_quota_warning_recovers_and_can_fire_again() {
     assert_eq!(fired, vec![50, 50]);
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:539 quota warning provider override beats global thresholds
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:538 quota warning provider override beats global thresholds
 #[test]
 fn usage_store_quota_warning_provider_override_beats_global_thresholds() {
     let codex = pid("codex");
@@ -5250,7 +5250,7 @@ fn usage_store_quota_warning_provider_override_beats_global_thresholds() {
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:573 quota warning session only config ignores weekly crossings
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:572 quota warning session only config ignores weekly crossings
 #[test]
 fn usage_store_quota_warning_session_only_config_ignores_weekly_crossings() {
     let codex = pid("codex");
@@ -5289,7 +5289,7 @@ fn usage_store_quota_warning_session_only_config_ignores_weekly_crossings() {
     }
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:606 quota warning weekly only config ignores session crossings
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:605 quota warning weekly only config ignores session crossings
 #[test]
 fn usage_store_quota_warning_weekly_only_config_ignores_session_crossings() {
     let codex = pid("codex");
@@ -5328,7 +5328,7 @@ fn usage_store_quota_warning_weekly_only_config_ignores_session_crossings() {
     }
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:697 antigravity quota warnings use named session and weekly durations
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:696 antigravity quota warnings use named session and weekly durations
 #[test]
 fn usage_store_antigravity_quota_warnings_use_named_session_and_weekly_durations() {
     let antigravity = pid("antigravity");
@@ -5364,7 +5364,7 @@ fn usage_store_antigravity_quota_warnings_use_named_session_and_weekly_durations
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:726 antigravity legacy quota warnings do not infer weekly from family slots
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:725 antigravity legacy quota warnings do not infer weekly from family slots
 #[test]
 fn usage_store_antigravity_legacy_quota_warnings_do_not_infer_weekly_from_family_slots() {
     let antigravity = pid("antigravity");
@@ -5396,7 +5396,7 @@ fn usage_store_antigravity_legacy_quota_warnings_do_not_infer_weekly_from_family
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:753 antigravity quota warning mode change resets warning baseline
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:752 antigravity quota warning mode change resets warning baseline
 #[test]
 fn usage_store_antigravity_quota_warning_mode_change_resets_warning_baseline() {
     let antigravity = pid("antigravity");
@@ -5436,7 +5436,7 @@ fn usage_store_antigravity_quota_warning_mode_change_resets_warning_baseline() {
     );
 }
 
-// upstream: UsageStoreSessionQuotaTransitionTests.swift:787 disabling quota warning window clears fired state
+// upstream: UsageStoreSessionQuotaTransitionTests.swift:786 disabling quota warning window clears fired state
 #[test]
 fn usage_store_disabling_quota_warning_window_clears_fired_state() {
     let codex = pid("codex");
