@@ -5,7 +5,6 @@ use std::future::Future;
 #[cfg(unix)]
 use std::path::PathBuf;
 use std::pin::Pin;
-#[cfg(unix)]
 use std::sync::Arc;
 
 use ariadusage_core::config::{Config, CookieSource, ProviderConfig, ProviderEntry};
@@ -26,9 +25,10 @@ use crate::error::StoreError;
 #[cfg(unix)]
 use crate::ipc_server::start_ipc_server;
 use crate::ipc_server::{IpcBackend, IpcServerError};
-use crate::paths::PathError;
+use crate::paths::{PathError, data_dir};
 #[cfg(unix)]
 use crate::paths::{config_path, socket_path};
+use crate::runtime::EngineRuntime;
 
 /// Errors encountered by the desktop notification boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -438,6 +438,39 @@ impl IpcBackend for ConfigIpcBackend {
     }
 }
 
+/// Builds the default [`EngineRuntime`] wired to `config_store`, [`SecretStore`], [`NetBroker`],
+/// and [`ProviderRegistry`].
+pub fn build_default_runtime(config_store: ConfigStore) -> Result<Arc<EngineRuntime>, DaemonError> {
+    let config = config_store.load_effective().unwrap_or_else(|_| {
+        ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
+    });
+    let consented = config.secret_file_fallback == Some(true);
+    let data = data_dir()?;
+    let file_backend = crate::brokers::secret_store::file::FileBackend::new(
+        data.join("ariadusage").join("secrets.json"),
+        consented,
+    );
+    let disabled = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
+        == Some(std::ffi::OsStr::new("1"));
+    let secret_store = Arc::new(
+        crate::brokers::secret_store::SecretStore::new(
+            crate::brokers::secret_store::service::ServiceBackend::new(disabled),
+        )
+        .with_file_fallback(file_backend, consented),
+    );
+    let net = Arc::new(
+        crate::brokers::net::NetBroker::new(crate::brokers::net::NetConfig::default())
+            .map_err(|err| DaemonError::Signal(std::io::Error::other(err.to_string())))?,
+    );
+    let registry = crate::registry::ProviderRegistry::default();
+    Ok(Arc::new(EngineRuntime::new(
+        config_store,
+        secret_store,
+        net,
+        registry,
+    )))
+}
+
 /// Runs the engine daemon with a custom shutdown future and optional socket path override.
 #[cfg(unix)]
 pub async fn run_daemon_with_shutdown(
@@ -462,7 +495,8 @@ pub async fn run_daemon_with_shutdown(
 #[cfg(unix)]
 pub async fn run_daemon(socket_override: Option<PathBuf>) -> Result<(), DaemonError> {
     let cfg_path = config_path()?;
-    let backend: Arc<dyn IpcBackend> = Arc::new(ConfigIpcBackend::new(ConfigStore::new(cfg_path)));
+    let runtime = build_default_runtime(ConfigStore::new(cfg_path))?;
+    let backend: Arc<dyn IpcBackend> = runtime;
 
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;

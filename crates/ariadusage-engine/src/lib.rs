@@ -1,5 +1,6 @@
 pub mod brokers;
 pub mod config_store;
+pub mod coordinator;
 pub mod daemon;
 pub mod error;
 pub mod hardening;
@@ -8,10 +9,17 @@ pub mod paths;
 pub mod private_file;
 pub mod private_tempdir;
 pub mod providers;
+pub mod registry;
+pub mod runtime;
+pub mod settings_page;
 pub mod state_store;
+pub mod status;
 pub mod trust;
 
 pub use config_store::{ConfigStore, UpdateResult};
+pub use coordinator::{
+    ProviderRefreshCoordinator, ProviderRefreshRequestState, Replacement, WaitResult,
+};
 pub use daemon::{ConfigIpcBackend, DaemonError, DefaultNotifier, NotificationError, Notifier};
 pub use error::StoreError;
 pub use ipc_server::{IpcBackend, IpcServerError, PeerIdentity, verify_peer_uid};
@@ -23,5 +31,21 @@ pub use paths::{
 };
 pub use private_file::{WriteHooks, repair_permissions, write_private};
 pub use private_tempdir::{PrivateTempDir, TempDirError};
+pub use registry::{
+    ClaudeProviderPlanFactory, ProviderPlanFactory, ProviderPlanInputs, ProviderRegistry,
+    ResolvedProviderSpec, UnregisteredProviderPlan,
+};
+pub use runtime::{
+    DEFAULT_STALE_AFTER_SECONDS, EngineRuntime, NoopTransitionSink, RecordingTransitionSink,
+    RefreshOptions, SnapshotStore, TokioSleeper, TransitionSink, is_supported_protocol,
+};
+pub use settings_page::{
+    AppPreferences, SettingsMutationError, apply_setting_mutation, build_settings_page,
+};
 pub use state_store::{BrokerState, BrokerStateStore, StateWarning};
+pub use status::{
+    DEFAULT_STATUS_TIMEOUT, GOOGLE_WORKSPACE_INCIDENTS_URL, ProviderStatusFetcher,
+    ProviderStatusSummary, StatusFetchError, StatusParseError, StatuspageComponentSummary,
+    status_declared_hosts, status_declared_origins,
+};
 pub use trust::TrustPolicy;

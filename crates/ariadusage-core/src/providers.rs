@@ -46,6 +46,13 @@ pub struct ProviderDescriptor {
     pub supports_enterprise_host: bool,
     pub token_account_support: bool,
     pub pace_capability: ProviderPaceCapability,
+    pub cli_name: &'static str,
+    pub toggle_title: &'static str,
+    pub dashboard_url: Option<&'static str>,
+    pub subscription_dashboard_url: Option<&'static str>,
+    pub status_page_url: Option<&'static str>,
+    pub status_link_url: Option<&'static str>,
+    pub status_workspace_product_id: Option<&'static str>,
 }
 
 impl ProviderDescriptor {
@@ -62,11 +69,25 @@ impl ProviderDescriptor {
             accent_color: Some(accent_color),
         }
     }
+
+    /// Returns the URL to open when viewing the provider's status page, if supported.
+    pub fn effective_status_link_url(&self) -> Option<&'static str> {
+        self.status_page_url.or(self.status_link_url)
+    }
+
+    /// Returns true if this provider has a pollable status feed (`status_page_url` or
+    /// `status_workspace_product_id`).
+    pub fn supports_status_polling(&self) -> bool {
+        self.status_page_url.is_some_and(|s| !s.trim().is_empty())
+            || self
+                .status_workspace_product_id
+                .is_some_and(|s| !s.trim().is_empty())
+    }
 }
 
 static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::new(|| {
     [
-        // Codex (CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift:31, 34-37, 43, 68, 86-93, 138)
+        // Codex (CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift:31, 34-37, 43, 62-64, 68, 86-93, 138)
         ProviderDescriptor {
             id: ProviderId::new("codex").expect("valid id"),
             display_name: "Codex",
@@ -95,8 +116,15 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
                 inferred_monthly_duration: ProviderPaceDurationRule::Unsupported,
                 shows_headroom_hint: true,
             },
+            cli_name: "codex",
+            toggle_title: "Show Codex usage",
+            dashboard_url: Some("https://chatgpt.com/settings/usage?tab=overview"),
+            subscription_dashboard_url: None,
+            status_page_url: Some("https://status.openai.com/"),
+            status_link_url: None,
+            status_workspace_product_id: None,
         },
-        // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:126-129, 135, 158, 233, 239-245)
+        // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:126-129, 135, 151-154, 158, 233, 239-245)
         ProviderDescriptor {
             id: ProviderId::new("claude").expect("valid id"),
             display_name: "Claude",
@@ -121,8 +149,15 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_enterprise_host: false,
             token_account_support: true,
             pace_capability: ProviderPaceCapability::calendar_month_reset_window(),
+            cli_name: "claude",
+            toggle_title: "Show Claude Code usage",
+            dashboard_url: Some("https://platform.claude.com/usage"),
+            subscription_dashboard_url: Some("https://claude.ai/settings/usage"),
+            status_page_url: Some("https://status.claude.com/"),
+            status_link_url: None,
+            status_workspace_product_id: None,
         },
-        // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:26-30, 36, 52, 71, 102)
+        // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:26-30, 36, 46-48, 52, 71, 102)
         ProviderDescriptor {
             id: ProviderId::new("antigravity").expect("valid id"),
             display_name: "Antigravity",
@@ -141,6 +176,15 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_enterprise_host: false,
             token_account_support: true,
             pace_capability: ProviderPaceCapability::unsupported(),
+            cli_name: "antigravity",
+            toggle_title: "Show Antigravity usage (experimental)",
+            dashboard_url: None,
+            subscription_dashboard_url: None,
+            status_page_url: None,
+            status_link_url: Some(
+                "https://www.google.com/appsstatus/dashboard/products/npdyhgECDJ6tB66MxXyo/history",
+            ),
+            status_workspace_product_id: Some("npdyhgECDJ6tB66MxXyo"),
         },
     ]
 });
