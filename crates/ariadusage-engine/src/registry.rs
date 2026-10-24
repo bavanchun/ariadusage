@@ -484,8 +484,8 @@ impl ProviderRegistry {
                 account_projection: Some(AccountTokenProjection {
                     scrub_keys: vec![
                         CLAUDE_OAUTH_TOKEN_ENV_KEY.to_string(),
+                        "ANTHROPIC_ADMIN_KEY".to_string(),
                         "ANTHROPIC_ADMIN_API_KEY".to_string(),
-                        "CLAUDE_ADMIN_API_KEY".to_string(),
                     ],
                     target_key,
                 }),
@@ -594,8 +594,8 @@ impl ProviderRegistry {
         }
         for env_key in [
             CLAUDE_OAUTH_TOKEN_ENV_KEY,
+            "ANTHROPIC_ADMIN_KEY",
             "ANTHROPIC_ADMIN_API_KEY",
-            "CLAUDE_ADMIN_API_KEY",
             "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS",
         ] {
             if let Some(val) = environment

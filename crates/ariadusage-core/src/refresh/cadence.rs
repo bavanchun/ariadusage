@@ -307,6 +307,7 @@ mod tests {
         }
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:23 age determines the canonical table boundary
     #[test]
     fn age_determines_canonical_table_boundary() {
         let cases = [
@@ -340,6 +341,7 @@ mod tests {
         }
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:46 nil last menu open is long idle
     #[test]
     fn nil_last_menu_open_is_long_idle() {
         let decision = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -352,6 +354,7 @@ mod tests {
         assert_eq!(decision.delay, Duration::from_secs(30 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:53 low power mode wins over recent interaction
     #[test]
     fn low_power_mode_wins_over_recent_interaction() {
         let decision = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -364,6 +367,7 @@ mod tests {
         assert_eq!(decision.delay, Duration::from_secs(30 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:62 thermal pressure wins when no menu open is recorded
     #[test]
     fn thermal_pressure_wins_when_no_menu_open_is_recorded() {
         let decision = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -376,6 +380,7 @@ mod tests {
         assert_eq!(decision.delay, Duration::from_secs(30 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:71 recent coding activity caps slower menu decisions at five minutes
     #[test]
     fn recent_coding_activity_caps_slower_menu_decisions_at_five_minutes() {
         for age_secs in [3601, 14400, 100_000] {
@@ -390,6 +395,7 @@ mod tests {
         }
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:80 coding activity does not lengthen recent or warm decisions
     #[test]
     fn coding_activity_does_not_lengthen_recent_or_warm_decisions() {
         let recent = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -410,6 +416,7 @@ mod tests {
         assert_eq!(warm.delay, Duration::from_secs(5 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:94 constraints win and the coding activity boundary is exclusive
     #[test]
     fn constraints_win_and_coding_activity_boundary_is_exclusive() {
         let constrained = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -441,6 +448,7 @@ mod tests {
         assert_eq!(at_boundary.delay, Duration::from_secs(30 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:114 future timestamps read as recent
     #[test]
     fn future_timestamps_read_as_recent() {
         let decision = AdaptiveRefreshPolicyCore.next_delay(&make_input(
@@ -453,6 +461,7 @@ mod tests {
         assert_eq!(decision.delay, Duration::from_secs(2 * 60));
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:121 every decision stays within the two to thirty minute bounds
     #[test]
     fn every_decision_stays_within_two_to_thirty_minute_bounds() {
         let ages = [
@@ -479,6 +488,7 @@ mod tests {
         }
     }
 
+    // upstream: Tests/AdaptiveReplayKitTests/AdaptiveRefreshPolicyCoreTests.swift:141 nominal heuristic interval remains five minutes
     #[test]
     fn nominal_heuristic_interval_remains_five_minutes() {
         assert_eq!(
@@ -487,6 +497,7 @@ mod tests {
         );
     }
 
+    // upstream: Tests/CodexBarTests/AdaptiveRefreshTimerTests.swift:266 fixed cadence advances from scheduled tick instead of refresh completion
     #[test]
     fn fixed_cadence_advances_from_scheduled_tick_instead_of_refresh_completion() {
         let interval = Duration::from_millis(100);

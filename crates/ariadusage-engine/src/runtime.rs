@@ -385,14 +385,54 @@ pub struct EngineRuntime {
     engine_version: String,
 }
 
+struct BatchRefreshGuard<'a> {
+    runtime: &'a EngineRuntime,
+}
+
+impl Drop for BatchRefreshGuard<'_> {
+    fn drop(&mut self) {
+        {
+            let mut batch = self.runtime.batch_state.lock().expect("batch_state lock");
+            batch.is_refreshing = false;
+            let _ = self.runtime.batch_idle_tx.send(true);
+        }
+        self.runtime.publish_current_snapshot();
+    }
+}
+
+struct RequiredPassGuard<'a> {
+    runtime: &'a EngineRuntime,
+    pass_target: u64,
+    completed_normally: bool,
+}
+
+impl Drop for RequiredPassGuard<'_> {
+    fn drop(&mut self) {
+        if self.completed_normally {
+            return;
+        }
+        {
+            let mut batch = self.runtime.batch_state.lock().expect("batch_state lock");
+            batch.is_refreshing = false;
+            let _ = self.runtime.batch_idle_tx.send(true);
+            batch.required_completed_generation =
+                batch.required_completed_generation.max(self.pass_target);
+            let _ = self
+                .runtime
+                .required_completed_tx
+                .send(batch.required_completed_generation);
+            batch.is_required_loop_running = false;
+        }
+        self.runtime.publish_current_snapshot();
+    }
+}
+
 impl Drop for EngineRuntime {
     fn drop(&mut self) {
         if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
             cancel.cancel();
         }
-        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
-            handle.abort();
-        }
+        let _ = self.timer_task.lock().expect("timer_task lock").take();
     }
 }
 
@@ -819,16 +859,9 @@ impl EngineRuntime {
             let _ = self.batch_idle_tx.send(false);
         }
 
+        let _guard = BatchRefreshGuard { runtime: self };
         self.publish_current_snapshot();
         self.execute_batch_pass(options).await;
-
-        {
-            let mut batch = self.batch_state.lock().expect("batch_state lock");
-            batch.is_refreshing = false;
-            let _ = self.batch_idle_tx.send(true);
-        }
-
-        self.publish_current_snapshot();
         true
     }
 
@@ -883,10 +916,16 @@ impl EngineRuntime {
                 batch.is_refreshing = true;
                 let _ = self.batch_idle_tx.send(false);
             }
+            let mut pass_guard = RequiredPassGuard {
+                runtime: self,
+                pass_target,
+                completed_normally: false,
+            };
             self.publish_current_snapshot();
 
             self.execute_batch_pass(options).await;
 
+            pass_guard.completed_normally = true;
             let done = {
                 let mut batch = self.batch_state.lock().expect("batch_state lock");
                 batch.is_refreshing = false;
@@ -1871,14 +1910,12 @@ impl EngineRuntime {
         self.restart_timer_internal();
     }
 
-    /// Stops any active background refresh timer.
+    /// Stops any active background refresh timer without aborting an already-started batch refresh.
     pub fn stop_timer(&self) {
         if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
             cancel.cancel();
         }
-        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
-            handle.abort();
-        }
+        let _ = self.timer_task.lock().expect("timer_task lock").take();
         let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
         adaptive.timer_active = false;
         adaptive.scheduled_fire_at = None;
@@ -1890,9 +1927,7 @@ impl EngineRuntime {
         if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
             cancel.cancel();
         }
-        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
-            handle.abort();
-        }
+        let _ = self.timer_task.lock().expect("timer_task lock").take();
 
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
@@ -1932,7 +1967,13 @@ impl EngineRuntime {
                     let Some(runtime) = weak.upgrade() else {
                         return;
                     };
-                    let _ = runtime.refresh_batch(RefreshOptions::background()).await;
+                    let batch_runtime = Arc::clone(&runtime);
+                    let _ = tokio::spawn(async move {
+                        let _ = batch_runtime
+                            .refresh_batch(RefreshOptions::background())
+                            .await;
+                    })
+                    .await;
                     if task_cancel.is_cancelled() {
                         return;
                     }
@@ -1980,7 +2021,10 @@ impl EngineRuntime {
                     let weak_inner = weak.clone();
                     async move {
                         if let Some(runtime) = weak_inner.upgrade() {
-                            let _ = runtime.refresh_batch(RefreshOptions::background()).await;
+                            let _ = tokio::spawn(async move {
+                                let _ = runtime.refresh_batch(RefreshOptions::background()).await;
+                            })
+                            .await;
                         }
                     }
                 },
