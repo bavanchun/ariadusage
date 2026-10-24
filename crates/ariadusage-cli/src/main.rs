@@ -1,3 +1,4 @@
+pub mod hooks;
 pub mod launch_agent;
 
 use std::io::{self, IsTerminal, Read};
@@ -61,6 +62,9 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Run external commands on quota/provider events
+    Hooks(hooks::HooksCommandArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -147,6 +151,14 @@ fn main() {
         Some(Commands::Status { socket, json }) => {
             if let Err(error) = run_status_command(socket, json) {
                 report(error);
+            }
+        }
+        Some(Commands::Hooks(args)) => {
+            if let Err(error) = hooks::run_hooks_command(args) {
+                let mut stdout = io::stdout();
+                let mut stderr = io::stderr();
+                hooks::write_hooks_cli_error(&error, &mut stdout, &mut stderr);
+                std::process::exit(i32::from(error.code));
             }
         }
         None => {}
