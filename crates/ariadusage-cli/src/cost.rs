@@ -2443,6 +2443,7 @@ pub struct CostRunEnvironment {
     pub now: Option<Timestamp>,
     pub timezone: Option<TimeZone>,
     pub catalog: Option<ModelsDevCatalog>,
+    pub antigravity_cancelled: bool,
 }
 
 fn resolve_environment_map(env_overrides: &CostRunEnvironment) -> BTreeMap<String, String> {
@@ -2811,6 +2812,14 @@ pub fn run_cost_command_with_env(
     let mut exit_code: i32 = 0;
 
     for provider in &output_providers {
+        crate::logging::logger(crate::logging::LogCategories::TOKEN_COST).debug(
+            "Loading local cost snapshot",
+            Some(BTreeMap::from([
+                ("provider", provider.raw_value().to_owned()),
+                ("period", period.raw_value()),
+                ("refresh", args.refresh.to_string()),
+            ])),
+        );
         match load_local_provider_snapshot(
             *provider,
             period,
@@ -2820,27 +2829,43 @@ pub fn run_cost_command_with_env(
             args.refresh,
             env_overrides,
         ) {
-            Ok(snapshot) => match format {
-                OutputFormat::Text => {
-                    sections.push(render_cost_text(
-                        *provider,
-                        &snapshot,
-                        group_by,
-                        use_color,
-                        &timezone,
-                        args.breakdown,
-                    ));
+            Ok(snapshot) => {
+                crate::logging::logger(crate::logging::LogCategories::TOKEN_COST).debug(
+                    "Loaded local cost snapshot",
+                    Some(BTreeMap::from([
+                        ("provider", provider.raw_value().to_owned()),
+                        ("dailyEntries", snapshot.daily.len().to_string()),
+                    ])),
+                );
+                match format {
+                    OutputFormat::Text => {
+                        sections.push(render_cost_text(
+                            *provider,
+                            &snapshot,
+                            group_by,
+                            use_color,
+                            &timezone,
+                            args.breakdown,
+                        ));
+                    }
+                    OutputFormat::Json => {
+                        payloads.push(make_cost_payload(
+                            *provider,
+                            Some(&snapshot),
+                            None,
+                            &timezone,
+                        ));
+                    }
                 }
-                OutputFormat::Json => {
-                    payloads.push(make_cost_payload(
-                        *provider,
-                        Some(&snapshot),
-                        None,
-                        &timezone,
-                    ));
-                }
-            },
+            }
             Err(err_msg) => {
+                crate::logging::logger(crate::logging::LogCategories::TOKEN_COST).error(
+                    &format!("Local cost scan failed: {err_msg}"),
+                    Some(BTreeMap::from([(
+                        "provider",
+                        provider.raw_value().to_owned(),
+                    )])),
+                );
                 exit_code = EXIT_FAILURE;
                 if format == OutputFormat::Json {
                     payloads.push(make_cost_payload(
@@ -3111,13 +3136,24 @@ fn load_local_provider_snapshot(
                 context = context.with_provider_config(provider_cfg);
             }
             let tz_offset_seconds = now.to_zoned(timezone.clone()).offset().seconds();
+            let cancelled = env_overrides.antigravity_cancelled;
             AntigravityLocalReader::load_token_snapshot(
                 &context,
                 now,
                 history_days,
                 tz_offset_seconds,
                 Some(&cache_root),
-                || Ok(()),
+                move || {
+                    if cancelled {
+                        Err(
+                            ariadusage_engine::providers::antigravity::ScanFailure::Cancelled(
+                                "scan cancelled".to_owned(),
+                            ),
+                        )
+                    } else {
+                        Ok(())
+                    }
+                },
             )
             .map(|ag_snap| snapshot_from_antigravity_snapshot(ag_snap, period))
             .map_err(|err| err.to_string())
