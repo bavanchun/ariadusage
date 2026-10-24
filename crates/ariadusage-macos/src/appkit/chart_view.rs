@@ -1,7 +1,7 @@
 // Ported from CodexBar Sources/CodexBar/CostHistoryChartMenuView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/QuotaBurndownChartMenuView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/ChartMenuViewLayout.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/ProviderMenuChartContent.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! AppKit `NSView` hosts for the `Plan Usage` and `Cost` submenu charts:
 //! - [`CostHistoryChartView`] (`CostHistoryChartMenuView`)

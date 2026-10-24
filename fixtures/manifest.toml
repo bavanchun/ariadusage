@@ -945,7 +945,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/chart_view.rs"
-sources = ["Sources/CodexBar/CostHistoryChartMenuView.swift", "Sources/CodexBar/QuotaBurndownChartMenuView.swift", "Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift", "Sources/CodexBar/ChartMenuViewLayout.swift"]
+sources = ["Sources/CodexBar/CostHistoryChartMenuView.swift", "Sources/CodexBar/QuotaBurndownChartMenuView.swift", "Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift", "Sources/CodexBar/ProviderMenuChartContent.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
