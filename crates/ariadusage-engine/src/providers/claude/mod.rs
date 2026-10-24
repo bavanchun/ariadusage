@@ -1,4 +1,5 @@
 pub mod account_profile;
+pub mod admin_api;
 pub mod cli_gates;
 pub mod cli_parser;
 pub mod cli_screen;
@@ -19,6 +20,15 @@ pub mod web_extras;
 pub mod web_fetcher;
 
 pub use account_profile::{ClaudeAccountProfile, ConfigOwnershipEvidence};
+pub use admin_api::{
+    ADMIN_API_HOST, ADMIN_API_USER_AGENT, ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE,
+    API_KEY_HEADER, COST_REPORT_PATH, ClaudeAdminAPIEndpointConfig, ClaudeAdminAPISettingsError,
+    ClaudeAdminAPISettingsReader, ClaudeAdminAPIUsageError, ClaudeAdminAPIUsageFetcher,
+    ClaudeAdminAPIUsageSnapshot, ClaudeOptionalDetailPolicy, CostBreakdown,
+    CostUsageBucketInterval, DEFAULT_ADMIN_API_BASE_URL, DEFAULT_ADMIN_API_TIMEOUT, DailyBucket,
+    MESSAGES_REPORT_PATH, ModelBreakdown, Summary, claude_admin_api_declared_origins,
+    claude_env_descriptor, claude_token_account_env_override, validate_admin_api_url,
+};
 pub use cli_gates::{
     ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundAvailabilityStore,
     ClaudeCLIBackgroundMarker, ClaudeCLIRateLimitGate, ClaudeCLISubprocessResult,
@@ -61,11 +71,11 @@ pub use reset_credits::{
 pub use scoped_weekly::{ClaudeScopedWeeklyLimitMapper, OAuthScopedLimitEntry};
 pub use strategy::{
     CLAUDE_ADMIN_API_STRATEGY_ID, CLAUDE_CLI_STRATEGY_ID, CLAUDE_OAUTH_STRATEGY_ID,
-    CLAUDE_WEB_STRATEGY_ID, ClaudeCLIFetchStrategy, ClaudeOAuthFetchStrategy,
-    ClaudeOAuthStrategyConfig, ClaudeProviderPlan, ClaudeUnavailableFetchStrategy,
-    ClaudeWebAvailabilityProbe, ClaudeWebEnrichmentAccess, ClaudeWebFetchDeadlineState,
-    ClaudeWebFetchStrategy, ClaudeWebFetchStrategyError, ClaudeWebUsageLoader,
-    DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS,
+    CLAUDE_WEB_STRATEGY_ID, ClaudeAdminAPIFetchStrategy, ClaudeCLIFetchStrategy,
+    ClaudeOAuthFetchStrategy, ClaudeOAuthStrategyConfig, ClaudeProviderPlan,
+    ClaudeUnavailableFetchStrategy, ClaudeWebAvailabilityProbe, ClaudeWebEnrichmentAccess,
+    ClaudeWebFetchDeadlineState, ClaudeWebFetchStrategy, ClaudeWebFetchStrategyError,
+    ClaudeWebUsageLoader, DEFAULT_CLAUDE_WEB_TIMEOUT_SECONDS,
 };
 pub use subscription_metadata::{
     BillingDate, ClaudeSubscriptionFetchResult, ClaudeSubscriptionMetadata,

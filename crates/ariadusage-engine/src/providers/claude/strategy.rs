@@ -31,7 +31,12 @@ use crate::brokers::exec_resolver::{RealResolverFs, ResolverFs};
 use crate::brokers::net::NetBroker;
 use crate::brokers::oauth::{DelegatedCoordinatorResult, DelegatedRefreshCoordinator};
 use crate::brokers::process::ProcessRegistry;
+use crate::brokers::secret_store::SecretStore;
 
+use super::admin_api::{
+    ClaudeAdminAPIEndpointConfig, ClaudeAdminAPISettingsError, ClaudeAdminAPISettingsReader,
+    ClaudeAdminAPIUsageFetcher,
+};
 use super::cli_gates::{
     ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundAvailabilityStore,
     ClaudeCLIRateLimitGate, ClaudeCLIUsageSpawnThrottle, ClaudeCLIUsageSpawnThrottleKey,
@@ -109,6 +114,7 @@ pub struct ClaudeOAuthStrategyConfig {
     pub net: Arc<NetBroker>,
     pub endpoint: ClaudeOAuthEndpointConfig,
     pub web_endpoint: ClaudeWebEndpointConfig,
+    pub admin_api_endpoint: ClaudeAdminAPIEndpointConfig,
     pub rate_limit_gate: Arc<ClaudeOAuthUsageRateLimitGate>,
     pub delegated_refresh: Option<Arc<DelegatedRefreshCoordinator>>,
     pub cookie_cache: Arc<CookieCache>,
@@ -120,6 +126,9 @@ pub struct ClaudeOAuthStrategyConfig {
     pub include_account_identity: bool,
     pub include_optional_usage: bool,
     pub token_account_token: Option<SecretString>,
+    pub admin_api_key: Option<SecretString>,
+    pub workspace_spend_enabled: bool,
+    pub secret_store: Option<Arc<SecretStore>>,
     pub manual_cookie_header: Option<SecretString>,
     pub cookie_source: Option<CookieSource>,
     pub use_desktop_cookies: bool,
@@ -173,6 +182,7 @@ impl ClaudeOAuthStrategyConfig {
             net,
             endpoint: ClaudeOAuthEndpointConfig::default(),
             web_endpoint: ClaudeWebEndpointConfig::default(),
+            admin_api_endpoint: ClaudeAdminAPIEndpointConfig::default(),
             rate_limit_gate: Arc::new(ClaudeOAuthUsageRateLimitGate::new()),
             delegated_refresh: None,
             cookie_cache: Arc::new(CookieCache::new()),
@@ -184,6 +194,9 @@ impl ClaudeOAuthStrategyConfig {
             include_account_identity: true,
             include_optional_usage: true,
             token_account_token: None,
+            admin_api_key: None,
+            workspace_spend_enabled: false,
+            secret_store: None,
             manual_cookie_header: None,
             cookie_source: None,
             use_desktop_cookies: false,
@@ -222,6 +235,34 @@ impl ClaudeOAuthStrategyConfig {
 
     pub fn with_web_endpoint(mut self, web_endpoint: ClaudeWebEndpointConfig) -> Self {
         self.web_endpoint = web_endpoint;
+        self
+    }
+
+    pub fn with_admin_api_endpoint(
+        mut self,
+        admin_api_endpoint: ClaudeAdminAPIEndpointConfig,
+    ) -> Self {
+        self.admin_api_endpoint = admin_api_endpoint;
+        self
+    }
+
+    pub fn with_admin_api_key(mut self, admin_api_key: Option<SecretString>) -> Self {
+        self.admin_api_key = admin_api_key;
+        self
+    }
+
+    pub fn with_token_account_token(mut self, token: Option<SecretString>) -> Self {
+        self.token_account_token = token;
+        self
+    }
+
+    pub fn with_workspace_spend_enabled(mut self, enabled: bool) -> Self {
+        self.workspace_spend_enabled = enabled;
+        self
+    }
+
+    pub fn with_secret_store(mut self, secret_store: Arc<SecretStore>) -> Self {
+        self.secret_store = Some(secret_store);
         self
     }
 
@@ -1666,10 +1707,193 @@ impl FetchStrategy for ClaudeCLIFetchStrategy {
     }
 }
 
-/// Placeholder strategy for Claude sources pending implementation (`admin-api`).
-///
-/// Reports `is_available = false` so `fetch_outcome` records `AttemptOutcome::Skipped` (`skipped: unavailable`),
-/// and returns a typed `ProviderUnavailable` error if invoked directly.
+/// Claude Admin API fetch strategy (`ClaudeAdminAPIFetchStrategy` in `ClaudeProviderDescriptor.swift:287-356`).
+pub struct ClaudeAdminAPIFetchStrategy {
+    config: ClaudeOAuthStrategyConfig,
+}
+
+impl ClaudeAdminAPIFetchStrategy {
+    pub fn new(config: ClaudeOAuthStrategyConfig) -> Self {
+        Self { config }
+    }
+
+    pub async fn resolve_token(&self, cx: &FetchContext) -> Option<SecretString> {
+        let call = BrokerCall {
+            interaction: cx.interaction,
+            cancel: cx.cancel.clone(),
+            request_id: cx.request_id.clone(),
+        };
+
+        if let Some(ref account_id) = cx.selected_token_account {
+            if cx.source_mode != SourceMode::Api {
+                return None;
+            }
+            let raw_account_token = match self.config.token_account_token.as_ref() {
+                Some(tok) => Some(tok.clone()),
+                None => match self.config.secret_store.as_ref() {
+                    Some(store) => {
+                        ClaudeAdminAPISettingsReader::token_account_from_secret_store(
+                            store, account_id, call,
+                        )
+                        .await
+                    }
+                    None => None,
+                },
+            };
+            return match ClaudeCredentialRouting::resolve(
+                raw_account_token.as_ref().map(SecretString::expose_secret),
+                None,
+            ) {
+                ClaudeCredentialRoute::AdminApiKey(token) => Some(token),
+                _ => None,
+            };
+        }
+
+        if let Some(config_token) = ClaudeCredentialRouting::normalize_admin_api_key(
+            self.config
+                .admin_api_key
+                .as_ref()
+                .map(SecretString::expose_secret),
+        ) {
+            return Some(config_token);
+        }
+
+        if let Some(ref store) = self.config.secret_store
+            && let Some(store_token) =
+                ClaudeAdminAPISettingsReader::api_key_from_secret_store(store, call).await
+        {
+            return Some(store_token);
+        }
+
+        ClaudeAdminAPISettingsReader::api_key(&cx.env)
+    }
+
+    pub fn resolve_token_sync(&self, cx: &FetchContext) -> Option<SecretString> {
+        if cx.selected_token_account.is_some() {
+            if cx.source_mode != SourceMode::Api {
+                return None;
+            }
+            return match ClaudeCredentialRouting::resolve(
+                self.config
+                    .token_account_token
+                    .as_ref()
+                    .map(SecretString::expose_secret),
+                None,
+            ) {
+                ClaudeCredentialRoute::AdminApiKey(token) => Some(token),
+                _ => None,
+            };
+        }
+
+        if let Some(config_token) = ClaudeCredentialRouting::normalize_admin_api_key(
+            self.config
+                .admin_api_key
+                .as_ref()
+                .map(SecretString::expose_secret),
+        ) {
+            return Some(config_token);
+        }
+
+        ClaudeAdminAPISettingsReader::api_key(&cx.env)
+    }
+
+    pub async fn is_selected_admin_api_account(&self, cx: &FetchContext) -> bool {
+        cx.selected_token_account.is_some()
+            && cx.source_mode == SourceMode::Api
+            && self
+                .resolve_token(cx)
+                .await
+                .is_some_and(|key| !key.expose_secret().is_empty())
+    }
+
+    pub fn is_selected_admin_api_account_sync(&self, cx: &FetchContext) -> bool {
+        cx.selected_token_account.is_some()
+            && cx.source_mode == SourceMode::Api
+            && self
+                .resolve_token_sync(cx)
+                .is_some_and(|key| !key.expose_secret().is_empty())
+    }
+
+    pub fn workspace_spend_enabled(&self, cx: &FetchContext) -> bool {
+        if self.config.workspace_spend_enabled {
+            return true;
+        }
+        ClaudeAdminAPISettingsReader::workspace_spend_enabled(&cx.env)
+    }
+}
+
+impl FetchStrategy for ClaudeAdminAPIFetchStrategy {
+    fn id(&self) -> &'static str {
+        CLAUDE_ADMIN_API_STRATEGY_ID
+    }
+
+    fn kind(&self) -> SourceKind {
+        SourceKind::Api
+    }
+
+    fn is_available<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            if cx.selected_token_account.is_some() {
+                return self.is_selected_admin_api_account(cx).await;
+            }
+            if cx.source_mode == SourceMode::Api {
+                return true;
+            }
+            self.resolve_token(cx).await.is_some()
+        })
+    }
+
+    fn fetch<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
+        Box::pin(async move {
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+            let Some(api_key) = self.resolve_token(cx).await else {
+                return Err(ClaudeAdminAPISettingsError::MissingToken.into_fetch_error());
+            };
+            let workspace_spend_enabled = self.workspace_spend_enabled(cx);
+            let now = (self.config.clock)();
+            let call = BrokerCall {
+                interaction: cx.interaction,
+                cancel: cx.cancel.clone(),
+                request_id: cx.request_id.clone(),
+            };
+            let usage = ClaudeAdminAPIUsageFetcher::fetch_usage(
+                &self.config.net,
+                &self.config.admin_api_endpoint,
+                api_key.expose_secret(),
+                workspace_spend_enabled,
+                now,
+                &call,
+            )
+            .await
+            .map_err(|err| err.into_fetch_error())?;
+
+            Ok(FetchResult::new(
+                usage.to_usage_snapshot(),
+                "admin-api",
+                CLAUDE_ADMIN_API_STRATEGY_ID,
+                SourceKind::Api,
+            ))
+        })
+    }
+
+    fn should_fallback(&self, error: &FetchError, cx: &FetchContext) -> bool {
+        if cx.cancel.is_cancelled() || matches!(error, FetchError::Cancelled) {
+            return false;
+        }
+        if let FetchError::Classified(c) = error
+            && c.transport == Some(TransportClass::Cancelled)
+        {
+            return false;
+        }
+        cx.runtime == FetchRuntime::Daemon
+            && cx.source_mode == SourceMode::Auto
+            && !self.is_selected_admin_api_account_sync(cx)
+    }
+}
+
+/// Unavailable strategy stub retained for explicit testing of disabled/unavailable sources.
 pub struct ClaudeUnavailableFetchStrategy {
     strategy_id: &'static str,
     kind: SourceKind,
@@ -1795,10 +2019,17 @@ impl ClaudeProviderPlan {
         })
     }
 
-    fn resolve_selected_account_strategies(
+    async fn resolve_selected_account_strategies(
         &self,
         cx: &FetchContext,
     ) -> Vec<Box<dyn FetchStrategy>> {
+        let admin_strategy = ClaudeAdminAPIFetchStrategy::new(self.config.clone());
+        if cx.source_mode == SourceMode::Api
+            && admin_strategy.is_selected_admin_api_account(cx).await
+        {
+            return vec![Box::new(admin_strategy)];
+        }
+
         let route = ClaudeCredentialRouting::resolve(
             self.config
                 .token_account_token
@@ -1810,8 +2041,12 @@ impl ClaudeProviderPlan {
                 .map(SecretString::expose_secret),
         );
 
-        if matches!(route, ClaudeCredentialRoute::AdminApiKey(_)) || has_admin_api_key(&cx.env) {
-            return vec![Box::new(ClaudeUnavailableFetchStrategy::admin_api())];
+        if cx.source_mode == SourceMode::Api {
+            return vec![Box::new(admin_strategy)];
+        }
+
+        if matches!(route, ClaudeCredentialRoute::AdminApiKey(_)) {
+            return vec![Box::new(admin_strategy)];
         }
 
         if cx.source_mode == SourceMode::Oauth
@@ -1836,10 +2071,7 @@ impl ClaudeProviderPlan {
 }
 
 pub fn has_admin_api_key(env: &BTreeMap<String, SecretString>) -> bool {
-    ADMIN_API_KEY_ENV_KEYS.iter().any(|key| {
-        env.get(*key)
-            .is_some_and(|v| !v.expose_secret().trim().is_empty())
-    })
+    ClaudeAdminAPISettingsReader::api_key(env).is_some()
 }
 
 impl ProviderPlan for ClaudeProviderPlan {
@@ -1850,13 +2082,15 @@ impl ProviderPlan for ClaudeProviderPlan {
         Box::pin(async move {
             // Selected account is an authority boundary: never fall through to ambient credentials.
             if cx.selected_token_account.is_some() {
-                return self.resolve_selected_account_strategies(cx);
+                return self.resolve_selected_account_strategies(cx).await;
             }
 
+            let admin_strategy = ClaudeAdminAPIFetchStrategy::new(self.config.clone());
             if cx.source_mode == SourceMode::Api
-                || (cx.source_mode == SourceMode::Auto && has_admin_api_key(&cx.env))
+                || (cx.source_mode == SourceMode::Auto
+                    && admin_strategy.resolve_token(cx).await.is_some())
             {
-                return vec![Box::new(ClaudeUnavailableFetchStrategy::admin_api())];
+                return vec![Box::new(admin_strategy)];
             }
 
             let plan = self.source_plan(cx);
@@ -1877,7 +2111,7 @@ impl ProviderPlan for ClaudeProviderPlan {
                                 .with_planned_step(step),
                         ),
                         ClaudeSourceSelectedStrategy::Api => {
-                            Box::new(ClaudeUnavailableFetchStrategy::admin_api())
+                            Box::new(ClaudeAdminAPIFetchStrategy::new(self.config.clone()))
                         }
                     }
                 })
