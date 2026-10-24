@@ -411,9 +411,9 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             .collect();
         models_used.sort();
 
-        let total_unpriced = unpriced_rows
-            .max(unpriced_from_map)
-            .max(u64::from(scan.priority_data_is_partial && !day_rows.is_empty()));
+        let total_unpriced = unpriced_rows.max(unpriced_from_map).max(u64::from(
+            scan.priority_data_is_partial && !day_rows.is_empty(),
+        ));
         let unpriced_request_count = (total_unpriced > 0).then_some(total_unpriced);
         let all_priced = !model_breakdowns.is_empty()
             && model_breakdowns.iter().all(|b| b.cost_usd.is_some())

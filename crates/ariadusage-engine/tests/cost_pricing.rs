@@ -713,7 +713,7 @@ fn codex_model_normalization_and_priority_multiplier() {
     );
 
     let standard = pricing::codex_cost_usd_with_tier(
-        "gpt-5.2-codex",
+        "gpt-5.4",
         100_000,
         20_000,
         10_000,
@@ -722,7 +722,7 @@ fn codex_model_normalization_and_priority_multiplier() {
     )
     .expect("standard cost");
     let priority = pricing::codex_cost_usd_with_tier(
-        "gpt-5.2-codex",
+        "gpt-5.4",
         100_000,
         20_000,
         10_000,
@@ -773,8 +773,8 @@ fn models_dev_catalog_and_custom_pricing_overrides_resolve() {
         Some(&catalog),
     )
     .expect("resolved from models.dev catalog");
-    // 1M * $4 + 0.5M * $0.4 + 0.25M * $16 = 4.0 + 0.2 + 4.0 = 8.2
-    assert!((cost - 8.2).abs() < 1e-9);
+    // non-cached input (0.5M) * $4 + cached input (0.5M) * $0.4 + output (0.25M) * $16 = 2.0 + 0.2 + 4.0 = 6.2
+    assert!((cost - 6.2).abs() < 1e-9);
 
     let mut custom = CustomModelPricing::default();
     custom.models.insert(
