@@ -259,6 +259,7 @@ fn cost_smoke_renders_text_and_json_and_rejects_unsupported_flags_with_code_21()
         now: Some(now),
         timezone: Some(tz),
         catalog: None,
+        antigravity_cancelled: false,
     };
 
     let code = run_cost_command_with_env(
@@ -489,6 +490,7 @@ fn cost_default_roots_resolve_from_home_codex_home_and_claude_config_dir() {
     assert_eq!(
         ariadusage_cli::config::current_cli_logging_configuration(),
         Some(ariadusage_cli::config::CliLoggingConfiguration {
+            destination: ariadusage_cli::config::CliLogDestination::Stderr,
             level: ariadusage_cli::config::CliLogLevel::Debug,
             json: true,
         })
@@ -596,4 +598,33 @@ fn antigravity_cost_binary_reads_gemini_sqlite_fixture() {
     let text = String::from_utf8_lossy(&text_out.stdout);
     assert!(text.contains("Antigravity Token History"), "text: {text}");
     assert!(text.contains("187"), "text: {text}");
+
+    // 3. Forced Antigravity reader error branch returns exit code 1 and populates JSON error payload
+    let mut ag_env_map = BTreeMap::new();
+    ag_env_map.insert("HOME".to_owned(), home_dir.to_string_lossy().into_owned());
+    let err_code = run_cost_command_with_env(
+        &CostCommandArgs {
+            provider: Some("antigravity".to_owned()),
+            json: true,
+            ..CostCommandArgs::default()
+        },
+        &CostRunEnvironment {
+            env: Some(ag_env_map),
+            cache_root: Some(dir.path().join("cache")),
+            antigravity_cancelled: true,
+            ..CostRunEnvironment::default()
+        },
+    );
+    assert_eq!(err_code, ariadusage_cli::cost::EXIT_FAILURE);
+    let err_payload = ariadusage_cli::cost::make_cost_payload(
+        CostProvider::Antigravity,
+        None,
+        Some("scan cancelled"),
+        &jiff::tz::TimeZone::UTC,
+    );
+    let err_json = serde_json::to_value(&err_payload).expect("serialize err payload");
+    assert_eq!(err_json["provider"], "antigravity");
+    assert_eq!(err_json["error"]["code"], 1);
+    assert_eq!(err_json["error"]["kind"], "provider");
+    assert_eq!(err_json["error"]["message"], "scan cancelled");
 }

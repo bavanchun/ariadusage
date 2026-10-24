@@ -7,6 +7,15 @@ pub mod config;
 pub mod cost;
 pub mod hooks;
 pub mod launch_agent;
+pub mod logging;
+
+pub use logging::{
+    CliLogDestination, CliLogLevel, CliLogger, CliLoggingConfiguration, CliLoggingOptions,
+    JsonLogLine, LogCategories, LogRedactor, ProviderLogging, bootstrap_cli_logging,
+    captured_log_lines, clear_captured_log_lines, current_cli_log_level,
+    current_cli_logging_configuration, log_startup_state, logger, resolved_log_level,
+    set_cli_log_level, will_log_to_stderr,
+};
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -329,6 +338,13 @@ pub fn execute_cache_clear(
     opts: &CacheClearOptions,
     socket_override: Option<&Path>,
 ) -> Result<(Vec<CacheClearResult>, String), (u8, String)> {
+    bootstrap_cli_logging(CliLoggingConfiguration::for_command(
+        opts.verbose,
+        opts.json_output,
+        opts.json_only,
+        opts.log_level.as_deref(),
+        &["cache", "clear"],
+    ));
     let clear_cookies = opts.cookies || opts.all;
     let clear_cost = opts.cost || opts.all;
 
@@ -338,6 +354,18 @@ pub fn execute_cache_clear(
     if let Some(err) = cache_clear_provider_scope_error(opts.provider.as_deref(), clear_cost) {
         return Err((2, err));
     }
+
+    logger(LogCategories::CACHE).debug(
+        "Clearing CLI caches",
+        Some(BTreeMap::from([
+            ("cookies", clear_cookies.to_string()),
+            ("cost", clear_cost.to_string()),
+            (
+                "provider",
+                opts.provider.as_deref().unwrap_or("all").to_owned(),
+            ),
+        ])),
+    );
 
     let mut results = Vec::new();
     let runtime = build_cli_runtime().ok();
@@ -565,6 +593,13 @@ pub struct DiagnoseOptions {
 }
 
 pub fn execute_diagnose(opts: &DiagnoseOptions) -> Result<String, (u8, String)> {
+    bootstrap_cli_logging(CliLoggingConfiguration::for_command(
+        opts.verbose,
+        opts.json_output,
+        false,
+        opts.log_level.as_deref(),
+        &["diagnose"],
+    ));
     let fmt = opts.format.as_deref().unwrap_or("json");
     if !fmt.eq_ignore_ascii_case("json") {
         return Err((
@@ -572,6 +607,14 @@ pub fn execute_diagnose(opts: &DiagnoseOptions) -> Result<String, (u8, String)> 
             "Error: only JSON format is supported for diagnose".to_owned(),
         ));
     }
+
+    logger(LogCategories::DIAGNOSE).debug(
+        "Running provider diagnostic export",
+        Some(BTreeMap::from([(
+            "provider",
+            opts.provider.as_deref().unwrap_or("enabled").to_owned(),
+        )])),
+    );
 
     let runtime = build_cli_runtime().map_err(|e| (16, format!("Error: {e}")))?;
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -691,6 +734,24 @@ pub fn execute_usage(
     verbose: bool,
     pretty: bool,
 ) -> Result<String, (u8, String)> {
+    execute_usage_with_logging(provider, verbose, pretty, false, None)
+}
+
+/// Runs `ariadusage usage` with explicit logging flags (`-v`/`--verbose`, `--json-output`, `--log-level`).
+pub fn execute_usage_with_logging(
+    provider: Option<&str>,
+    verbose: bool,
+    pretty: bool,
+    json_output: bool,
+    log_level: Option<&str>,
+) -> Result<String, (u8, String)> {
+    bootstrap_cli_logging(CliLoggingConfiguration::for_command(
+        verbose,
+        json_output,
+        false,
+        log_level,
+        &["usage"],
+    ));
     let raw = provider.unwrap_or("codex");
     let normalized = raw.trim().to_ascii_lowercase();
     let Ok(pid) = ProviderId::new(&normalized) else {
@@ -699,6 +760,12 @@ pub fn execute_usage(
     if !first_party_order().iter().any(|d| d.id == pid) {
         return Err((2, format!("Error: unknown provider '{raw}'")));
     }
+
+    let provider_cat = LogCategories::provider(pid.as_str());
+    logger(&provider_cat).debug(
+        "Fetching provider usage",
+        Some(BTreeMap::from([("provider", pid.as_str().to_owned())])),
+    );
 
     let runtime = build_cli_runtime().map_err(|e| (16, format!("Error: {e}")))?;
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -716,6 +783,10 @@ pub fn execute_usage(
 
     match &outcome.result {
         Ok(fetched) => {
+            logger(&provider_cat).debug(
+                "Fetched provider usage",
+                Some(BTreeMap::from([("provider", pid.as_str().to_owned())])),
+            );
             let rendered = if pretty {
                 serde_json::to_string_pretty(&fetched.usage)
             } else {
@@ -725,27 +796,53 @@ pub fn execute_usage(
             Ok(rendered)
         }
         Err(_err) => {
-            if verbose {
-                let summary = outcome
-                    .attempts
-                    .iter()
-                    .map(|attempt| {
-                        let diag = ariadusage_core::pipeline::DiagnosticFetchAttempt::from_attempt(
-                            attempt,
-                        );
-                        let strategy = diag.strategy_id.as_deref().unwrap_or("unknown");
-                        match diag.error_category.as_deref() {
-                            Some(cat) => {
-                                format!("{strategy} ({}): {}: {cat}", diag.kind, diag.outcome)
-                            }
-                            None => format!("{strategy} ({}): {}", diag.kind, diag.outcome),
+            let summary = outcome
+                .attempts
+                .iter()
+                .map(|attempt| {
+                    let diag =
+                        ariadusage_core::pipeline::DiagnosticFetchAttempt::from_attempt(attempt);
+                    let strategy = diag.strategy_id.as_deref().unwrap_or("unknown");
+                    match diag.error_category.as_deref() {
+                        Some(cat) => {
+                            format!("{strategy} ({}): {}: {cat}", diag.kind, diag.outcome)
                         }
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err((1, format!("Provider fetch failed: {summary}")));
+                        None => format!("{strategy} ({}): {}", diag.kind, diag.outcome),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let error_category = outcome
+                .attempts
+                .last()
+                .and_then(|attempt| {
+                    ariadusage_core::pipeline::DiagnosticFetchAttempt::from_attempt(attempt)
+                        .error_category
+                })
+                .unwrap_or_else(|| "unknown".to_owned());
+
+            let logged_debug = will_log_to_stderr(CliLogLevel::Debug);
+            logger(&provider_cat).debug(
+                &format!("Provider fetch failed: {summary}"),
+                Some(BTreeMap::from([
+                    ("provider", pid.as_str().to_owned()),
+                    ("errorCategory", error_category.clone()),
+                ])),
+            );
+
+            if logged_debug {
+                Err((
+                    1,
+                    format!(
+                        "Error: {} usage unavailable ({error_category})",
+                        pid.as_str()
+                    ),
+                ))
+            } else if verbose {
+                Err((1, format!("Provider fetch failed: {summary}")))
+            } else {
+                Err((1, "Provider fetch failed".to_owned()))
             }
-            Err((1, "Provider fetch failed".to_owned()))
         }
     }
 }
@@ -764,6 +861,8 @@ pub fn cookie_help(version: &str) -> String {
          [--format text|json]\n                         \
          [--json]\n                         \
          [--json-only]\n                         \
+         [--json-output] [--log-level <trace|verbose|debug|info|warning|error|critical>]\n                         \
+         [-v|--verbose]\n                         \
          [--pretty]\n\n\
          Description:\n  \
          Re-import browser cookies using each provider's configured browser order.\n  \
@@ -782,6 +881,7 @@ pub fn cookie_help(version: &str) -> String {
 pub struct CookieRefreshOptions {
     pub verbose: bool,
     pub json_output: bool,
+    pub log_level: Option<String>,
     pub json_shortcut: bool,
     pub json_only: bool,
     pub pretty: bool,
@@ -819,6 +919,13 @@ impl CookieRefreshOptions {
                     let fmt =
                         OutputFormat::parse(val).ok_or_else(|| format!("Invalid format: {val}"))?;
                     opts.format = Some(fmt);
+                }
+                "--log-level" => {
+                    idx += 1;
+                    let val = args
+                        .get(idx)
+                        .ok_or_else(|| "Missing value for --log-level".to_owned())?;
+                    opts.log_level = Some((*val).to_owned());
                 }
                 other => return Err(format!("Unknown argument: {other}")),
             }
@@ -1170,6 +1277,13 @@ pub fn cookie_refresh_text(results: &[CookieRefreshResult]) -> String {
 }
 
 pub fn execute_cookie_refresh(opts: &CookieRefreshOptions) -> Result<String, (u8, String)> {
+    bootstrap_cli_logging(CliLoggingConfiguration::for_command(
+        opts.verbose,
+        opts.json_output,
+        opts.json_only,
+        opts.log_level.as_deref(),
+        &["cookie", "refresh"],
+    ));
     if opts.provider.is_some() == opts.all {
         return Err((
             2,
@@ -1178,6 +1292,10 @@ pub fn execute_cookie_refresh(opts: &CookieRefreshOptions) -> Result<String, (u8
     }
     let targets = cookie_refresh_targets(opts.provider.as_deref(), opts.all, first_party_order())
         .map_err(|e| (2, e.to_string()))?;
+    logger(LogCategories::COOKIE_REFRESH).debug(
+        "Refreshing browser cookies",
+        Some(BTreeMap::from([("targets", targets.len().to_string())])),
+    );
 
     let cfg_path = paths::config_path().map_err(|e| (16, e.to_string()))?;
     let cfg = ConfigStore::new(cfg_path)

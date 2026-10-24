@@ -2,7 +2,8 @@
 use ariadusage_cli::launch_agent;
 use ariadusage_cli::{
     CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, config, cost,
-    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_usage, hooks,
+    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_usage_with_logging,
+    hooks,
 };
 
 use std::io::{self, IsTerminal, Read};
@@ -124,6 +125,10 @@ enum Commands {
         verbose: bool,
         #[arg(long)]
         pretty: bool,
+        #[arg(long)]
+        json_output: bool,
+        #[arg(long)]
+        log_level: Option<String>,
     },
 }
 
@@ -180,6 +185,8 @@ enum CookieCommands {
         verbose: bool,
         #[arg(long)]
         json_output: bool,
+        #[arg(long)]
+        log_level: Option<String>,
     },
 }
 
@@ -390,6 +397,7 @@ fn main() {
                     pretty,
                     verbose,
                     json_output,
+                    log_level,
                 },
         }) => {
             let parsed_format = match format {
@@ -405,6 +413,7 @@ fn main() {
             let opts = CookieRefreshOptions {
                 verbose,
                 json_output,
+                log_level,
                 json_shortcut: json,
                 json_only,
                 pretty,
@@ -433,7 +442,15 @@ fn main() {
             provider,
             verbose,
             pretty,
-        }) => match execute_usage(provider.as_deref(), verbose, pretty) {
+            json_output,
+            log_level,
+        }) => match execute_usage_with_logging(
+            provider.as_deref(),
+            verbose,
+            pretty,
+            json_output,
+            log_level.as_deref(),
+        ) {
             Ok(rendered) => println!("{rendered}"),
             Err((code, msg)) => {
                 eprintln!("{msg}");

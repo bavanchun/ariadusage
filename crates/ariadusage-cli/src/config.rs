@@ -11,9 +11,9 @@
 //! - `ariadusage config set-api-key` is rejected with exit code `20` and directs the user to
 //!   `ariadusage secret set` without echoing any supplied value.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
 
 use ariadusage_core::config::{
     Config, Issue, IssueSeverity, ProviderConfig, ProviderEntry, SecretPresence,
@@ -37,86 +37,10 @@ pub use crate::hooks::HooksOutputFormat as OutputFormat;
 use crate::hooks::{
     HooksCliError, HooksErrorKind, HooksOutputArgs, HooksOutputFormat, HooksOutputPreferences,
 };
-
-/// CLI log level (`CodexBarLog.Level` in `CodexBarLog.swift`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CliLogLevel {
-    Trace,
-    Verbose,
-    Debug,
-    Info,
-    Warning,
-    Error,
-    Critical,
-}
-
-impl CliLogLevel {
-    /// Parses a raw `--log-level` value (`trace|verbose|debug|info|warning|error|critical`).
-    #[must_use]
-    pub fn parse_level(raw: Option<&str>) -> Option<Self> {
-        let trimmed = raw?.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        match trimmed.to_ascii_lowercase().as_str() {
-            "trace" => Some(Self::Trace),
-            "verbose" => Some(Self::Verbose),
-            "debug" => Some(Self::Debug),
-            "info" => Some(Self::Info),
-            "warning" => Some(Self::Warning),
-            "error" => Some(Self::Error),
-            "critical" => Some(Self::Critical),
-            _ => None,
-        }
-    }
-
-    /// Resolves the effective log level from `--verbose` and `--log-level` (`CodexBarCLI.resolvedLogLevel`).
-    #[must_use]
-    pub fn resolved(verbose: bool, raw_level: Option<&str>) -> Self {
-        Self::parse_level(raw_level).unwrap_or(if verbose { Self::Debug } else { Self::Error })
-    }
-}
-
-/// Resolved CLI logging configuration (`CodexBarLog.Configuration` in `CLIEntry.swift`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CliLoggingConfiguration {
-    pub level: CliLogLevel,
-    pub json: bool,
-}
-
-impl CliLoggingConfiguration {
-    /// Builds the CLI logging configuration from CLI flags (`CodexBarCLI.loggingConfiguration`).
-    #[must_use]
-    pub fn from_flags(
-        verbose: bool,
-        json_output: bool,
-        json_only: bool,
-        log_level: Option<&str>,
-    ) -> Self {
-        Self {
-            level: CliLogLevel::resolved(verbose, log_level),
-            json: json_output || json_only,
-        }
-    }
-}
-
-static CLI_LOGGING_CONFIG: OnceLock<Mutex<Option<CliLoggingConfiguration>>> = OnceLock::new();
-
-/// Bootstraps or updates the process-wide CLI logging configuration (`CodexBarLog.bootstrapIfNeeded`).
-pub fn bootstrap_cli_logging(config: CliLoggingConfiguration) {
-    let cell = CLI_LOGGING_CONFIG.get_or_init(|| Mutex::new(None));
-    if let Ok(mut guard) = cell.lock() {
-        *guard = Some(config);
-    }
-}
-
-/// Returns the most recently bootstrapped CLI logging configuration.
-#[must_use]
-pub fn current_cli_logging_configuration() -> Option<CliLoggingConfiguration> {
-    CLI_LOGGING_CONFIG
-        .get()
-        .and_then(|cell| cell.lock().ok().and_then(|g| *g))
-}
+pub use crate::logging::{
+    CliLogDestination, CliLogLevel, CliLoggingConfiguration, CliLoggingOptions, LogCategories,
+    bootstrap_cli_logging, current_cli_logging_configuration, logger,
+};
 
 /// Exit code for invalid CLI arguments (`CLIExitCode.invalidArguments`).
 pub const EXIT_ARGS: i32 = 2;
@@ -726,6 +650,8 @@ pub fn run_config_command_with_store(
         }
         Some(ConfigSubcommand::SetApiKey(sub)) => {
             bootstrap_cli_logging(sub.common.logging_configuration());
+            logger(LogCategories::CONFIG_STORE)
+                .error("Rejected unsupported config set-api-key command", None);
             let output = HooksOutputPreferences::from_args(&sub.common.output);
             Err(HooksCliError {
                 code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
@@ -739,6 +665,8 @@ pub fn run_config_command_with_store(
         }
         Some(ConfigSubcommand::Preferences(sub)) => {
             bootstrap_cli_logging(sub.common.logging_configuration());
+            logger(LogCategories::CONFIG_STORE)
+                .error("Rejected unsupported config preferences command", None);
             let output = HooksOutputPreferences::from_args(&sub.common.output);
             Err(HooksCliError {
                 code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
@@ -767,6 +695,13 @@ pub fn run_config_validate_with_store(
     let has_errors = issues
         .iter()
         .any(|issue| issue.severity == IssueSeverity::Error);
+    logger(LogCategories::CONFIG_STORE).debug(
+        "Validated AriadUsage configuration",
+        Some(BTreeMap::from([
+            ("issues", issues.len().to_string()),
+            ("hasErrors", has_errors.to_string()),
+        ])),
+    );
 
     match output.format {
         HooksOutputFormat::Text => {
@@ -812,6 +747,8 @@ pub fn run_config_dump_with_store(
     bootstrap_cli_logging(args.common.logging_configuration());
     let output = resolve_config_output(&args.common.output)?;
     if args.show_secrets {
+        logger(LogCategories::CONFIG_STORE)
+            .error("Rejected unsupported config dump --show-secrets flag", None);
         return Err(HooksCliError {
             code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
             message: Some(
@@ -825,6 +762,13 @@ pub fn run_config_dump_with_store(
 
     let config = load_config_from_store(store, output)?;
     let redacted = sanitized_for_dump(&config, false);
+    logger(LogCategories::CONFIG_STORE).debug(
+        "Dumping redacted AriadUsage configuration",
+        Some(BTreeMap::from([(
+            "providers",
+            redacted.providers.len().to_string(),
+        )])),
+    );
     let pretty_bytes = ariadusage_core::config::encode(&redacted);
     let mut bytes = if output.pretty {
         pretty_bytes
@@ -852,6 +796,10 @@ pub fn run_config_providers_with_store(
     let output = resolve_config_output(&common.output)?;
     let config = load_config_from_store(store, output)?;
     let results = config_provider_statuses(&config);
+    logger(LogCategories::CONFIG_STORE).debug(
+        "Listed provider statuses",
+        Some(BTreeMap::from([("count", results.len().to_string())])),
+    );
 
     match output.format {
         HooksOutputFormat::Text => {
@@ -886,6 +834,13 @@ pub fn run_config_set_provider_enabled_with_store(
     let config = load_config_from_store(store, output)?;
     let updated = config_setting_provider_enabled(&config, &descriptor.id, enabled);
     save_config_to_store(store, &updated, output)?;
+    logger(LogCategories::CONFIG_STORE).debug(
+        "Updated provider enablement in configuration",
+        Some(BTreeMap::from([
+            ("provider", descriptor.id.as_str().to_string()),
+            ("enabled", enabled.to_string()),
+        ])),
+    );
 
     let result = ConfigProviderToggleResult {
         provider: descriptor.id.as_str().to_string(),
@@ -920,6 +875,13 @@ pub fn run_config_set_source_with_store(
     let config = load_config_from_store(store, output)?;
     let updated = config_setting_source(&config, &descriptor.id, source);
     save_config_to_store(store, &updated, output)?;
+    logger(LogCategories::CONFIG_STORE).debug(
+        "Updated provider source in configuration",
+        Some(BTreeMap::from([
+            ("provider", descriptor.id.as_str().to_string()),
+            ("source", source_mode_str(source).to_string()),
+        ])),
+    );
 
     let enabled = updated
         .provider_config(descriptor.id.as_str())
