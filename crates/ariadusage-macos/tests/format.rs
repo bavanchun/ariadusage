@@ -4,13 +4,13 @@
 mod common;
 
 use ariadusage_macos::format::{
-    ResetTimeDisplayStyle, clean_plan_name, compact_currency_string, credits_number_string,
-    credits_string, currency_string, grouped_u64, percent_string, percent_text, plan_display,
-    remaining_string, reset_countdown_description, reset_description, reset_line,
-    share_stats_compact_count, token_count_string, updated_string, usage_line,
+    DateTexts, ResetTimeDisplayStyle, clean_plan_name, compact_currency_string,
+    credits_number_string, credits_string, currency_string, grouped_u64, percent_string,
+    percent_text, plan_display, remaining_string, reset_countdown_description, reset_description,
+    reset_line, share_stats_compact_count, token_count_string, updated_string, usage_line,
 };
 use ariadusage_protocol::usage::RateWindow;
-use common::{FixedDates, ts};
+use common::{FixedDates, FrenchDates, ts};
 use jiff::{SignedDuration, Timestamp};
 
 fn after(now: Timestamp, seconds: f64) -> Timestamp {
@@ -363,4 +363,54 @@ fn currency_and_share_stats_compact_counts_match_upstream_rules() {
     assert_eq!(share_stats_compact_count(12_600_000), "12.6M");
     assert_eq!(share_stats_compact_count(999_950_000), "1B");
     assert_eq!(share_stats_compact_count(1_235_792_510), "1.24B");
+}
+
+#[test]
+fn quota_window_range_stays_en_us_while_month_day_year_and_decimals_follow_user_locale() {
+    let start = ts("2026-10-18T16:59:00Z");
+    let end = ts("2026-10-25T16:59:00Z");
+    let same_day_end = ts("2026-10-18T21:15:00Z");
+    let renew = ts("2026-11-01T00:00:00Z");
+
+    let en = FixedDates::utc();
+    let fr = FrenchDates::utc();
+
+    assert_eq!(
+        en.quota_window_range(start, end),
+        "Oct 18 at 4:59 PM – Oct 25 at 4:59 PM"
+    );
+    assert_eq!(
+        fr.quota_window_range(start, end),
+        "Oct 18 at 4:59 PM – Oct 25 at 4:59 PM"
+    );
+    assert_eq!(
+        fr.quota_window_range(start, same_day_end),
+        "Oct 18 at 4:59 PM – 9:15 PM"
+    );
+    assert_eq!(en.month_day_year(renew, true), "Nov 1, 2026");
+    assert_eq!(fr.month_day_year(renew, true), "1 nov. 2026");
+    assert_eq!(en.format_one_decimal(2.8), "2.8");
+    assert_eq!(fr.format_one_decimal(2.8), "2,8");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn foundation_date_texts_with_french_locale_splits_resource_and_user_locales() {
+    let fr = ariadusage_macos::appkit::FoundationDateTexts::with_locale_and_tz(
+        "fr_FR",
+        jiff::tz::TimeZone::UTC,
+    );
+    let start = ts("2026-10-18T16:59:00Z");
+    let end = ts("2026-10-25T16:59:00Z");
+    let renew = ts("2026-11-01T00:00:00Z");
+
+    let range_norm = fr.quota_window_range(start, end).replace('\u{202f}', " ");
+    assert_eq!(range_norm, "Oct 18 at 4:59 PM – Oct 25 at 4:59 PM");
+
+    let renew_str = fr.month_day_year(renew, true);
+    assert!(
+        renew_str.contains("nov") && renew_str.contains("2026"),
+        "expected French date, got {renew_str:?}"
+    );
+    assert_eq!(fr.format_one_decimal(2.8), "2,8");
 }

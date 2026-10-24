@@ -15,11 +15,13 @@ use std::rc::Rc;
 use objc2::rc::Retained;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSFont, NSFontTextStyle,
-    NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleCaption2, NSFontTextStyleFootnote,
-    NSFontTextStyleHeadline, NSFontTextStyleSubheadline, NSFontTextStyleTitle2, NSFontWeightBold,
-    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSLineBreakMode, NSResponder,
-    NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+    NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSColor, NSEvent, NSFont,
+    NSFontTextStyle, NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleCaption2,
+    NSFontTextStyleFootnote, NSFontTextStyleHeadline, NSFontTextStyleSubheadline,
+    NSFontTextStyleTitle2, NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular,
+    NSFontWeightSemibold, NSLineBreakMode, NSResponder, NSTextAlignment, NSTextField,
+    NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -70,6 +72,7 @@ pub struct CardState {
     mini_strips: Vec<MiniStripView>,
     hovered_bar_index: Option<usize>,
     tracking_area: Option<Retained<NSTrackingArea>>,
+    backdrop_dark: Option<bool>,
 }
 
 impl Default for CardState {
@@ -87,6 +90,7 @@ impl Default for CardState {
             mini_strips: Vec::new(),
             hovered_bar_index: None,
             tracking_area: None,
+            backdrop_dark: None,
         }
     }
 }
@@ -491,8 +495,48 @@ impl CardView {
         Some(rep)
     }
 
+    /// Renders the card into a bitmap under an explicit dark or light `NSAppearance`
+    /// with a menu backdrop so dynamic colors resolve and are legible offscreen.
+    #[allow(deprecated)]
+    pub fn render_bitmap_with_appearance(&self, dark: bool) -> Option<Retained<NSBitmapImageRep>> {
+        // SAFETY: `NSAppearanceNameDarkAqua` and `NSAppearanceNameAqua` are valid AppKit globals.
+        let name = unsafe {
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
+        };
+        let appearance = NSAppearance::appearanceNamed(name)?;
+        self.setAppearance(Some(&appearance));
+        // SAFETY: `appearance` is a valid `NSAppearance` and we are on the main thread.
+        unsafe {
+            NSAppearance::setCurrentAppearance(Some(&appearance));
+        }
+        self.ivars().borrow_mut().backdrop_dark = Some(dark);
+        let rep = self.render_bitmap();
+        self.ivars().borrow_mut().backdrop_dark = None;
+        rep
+    }
+
+    #[allow(deprecated)]
     fn draw(&self) {
         let state = self.ivars().borrow();
+        if let Some(dark) = state.backdrop_dark {
+            if let Some(app) = self.appearance() {
+                // SAFETY: `app` is a valid `NSAppearance` on `self`.
+                unsafe {
+                    NSAppearance::setCurrentAppearance(Some(&app));
+                }
+            }
+            let (r, g, b) = if dark {
+                (36.0 / 255.0, 36.0 / 255.0, 39.0 / 255.0)
+            } else {
+                (216.0 / 255.0, 216.0 / 255.0, 218.0 / 255.0)
+            };
+            NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0).setFill();
+            NSBezierPath::fillRect(self.bounds());
+        }
         let accent = state.model.as_ref().map_or(Accent::System, |m| m.accent);
         if let Some(color) = highlight_style::selection_background(state.highlighted) {
             let bounds = self.bounds();

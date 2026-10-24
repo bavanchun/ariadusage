@@ -52,6 +52,74 @@ impl DateTexts for FixedDates {
     }
 }
 
+/// Non-US (`fr_FR`) test double for `DateTexts`: `month_day_year`, `month_day_short`,
+/// `detail_month_day_time`, and `format_one_decimal` follow `Locale.current` (`fr_FR`),
+/// while `quota_window_range` remains pinned to the `en_US` resource locale.
+pub struct FrenchDates {
+    pub tz: TimeZone,
+}
+
+impl FrenchDates {
+    pub fn utc() -> Self {
+        Self { tz: TimeZone::UTC }
+    }
+}
+
+const FR_MONTH_ABBR: [&str; 12] = [
+    "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
+    "déc.",
+];
+
+impl DateTexts for FrenchDates {
+    fn time_zone(&self) -> TimeZone {
+        self.tz.clone()
+    }
+
+    fn hour_minute(&self, date: Timestamp) -> String {
+        date.to_zoned(self.tz.clone()).strftime("%H:%M").to_string()
+    }
+
+    fn month_day_hour_minute(&self, date: Timestamp) -> String {
+        let z = date.to_zoned(self.tz.clone());
+        let m = (z.month() - 1).clamp(0, 11) as usize;
+        format!(
+            "{} {} à {:02}:{:02}",
+            z.day(),
+            FR_MONTH_ABBR[m],
+            z.hour(),
+            z.minute()
+        )
+    }
+
+    fn relative_abbreviated(&self, date: Timestamp, now: Timestamp) -> String {
+        let seconds = now.duration_since(date).as_secs();
+        format!("il y a {} min", seconds / 60)
+    }
+
+    fn month_day_year(&self, date: Timestamp, date_only: bool) -> String {
+        let tz = if date_only {
+            TimeZone::UTC
+        } else {
+            self.tz.clone()
+        };
+        let z = date.to_zoned(tz);
+        let m = (z.month() - 1).clamp(0, 11) as usize;
+        format!("{} {} {}", z.day(), FR_MONTH_ABBR[m], z.year())
+    }
+
+    fn month_day_short(&self, date: Timestamp) -> String {
+        let z = date.to_zoned(self.tz.clone());
+        let m = (z.month() - 1).clamp(0, 11) as usize;
+        format!("{} {}", z.day(), FR_MONTH_ABBR[m])
+    }
+
+    fn format_one_decimal(&self, value: f64) -> String {
+        ariadusage_macos::format::format_one_decimal_en_us(value)
+            .replace(',', "\u{202f}")
+            .replace('.', ",")
+    }
+}
+
 /// Text metrics with a fixed advance per character and a line height per
 /// text style.
 pub struct FixedMeasure;

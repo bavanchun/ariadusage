@@ -315,6 +315,35 @@ pub struct CostHistoryChartGeometry {
 impl CostHistoryChartModel {
     /// Builds a `CostHistoryChartModel` from a `ProviderSnapshot` when daily cost history exists.
     pub fn from_provider(provider: &ProviderSnapshot, currency_code: &str) -> Option<Self> {
+        struct UtcFallbackDates;
+        impl DateTexts for UtcFallbackDates {
+            fn time_zone(&self) -> jiff::tz::TimeZone {
+                jiff::tz::TimeZone::UTC
+            }
+            fn hour_minute(&self, date: Timestamp) -> String {
+                date.to_zoned(jiff::tz::TimeZone::UTC)
+                    .strftime("%-I:%M %p")
+                    .to_string()
+            }
+            fn month_day_hour_minute(&self, date: Timestamp) -> String {
+                date.to_zoned(jiff::tz::TimeZone::UTC)
+                    .strftime("%b %-d at %-I:%M %p")
+                    .to_string()
+            }
+            fn relative_abbreviated(&self, date: Timestamp, now: Timestamp) -> String {
+                let secs = now.duration_since(date).as_secs();
+                format!("{} min ago", secs / 60)
+            }
+        }
+        Self::from_provider_with_dates(provider, currency_code, &UtcFallbackDates)
+    }
+
+    /// Builds a `CostHistoryChartModel` using `dates` to format localized short day labels.
+    pub fn from_provider_with_dates(
+        provider: &ProviderSnapshot,
+        currency_code: &str,
+        dates: &dyn DateTexts,
+    ) -> Option<Self> {
         let history = provider.cost_history.as_ref().and_then(displayable_value)?;
         if history.daily.is_empty() {
             return None;
@@ -351,7 +380,7 @@ impl CostHistoryChartModel {
             max_models_in_any_day = max_models_in_any_day.max(models.len());
             points.push(CostHistoryPoint {
                 date_key: entry.date.clone(),
-                date_label: format::short_day_key_label(&entry.date),
+                date_label: format::short_day_key_label_localized(&entry.date, dates),
                 cost_usd: entry.cost_usd.filter(|c| *c >= 0.0),
                 total_tokens: entry.total_tokens,
                 request_count: entry.total_requests,
@@ -377,12 +406,12 @@ impl CostHistoryChartModel {
                 format::currency_string(c, currency_code)
             )
         });
+        // `CostHistoryChartMenuView.estimateDisclaimer(provider:)` (`CostHistoryChartMenuView.swift:413-422`):
+        // only Codex sets `costChartEstimateDisclaimerLine`; Claude returns `nil`.
         let disclaimer_line = if pid == "codex" {
             Some("Estimated from token usage · not a subscription bill".to_string())
-        } else if pid == "claude" {
-            Some("Estimated from local usage logs.".to_string())
         } else {
-            history.hint_lines.first().cloned()
+            None
         };
 
         Some(Self {
@@ -433,17 +462,23 @@ impl CostHistoryChartModel {
             .map_or(&[], |p| p.models.as_slice())
     }
 
-    /// Total view height for the menu item (`CostHistoryChartMenuView.swift:257-407`).
+    /// Total view height for the menu item (`CostHistoryChartMenuView.swift:139-142,440-462`).
     pub fn preferred_height(&self) -> f64 {
-        let mut h = SUBMENU_CHART_V_PADDING * 2.0 + SUBMENU_CHART_CANVAS_HEIGHT;
+        // Top padding (10) + top clear gutter (22 + 10) + chart (130) + bottom padding (10) = 182.
+        let mut h = SUBMENU_CHART_V_PADDING * 2.0 + 22.0 + 10.0 + SUBMENU_CHART_CANVAS_HEIGHT;
         if self.available_metrics.len() > 1 {
             h += 10.0 + 22.0;
         }
-        // Detail block: primary line (16 pt) + rows (36 pt each, 6 pt spacing).
+        // Detail block: primary line (16 pt) + model rows viewport.
         h += 10.0 + 16.0;
         if self.detail_viewport_row_count > 0 {
+            let row_h = if self.detail_viewport_row_count > 1 {
+                50.0
+            } else {
+                36.0
+            };
             h += 6.0
-                + self.detail_viewport_row_count as f64 * 36.0
+                + self.detail_viewport_row_count as f64 * row_h
                 + (self.detail_viewport_row_count.saturating_sub(1)) as f64 * 6.0;
         }
         if self.total_line.is_some() {
@@ -671,14 +706,18 @@ pub struct QuotaBurndownChartGeometry {
 }
 
 impl QuotaBurndownChartModel {
-    /// Builds a `QuotaBurndownChartModel` from a `ProviderSnapshot`.
+    /// Builds a `QuotaBurndownChartModel` from a `ProviderSnapshot`
+    /// (`supportsQuotaBurndownSubmenu`, `StatusItemController+UsageHistoryMenu.swift:53-55`).
     pub fn from_provider(
         provider: &ProviderSnapshot,
         now: Timestamp,
         dates: &dyn DateTexts,
     ) -> Option<Self> {
-        let util_series_list = provider.utilization.as_ref().and_then(displayable_value)?;
         let pid = provider.id.as_str();
+        if !matches!(pid, "codex" | "claude" | "kiro") {
+            return None;
+        }
+        let util_series_list = provider.utilization.as_ref().and_then(displayable_value)?;
         let ref_now = provider.updated_at.unwrap_or(now);
 
         let find_series = |name: &str| util_series_list.iter().find(|s| s.name == name);
@@ -758,20 +797,21 @@ impl QuotaBurndownChartModel {
         })
     }
 
-    /// Preferred height for the menu item (`QuotaBurndownChartMenuView.swift`).
+    /// Preferred height for the menu item (`QuotaBurndownChartMenuView.swift`,
+    /// `310 x 259 pt` when segmented picker and last-known note are shown).
     pub fn preferred_height(&self, series_index: usize) -> f64 {
         let mut h = SUBMENU_CHART_V_PADDING * 2.0 + SUBMENU_CHART_CANVAS_HEIGHT;
         if self.series.len() > 1 {
-            h += 10.0 + 22.0;
+            h += 24.0 + 10.0;
         }
-        // Start/reset edge labels row (14 pt) + remaining line (16 pt)
-        h += 6.0 + 14.0 + 8.0 + 16.0;
+        // Start/reset edge labels row (10 + 15 pt) + remaining line (10 + 15 pt)
+        h += 10.0 + 15.0 + 10.0 + 15.0;
         if self
             .series
             .get(series_index)
             .is_some_and(|s| s.last_known_note.is_some())
         {
-            h += 2.0 + 14.0;
+            h += 10.0 + 15.0;
         }
         h
     }
@@ -885,12 +925,12 @@ fn build_burndown_series(
     let start_label = format_range_edge(start_ts, ref_now, dates);
     let reset_label = format_range_edge(reset_ts, ref_now, dates);
     let elapsed_since_capture = (ref_now.as_second() - latest.captured_at.as_second()).abs();
-    let last_known_note = (elapsed_since_capture >= 120).then(|| {
-        format!(
-            "Showing last-known usage captured {}.",
-            format_range_edge(latest.captured_at, ref_now, dates)
-        )
-    });
+    let rel = if elapsed_since_capture < 5 {
+        "just now".to_string()
+    } else {
+        dates.relative_abbreviated(latest.captured_at, ref_now)
+    };
+    let last_known_note = Some(format!("Showing last-known usage captured {rel}."));
 
     Some(QuotaBurndownSeries {
         id: id.to_string(),
@@ -972,10 +1012,20 @@ impl PlanUtilizationChartModel {
         let tertiary_default_title = if pid == "claude" { "Sonnet" } else { "Monthly" };
 
         let mut series = Vec::new();
-        let candidates: [(&str, &str, Option<&ProtocolUtilizationSeries>); 3] = [
+        let candidates: [(&str, &str, Option<&ProtocolUtilizationSeries>); 5] = [
             ("session", "Session", find_series("session")),
             ("weekly", "Weekly", find_series("weekly")),
             ("opus", tertiary_default_title, opus_or_monthly),
+            (
+                "antigravityGemini",
+                "Gemini Models",
+                find_series("antigravityGemini"),
+            ),
+            (
+                "antigravityClaudeGpt",
+                "Claude and GPT",
+                find_series("antigravityClaudeGpt"),
+            ),
         ];
 
         for (id, default_title, util_series) in candidates {
@@ -994,26 +1044,11 @@ impl PlanUtilizationChartModel {
                 entries = entries.split_off(entries.len() - 30);
             }
 
-            let tz = dates.time_zone();
-            let mut seen_days = std::collections::HashSet::new();
-            let mut has_same_day_duplicates = false;
-            for entry in &entries {
-                let d = entry.captured_at.to_zoned(tz.clone()).date();
-                if !seen_days.insert(d) {
-                    has_same_day_duplicates = true;
-                    break;
-                }
-            }
-
             let bars: Vec<PlanUtilizationBarPoint> = entries
                 .iter()
                 .map(|e| {
-                    let date_label = format::month_day_short(e.captured_at, tz.clone());
-                    let detail_timestamp_label = if has_same_day_duplicates {
-                        dates.month_day_hour_minute(e.captured_at)
-                    } else {
-                        date_label.clone()
-                    };
+                    let date_label = dates.month_day_short(e.captured_at);
+                    let detail_timestamp_label = dates.detail_month_day_time(e.captured_at);
                     PlanUtilizationBarPoint {
                         date_label,
                         detail_timestamp_label,
@@ -1061,31 +1096,32 @@ impl PlanUtilizationChartModel {
         )
     }
 
-    /// Preferred height for the menu item (`PlanUtilizationHistoryChartMenuView.swift`).
+    /// Preferred height for the menu item (`PlanUtilizationHistoryChartMenuView.swift`,
+    /// `310 x 210 pt` when segmented picker is shown).
     pub fn preferred_height(&self) -> f64 {
         let mut h = SUBMENU_CHART_V_PADDING * 2.0 + SUBMENU_CHART_CANVAS_HEIGHT;
         if self.series.len() > 1 {
-            h += 10.0 + 22.0;
+            h += 24.0 + 10.0;
         }
-        // Detail line (16 pt)
+        // Detail line (10 + 16 pt)
         h += 10.0 + 16.0;
         h
     }
 
     /// Computes fixed 6 pt bars, axis ticks, and hover rule inside `canvas_rect` (`278 x 130`).
+    /// Note: `PlanUtilizationHistoryChartMenuView.swift:128` sets `.chartYAxis(.hidden)`.
     pub fn geometry(
         &self,
         canvas_rect: Rect,
         series_index: usize,
         selected_bar_index: Option<usize>,
     ) -> PlanUtilizationChartGeometry {
-        let trailing_axis_w = 28.0;
-        let top_pad = 6.0;
-        let bottom_label_h = 18.0;
+        let top_pad = 4.0;
+        let bottom_label_h = 19.0;
         let plot_rect = Rect::new(
-            canvas_rect.x + 2.0,
+            canvas_rect.x,
             canvas_rect.y + top_pad,
-            (canvas_rect.w - trailing_axis_w - 2.0).max(1.0),
+            canvas_rect.w.max(1.0),
             (canvas_rect.h - top_pad - bottom_label_h).max(1.0),
         );
 
@@ -1094,9 +1130,22 @@ impl PlanUtilizationChartModel {
         if let Some(series) = self.series.get(series_index) {
             let count = series.bars.len();
             if count > 0 {
+                let stride = 8.0_f64;
+                let total_bars_w = count as f64 * PLAN_UTILIZATION_BAR_WIDTH
+                    + (count.saturating_sub(1)) as f64 * 2.0;
+                let use_fixed_stride = total_bars_w <= plot_rect.w;
+                let start_x = if use_fixed_stride {
+                    plot_rect.x + (plot_rect.w - total_bars_w) * 0.5
+                } else {
+                    plot_rect.x
+                };
                 let slot_w = plot_rect.w / count as f64;
                 for (idx, pt) in series.bars.iter().enumerate() {
-                    let center_x = plot_rect.x + (idx as f64 + 0.5) * slot_w;
+                    let center_x = if use_fixed_stride {
+                        start_x + idx as f64 * stride + PLAN_UTILIZATION_BAR_HALF_WIDTH
+                    } else {
+                        plot_rect.x + (idx as f64 + 0.5) * slot_w
+                    };
                     let bar_x = center_x - PLAN_UTILIZATION_BAR_HALF_WIDTH;
                     let track_rect =
                         Rect::new(bar_x, plot_rect.y, PLAN_UTILIZATION_BAR_WIDTH, plot_rect.h);
@@ -1159,25 +1208,36 @@ fn proportional_axis_labels(bars: &[PlanUtilizationBarPoint]) -> Vec<(usize, Str
     if count == 0 {
         return Vec::new();
     }
-    if count <= 4 {
-        return bars
-            .iter()
-            .enumerate()
-            .map(|(i, b)| (i, b.date_label.clone()))
-            .collect();
+    let first_label = &bars[0].date_label;
+    if bars.iter().all(|b| &b.date_label == first_label) {
+        let mid = count / 2;
+        return vec![(mid, first_label.clone())];
     }
     let last = count - 1;
-    let mut indexes = vec![
+    let candidates = [
         0,
         (last as f64 / 3.0).round() as usize,
         (last as f64 * 2.0 / 3.0).round() as usize,
         last,
     ];
-    indexes.dedup();
-    indexes
-        .into_iter()
-        .filter_map(|i| bars.get(i).map(|b| (i, b.date_label.clone())))
-        .collect()
+    let mut kept: Vec<(usize, String)> = Vec::new();
+    for idx in candidates {
+        let Some(bar) = bars.get(idx) else { continue };
+        if let Some((prev_idx, prev_label)) = kept.last() {
+            if prev_label == &bar.date_label {
+                continue;
+            }
+            if idx.saturating_sub(*prev_idx) < 5 {
+                if idx == last && kept.len() > 1 {
+                    kept.pop();
+                } else {
+                    continue;
+                }
+            }
+        }
+        kept.push((idx, bar.date_label.clone()));
+    }
+    kept
 }
 
 #[cfg(test)]

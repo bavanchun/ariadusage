@@ -178,7 +178,8 @@ pub struct CardSectionEntry {
 pub struct OverviewCard {
     pub provider_id: String,
     pub model: CardModel,
-    pub cost_submenu: Vec<SubmenuEntry>,
+    pub submenu_title: Option<String>,
+    pub submenu: Vec<SubmenuEntry>,
 }
 
 /// Primary card content above the history, action and meta sections.
@@ -268,10 +269,16 @@ pub fn build(
             });
             let cards = enabled
                 .iter()
-                .map(|provider| OverviewCard {
-                    provider_id: provider.id.as_str().to_string(),
-                    model: card::provider_card(provider, prefs, now, dates),
-                    cost_submenu: cost_chart_submenu_items(provider),
+                .map(|provider| {
+                    let mut model = card::provider_card(provider, prefs, now, dates);
+                    let (submenu_title, submenu) = overview_row_submenu(provider, now, dates);
+                    model.shows_submenu_indicator = !submenu.is_empty();
+                    OverviewCard {
+                        provider_id: provider.id.as_str().to_string(),
+                        model,
+                        submenu_title,
+                        submenu,
+                    }
                 })
                 .collect();
             MenuStructure {
@@ -297,7 +304,7 @@ pub fn build(
                 .unwrap_or(enabled[0]);
             let card_model = card::provider_card(provider, prefs, now, dates);
             let sections = provider_card_sections(provider, &card_model);
-            let cost_submenu = cost_chart_submenu_items(provider);
+            let cost_submenu = cost_chart_submenu_items(provider, dates);
             let buy_credits = buy_credits_entry(provider, prefs);
             let history = build_history_section_at(provider, prefs, now, dates);
             let actions = build_actions_section(provider, now, dates);
@@ -319,9 +326,9 @@ pub fn build(
     }
 }
 
-/// Splits a provider's card into separate `NSMenuItem` sections when the
-/// provider has a daily cost-history chart (`addMenuCardSections`,
-/// `StatusItemController+Menu.swift:1290-1400`).
+/// Splits a provider's card into separate `NSMenuItem` sections when
+/// `hasOpenAIWebMenuItems || requiresSectionedMenuForProviderDerivedCost` holds
+/// (`addMenuCardSections`, `StatusItemController+Menu.swift:748-749,1290-1400,1521-1523,1584-1587`).
 pub fn provider_card_sections(
     provider: &ProviderSnapshot,
     card: &CardModel,
@@ -331,7 +338,15 @@ pub fn provider_card_sections(
         .as_ref()
         .and_then(displayable_value)
         .is_some_and(|h| !h.daily.is_empty());
-    if !has_cost_chart {
+    let has_openai_web_items = provider.id.as_str() == "codex"
+        && (card.credits.is_some()
+            || card.limit_reset_credits.is_some()
+            || card.inline_usage_dashboard.is_some());
+    let requires_sectioned_cost = has_cost_chart
+        && (card.inline_usage_dashboard.is_some()
+            || card.credits.is_some()
+            || card.provider_cost.is_some());
+    if !has_openai_web_items && !requires_sectioned_cost {
         return vec![CardSectionEntry {
             mode: CardSectionMode::Full,
             has_cost_submenu: false,
@@ -343,7 +358,7 @@ pub fn provider_card_sections(
         mode: CardSectionMode::HeaderAndUsage {
             bottom_padding: usage_bottom,
         },
-        has_cost_submenu: true,
+        has_cost_submenu: card.inline_usage_dashboard.is_some() && has_cost_chart,
     }];
     if has_credits {
         sections.push(CardSectionEntry {
@@ -366,17 +381,41 @@ pub fn provider_card_sections(
     sections
 }
 
-fn cost_chart_submenu_items(provider: &ProviderSnapshot) -> Vec<SubmenuEntry> {
+fn cost_chart_submenu_items(
+    provider: &ProviderSnapshot,
+    dates: &dyn DateTexts,
+) -> Vec<SubmenuEntry> {
     let currency = provider
         .cost_history
         .as_ref()
         .and_then(displayable_value)
         .and_then(|h| h.currency_code.as_deref())
         .unwrap_or("USD");
-    let Some(chart) = CostHistoryChartModel::from_provider(provider, currency) else {
+    let Some(chart) = CostHistoryChartModel::from_provider_with_dates(provider, currency, dates)
+    else {
         return Vec::new();
     };
     vec![SubmenuEntry::CostHistoryChart(Box::new(chart))]
+}
+
+/// Builds the submenu attached to an `Overview` card row (`makeOverviewSubmenu`,
+/// `StatusItemController+OverviewSubmenus.swift:5-35`): prefers the daily cost
+/// history chart submenu when available, otherwise falls back to the plan usage
+/// history chart submenu when utilization history exists.
+fn overview_row_submenu(
+    provider: &ProviderSnapshot,
+    now: Timestamp,
+    dates: &dyn DateTexts,
+) -> (Option<String>, Vec<SubmenuEntry>) {
+    let cost_items = cost_chart_submenu_items(provider, dates);
+    if !cost_items.is_empty() {
+        return (Some("Cost".to_string()), cost_items);
+    }
+    let plan_items = plan_usage_chart_submenu_items(provider, now, dates);
+    if !plan_items.is_empty() {
+        return (Some("Plan Usage".to_string()), plan_items);
+    }
+    (None, Vec::new())
 }
 
 /// Builds the `OverviewSpendSummary` across enabled providers from their
@@ -667,21 +706,33 @@ pub fn build_history_section_at(
     if let Some(plan_usage) = plan_usage_submenu(provider, prefs, now, dates) {
         entries.push(plan_usage);
     }
-    if let Some(cost) = cost_submenu(provider) {
+    if let Some(cost) = cost_submenu(provider, dates) {
         entries.push(cost);
     }
     entries
 }
 
-fn plan_usage_submenu(
+/// `supportsQuotaBurndownSubmenu` (`StatusItemController+UsageHistoryMenu.swift:53-55`).
+fn supports_quota_burndown_submenu(provider_id: &str) -> bool {
+    matches!(provider_id, "codex" | "claude" | "kiro")
+}
+
+fn plan_usage_chart_submenu_items(
     provider: &ProviderSnapshot,
-    prefs: &CardPreferences,
     now: Timestamp,
     dates: &dyn DateTexts,
-) -> Option<MenuEntry> {
-    let series_list: &Vec<PlanUtilizationSeries> =
-        provider.utilization.as_ref().and_then(displayable_value)?;
-    let burndown = QuotaBurndownChartModel::from_provider(provider, now, dates);
+) -> Vec<SubmenuEntry> {
+    if provider
+        .utilization
+        .as_ref()
+        .and_then(displayable_value)
+        .is_none()
+    {
+        return Vec::new();
+    }
+    let burndown = supports_quota_burndown_submenu(provider.id.as_str())
+        .then(|| QuotaBurndownChartModel::from_provider(provider, now, dates))
+        .flatten();
     let util = PlanUtilizationChartModel::from_provider(provider, dates);
     let mut items = Vec::new();
     if let Some(b) = burndown {
@@ -693,6 +744,18 @@ fn plan_usage_submenu(
         }
         items.push(SubmenuEntry::PlanUtilizationChart(Box::new(u)));
     }
+    items
+}
+
+fn plan_usage_submenu(
+    provider: &ProviderSnapshot,
+    prefs: &CardPreferences,
+    now: Timestamp,
+    dates: &dyn DateTexts,
+) -> Option<MenuEntry> {
+    let series_list: &Vec<PlanUtilizationSeries> =
+        provider.utilization.as_ref().and_then(displayable_value)?;
+    let mut items = plan_usage_chart_submenu_items(provider, now, dates);
     if items.is_empty() {
         let style = if prefs.show_used {
             PercentStyle::Used
@@ -740,14 +803,16 @@ fn default_series_title(name: &str) -> &str {
     }
 }
 
-fn cost_submenu(provider: &ProviderSnapshot) -> Option<MenuEntry> {
+fn cost_submenu(provider: &ProviderSnapshot, dates: &dyn DateTexts) -> Option<MenuEntry> {
     let history: Option<&CostHistory> = provider.cost_history.as_ref().and_then(displayable_value);
     let cost: Option<&Cost> = provider.cost.as_ref().and_then(displayable_value);
     let mut items = Vec::new();
 
     if let Some(history) = history {
         let currency = history.currency_code.as_deref().unwrap_or("USD");
-        if let Some(chart) = CostHistoryChartModel::from_provider(provider, currency) {
+        if let Some(chart) =
+            CostHistoryChartModel::from_provider_with_dates(provider, currency, dates)
+        {
             return Some(MenuEntry::Submenu {
                 title: "Cost".to_string(),
                 system_image: None,
@@ -834,16 +899,10 @@ fn cost_submenu(provider: &ProviderSnapshot) -> Option<MenuEntry> {
     if let Some(cost) = cost {
         let mut cost_lines = Vec::new();
         if let Some(limit) = cost.limit.filter(|&l| l > 0.0) {
-            let period = cost
-                .period
-                .as_deref()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .unwrap_or("This month");
             let used = format_currency(cost.used, &cost.currency_code);
             let lim = format_currency(limit, &cost.currency_code);
             cost_lines.push(SubmenuEntry::SecondaryText(format!(
-                "Extra usage ({period}): {used} / {lim}"
+                "Extra usage: {used} / {lim}"
             )));
         }
         if let Some(balance) = cost.balance

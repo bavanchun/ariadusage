@@ -493,7 +493,7 @@ pub fn card_model(
     let refreshing = is_refreshing(provider);
     let has_snapshot = provider.updated_at.is_some() || has_any_value(provider);
     let usage_notes = subscription_notes(provider, dates);
-    let limit_reset_credits = limit_reset_credits_section(provider, prefs, now);
+    let limit_reset_credits = limit_reset_credits_section(provider, prefs, now, dates);
     let inline_usage_dashboard = inline_usage_dashboard_section(provider, dates);
     let cloud_credits = cloud_credits_section(provider, prefs);
     let credits = (prefs.show_optional_credits_and_extra_usage
@@ -510,11 +510,12 @@ pub fn card_model(
                 .and_then(|cost| provider_cost_section(provider_id, cost, percent_style))
         })
         .flatten();
-    let shows_submenu_indicator = provider
-        .cost_history
-        .as_ref()
-        .and_then(displayable_value)
-        .is_some_and(|history| !history.daily.is_empty());
+    let shows_submenu_indicator = inline_usage_dashboard.is_some()
+        && provider
+            .cost_history
+            .as_ref()
+            .and_then(displayable_value)
+            .is_some_and(|history| !history.daily.is_empty());
 
     CardModel {
         provider_name: provider.display_name.clone(),
@@ -670,6 +671,18 @@ impl RowBuilder<'_> {
         if !pace.expected_used_percent.is_finite() || !window.used_percent.is_finite() {
             return;
         }
+        match context {
+            PaceContext::Session => {
+                if !supports_session_pace(self.provider_id) || pace.expected_used_percent < 3.0 {
+                    return;
+                }
+            }
+            PaceContext::Weekly => {
+                if pace.expected_used_percent < 3.0 && pace.eta_seconds != Some(0) {
+                    return;
+                }
+            }
+        }
         let facts = PaceFacts {
             stage: pace.stage,
             delta_percent: pace.delta_percent,
@@ -699,7 +712,7 @@ impl RowBuilder<'_> {
         let Some(forecast) = window.session_equivalent.as_ref() else {
             return;
         };
-        let detail = pace_text::session_equivalent_detail(forecast);
+        let detail = pace_text::session_equivalent_detail(forecast, self.dates);
         row.session_equivalent_left_text = Some(detail.left);
         row.session_equivalent_right_text = Some(detail.right);
     }
@@ -738,6 +751,11 @@ fn shows_headroom_hint(provider_id: &str) -> bool {
     provider_id == "codex"
 }
 
+/// Only Codex and Claude enable `supportsSessionPace` (`ProviderDescriptor.swift:320`).
+fn supports_session_pace(provider_id: &str) -> bool {
+    matches!(provider_id, "codex" | "claude")
+}
+
 /// Clears pace output when the user hides pace (`paceGatedMetrics`).
 fn gate_pace(metric: &mut MetricRow) {
     if metric.detail_is_pace_derived {
@@ -751,10 +769,6 @@ fn gate_pace(metric: &mut MetricRow) {
 
 /// `subscriptionNotes` (`MenuCardView+ModelHelpers.swift:720-752`).
 fn subscription_notes(provider: &ProviderSnapshot, dates: &dyn DateTexts) -> Vec<String> {
-    let id = provider.id.as_str();
-    if id != "codex" && id != "claude" {
-        return Vec::new();
-    }
     let Some(SubscriptionDates { renews, expires }) =
         provider.subscription.as_ref().and_then(displayable_value)
     else {
@@ -762,20 +776,10 @@ fn subscription_notes(provider: &ProviderSnapshot, dates: &dyn DateTexts) -> Vec
     };
     let mut notes = Vec::new();
     if let Some(billing) = renews {
-        let tz = if billing.date_only {
-            jiff::tz::TimeZone::UTC
-        } else {
-            dates.time_zone()
-        };
-        let date_text = format::month_day_year(billing.at, tz);
+        let date_text = dates.month_day_year(billing.at, billing.date_only);
         notes.push(format!("Plan renews: {date_text}"));
     } else if let Some(billing) = expires {
-        let tz = if billing.date_only {
-            jiff::tz::TimeZone::UTC
-        } else {
-            dates.time_zone()
-        };
-        let date_text = format::month_day_year(billing.at, tz);
+        let date_text = dates.month_day_year(billing.at, billing.date_only);
         notes.push(format!("Plan expires: {date_text}"));
     }
     notes
@@ -786,6 +790,7 @@ fn limit_reset_credits_section(
     provider: &ProviderSnapshot,
     prefs: &CardPreferences,
     now: Timestamp,
+    dates: &dyn DateTexts,
 ) -> Option<LimitResetCreditsSection> {
     if provider.id.as_str() != "codex" || !prefs.show_optional_credits_and_extra_usage {
         return None;
@@ -796,19 +801,26 @@ fn limit_reset_credits_section(
         next_expires_at,
     } = credits.reset_credits.as_ref()?;
     let total = *available_count;
+    if total == 0 {
+        return None;
+    }
     let count_text = format!("{total} available");
-    let expiry_text = (total > 0)
-        .then_some(*next_expires_at)
-        .flatten()
-        .and_then(|expires| {
-            let secs = expires.duration_since(now).as_secs_f64();
-            if secs <= 0.0 {
-                None
-            } else {
-                let cd = format::reset_countdown_description(secs);
-                Some(cd.strip_prefix("in ").unwrap_or(&cd).to_string())
+    let expiry_text = next_expires_at.and_then(|expires| {
+        let secs = expires.duration_since(now).as_secs_f64();
+        if secs <= 0.0 {
+            None
+        } else {
+            match prefs.reset_style() {
+                ResetTimeDisplayStyle::Countdown => {
+                    let cd = format::reset_countdown_description(secs);
+                    Some(cd.strip_prefix("in ").unwrap_or(&cd).to_string())
+                }
+                ResetTimeDisplayStyle::Absolute => {
+                    Some(format::reset_description(expires, now, dates))
+                }
             }
-        });
+        }
+    });
     Some(LimitResetCreditsSection {
         count_text,
         expiry_text,
@@ -902,11 +914,7 @@ fn compute_quota_windows(
             break;
         }
 
-        let raw_range = format!(
-            "{} – {}",
-            dates.month_day_hour_minute(start_ts),
-            dates.month_day_hour_minute(end_ts)
-        );
+        let raw_range = dates.quota_window_range(start_ts, end_ts);
         let range = if estimated {
             format!("Est. {raw_range}")
         } else {

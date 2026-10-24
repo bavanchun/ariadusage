@@ -283,9 +283,41 @@ fn placeholder_shows_below_the_divider() {
 }
 
 #[test]
-fn overview_layout_omits_dividers_and_credits() {
+fn overview_layout_omits_dividers_and_credits_while_rendering_detail_sections() {
     let mut m = model("Updated 5 min ago", SubtitleStyle::Info);
+    m.shows_submenu_indicator = true;
     m.metrics = vec![row("Session", 58.0, Some("Resets in 2h 13m"))];
+    m.usage_notes = vec!["Plan renews: Nov 15, 2026".to_string()];
+    m.limit_reset_credits = Some(LimitResetCreditsSection {
+        count_text: "2 available".to_string(),
+        expiry_text: Some("14d 7h".to_string()),
+    });
+    m.inline_usage_dashboard = Some(InlineUsageDashboardSection {
+        kpis: vec![KpiItem {
+            title: "Today".to_string(),
+            value: "$10.00".to_string(),
+            emphasis: KpiEmphasis::Primary,
+        }],
+        points: vec![MiniBarPoint {
+            day_key: "2026-10-06".to_string(),
+            value: Some(10.0),
+            hover_summary: Some("Oct 6: $10.00".to_string()),
+        }],
+        max_bar_label: Some("$10".to_string()),
+        recent_windows: vec![WindowComparisonItem {
+            title: "Current window".to_string(),
+            value: "5.2M tokens".to_string(),
+            range: "Oct 3 at 4:59 PM – Oct 6 at 12:52 PM".to_string(),
+            note: None,
+        }],
+        detail_lines: vec!["Top model: gpt-5-codex".to_string()],
+    });
+    m.cloud_credits = Some(ProviderCostSection {
+        title: "Cloud credits".to_string(),
+        presentation: ProviderCostPresentation::InlineBalance {
+            value: "$48.50".to_string(),
+        },
+    });
     m.credits = Some(CreditsSection {
         text: "42.5 left".to_string(),
         show_progress: true,
@@ -304,6 +336,10 @@ fn overview_layout_omits_dividers_and_credits() {
         "overview card omits credits bar"
     );
     assert_eq!(frame_of(&l, "Session 58% left").y, 39.0 + 6.0 + 10.0);
+    assert!(frame_of(&l, "Plan renews: Nov 15, 2026").y > 60.0);
+    assert!(frame_of(&l, "Limit Reset Credits").y > 80.0);
+    assert!(frame_of(&l, "Today").y > 100.0);
+    assert!(frame_of(&l, "Cloud credits").y > 150.0);
 }
 
 #[test]

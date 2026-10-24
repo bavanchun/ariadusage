@@ -475,7 +475,7 @@ fn make_provider_snapshot(
         will_last_to_reset: true,
         eta_seconds: None,
         speed_multiplier_to_reset: Some(1.2),
-        run_out_probability: Some(0.08),
+        run_out_probability: None,
         summary: "6% in reserve | Expected 48% used | Lasts until reset".to_string(),
     };
 

@@ -609,7 +609,7 @@ impl Builder<'_> {
     }
 
     /// `UsageMenuCardUsageContentView` (`MenuCardView.swift:653-694`).
-    fn usage_content(&mut self, model: &CardModel, shows_section_dividers: bool, compact: bool) {
+    fn usage_content(&mut self, model: &CardModel, shows_section_dividers: bool) {
         let mut first = true;
         let mut next = |b: &mut Self| {
             if !first {
@@ -623,7 +623,7 @@ impl Builder<'_> {
             self.metric_row(row);
         }
 
-        if !compact && !model.usage_notes.is_empty() {
+        if !model.usage_notes.is_empty() {
             next(self);
             self.usage_notes(&model.usage_notes);
         }
@@ -637,24 +637,12 @@ impl Builder<'_> {
             self.limit_reset_credits(reset_credits);
         }
 
-        if !compact {
-            if let Some(dash) = &model.inline_usage_dashboard {
-                next(self);
-                self.inline_usage_dashboard(dash);
-            } else if model.metrics.is_empty()
-                && model.limit_reset_credits.is_none()
-                && model.cloud_credits.is_none()
-                && let Some(placeholder) = &model.placeholder
-            {
-                next(self);
-                self.text_line(label(
-                    placeholder,
-                    PLACEHOLDER_FONT,
-                    TextColor::Secondary,
-                    0,
-                ));
-            }
+        if let Some(dash) = &model.inline_usage_dashboard {
+            next(self);
+            self.inline_usage_dashboard(dash);
         } else if model.metrics.is_empty()
+            && model.limit_reset_credits.is_none()
+            && model.cloud_credits.is_none()
             && let Some(placeholder) = &model.placeholder
         {
             next(self);
@@ -666,7 +654,7 @@ impl Builder<'_> {
             ));
         }
 
-        if !compact && let Some(cloud_credits) = &model.cloud_credits {
+        if let Some(cloud_credits) = &model.cloud_credits {
             let has_above = !model.metrics.is_empty()
                 || !model.usage_notes.is_empty()
                 || model.limit_reset_credits.is_some()
@@ -795,7 +783,7 @@ pub fn layout_section(
                 b.y += HEADER_CONTENT_SPACING;
                 b.divider();
                 b.y += SECTION_BOTTOM_PADDING + USAGE_SECTION_TOP_PADDING;
-                b.usage_content(model, true, false);
+                b.usage_content(model, true);
                 b.y += bottom_padding;
             } else {
                 b.y += HEADER_ONLY_VERTICAL_PADDING;
@@ -846,7 +834,7 @@ pub fn layout_section(
                 };
                 if has_usage {
                     next_section(&mut b);
-                    b.usage_content(model, true, false);
+                    b.usage_content(model, true);
                 }
                 if let Some(credits) = &model.credits {
                     if has_usage {
@@ -886,8 +874,10 @@ pub fn layout_section(
     }
 }
 
-/// Lays out `model` as a compact overview card row (`OverviewMenuCardRowView`):
-/// header and usage metrics without section dividers or credits.
+/// Lays out `model` as an overview card row (`OverviewMenuCardRowView`,
+/// `StatusItemController+MenuTypes.swift:36-88`): header and full usage
+/// content (`compactMetrics: false`, `showsSectionDividers: false`,
+/// `bottomPadding: 6`) without the separate Credits or Extra usage sections.
 pub fn overview_layout(model: &CardModel, width: f64, measure: &dyn TextMeasure) -> CardLayout {
     let mut b = Builder {
         measure,
@@ -903,9 +893,9 @@ pub fn overview_layout(model: &CardModel, width: f64, measure: &dyn TextMeasure)
     b.header(model);
     b.y += HEADER_ONLY_VERTICAL_PADDING;
 
-    if !model.metrics.is_empty() || model.placeholder.is_some() {
+    if model.has_usage_content() || model.placeholder.is_some() {
         b.y += USAGE_SECTION_TOP_PADDING;
-        b.usage_content(model, false, true);
+        b.usage_content(model, false);
         b.y += SECTION_BOTTOM_PADDING;
     }
 
