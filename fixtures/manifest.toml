@@ -2565,3 +2565,17 @@ sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/logging.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIOptions.swift",
+    "Sources/CodexBarCLI/CLIEntry.swift",
+    "Sources/CodexBarCore/Logging/CodexBarLog.swift",
+    "Sources/CodexBarCore/Logging/JSONStderrLogHandler.swift",
+    "Sources/CodexBarCore/Logging/LogRedactor.swift",
+    "Sources/CodexBarCore/Logging/LogCategories.swift",
+    "Sources/CodexBarCore/Logging/ProviderLogging.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
