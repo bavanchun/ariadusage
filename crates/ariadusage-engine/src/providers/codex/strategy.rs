@@ -672,32 +672,60 @@ impl CodexOAuthFetchStrategy {
                 Output = Result<CodexWorkspaceRemainingBalanceResponse, CodexOAuthFetchError>,
             >,
     {
+        Self::try_applying_workspace_remaining_balance(
+            result.clone(),
+            usage,
+            credentials,
+            include_credits,
+            now,
+            fetcher,
+        )
+        .await
+        .unwrap_or(result)
+    }
+
+    pub async fn try_applying_workspace_remaining_balance<F, Fut>(
+        result: CodexFetchOutcome,
+        usage: &CodexUsageResponse,
+        credentials: &CodexOAuthCredentials,
+        include_credits: bool,
+        now: Timestamp,
+        fetcher: F,
+    ) -> Result<CodexFetchOutcome, CodexOAuthFetchError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexWorkspaceRemainingBalanceResponse, CodexOAuthFetchError>,
+            >,
+    {
         if !include_credits {
-            return result;
+            return Ok(result);
         }
         let Some(credits_details) = &usage.credits else {
-            return result;
+            return Ok(result);
         };
         if !credits_details.has_credits
             || credits_details.unlimited
             || credits_details.balance.is_some()
         {
-            return result;
+            return Ok(result);
         }
         let Some(account_id) = Self::first_non_empty(&[usage.account_id.as_deref()]) else {
-            return result;
+            return Ok(result);
         };
         if let Some(credential_acct) = Self::first_non_empty(&[credentials.account_id.as_deref()])
             && credential_acct != account_id
         {
-            return result;
+            return Ok(result);
         }
 
-        let Ok(resp) = fetcher(account_id.to_owned()).await else {
-            return result;
+        let resp = match fetcher(account_id.to_owned()).await {
+            Ok(resp) => resp,
+            Err(CodexOAuthFetchError::Cancelled) => return Err(CodexOAuthFetchError::Cancelled),
+            Err(_) => return Ok(result),
         };
         let Some(balance) = resp.balance else {
-            return result;
+            return Ok(result);
         };
         let existing = result.credits.as_ref();
         let credits = CreditsSnapshot::with_details(
@@ -709,7 +737,32 @@ impl CodexOAuthFetchStrategy {
             Some(true),
             true,
         );
-        Self::replacing_credits(result, Some(credits))
+        Ok(Self::replacing_credits(result, Some(credits)))
+    }
+
+    pub async fn apply_workspace_remaining_balance_for_testing<F, Fut>(
+        result: CodexFetchOutcome,
+        usage: &CodexUsageResponse,
+        credentials: &CodexOAuthCredentials,
+        include_credits: bool,
+        now: Timestamp,
+        fetcher: F,
+    ) -> Result<CodexFetchOutcome, CodexOAuthFetchError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexWorkspaceRemainingBalanceResponse, CodexOAuthFetchError>,
+            >,
+    {
+        Self::try_applying_workspace_remaining_balance(
+            result,
+            usage,
+            credentials,
+            include_credits,
+            now,
+            fetcher,
+        )
+        .await
     }
 
     pub async fn applying_spend_controls_monthly_limit<F, Fut>(
@@ -725,21 +778,47 @@ impl CodexOAuthFetchStrategy {
                 Output = Result<CodexSpendControlsMonthlyUsageResponse, CodexOAuthFetchError>,
             >,
     {
+        Self::try_applying_spend_controls_monthly_limit(
+            result.clone(),
+            usage,
+            credentials,
+            include_credits,
+            fetcher,
+        )
+        .await
+        .unwrap_or_else(|_| result.marking_monthly_limit_enrichment_failed())
+    }
+
+    pub async fn try_applying_spend_controls_monthly_limit<F, Fut>(
+        result: CodexFetchOutcome,
+        usage: &CodexUsageResponse,
+        credentials: &CodexOAuthCredentials,
+        include_credits: bool,
+        fetcher: F,
+    ) -> Result<CodexFetchOutcome, CodexOAuthFetchError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexSpendControlsMonthlyUsageResponse, CodexOAuthFetchError>,
+            >,
+    {
         if !include_credits || !CodexSpendControlsMonthlyUsageGate::should_fetch(usage) {
-            return result;
+            return Ok(result);
         }
         let Some(account_id) = Self::first_non_empty(&[
             credentials.account_id.as_deref(),
             usage.account_id.as_deref(),
         ]) else {
-            return result.marking_monthly_limit_enrichment_failed();
+            return Ok(result.marking_monthly_limit_enrichment_failed());
         };
 
-        let Ok(response) = fetcher(account_id.to_owned()).await else {
-            return result.marking_monthly_limit_enrichment_failed();
+        let response = match fetcher(account_id.to_owned()).await {
+            Ok(resp) => resp,
+            Err(CodexOAuthFetchError::Cancelled) => return Err(CodexOAuthFetchError::Cancelled),
+            Err(_) => return Ok(result.marking_monthly_limit_enrichment_failed()),
         };
         if response.monthly_limit_mapping_failed() {
-            return result.marking_monthly_limit_enrichment_failed();
+            return Ok(result.marking_monthly_limit_enrichment_failed());
         }
         let updated_at = result
             .credits
@@ -747,7 +826,7 @@ impl CodexOAuthFetchStrategy {
             .map(|c| c.updated_at)
             .unwrap_or(result.usage.updated_at);
         let Some(limit) = response.codex_credit_limit_snapshot(updated_at) else {
-            return result;
+            return Ok(result);
         };
         let credits = match &result.credits {
             Some(existing) => CreditsSnapshot::with_details(
@@ -769,7 +848,65 @@ impl CodexOAuthFetchStrategy {
                 false,
             ),
         };
-        Self::replacing_credits(result, Some(credits))
+        Ok(Self::replacing_credits(result, Some(credits)))
+    }
+
+    pub async fn apply_spend_controls_monthly_limit_for_testing<F, Fut>(
+        result: CodexFetchOutcome,
+        usage: &CodexUsageResponse,
+        credentials: &CodexOAuthCredentials,
+        include_credits: bool,
+        fetcher: F,
+    ) -> Result<CodexFetchOutcome, CodexOAuthFetchError>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexSpendControlsMonthlyUsageResponse, CodexOAuthFetchError>,
+            >,
+    {
+        Self::try_applying_spend_controls_monthly_limit(
+            result,
+            usage,
+            credentials,
+            include_credits,
+            fetcher,
+        )
+        .await
+    }
+
+    pub async fn fetch_reset_credits_if_requested<F, Fut>(
+        ctx: &FetchContext,
+        credentials: &CodexOAuthCredentials,
+        fetcher: F,
+    ) -> Result<Option<CodexRateLimitResetCreditsSnapshot>, CodexOAuthFetchError>
+    where
+        F: FnOnce(CodexOAuthCredentials) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexRateLimitResetCreditsSnapshot, CodexOAuthFetchError>,
+            >,
+    {
+        if !Self::should_fetch_reset_credits(ctx) {
+            return Ok(None);
+        }
+        match fetcher(credentials.clone()).await {
+            Ok(snap) => Ok(Some(snap)),
+            Err(CodexOAuthFetchError::Cancelled) => Err(CodexOAuthFetchError::Cancelled),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub async fn fetch_reset_credits_for_testing<F, Fut>(
+        ctx: &FetchContext,
+        credentials: &CodexOAuthCredentials,
+        fetcher: F,
+    ) -> Result<Option<CodexRateLimitResetCreditsSnapshot>, CodexOAuthFetchError>
+    where
+        F: FnOnce(CodexOAuthCredentials) -> Fut,
+        Fut: std::future::Future<
+                Output = Result<CodexRateLimitResetCreditsSnapshot, CodexOAuthFetchError>,
+            >,
+    {
+        Self::fetch_reset_credits_if_requested(ctx, credentials, fetcher).await
     }
 
     pub async fn replacing_with_cli_monthly_limit_if_available<F, Fut>(
@@ -917,28 +1054,30 @@ impl CodexOAuthFetchStrategy {
         .await?;
 
         let reset_credits_attempted = Self::should_fetch_reset_credits(ctx);
-        let reset_credits = if reset_credits_attempted {
-            match CodexOAuthUsageFetcher::fetch_rate_limit_reset_credits_with_call(
-                &self.config.net,
-                credentials.access_token_str(),
-                credentials.account_id.as_deref(),
-                &self.config.environment,
-                Some(&self.config.home_directory),
-                Duration::from_secs(4),
-                now,
-                Some(&call),
-            )
-            .await
-            {
-                Ok(snap) => Some(snap),
-                Err(CodexOAuthFetchError::Cancelled) => {
-                    return Err(CodexOAuthError::Fetch(CodexOAuthFetchError::Cancelled));
-                }
-                Err(_) => None,
+        let net_rc = Arc::clone(&self.config.net);
+        let env_rc = self.config.environment.clone();
+        let home_rc = self.config.home_directory.clone();
+        let call_rc = call.clone();
+        let reset_credits = Self::fetch_reset_credits_if_requested(ctx, &credentials, |creds| {
+            let net = Arc::clone(&net_rc);
+            let env = env_rc.clone();
+            let home = home_rc.clone();
+            let call = call_rc.clone();
+            async move {
+                CodexOAuthUsageFetcher::fetch_rate_limit_reset_credits_with_call(
+                    &net,
+                    creds.access_token_str(),
+                    creds.account_id.as_deref(),
+                    &env,
+                    Some(&home),
+                    Duration::from_secs(4),
+                    now,
+                    Some(&call),
+                )
+                .await
             }
-        } else {
-            None
-        };
+        })
+        .await?;
 
         let oauth_result = Self::make_result(
             &usage,
@@ -955,7 +1094,7 @@ impl CodexOAuthFetchStrategy {
         let home = self.config.home_directory.clone();
         let access_token = credentials.access_token_str().to_owned();
         let call_ws = call.clone();
-        let workspace_balance_result = Self::applying_workspace_remaining_balance(
+        let workspace_balance_result = Self::try_applying_workspace_remaining_balance(
             oauth_result,
             &usage,
             &credentials,
@@ -981,7 +1120,7 @@ impl CodexOAuthFetchStrategy {
                 }
             },
         )
-        .await;
+        .await?;
         if call.cancel.is_cancelled() {
             return Err(CodexOAuthError::Fetch(CodexOAuthFetchError::Cancelled));
         }
@@ -991,7 +1130,7 @@ impl CodexOAuthFetchStrategy {
         let home2 = self.config.home_directory.clone();
         let access_token2 = credentials.access_token_str().to_owned();
         let call_sc = call.clone();
-        let spend_controls_result = Self::applying_spend_controls_monthly_limit(
+        let spend_controls_result = Self::try_applying_spend_controls_monthly_limit(
             workspace_balance_result,
             &usage,
             &credentials,
@@ -1016,7 +1155,7 @@ impl CodexOAuthFetchStrategy {
                 }
             },
         )
-        .await;
+        .await?;
         if call.cancel.is_cancelled() {
             return Err(CodexOAuthError::Fetch(CodexOAuthFetchError::Cancelled));
         }
@@ -1425,8 +1564,22 @@ impl FetchStrategy for CodexPATFetchStrategy {
         })
     }
 
-    fn should_fallback(&self, _err: &FetchError, ctx: &FetchContext) -> bool {
-        ctx.source_mode == SourceMode::Auto
+    fn should_fallback(&self, err: &FetchError, ctx: &FetchContext) -> bool {
+        if ctx.source_mode != SourceMode::Auto {
+            return false;
+        }
+        let FetchError::Classified(classified) = err else {
+            return false;
+        };
+        matches!(
+            classified.kind,
+            ProviderErrorKind::AuthenticationExpired
+                | ProviderErrorKind::MissingCredential
+                | ProviderErrorKind::PermissionDenied
+        ) && (classified.message == CodexOAuthFetchError::Unauthorized.to_string()
+            || classified.message == CodexOAuthCredentialsError::NotFound.to_string()
+            || classified.message == CodexOAuthCredentialsError::Unreadable.to_string()
+            || classified.message == CodexOAuthCredentialsError::MissingTokens.to_string())
     }
 }
 

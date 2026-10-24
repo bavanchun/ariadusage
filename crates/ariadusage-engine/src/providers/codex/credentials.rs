@@ -682,10 +682,9 @@ impl CodexOAuthCredentialsStore {
     fn decode_json_object(data: &[u8]) -> Result<Map<String, Value>, CodexOAuthCredentialsError> {
         match serde_json::from_slice::<Value>(data) {
             Ok(Value::Object(map)) => Ok(map),
-            Ok(_) => Err(CodexOAuthCredentialsError::DecodeFailed(
+            Ok(_) | Err(_) => Err(CodexOAuthCredentialsError::DecodeFailed(
                 "Invalid JSON".to_owned(),
             )),
-            Err(err) => Err(CodexOAuthCredentialsError::DecodeFailed(err.to_string())),
         }
     }
 
@@ -849,9 +848,6 @@ impl CodexTokenRefresher {
 
         let status = response.status.as_u16();
         let bytes = response.body();
-        if status == 401 {
-            return Err(Self::parse_refresh_error(bytes).unwrap_or(CodexRefreshError::Expired));
-        }
         if !(200..=299).contains(&status) {
             return Err(Self::refresh_failure_error(status, bytes));
         }
@@ -860,7 +856,7 @@ impl CodexTokenRefresher {
             Ok(Value::Object(map)) => map,
             _ => {
                 return Err(CodexRefreshError::InvalidResponse(
-                    "Unable to decode response".to_owned(),
+                    "Invalid JSON".to_owned(),
                 ));
             }
         };
@@ -930,7 +926,10 @@ impl CodexTokenRefresher {
         if let Some(err) = Self::parse_refresh_error(bytes) {
             return err;
         }
-        CodexRefreshError::InvalidResponse(format!("HTTP {status}"))
+        if status == 401 {
+            return CodexRefreshError::Expired;
+        }
+        CodexRefreshError::InvalidResponse(format!("Status {status}"))
     }
 
     pub fn refresh_failure_error_for_testing(status: u16, bytes: &[u8]) -> CodexRefreshError {

@@ -117,8 +117,6 @@ where
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct AdditionalRateLimitDetails {
-    pub allowed: Option<bool>,
-    pub limit_reached: Option<bool>,
     pub primary_window: Option<WindowSnapshot>,
     pub secondary_window: Option<WindowSnapshot>,
     #[serde(skip)]
@@ -140,10 +138,6 @@ impl<'de> Deserialize<'de> for AdditionalRateLimitDetails {
     {
         #[derive(Deserialize)]
         struct RawDetails {
-            #[serde(default)]
-            allowed: Option<serde_json::Value>,
-            #[serde(default)]
-            limit_reached: Option<serde_json::Value>,
             #[serde(default, deserialize_with = "deserialize_optional_window")]
             primary_window: (Option<WindowSnapshot>, bool),
             #[serde(default, deserialize_with = "deserialize_optional_window")]
@@ -152,8 +146,6 @@ impl<'de> Deserialize<'de> for AdditionalRateLimitDetails {
 
         let raw = RawDetails::deserialize(deserializer)?;
         Ok(Self {
-            allowed: raw.allowed.and_then(|v| v.as_bool()),
-            limit_reached: raw.limit_reached.and_then(|v| v.as_bool()),
             primary_window: raw.primary_window.0,
             secondary_window: raw.secondary_window.0,
             primary_window_decode_failed: raw.primary_window.1,

@@ -928,7 +928,6 @@ impl CodexOAuthUsageFetcher {
         }
         if let Some(contents) = Self::load_config_contents(env, home_dir)
             && let Some(parsed) = Self::parse_chatgpt_base_url(&contents)
-            && (parsed.is_empty() || Self::validate_chatgpt_base_url(&parsed).is_ok())
         {
             return parsed;
         }
@@ -1161,6 +1160,7 @@ impl CodexOAuthUsageFetcher {
         Ok(req)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn fetch_usage(
         net: &NetBroker,
         access_token: &str,
@@ -1193,6 +1193,7 @@ impl CodexOAuthUsageFetcher {
         Self::decode_usage_response(&body)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn fetch_rate_limit_reset_credits(
         net: &NetBroker,
         access_token: &str,
@@ -1236,6 +1237,7 @@ impl CodexOAuthUsageFetcher {
         Self::decode_rate_limit_reset_credits(&body, now)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn fetch_workspace_remaining_balance(
         net: &NetBroker,
         access_token: &str,
@@ -1281,6 +1283,7 @@ impl CodexOAuthUsageFetcher {
         Self::decode_workspace_remaining_balance_response(&body)
     }
 
+    #[cfg(any(test, feature = "test-hooks"))]
     pub async fn fetch_spend_controls_monthly_usage(
         net: &NetBroker,
         access_token: &str,
@@ -1375,43 +1378,11 @@ impl CodexOAuthUsageFetcher {
             })?;
         match resp.status.as_u16() {
             200..=299 => Ok(resp.body().to_vec()),
-            401 | 403 => Err(CodexOAuthFetchError::Unauthorized),
+            401 => Err(CodexOAuthFetchError::Unauthorized),
             status => {
-                let message = extract_structured_error_message(resp.body());
+                let message = std::str::from_utf8(resp.body()).ok().map(str::to_owned);
                 Err(CodexOAuthFetchError::ServerError(status, message))
             }
         }
     }
-}
-
-fn extract_structured_error_message(body: &[u8]) -> Option<String> {
-    let val: Value = serde_json::from_slice(body).ok()?;
-    let obj = val.as_object()?;
-    if let Some(err_obj) = obj.get("error").and_then(Value::as_object) {
-        if let Some(msg) = err_obj
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(msg.to_owned());
-        }
-        if let Some(code) = err_obj
-            .get("code")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return Some(code.to_owned());
-        }
-    }
-    if let Some(detail) = obj
-        .get("detail")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        return Some(detail.to_owned());
-    }
-    None
 }

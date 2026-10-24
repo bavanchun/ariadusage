@@ -242,8 +242,7 @@ impl CodexReconciledState {
                     .get("chatgpt_plan_type")
                     .and_then(serde_json::Value::as_str)
             })?;
-        let trimmed = plan.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_owned())
+        Some(plan.trim().to_owned())
     }
 }
 
