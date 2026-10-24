@@ -17,11 +17,13 @@ use ariadusage_protocol::ProviderId;
 use ariadusage_protocol::secret::SecretString;
 
 use crate::brokers::net::{NetBroker, NetConfig};
+use crate::brokers::secret_store::SecretStore;
 use crate::config_store::ConfigStore;
 use crate::error::StoreError;
 use crate::providers::claude::{
-    CLAUDE_OAUTH_TOKEN_ENV_KEY, ClaudeCredentialRoute, ClaudeCredentialRouting,
-    ClaudeOAuthStrategyConfig, ClaudeProviderPlan,
+    CLAUDE_OAUTH_TOKEN_ENV_KEY, ClaudeAdminAPISettingsReader, ClaudeCredentialRoute,
+    ClaudeCredentialRouting, ClaudeOAuthStrategyConfig, ClaudeProviderPlan,
+    claude_provider_config_env_descriptor,
 };
 use crate::providers::codex::{CodexProviderPlan, CodexStrategyConfig};
 
@@ -34,6 +36,7 @@ pub struct ProviderPlanInputs {
     pub manual_cookie_header: Option<SecretString>,
     pub selected_account_token: Option<SecretString>,
     pub include_optional_usage: bool,
+    pub secret_store: Option<Arc<SecretStore>>,
 }
 
 impl std::fmt::Debug for ProviderPlanInputs {
@@ -53,6 +56,7 @@ impl std::fmt::Debug for ProviderPlanInputs {
                 &self.selected_account_token.is_some(),
             )
             .field("include_optional_usage", &self.include_optional_usage)
+            .field("has_secret_store", &self.secret_store.is_some())
             .finish()
     }
 }
@@ -119,6 +123,21 @@ impl ProviderPlanFactory for ClaudeProviderPlanFactory {
         cfg.web_extras_enabled = provider_config
             .and_then(|c| c.extras_enabled)
             .unwrap_or(self.base_config.web_extras_enabled);
+        cfg.workspace_spend_enabled = provider_config
+            .and_then(ProviderConfig::claude_workspace_spend_enabled_opt)
+            .unwrap_or(self.base_config.workspace_spend_enabled);
+        cfg.secret_store = inputs
+            .secret_store
+            .clone()
+            .or_else(|| self.base_config.secret_store.clone());
+        cfg.admin_api_key = if selected_account.is_none() {
+            ClaudeAdminAPISettingsReader::clean_token(
+                inputs.api_key.as_ref().map(SecretString::expose_secret),
+            )
+            .or_else(|| self.base_config.admin_api_key.clone())
+        } else {
+            None
+        };
 
         let manual_cookie_header = if selected_account.is_none() {
             inputs
@@ -454,9 +473,13 @@ impl ProviderRegistry {
 
         if descriptor.id.as_str() == "claude" {
             if let Some(api_key) = &inputs.api_key
-                && !base.contains_key("ANTHROPIC_ADMIN_API_KEY")
+                && let Some(cleaned) =
+                    ClaudeAdminAPISettingsReader::clean_token(Some(api_key.expose_secret()))
             {
-                base.insert("ANTHROPIC_ADMIN_API_KEY".to_string(), api_key.clone());
+                base.insert(
+                    ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY.to_string(),
+                    cleaned,
+                );
             }
 
             let target_key = if selected_account.is_some() {
@@ -471,7 +494,7 @@ impl ProviderRegistry {
                         Some(CLAUDE_OAUTH_TOKEN_ENV_KEY.to_string())
                     }
                     ClaudeCredentialRoute::AdminApiKey(_) => {
-                        Some("ANTHROPIC_ADMIN_API_KEY".to_string())
+                        Some(ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY.to_string())
                     }
                     ClaudeCredentialRoute::WebCookie { .. } | ClaudeCredentialRoute::None => None,
                 }
@@ -479,17 +502,10 @@ impl ProviderRegistry {
                 None
             };
 
-            let env_descriptor = ProviderEnvDescriptor::<ProviderConfig> {
-                projections: Vec::new(),
-                account_projection: Some(AccountTokenProjection {
-                    scrub_keys: vec![
-                        CLAUDE_OAUTH_TOKEN_ENV_KEY.to_string(),
-                        "ANTHROPIC_ADMIN_KEY".to_string(),
-                        "ANTHROPIC_ADMIN_API_KEY".to_string(),
-                    ],
-                    target_key,
-                }),
-            };
+            let mut env_descriptor = claude_provider_config_env_descriptor(|_| None);
+            if let Some(acct_proj) = &mut env_descriptor.account_projection {
+                acct_proj.target_key = target_key;
+            }
 
             let token_for_projection = match ClaudeCredentialRouting::resolve(
                 inputs
@@ -505,6 +521,7 @@ impl ProviderRegistry {
                 }
             };
 
+            let empty_token = SecretString::new(String::new());
             return ProviderEnvironmentResolver::resolve(
                 &base,
                 provider_config,
@@ -512,6 +529,7 @@ impl ProviderRegistry {
                     token_for_projection
                         .as_ref()
                         .or(inputs.selected_account_token.as_ref())
+                        .or(Some(&empty_token))
                 } else {
                     None
                 },
