@@ -282,6 +282,23 @@ impl Dependencies {
         }
     }
 
+    fn with_state_directory(
+        self,
+        state_directory: Result<PathBuf, crate::paths::PathError>,
+    ) -> Self {
+        let Ok(state_directory) = state_directory else {
+            return self;
+        };
+        let state_root = state_directory.join("antigravity");
+        self.with_session_coordination(
+            Arc::new(FileSessionRecordStore::new(
+                state_root.join("agy-session.json"),
+            )),
+            Arc::new(ProcSessionIdentityProvider),
+            FileSessionLaunchLock::new(state_root.join("agy-session.lock")),
+        )
+    }
+
     #[must_use]
     pub fn with_session_coordination(
         mut self,
@@ -476,23 +493,8 @@ impl AntigravityCLISession {
     #[must_use]
     pub fn live(registry: Arc<ProcessRegistry>, gate: Arc<LaunchGate>) -> Self {
         let launcher = BrokerProcessLauncher::new(registry, gate);
-        let state_root = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .map(|home| home.join(".local").join("state"))
-            })
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("ariadusage")
-            .join("antigravity");
-        let store = Arc::new(FileSessionRecordStore::new(
-            state_root.join("agy-session.json"),
-        ));
-        let lock = FileSessionLaunchLock::new(state_root.join("agy-session.lock"));
-        let identity = Arc::new(ProcSessionIdentityProvider);
         let dependencies =
-            Dependencies::new(launcher).with_session_coordination(store, identity, lock);
+            Dependencies::new(launcher).with_state_directory(crate::paths::state_dir());
         Self::new(dependencies)
     }
 
@@ -940,7 +942,53 @@ impl AntigravityCLISession {
 
 #[cfg(test)]
 mod tests {
-    use super::AuthenticationPrompt;
+    use super::{AuthenticationPrompt, BrokerProcessLauncher, Dependencies};
+    use crate::brokers::process::ProcessRegistry;
+    use ariadusage_core::gates::launch::LaunchGate;
+    use std::sync::Arc;
+
+    fn dependencies() -> Dependencies {
+        Dependencies::new(BrokerProcessLauncher::new(
+            Arc::new(ProcessRegistry::new()),
+            Arc::new(LaunchGate::default()),
+        ))
+    }
+
+    #[test]
+    fn unavailable_state_directory_disables_session_coordination() {
+        let dependencies =
+            dependencies().with_state_directory(Err(crate::paths::PathError::NoHomeDirectory));
+        assert!(dependencies.record_store.is_none());
+        assert!(dependencies.identity_provider.is_none());
+        assert!(dependencies.launch_lock.is_none());
+    }
+
+    #[test]
+    fn session_records_use_the_resolved_state_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let state_directory =
+            crate::paths::resolve_state_dir(|_| Some(" relative-state ".into()), Some(home.path()))
+                .unwrap();
+        let dependencies = dependencies().with_state_directory(Ok(state_directory));
+        let record = super::SessionRecord {
+            pid: 123,
+            requested_binary_path: "/synthetic/agy".into(),
+            executable_path: "/synthetic/agy".into(),
+            start_epoch: 100.0,
+            process_group: Some(123),
+            owner_pid: None,
+            owner_executable_path: None,
+            owner_start_epoch: None,
+            marker: Some("synthetic-marker".into()),
+        };
+        dependencies.record_store.unwrap().save(&record).unwrap();
+        let path = home
+            .path()
+            .join(".local/state/antigravity/agy-session.json");
+        let records: Vec<super::SessionRecord> =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(records, vec![record]);
+    }
 
     #[test]
     fn prompt_matching_preserves_auto_refresh_exception() {
