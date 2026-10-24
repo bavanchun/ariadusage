@@ -942,8 +942,8 @@ async fn concurrent_hosts_track_independent_sessions() {
     let first_identity = FakeIdentity::current(900, "/app/ariadusage", 1.0);
     let second_identity = FakeIdentity::current(901, "/app/ariadusage", 2.0);
     for identity in [&first_identity, &second_identity] {
-        identity.set(10, "/bin/agy", 10.0);
-        identity.set(20, "/bin/agy", 20.0);
+        identity.set(10, "/bin/agy", 100.0);
+        identity.set(20, "/bin/agy", 200.0);
         identity.set(900, "/app/ariadusage", 1.0);
         identity.set(901, "/app/ariadusage", 2.0);
     }
@@ -1511,4 +1511,18 @@ async fn idle_timeout_hard_stops_a_failed_process() {
         launcher.processes.lock().unwrap()[0].events(),
         vec!["force"]
     );
+}
+
+#[tokio::test]
+async fn persisted_record_uses_the_verified_identity_provider() {
+    let store = MemoryStore::with(std::iter::empty::<SessionRecord>());
+    let identity = FakeIdentity::current(901, "/app/ariadusage", 1.0);
+    identity.set(10, "/resolved/agy", 100.0);
+    let session = coordinated_session(FakeLauncher::new(), store.clone(), identity);
+    session.begin_probe("/selected/agy", None).await.unwrap();
+    let records = store.snapshot();
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].executable_path, "/resolved/agy");
+    assert_eq!(records[0].start_epoch, 100.0);
+    session.finish_probe(true, true, false).await;
 }

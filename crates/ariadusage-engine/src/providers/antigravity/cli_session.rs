@@ -706,12 +706,17 @@ impl AntigravityCLISession {
     }
 
     async fn persist_record(&self, process: &Arc<dyn ProcessHandle>, binary: &Path) {
-        let (Some(store), Some(identity), Some(lock), Some(process_identity)) = (
+        let (Some(store), Some(identity), Some(lock)) = (
             self.inner.dependencies.record_store.clone(),
             self.inner.dependencies.identity_provider.clone(),
             self.inner.dependencies.launch_lock.clone(),
-            process.identity(),
         ) else {
+            return;
+        };
+        let Some(process_identity) = identity
+            .identity(process.pid())
+            .or_else(|| process.identity())
+        else {
             return;
         };
         let owner = identity.current_identity();
