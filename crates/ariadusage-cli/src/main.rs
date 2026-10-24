@@ -344,7 +344,7 @@ fn run_daemon_command(
             {
                 let _ = binary;
                 Err(CliError::new(
-                    17,
+                    19,
                     "LaunchAgent management is supported only on macOS",
                 ))
             }
@@ -368,7 +368,7 @@ fn run_daemon_command(
             {
                 let _ = binary;
                 Err(CliError::new(
-                    17,
+                    19,
                     "LaunchAgent management is supported only on macOS",
                 ))
             }
@@ -390,7 +390,7 @@ fn run_daemon_command(
             #[cfg(not(target_os = "macos"))]
             {
                 Err(CliError::new(
-                    17,
+                    19,
                     "LaunchAgent management is supported only on macOS",
                 ))
             }
@@ -412,7 +412,7 @@ fn run_daemon_command(
             #[cfg(not(target_os = "macos"))]
             {
                 Err(CliError::new(
-                    17,
+                    19,
                     "LaunchAgent management is supported only on macOS",
                 ))
             }
@@ -455,7 +455,7 @@ fn run_foreground_daemon(socket: Option<PathBuf>) -> Result<(), CliError> {
     {
         let _ = socket;
         Err(CliError::new(
-            17,
+            19,
             "engine daemon is unsupported on this platform",
         ))
     }
@@ -544,7 +544,7 @@ fn run_status_command(socket: Option<PathBuf>, json: bool) -> Result<(), CliErro
     {
         let _ = (socket, json);
         Err(CliError::new(
-            17,
+            19,
             "engine status is unsupported on this platform",
         ))
     }

@@ -177,10 +177,12 @@ dependencies = [
  "ariadusage-protocol",
  "dispatch2",
  "jiff",
+ "nix",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "regex",
+ "rustix",
  "serde_json",
  "tempfile",
  "tokio",
@@ -1819,6 +1821,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

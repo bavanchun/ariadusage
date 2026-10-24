@@ -20,6 +20,7 @@ setting ID or secret value in its error text.
 | 16 | Configuration, data path, runtime or storage operation failed |
 | 17 | Secret operation is unsupported on this platform |
 | 18 | Process hardening failed |
+| 19 | Daemon, LaunchAgent or status operation is unsupported on this platform |
 
 When the keyring is unavailable, a terminal call asks whether to store the
 secret in the private file fallback. The first non-interactive fallback use

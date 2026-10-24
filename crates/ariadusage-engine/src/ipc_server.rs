@@ -195,30 +195,56 @@ fn remove_socket_file(socket_path: &Path) {
 }
 
 /// Prepares the socket parent directory with mode `0700`, verifies ownership and non-symlink
-/// status via `lstat`, and removes any stale socket file at `socket_path`.
+/// status via `lstat` before any permission change, and removes any stale socket file at
+/// `socket_path`.
 #[cfg(unix)]
 pub fn prepare_socket_path(socket_path: &Path) -> Result<(), IpcServerError> {
+    use std::os::unix::fs::DirBuilderExt;
+
     validate_socket_path_len(socket_path)?;
     let parent = socket_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or_else(|| IpcServerError::MissingParentDirectory(socket_path.to_path_buf()))?;
 
-    if !parent.exists() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+    let stat = match rustix::fs::lstat(parent) {
+        Ok(stat) => stat,
+        Err(rustix::io::Errno::NOENT) => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
+            rustix::fs::lstat(parent)
+                .map_err(|_| IpcServerError::UntrustedParentDirectory(parent.to_path_buf()))?
+        }
+        Err(_) => {
+            return Err(IpcServerError::UntrustedParentDirectory(
+                parent.to_path_buf(),
+            ));
+        }
+    };
 
-    let stat = rustix::fs::lstat(parent)
-        .map_err(|_| IpcServerError::UntrustedParentDirectory(parent.to_path_buf()))?;
     let euid = rustix::process::geteuid().as_raw();
     if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory
         || stat.st_uid != euid
-        || (stat.st_mode & 0o777) != 0o700
     {
         return Err(IpcServerError::UntrustedParentDirectory(
             parent.to_path_buf(),
         ));
+    }
+
+    if (stat.st_mode & 0o777) != 0o700 {
+        std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))?;
+        let verify = rustix::fs::lstat(parent)
+            .map_err(|_| IpcServerError::UntrustedParentDirectory(parent.to_path_buf()))?;
+        if rustix::fs::FileType::from_raw_mode(verify.st_mode) != rustix::fs::FileType::Directory
+            || verify.st_uid != euid
+            || (verify.st_mode & 0o777) != 0o700
+        {
+            return Err(IpcServerError::UntrustedParentDirectory(
+                parent.to_path_buf(),
+            ));
+        }
     }
 
     if let Ok(meta) = std::fs::symlink_metadata(socket_path) {
@@ -547,5 +573,32 @@ mod tests {
         let err = verify_unix_peer_with_euid(&a, euid.wrapping_add(1))
             .expect_err("different expected UID must fail");
         assert!(matches!(err, IpcServerError::UntrustedPeerUid { .. }));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prepare_socket_path_rejects_symlink_parent_without_modifying_target_mode() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target");
+        std::fs::create_dir_all(&target).expect("create target");
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))
+            .expect("set target 0755");
+
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).expect("create symlink");
+
+        let sock = link.join("engine.sock");
+        let err = prepare_socket_path(&sock).expect_err("symlink parent must be rejected");
+        assert!(matches!(err, IpcServerError::UntrustedParentDirectory(_)));
+
+        let target_mode = std::fs::metadata(&target)
+            .expect("target metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            target_mode, 0o755,
+            "symlink target permissions must not be changed before lstat rejects the symlink"
+        );
     }
 }
