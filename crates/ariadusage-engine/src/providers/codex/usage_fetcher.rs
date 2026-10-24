@@ -1154,9 +1154,14 @@ impl CodexOAuthUsageFetcher {
         headers: HeaderMap,
         timeout: Duration,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
+        if access_token.is_empty()
+            || !access_token
+                .bytes()
+                .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
+        {
+            return Err(CodexOAuthFetchError::InvalidResponse);
+        }
         let bearer = SecretString::new(format!("Bearer {access_token}"));
-        HeaderValue::from_str(bearer.expose_secret())
-            .map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
         let mut req = NetRequest::new(Method::GET, url);
         req.headers = headers;
         req.credentials.push((AUTHORIZATION, bearer));

@@ -160,6 +160,13 @@ fn non_empty(value: Option<String>) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
+fn is_valid_header_token(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
+}
+
 pub struct CodexPATUsageFetcher;
 
 impl CodexPATUsageFetcher {
@@ -183,9 +190,10 @@ impl CodexPATUsageFetcher {
         user_agent: &str,
         account_id: Option<&str>,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
+        if !is_valid_header_token(token) {
+            return Err(CodexOAuthFetchError::InvalidResponse);
+        }
         let bearer = SecretString::new(format!("Bearer {token}"));
-        HeaderValue::from_str(bearer.expose_secret())
-            .map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
         let ua_val =
             HeaderValue::from_str(user_agent).map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
 
