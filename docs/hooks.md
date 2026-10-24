@@ -10,13 +10,13 @@ Hooks are configured under the `hooks` object in `config.json`:
 {
   "hooks": {
     "enabled": true,
-    "rules": [
+    "events": [
       {
         "id": "notify-quota-low",
         "enabled": true,
         "event": "quota_low",
         "provider": "codex",
-        "command": "/usr/local/bin/my-hook",
+        "executable": "/usr/local/bin/my-hook",
         "arguments": ["--channel", "alerts"],
         "timeoutSeconds": 10
       }
@@ -29,11 +29,11 @@ Hooks are configured under the `hooks` object in `config.json`:
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | `string` | Stable identifier for rate-limiting and diagnostics (auto-generated when omitted). |
+| `id` | `string` | Stable identifier for rate-limiting and diagnostics (auto-generated UUID v4 when omitted). |
 | `enabled` | `boolean` | Whether this rule is active (default: `true`). |
 | `event` | `string` | Event trigger (`quota_low`, `quota_reached`, `quota_reset`, `provider_unavailable`, `provider_recovered`, `refresh_failed`, or `usage_updated`). |
 | `provider` | `string?` | Optional lowercase provider ID (`claude`, `codex`, `antigravity`). Omit or set to `null` to match all providers. |
-| `command` | `string` | Absolute path to the executable (`~/...` is expanded before validation). Relative command names without `/` are rejected. |
+| `executable` | `string` | Absolute path to the executable (`~/...` is expanded before validation). Relative command names without `/` are rejected. |
 | `arguments` | `string[]` | Fixed argument vector passed directly to the executable without shell evaluation. |
 | `timeoutSeconds` | `number` | Per-invocation timeout in seconds (0.1 to 300 s, default 10; rules outside the range never run). |
 
@@ -53,7 +53,7 @@ Hooks are configured under the `hooks` object in `config.json`:
 
 Hooks run exclusively through the engine's `Process` broker (`ariadusage-engine::hooks::ProcessBrokerHookExecutor`):
 
-- **No shell interpolation**: `command` must resolve to an `AbsolutePath`, and `arguments` are passed as a fixed `argv` vector. AriadUsage never constructs a shell command string from event data.
+- **No shell interpolation**: `executable` must resolve to an `AbsolutePath`, and `arguments` are passed as a fixed `argv` vector. AriadUsage never constructs a shell command string from event data.
 - **Bounded stdin payload**: The serialized `HookEvent` JSON document is written to the child process's `stdin` and capped at `4096` bytes (`MAXIMUM_PAYLOAD_BYTES`).
 - **Timeouts and process-group teardown**: Each execution runs in its own process group with `timeoutSeconds` enforced (`SIGTERM` followed by `SIGKILL` after grace period) and stdout/stderr capped at 64 KiB.
 - **Rate limiting**: Transition events (`quota_low`, `quota_reached`, `quota_reset`, `provider_unavailable`, `provider_recovered`, `refresh_failed`) are rate-limited to once per 600 seconds per `(rule.id, event, provider, account_lane)`. `usage_updated` bypasses the cooldown so live consumers receive every successful poll.
@@ -117,5 +117,5 @@ The CLI provides five subcommands under `ariadusage hooks` (running `ariadusage 
   Disables hooks in `config.json` and prints `Hooks: disabled` (or the updated `HooksConfig` JSON).
 - `ariadusage hooks test <event> --provider <name> [--format text|json] [--json] [--json-only] [--pretty]`
   Synthesizes a representative `HookEvent` for `<event>` and `<provider>`, matches it against `config.json`, runs every matching rule through the `Process` broker with `ARIADUSAGE_*` environment variables and JSON stdin, and exits `0` when all matching rules succeed or `1` when arguments/config are invalid or any rule fails.
-- `ariadusage hooks watch [--interval <seconds>] [--provider <name|both|all>] [--web-timeout <seconds>] [-v|--verbose] [--format text|json] [--json] [--json-only] [--pretty]`
+- `ariadusage hooks watch [--interval <seconds>] [--provider <name|both|all>] [--verbose] [--format text|json] [--json] [--json-only] [--pretty]`
   Continuously polls the selected (or enabled) providers every `--interval` seconds (default `300`, minimum `60`), evaluates `HookTransitionDetector` across polls, dispatches matching rules through `HookRunner` with `HookRateLimiter`, and stops cleanly on `SIGINT`, `SIGTERM`, or `SIGHUP`. Argument flags (`--once` rejection, `--interval`, `--provider`) are validated before reading `config.json`.

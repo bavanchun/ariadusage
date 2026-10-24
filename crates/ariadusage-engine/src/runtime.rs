@@ -1170,32 +1170,53 @@ impl EngineRuntime {
         request_state: &Arc<crate::coordinator::ProviderRefreshRequestState>,
     ) -> ProviderPlanInputs {
         let base_environment = self.base_environment.read().expect("base_env lock").clone();
+        Self::resolve_plan_inputs_with_store(
+            Some(&self.secret_store),
+            id,
+            config,
+            prefs,
+            base_environment,
+            interaction,
+            request_state.cancel_token(),
+            format!("secret-{}-{}", id.as_str(), request_state.id()),
+        )
+        .await
+    }
+
+    /// Resolves [`ProviderPlanInputs`] from an optional [`SecretStore`], `config`, `prefs`, and
+    /// `base_environment` for a single provider fetch.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn resolve_plan_inputs_with_store(
+        secret_store: Option<&Arc<SecretStore>>,
+        id: &ProviderId,
+        config: &Config,
+        prefs: &AppPreferences,
+        base_environment: BTreeMap<String, SecretString>,
+        interaction: FetchInteraction,
+        cancel: CancellationToken,
+        request_id: String,
+    ) -> ProviderPlanInputs {
         let call = BrokerCall {
             interaction,
-            cancel: request_state.cancel_token(),
-            request_id: format!("secret-{}-{}", id.as_str(), request_state.id()),
+            cancel,
+            request_id,
         };
 
-        let api_key = self
-            .lookup_secret(
+        let api_key = if let Some(store) = secret_store {
+            Self::lookup_secret_in_store(
+                store,
                 &format!("providers.{}.apiKey", id.as_str()),
                 interaction,
                 &call,
             )
-            .await;
-        let manual_cookie_header = self
-            .lookup_secret(
+            .await
+        } else {
+            None
+        };
+        let manual_cookie_header = if let Some(store) = secret_store {
+            Self::lookup_secret_in_store(
+                store,
                 &format!("providers.{}.cookieHeader", id.as_str()),
-                interaction,
-                &call,
-            )
-            .await;
-
-        let provider_cfg = config.provider_config(id.as_str());
-        let selected_account = ProviderRegistry::selected_account(provider_cfg);
-        let selected_account_token = if let Some(acct) = &selected_account {
-            self.lookup_secret(
-                &format!("providers.{}.accounts.{}.token", id.as_str(), acct.id),
                 interaction,
                 &call,
             )
@@ -1204,18 +1225,34 @@ impl EngineRuntime {
             None
         };
 
+        let provider_cfg = config.provider_config(id.as_str());
+        let selected_account = ProviderRegistry::selected_account(provider_cfg);
+        let selected_account_token = match (secret_store, &selected_account) {
+            (Some(store), Some(acct)) => {
+                Self::lookup_secret_in_store(
+                    store,
+                    &format!("providers.{}.accounts.{}.token", id.as_str(), acct.id),
+                    interaction,
+                    &call,
+                )
+                .await
+            }
+            _ => None,
+        };
+
         ProviderPlanInputs {
             base_environment,
             api_key,
             manual_cookie_header,
             selected_account_token,
             include_optional_usage: prefs.show_optional_credits_and_extra_usage,
-            secret_store: Some(Arc::clone(&self.secret_store)),
+            secret_store: secret_store.cloned(),
         }
     }
 
-    async fn lookup_secret(
-        &self,
+    /// Looks up a single secret by setting ID string in `secret_store` under `interaction`.
+    pub async fn lookup_secret_in_store(
+        secret_store: &SecretStore,
         setting_id_str: &str,
         interaction: FetchInteraction,
         call: &BrokerCall,
@@ -1224,16 +1261,13 @@ impl EngineRuntime {
         let secret_id = SecretId::from_setting_id(&setting_id).ok()?;
         let lookup = match interaction {
             FetchInteraction::Background => {
-                self.secret_store
+                secret_store
                     .background(call.clone())
                     .lookup(&secret_id)
                     .await
             }
             FetchInteraction::UserInitiated => {
-                self.secret_store
-                    .user(call.clone())
-                    .lookup(&secret_id)
-                    .await
+                secret_store.user(call.clone()).lookup(&secret_id).await
             }
         };
         match lookup {

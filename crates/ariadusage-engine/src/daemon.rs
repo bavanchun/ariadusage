@@ -633,6 +633,29 @@ impl IpcBackend for ConfigIpcBackend {
     }
 }
 
+/// Builds the default [`SecretStore`](crate::brokers::secret_store::SecretStore) backed by
+/// [`ServiceBackend`](crate::brokers::secret_store::service::ServiceBackend) and
+/// [`FileBackend`](crate::brokers::secret_store::file::FileBackend) at
+/// `<data_dir>/ariadusage/secrets.json`, honoring `config.secret_file_fallback == Some(true)`
+/// and `disable_keyring`.
+pub fn build_default_secret_store(
+    config: &Config,
+    disable_keyring: bool,
+) -> Result<Arc<crate::brokers::secret_store::SecretStore>, PathError> {
+    let consented = config.secret_file_fallback == Some(true);
+    let data = data_dir()?;
+    let file_backend = crate::brokers::secret_store::file::FileBackend::new(
+        data.join("ariadusage").join("secrets.json"),
+        consented,
+    );
+    Ok(Arc::new(
+        crate::brokers::secret_store::SecretStore::new(
+            crate::brokers::secret_store::service::ServiceBackend::new(disable_keyring),
+        )
+        .with_file_fallback(file_backend, consented),
+    ))
+}
+
 /// Builds the default [`EngineRuntime`] wired to `config_store`, [`SecretStore`], [`NetBroker`],
 /// and [`ProviderRegistry`].
 pub fn build_default_runtime(config_store: ConfigStore) -> Result<Arc<EngineRuntime>, DaemonError> {
@@ -648,18 +671,7 @@ pub fn build_default_runtime_with_options(
     let config = config_store.load_effective().unwrap_or_else(|_| {
         ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
     });
-    let consented = config.secret_file_fallback == Some(true);
-    let data = data_dir()?;
-    let file_backend = crate::brokers::secret_store::file::FileBackend::new(
-        data.join("ariadusage").join("secrets.json"),
-        consented,
-    );
-    let secret_store = Arc::new(
-        crate::brokers::secret_store::SecretStore::new(
-            crate::brokers::secret_store::service::ServiceBackend::new(disable_keyring),
-        )
-        .with_file_fallback(file_backend, consented),
-    );
+    let secret_store = build_default_secret_store(&config, disable_keyring)?;
     let net = Arc::new(
         crate::brokers::net::NetBroker::new(crate::brokers::net::NetConfig::default())
             .map_err(|err| DaemonError::Signal(std::io::Error::other(err.to_string())))?,

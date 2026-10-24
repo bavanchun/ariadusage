@@ -514,34 +514,6 @@ impl HookRunner {
         Self::run_with_executor(self.executor.as_ref(), rule, event, base_environment).await
     }
 
-    /// Runs every enabled rule matching `event`, subject to `rate_limiter`, using `executor`
-    /// (`HookRunner.dispatch`).
-    ///
-    /// Failures are contained per rule and never abort subsequent rules.
-    pub async fn dispatch_with_executor(
-        executor: &dyn HookCommandExecutor,
-        event: &HookEvent,
-        config: &HooksConfig,
-        rate_limiter: &mut HookRateLimiter,
-        rate_limit_account_discriminator: Option<&str>,
-        base_environment: &BTreeMap<String, String>,
-        now: Timestamp,
-    ) -> DispatchOutcome {
-        let rules = config.matching_rules(event);
-        if rules.is_empty() {
-            return DispatchOutcome::NoMatchingRules;
-        }
-        if event.event.is_rate_limited()
-            && !rate_limiter.allow(event, rate_limit_account_discriminator, now)
-        {
-            return DispatchOutcome::RateLimited;
-        }
-        for rule in rules {
-            let _ = Self::run_with_executor(executor, &rule, event, base_environment).await;
-        }
-        DispatchOutcome::Attempted
-    }
-
     /// Runs every enabled rule matching `event`, subject to the rate limiter (`HookRunner.dispatch`).
     ///
     /// Failures are contained per rule and never abort subsequent rules.
