@@ -649,40 +649,36 @@ impl OpenAIDashboardSnapshot {
     pub fn removing_skill_usage_services(
         breakdown: &[OpenAIDashboardDailyBreakdown],
     ) -> Vec<OpenAIDashboardDailyBreakdown> {
-        let mut out = Vec::new();
-        for item in breakdown {
-            let mut filtered_services = Vec::new();
-            let mut removed_any = false;
-            for service in &item.services {
-                let normalized = service.service.trim().to_ascii_lowercase();
-                if Self::EXCLUDED_USAGE_BREAKDOWN_SERVICE_PREFIXES
-                    .iter()
-                    .any(|prefix| normalized.starts_with(prefix))
-                {
-                    removed_any = true;
-                } else {
-                    filtered_services.push(service.clone());
+        breakdown
+            .iter()
+            .filter_map(|day| {
+                if day.services.is_empty() {
+                    return (day.total_credits_used > 0.0).then(|| day.clone());
                 }
-            }
-            if !removed_any {
-                out.push(item.clone());
-                continue;
-            }
-            if !filtered_services.is_empty() {
-                let filtered_total: f64 = filtered_services.iter().map(|s| s.credits_used).sum();
-                out.push(OpenAIDashboardDailyBreakdown {
-                    day: item.day.clone(),
-                    services: filtered_services,
-                    total_credits_used: filtered_total,
-                });
-            } else if item.services.is_empty()
-                && item.total_credits_used.is_finite()
-                && item.total_credits_used > 0.0
-            {
-                out.push(item.clone());
-            }
-        }
-        out
+
+                let services: Vec<OpenAIDashboardServiceUsage> = day
+                    .services
+                    .iter()
+                    .filter(|s| {
+                        let normalized = s.service.trim().to_ascii_lowercase();
+                        !Self::EXCLUDED_USAGE_BREAKDOWN_SERVICE_PREFIXES
+                            .iter()
+                            .any(|prefix| normalized.starts_with(prefix))
+                    })
+                    .cloned()
+                    .collect();
+                if services.is_empty() {
+                    return None;
+                }
+
+                let total: f64 = services.iter().map(|s| s.credits_used).sum();
+                Some(OpenAIDashboardDailyBreakdown {
+                    day: day.day.clone(),
+                    services,
+                    total_credits_used: total,
+                })
+            })
+            .collect()
     }
 
     pub fn make_daily_breakdown(
