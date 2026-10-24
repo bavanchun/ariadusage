@@ -1312,9 +1312,10 @@ pub fn read_with_expected_uid(
         return Err(CredentialFileError::Cancelled);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     {
         use std::io::Read;
+        use std::os::unix::fs::MetadataExt;
         let fd = match rustix::fs::open(
             decl.path(),
             rustix::fs::OFlags::RDONLY
@@ -1330,37 +1331,37 @@ pub fn read_with_expected_uid(
             Err(_) => return Err(CredentialFileError::Unreadable),
         };
 
-        let stat = match rustix::fs::fstat(&fd) {
+        let mut file = std::fs::File::from(fd);
+        let metadata = match file.metadata() {
             Ok(stat) => stat,
             Err(_) => return Err(CredentialFileError::Unreadable),
         };
 
         // Must be a regular file (e.g. FIFOs return immediately on nonblocking open and are rejected here).
-        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        if !metadata.file_type().is_file() {
             return Err(CredentialFileError::Unreadable);
         }
 
         // Owner check: must match current EUID or injected expected_uid.
         let required_uid = expected_uid.unwrap_or_else(|| rustix::process::geteuid().as_raw());
-        if stat.st_uid != required_uid {
+        if metadata.uid() != required_uid {
             return Err(CredentialFileError::Untrusted);
         }
 
         // Size check: must not exceed 1 MiB.
-        if (stat.st_size as u64) > MAX_CREDENTIAL_FILE_SIZE {
+        if metadata.len() > MAX_CREDENTIAL_FILE_SIZE {
             return Err(CredentialFileError::TooLarge);
         }
 
-        let mtime_ns = (stat.st_mtime as i128) * 1_000_000_000 + (stat.st_mtime_nsec as i128);
+        let mtime_ns = (metadata.mtime() as i128) * 1_000_000_000 + (metadata.mtime_nsec() as i128);
         let stat_fp = StatFingerprint {
             path: decl.path().to_path_buf(),
-            dev: stat.st_dev,
-            ino: stat.st_ino,
+            dev: metadata.dev(),
+            ino: metadata.ino(),
             mtime_ns,
-            size: stat.st_size as u64,
+            size: metadata.len(),
         };
 
-        let mut file = std::fs::File::from(fd);
         let mut buffer = Vec::new();
         let mut handle = (&mut file).take(MAX_CREDENTIAL_FILE_SIZE + 1);
         if handle.read_to_end(&mut buffer).is_err() {
@@ -1377,7 +1378,7 @@ pub fn read_with_expected_uid(
         })
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     {
         let _ = (decl, expected_uid);
         Err(CredentialFileError::Unreadable)
