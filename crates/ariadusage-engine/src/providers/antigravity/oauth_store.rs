@@ -358,16 +358,13 @@ impl AntigravityOAuthConfig {
     }
 
     pub fn is_antigravity_app_bundle(bundle_url: &Path) -> bool {
-        Self::bundle_identifier(bundle_url)
-            .is_some_and(|id| Self::is_known_bundle_identifier(&id))
+        Self::bundle_identifier(bundle_url).is_some_and(|id| Self::is_known_bundle_identifier(&id))
     }
 
     pub fn is_known_bundle_identifier(bundle_id: &str) -> bool {
         matches!(
             bundle_id.trim(),
-            "com.google.antigravity"
-                | "com.google.antigravity-ide"
-                | "com.google.GeminiMacOS"
+            "com.google.antigravity" | "com.google.antigravity-ide" | "com.google.GeminiMacOS"
         )
     }
 

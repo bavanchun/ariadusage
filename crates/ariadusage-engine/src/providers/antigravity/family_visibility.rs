@@ -58,10 +58,7 @@ pub fn idle_window_ids(snapshot: &UsageSnapshot) -> BTreeSet<String> {
 
     let mut families: BTreeMap<String, Vec<&NamedRateWindow>> = BTreeMap::new();
     for window in windows {
-        families
-            .entry(family_key(window))
-            .or_default()
-            .push(window);
+        families.entry(family_key(window)).or_default().push(window);
     }
 
     let idle_families: Vec<Vec<&NamedRateWindow>> = families
@@ -129,4 +126,3 @@ fn family_key(named_window: &NamedRateWindow) -> String {
     }
     title
 }
-
