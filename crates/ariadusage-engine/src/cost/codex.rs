@@ -2270,7 +2270,7 @@ where
                 };
                 let payload_type = payload.get("type").and_then(Value::as_str);
                 if payload_type == Some("thread_settings_applied") {
-                    // LOW 1: match upstream CostUsageScanner.swift:3766-3770 and 4901-4902:
+                    // Match upstream CostUsageScanner.swift:3766-3770 and 4901-4902:
                     // only inspect `payload["thread_settings"]["service_tier"]`, trim whitespace,
                     // and check exact equality `== "priority"` (no `"fast"`, no case-folding).
                     let tier_raw = payload

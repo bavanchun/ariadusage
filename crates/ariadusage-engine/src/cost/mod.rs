@@ -103,7 +103,12 @@ pub fn load_daily_report(
                 codex_home: options.codex_home.clone(),
                 codex_sessions_root: options.codex_sessions_root.clone(),
                 priority_db_path: options.codex_priority_db_path.clone(),
-                temp_dir: options.temp_dir.clone(),
+                temp_dir: options.temp_dir.clone().or_else(|| {
+                    options
+                        .cache_root
+                        .as_deref()
+                        .map(|root| store::default_sqlite_copy_parent(Some(root)))
+                }),
                 max_sqlite_bytes: options.max_codex_sqlite_bytes,
                 priority_deadline: None,
                 persisted_priority_cursor: persisted_cursor,
