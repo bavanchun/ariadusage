@@ -14,6 +14,7 @@ pub mod geometry;
 pub mod highlight_style;
 pub mod icon;
 pub mod menu_descriptor;
+pub mod menu_session;
 pub mod pace_text;
 pub mod presentation;
 pub mod progress_bar;

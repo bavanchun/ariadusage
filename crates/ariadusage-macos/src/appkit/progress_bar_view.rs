@@ -80,6 +80,30 @@ impl ProgressBarView {
         view
     }
 
+    /// Updates the bar's frame, spec, accent and accessibility value in place
+    /// without removing or recreating the view.
+    pub fn update(&self, frame: Rect, spec: BarSpec, accent: Accent, accessibility_label: &str) {
+        let next_frame = ns_rect(frame);
+        if self.frame() != next_frame {
+            self.setFrame(next_frame);
+        }
+        let accessibility_value = progress_bar::accessibility_value(&spec);
+        let changed = {
+            let mut state = self.ivars().borrow_mut();
+            let changed = state.spec != spec || state.accent != accent;
+            state.spec = spec;
+            state.accent = accent;
+            changed
+        };
+        self.setAccessibilityLabel(Some(&NSString::from_str(accessibility_label)));
+        let value = NSString::from_str(&accessibility_value);
+        // SAFETY: the accessibility value of a progress element is a string.
+        unsafe { self.setAccessibilityValue(Some(&value)) };
+        if changed {
+            self.setNeedsDisplay(true);
+        }
+    }
+
     pub fn set_highlighted(&self, highlighted: bool) {
         let changed = {
             let mut state = self.ivars().borrow_mut();
