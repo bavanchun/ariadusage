@@ -426,6 +426,27 @@ fn provider_tint_contrast_checks_match_upstream() {
     );
 }
 
+#[test]
+fn morph_layout_interpolates_ribbons_and_critters() {
+    let start = morph_layout(0.0, IconStyle::Codex, false);
+    assert_eq!(start.ribbons.len(), 3);
+    assert!(start.crossfade_bars.is_none());
+    assert!((start.ribbons[0].angle_deg - (-30.0)).abs() < 1e-6);
+
+    let end = morph_layout(1.0, IconStyle::Codex, false);
+    assert_eq!(end.ribbons.len(), 3);
+    let (end_layout, end_alpha) = end.crossfade_bars.expect("crossfade bars at t=1.0");
+    assert!((end_alpha - 1.0).abs() < 1e-6);
+    assert!(end.ribbons[0].angle_deg.abs() < 1e-6);
+    assert!(end.ribbons[1].angle_deg.abs() < 1e-6);
+    assert!(end.ribbons[2].alpha <= 0.01);
+    assert!(end_layout.critters.face.is_some());
+
+    let end_bars = morph_layout(1.0, IconStyle::Codex, true);
+    let (end_bars_layout, _) = end_bars.crossfade_bars.expect("crossfade bars at t=1.0");
+    assert!(end_bars_layout.critters.is_empty());
+}
+
 #[cfg(target_os = "macos")]
 mod macos_pixel_tests {
     use super::*;
