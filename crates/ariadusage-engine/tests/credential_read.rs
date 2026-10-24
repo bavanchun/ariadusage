@@ -2,7 +2,7 @@
 // Ported from CodexBar Tests/CodexBarTests/CodexOAuthExpiryPipelineTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexOAuthCredentialReadTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-#![cfg(target_os = "linux")]
+#![cfg(unix)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -178,6 +178,7 @@ fn test_fifo_at_declared_path_returns_unreadable_immediately() {
     let temp = tempfile::tempdir().expect("tempdir");
     let fifo_path = temp.path().join("auth_fifo");
 
+    #[cfg(not(target_os = "macos"))]
     rustix::fs::mknodat(
         rustix::fs::CWD,
         &fifo_path,
@@ -186,6 +187,15 @@ fn test_fifo_at_declared_path_returns_unreadable_immediately() {
         0,
     )
     .expect("mkfifo");
+    #[cfg(target_os = "macos")]
+    assert!(
+        std::process::Command::new("/usr/bin/mkfifo")
+            .args(["-m", "600"])
+            .arg(&fifo_path)
+            .status()
+            .expect("mkfifo")
+            .success()
+    );
 
     let start = std::time::Instant::now();
     let decl = CredentialDecl::for_test(&fifo_path);

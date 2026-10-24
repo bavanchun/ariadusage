@@ -19,7 +19,7 @@ fn test_content_fingerprint_sha256_hex() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 #[test]
 fn test_stat_fingerprint_changes_on_atomic_same_size_replacement() {
     use ariadusage_core::pipeline::FetchInteraction;
