@@ -3,6 +3,8 @@
 //! Writes, loads (`bootstrap gui/<uid>`), unloads (`bootout gui/<uid>`), and removes
 //! `~/Library/LaunchAgents/io.github.bavanchun.ariadusage.daemon.plist`.
 
+#![cfg_attr(not(target_os = "macos"), allow(dead_code))]
+
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 

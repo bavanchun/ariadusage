@@ -9,9 +9,11 @@
 //!   rejecting any peer whose UID does not match the engine's effective UID.
 //! - 1 MiB framing boundary in both directions via [`IpcCodec`].
 
+#[cfg(unix)]
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
+#[cfg(unix)]
 use std::sync::Arc;
 
 #[cfg(unix)]
@@ -19,23 +21,33 @@ use std::os::unix::fs::PermissionsExt;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
 
+#[cfg(unix)]
 use ariadusage_protocol::codec::{IpcCodec, IpcCodecError};
 use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
+#[cfg(unix)]
 use ariadusage_protocol::ipc::{
-    ClientMessage, ErrorCode, IpcError, ServerMessage, Topic, negotiate_protocol,
-    parse_client_message,
+    ClientMessage, ErrorCode, Topic, negotiate_protocol, parse_client_message,
 };
+use ariadusage_protocol::ipc::{IpcError, ServerMessage};
 use ariadusage_protocol::settings::{SettingsPage, SettingsScope};
 use ariadusage_protocol::snapshot::EngineSnapshot;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 #[cfg(unix)]
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
+#[cfg(unix)]
+use tokio::sync::watch;
+#[cfg(unix)]
 use tokio::task::JoinSet;
+#[cfg(unix)]
 use tokio_util::bytes::BytesMut;
+#[cfg(unix)]
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::paths::{PathError, validate_socket_path_len};
+use crate::paths::PathError;
+#[cfg(unix)]
+use crate::paths::validate_socket_path_len;
 
 /// Errors encountered while starting or authenticating on the IPC v1 Unix socket server.
 #[derive(Debug, thiserror::Error)]
