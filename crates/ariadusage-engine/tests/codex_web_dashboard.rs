@@ -4548,647 +4548,665 @@ fn recent_credit_totals_keep_gregorian_dashboard_keys_with_a_non_gregorian_syste
 // Suite 10: OpenAIDashboardIdentityMergeTests.swift
 // ============================================================================
 
-fn make_api_data_for_merge(account_id: Option<&str>) -> DashboardAPIData {
-    DashboardAPIData {
-        account_id: account_id.map(str::to_owned),
-        primary_limit: Some(RateWindow {
-            used_percent: 25.0,
-            window_minutes: Some(300),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        secondary_limit: None,
-        extra_rate_windows: None,
-        credits_remaining: Some(42.0),
-        credits_available: Some(true),
-        balance_is_workspace: Some(false),
-        codex_credit_limit: None,
-        account_plan: Some("pro".to_owned()),
+fn identity_window(used: f64) -> RateWindow {
+    RateWindow {
+        used_percent: used,
+        window_minutes: Some(300),
+        resets_at: None,
+        reset_description: None,
+        next_regen_percent: None,
+        is_synthetic_placeholder: false,
     }
 }
 
-fn make_previous_snapshot_for_merge(
+fn identity_api_data(balance: Option<f64>) -> DashboardAPIData {
+    DashboardAPIData {
+        account_id: Some("workspace-a".into()),
+        primary_limit: Some(identity_window(12.0)),
+        secondary_limit: None,
+        extra_rate_windows: Some(vec![]),
+        credits_remaining: balance,
+        credits_available: balance.map(|_| true),
+        balance_is_workspace: balance.map(|_| true),
+        codex_credit_limit: None,
+        account_plan: Some("business".into()),
+    }
+}
+
+fn identity_incoming(email: Option<&str>, account_id: Option<&str>) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardSnapshot {
+        signed_in_email: email.map(str::to_owned),
+        account_id: account_id.map(str::to_owned),
+        primary_limit: Some(identity_window(12.0)),
+        updated_at: Timestamp::from_second(1_700_000_100).unwrap(),
+        ..Default::default()
+    }
+}
+
+fn identity_previous(
     email: Option<&str>,
     account_id: Option<&str>,
+    workspace: Option<bool>,
 ) -> OpenAIDashboardSnapshot {
-    let event = CreditEvent::new(Timestamp::from_second(1_700_000_000).unwrap(), "CLI", 10.0);
-    let breakdown = vec![OpenAIDashboardDailyBreakdown::new(
-        "2026-04-10",
-        vec![OpenAIDashboardServiceUsage::new("CLI", 10.0)],
-        10.0,
-    )];
-    OpenAIDashboardSnapshot::new(
-        email.map(str::to_owned),
-        account_id.map(str::to_owned),
-        Some(88.0),
-        Some(RateWindow {
-            used_percent: 12.0,
-            window_minutes: None,
-            resets_at: None,
-            reset_description: Some("Resets tomorrow".to_owned()),
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        vec![event],
-        breakdown.clone(),
-        breakdown,
-        Some("https://chatgpt.com/codex/settings/usage".to_owned()),
-        Some(RateWindow {
-            used_percent: 5.0,
-            window_minutes: Some(300),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        Some(RateWindow {
-            used_percent: 40.0,
-            window_minutes: Some(10080),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        None,
-        Some(99.0),
-        Some(true),
-        Some(false),
-        None,
-        Some("Plus".to_owned()),
-        None,
-        Some(Timestamp::from_second(1_776_000_000).unwrap()),
-        Timestamp::from_second(1_700_000_000).unwrap(),
+    let date = Timestamp::from_second(1_700_000_000).unwrap();
+    let history = OpenAIDashboardDailyBreakdown::new(
+        "2023-11-14",
+        vec![OpenAIDashboardServiceUsage::new("Codex", 2.0)],
+        2.0,
+    );
+    OpenAIDashboardSnapshot {
+        signed_in_email: email.map(str::to_owned),
+        account_id: account_id.map(str::to_owned),
+        code_review_remaining_percent: Some(81.0),
+        code_review_limit: Some(identity_window(19.0)),
+        credit_events: vec![CreditEvent::new(date, "Codex", 2.0)],
+        daily_breakdown: vec![history.clone()],
+        usage_breakdown: vec![history],
+        credits_purchase_url: Some("https://chatgpt.com/checkout".into()),
+        primary_limit: Some(identity_window(99.0)),
+        secondary_limit: Some(identity_window(98.0)),
+        credits_remaining: Some(1234.0),
+        credits_available: Some(true),
+        balance_is_workspace: workspace,
+        codex_credit_limit: Some(CodexCreditLimitSnapshot::new_monthly(
+            300.0, 400.0, 25.0, None, date,
+        )),
+        account_plan: Some("Previous plan".into()),
+        subscription_expires_at: Some(Timestamp::from_second(1_700_000_000 + 3600).unwrap()),
+        subscription_renews_at: Some(Timestamp::from_second(1_700_000_000 + 7200).unwrap()),
+        updated_at: date,
+        ..Default::default()
+    }
+}
+
+fn identity_expect_no_cached_fields(result: &OpenAIDashboardSnapshot) {
+    assert!(result.credit_events.is_empty());
+    assert!(result.daily_breakdown.is_empty());
+    assert!(result.usage_breakdown.is_empty());
+    assert_eq!(result.code_review_remaining_percent, None);
+    assert_eq!(result.code_review_limit, None);
+    assert_eq!(result.credits_purchase_url, None);
+    assert_eq!(result.secondary_limit, None);
+    assert_eq!(result.extra_rate_windows, None);
+    assert_eq!(result.credits_remaining, None);
+    assert_eq!(result.credits_available, None);
+    assert_eq!(result.balance_is_workspace, None);
+    assert_eq!(result.codex_credit_limit, None);
+    assert_eq!(result.subscription_expires_at, None);
+    assert_eq!(result.subscription_renews_at, None);
+}
+
+fn identity_merge_api(
+    api: &DashboardAPIData,
+    verified: &str,
+    previous: &OpenAIDashboardSnapshot,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardFetcher::snapshot_by_merging_api(
+        api,
+        Some(previous),
+        Some(verified),
+        OpenAISubscriptionFetchResult::Unavailable,
+        Timestamp::now(),
+    )
+}
+
+fn identity_fill_page(
+    snapshot: OpenAIDashboardSnapshot,
+    previous: Option<&OpenAIDashboardSnapshot>,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardFetcher::filling_missing_page_fields(
+        snapshot,
+        previous,
+        OpenAISubscriptionFetchResult::Unavailable,
     )
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:8 legacy personal dashboard fields survive page and API refreshes without account IDs
 #[test]
 fn legacy_personal_dashboard_fields_survive_page_and_api_refreshes_without_account_ids() {
-    let previous = make_previous_snapshot_for_merge(Some("user@example.com"), None);
-    let api_data = make_api_data_for_merge(None);
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let api_merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_data,
-        Some(&previous),
-        Some("user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
-    );
-    assert_eq!(api_merged.code_review_remaining_percent, Some(88.0));
-    assert_eq!(api_merged.credit_events.len(), 1);
-    assert_eq!(api_merged.daily_breakdown.len(), 1);
-    assert_eq!(api_merged.usage_breakdown.len(), 1);
-
-    let page_snapshot = OpenAIDashboardSnapshot {
-        signed_in_email: Some("user@example.com".to_owned()),
-        account_id: None,
-        primary_limit: api_data.primary_limit.clone(),
-        updated_at: now,
-        ..Default::default()
-    };
-    let page_merged = OpenAIDashboardFetcher::filling_missing_page_fields(
-        page_snapshot,
-        Some(&previous),
-        OpenAISubscriptionFetchResult::Unavailable,
-    );
-    assert_eq!(page_merged.code_review_remaining_percent, Some(88.0));
-    assert_eq!(page_merged.credit_events.len(), 1);
+    for account_id in [None, Some(""), Some("workspace-a")] {
+        for workspace in [None, Some(false)] {
+            let previous = identity_previous(Some("owner@example.com"), account_id, workspace);
+            let api = identity_merge_api(&identity_api_data(None), "owner@example.com", &previous);
+            let page = identity_fill_page(
+                identity_incoming(Some("owner@example.com"), None),
+                Some(&previous),
+            );
+            for result in [api, page] {
+                assert_eq!(result.credits_remaining, previous.credits_remaining);
+                assert_eq!(result.credit_events, previous.credit_events);
+                assert_eq!(result.daily_breakdown, previous.daily_breakdown);
+                assert_eq!(result.usage_breakdown, previous.usage_breakdown);
+                assert_eq!(result.codex_credit_limit, previous.codex_credit_limit);
+                assert_eq!(result.secondary_limit, previous.secondary_limit);
+                assert_eq!(
+                    result.subscription_expires_at,
+                    previous.subscription_expires_at
+                );
+                assert_eq!(
+                    result.subscription_renews_at,
+                    previous.subscription_renews_at
+                );
+                assert!(!result.requires_workspace_balance_scope());
+            }
+        }
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:30 unidentified page waits without inheriting the API identity
 #[test]
 fn unidentified_page_waits_without_inheriting_the_api_identity() {
-    assert!(OpenAIDashboardFetcher::should_wait_for_page_identity(
-        Some("verified@example.com"),
-        None,
-    ));
-    assert!(OpenAIDashboardFetcher::should_wait_for_page_identity(
-        Some("verified@example.com"),
-        Some("   "),
-    ));
+    for page_email in [None, Some(""), Some(" \n ")] {
+        assert!(OpenAIDashboardFetcher::should_wait_for_page_identity(
+            Some("owner@example.com"),
+            page_email
+        ));
+        assert!(!OpenAIDashboardFetcher::should_wait_for_page_identity(
+            Some("owner@example.com"),
+            Some("other@example.com")
+        ));
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:38 API usage excludes all cached fields from an unpaired identity
 #[test]
 fn api_usage_excludes_all_cached_fields_from_an_unpaired_identity() {
-    let previous = make_previous_snapshot_for_merge(Some("other@example.com"), Some("acct-1"));
-    let api_data = make_api_data_for_merge(Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_data,
-        Some(&previous),
-        Some("verified@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
-    );
-
-    assert_eq!(
-        merged.signed_in_email.as_deref(),
-        Some("verified@example.com")
-    );
-    assert_eq!(merged.code_review_remaining_percent, None);
-    assert!(merged.credit_events.is_empty());
-    assert!(merged.daily_breakdown.is_empty());
-    assert!(merged.usage_breakdown.is_empty());
-    assert_eq!(merged.secondary_limit, None);
-    assert_eq!(merged.subscription_renews_at, None);
+    for previous_email in [None, Some(""), Some("other@example.com")] {
+        let result = identity_merge_api(
+            &identity_api_data(None),
+            "owner@example.com",
+            &identity_previous(previous_email, Some("workspace-a"), Some(true)),
+        );
+        assert_eq!(result.signed_in_email.as_deref(), Some("owner@example.com"));
+        assert_eq!(
+            result.primary_limit.as_ref().map(|w| w.used_percent),
+            Some(12.0)
+        );
+        assert_eq!(result.account_plan.as_deref(), Some("business"));
+        identity_expect_no_cached_fields(&result);
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:51 API merge cannot use a cached email as its verified identity
 #[test]
 fn api_merge_cannot_use_a_cached_email_as_its_verified_identity() {
-    let previous = make_previous_snapshot_for_merge(Some("cached@example.com"), Some("acct-1"));
-    let api_data = make_api_data_for_merge(Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_data,
-        Some(&previous),
-        None,
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
-    );
-
-    assert_eq!(merged.signed_in_email, None);
-    assert_eq!(merged.code_review_remaining_percent, None);
-    assert!(merged.credit_events.is_empty());
+    for verified in ["", " \n "] {
+        let result = identity_merge_api(
+            &identity_api_data(None),
+            verified,
+            &identity_previous(Some("owner@example.com"), Some("workspace-a"), Some(true)),
+        );
+        assert!(
+            result
+                .signed_in_email
+                .as_deref()
+                .is_none_or(|v| v.trim().is_empty())
+        );
+        identity_expect_no_cached_fields(&result);
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:62 page merge cannot infer an identity or copy another accounts data
 #[test]
 fn page_merge_cannot_infer_an_identity_or_copy_another_accounts_data() {
-    let previous = make_previous_snapshot_for_merge(Some("cached@example.com"), Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let anonymous_page = OpenAIDashboardSnapshot {
-        signed_in_email: None,
-        account_id: Some("acct-1".to_owned()),
-        primary_limit: Some(RateWindow {
-            used_percent: 30.0,
-            window_minutes: Some(300),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        updated_at: now,
-        ..Default::default()
-    };
-    let merged_anon = OpenAIDashboardFetcher::filling_missing_page_fields(
-        anonymous_page,
-        Some(&previous),
-        OpenAISubscriptionFetchResult::Unavailable,
-    );
-    assert_eq!(merged_anon.signed_in_email, None);
-    assert_eq!(merged_anon.code_review_remaining_percent, None);
-    assert!(merged_anon.credit_events.is_empty());
-
-    let other_page = OpenAIDashboardSnapshot {
-        signed_in_email: Some("different@example.com".to_owned()),
-        account_id: Some("acct-1".to_owned()),
-        primary_limit: Some(RateWindow {
-            used_percent: 30.0,
-            window_minutes: Some(300),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        updated_at: now,
-        ..Default::default()
-    };
-    let merged_other = OpenAIDashboardFetcher::filling_missing_page_fields(
-        other_page,
-        Some(&previous),
-        OpenAISubscriptionFetchResult::Unavailable,
-    );
-    assert_eq!(
-        merged_other.signed_in_email.as_deref(),
-        Some("different@example.com")
-    );
-    assert_eq!(merged_other.code_review_remaining_percent, None);
-    assert!(merged_other.credit_events.is_empty());
+    for scenario in [
+        "different",
+        "missing incoming",
+        "missing previous",
+        "both missing",
+        "blank incoming",
+    ] {
+        let current = match scenario {
+            "missing incoming" | "both missing" => None,
+            "blank incoming" => Some(" \n "),
+            _ => Some("owner@example.com"),
+        };
+        let previous = match scenario {
+            "missing previous" | "both missing" => None,
+            _ => Some("other@example.com"),
+        };
+        let incoming = identity_incoming(current, Some("workspace-a"));
+        assert_eq!(
+            identity_fill_page(
+                incoming.clone(),
+                Some(&identity_previous(
+                    previous,
+                    Some("workspace-a"),
+                    Some(true)
+                )),
+            ),
+            incoming
+        );
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:81 normalized matching identities preserve history and independently missing fields
 #[test]
 fn normalized_matching_identities_preserve_history_and_independently_missing_fields() {
-    let previous = make_previous_snapshot_for_merge(Some("User@Example.com"), Some("acct-alpha"));
-    let api_data = make_api_data_for_merge(Some(" ACCT-ALPHA "));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_data,
+    let previous = identity_previous(
+        Some(" Owner@Example.COM \n"),
+        Some("workspace-a"),
+        Some(true),
+    )
+    .with_subscription_metadata(None);
+    let api = identity_merge_api(&identity_api_data(None), "owner@example.com", &previous);
+    let page = identity_fill_page(
+        identity_incoming(Some("owner@example.com"), Some("workspace-a")),
         Some(&previous),
-        Some("  user@example.com  "),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
     );
-
-    assert_eq!(merged.signed_in_email.as_deref(), Some("user@example.com"));
-    assert_eq!(merged.code_review_remaining_percent, Some(88.0));
-    assert_eq!(merged.credit_events.len(), 1);
-    assert_eq!(merged.secondary_limit, previous.secondary_limit);
-    assert_eq!(
-        merged.subscription_renews_at,
-        previous.subscription_renews_at
-    );
+    for result in [&api, &page] {
+        assert_eq!(result.signed_in_email.as_deref(), Some("owner@example.com"));
+        assert_eq!(
+            result.primary_limit.as_ref().map(|w| w.used_percent),
+            Some(12.0)
+        );
+        assert_eq!(result.credit_events, previous.credit_events);
+        assert_eq!(result.daily_breakdown, previous.daily_breakdown);
+        assert_eq!(result.usage_breakdown, previous.usage_breakdown);
+        assert_eq!(result.credits_remaining, Some(1234.0));
+        assert_eq!(result.balance_is_workspace, Some(true));
+        assert_eq!(result.codex_credit_limit, previous.codex_credit_limit);
+        assert_eq!(result.secondary_limit, previous.secondary_limit);
+        assert_eq!(result.credits_purchase_url, previous.credits_purchase_url);
+        assert_eq!(
+            result.subscription_renews_at,
+            previous.subscription_renews_at
+        );
+    }
+    assert_eq!(api.account_plan, previous.account_plan);
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:108 missing page identity waits and mismatched page returns verified API data
 #[test]
 fn missing_page_identity_waits_and_mismatched_page_returns_verified_api_data() {
-    let previous = make_previous_snapshot_for_merge(Some("page-user@example.com"), Some("acct-1"));
-    let api_data = make_api_data_for_merge(Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let waiting = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
-        Some(&api_data),
-        Some("api-user@example.com"),
-        None,
-        OpenAISubscriptionFetchResult::Unavailable,
-        Some(&previous),
-        now,
-    )
-    .unwrap();
-    assert_eq!(waiting, None);
-
-    let mismatched = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
-        Some(&api_data),
-        Some("api-user@example.com"),
-        Some("page-user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        Some(&previous),
-        now,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(
-        mismatched.signed_in_email.as_deref(),
-        Some("api-user@example.com")
-    );
-    assert_eq!(mismatched.code_review_remaining_percent, None);
-    assert!(mismatched.credit_events.is_empty());
+    for page_email in [None, Some(""), Some("other@example.com")] {
+        let result = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
+            Some(&identity_api_data(Some(14.0))),
+            Some("owner@example.com"),
+            page_email,
+            OpenAISubscriptionFetchResult::Unavailable,
+            Some(&identity_previous(
+                Some("other@example.com"),
+                Some("workspace-a"),
+                Some(true),
+            )),
+            Timestamp::now(),
+        )
+        .unwrap();
+        if page_email.is_none_or(str::is_empty) {
+            assert_eq!(result, None);
+            continue;
+        }
+        let snapshot = result.unwrap();
+        assert_eq!(
+            snapshot.signed_in_email.as_deref(),
+            Some("owner@example.com")
+        );
+        assert_eq!(
+            snapshot.primary_limit.as_ref().map(|w| w.used_percent),
+            Some(12.0)
+        );
+        assert_eq!(snapshot.credits_remaining, Some(14.0));
+        assert_eq!(snapshot.balance_is_workspace, Some(true));
+        assert!(snapshot.credit_events.is_empty());
+        assert!(snapshot.daily_breakdown.is_empty());
+        assert!(snapshot.usage_breakdown.is_empty());
+        assert_eq!(snapshot.account_plan.as_deref(), Some("business"));
+        assert_eq!(snapshot.code_review_remaining_percent, None);
+        assert_eq!(snapshot.credits_purchase_url, None);
+        assert_eq!(snapshot.codex_credit_limit, None);
+        assert_eq!(snapshot.subscription_renews_at, None);
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:135 matching page identity allows the normal page merge
 #[test]
 fn matching_page_identity_allows_the_normal_page_merge() {
-    let api_data = make_api_data_for_merge(Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let unpaired = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
-        Some(&api_data),
-        Some("Same@Example.com"),
-        Some(" same@example.com "),
-        OpenAISubscriptionFetchResult::Unavailable,
-        None,
-        now,
-    )
-    .unwrap();
-    assert_eq!(unpaired, None);
+    assert_eq!(
+        OpenAIDashboardFetcher::snapshot_for_unpaired_page(
+            Some(&identity_api_data(Some(14.0))),
+            Some(" Owner@Example.COM \n"),
+            Some("owner@example.com"),
+            OpenAISubscriptionFetchResult::Unavailable,
+            None,
+            Timestamp::now(),
+        )
+        .unwrap(),
+        None
+    );
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:146 API only fallback requires independently verified API identity
 #[test]
 fn api_only_fallback_requires_independently_verified_api_identity() {
-    let api_data = make_api_data_for_merge(Some("acct-1"));
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let unpaired = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
-        Some(&api_data),
-        None,
-        Some("page-user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        None,
-        now,
-    )
-    .unwrap();
-    assert_eq!(unpaired, None);
+    for scenario in ["missing API", "missing verification", "blank verification"] {
+        let api = identity_api_data(Some(14.0));
+        let verified = match scenario {
+            "missing verification" => None,
+            "blank verification" => Some(" \n "),
+            _ => Some("owner@example.com"),
+        };
+        assert_eq!(
+            OpenAIDashboardFetcher::snapshot_for_unpaired_page(
+                (scenario != "missing API").then_some(&api),
+                verified,
+                Some("other@example.com"),
+                OpenAISubscriptionFetchResult::Unavailable,
+                Some(&identity_previous(
+                    Some("owner@example.com"),
+                    Some("workspace-a"),
+                    Some(true)
+                )),
+                Timestamp::now(),
+            )
+            .unwrap(),
+            None
+        );
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:158 metadata only API cannot be mixed into an unpaired page
 #[test]
 fn metadata_only_api_cannot_be_mixed_into_an_unpaired_page() {
-    let metadata_only = DashboardAPIData {
-        account_id: Some("acct-1".to_owned()),
-        primary_limit: None,
-        secondary_limit: None,
-        extra_rate_windows: None,
-        credits_remaining: None,
-        credits_available: Some(false),
-        balance_is_workspace: None,
-        codex_credit_limit: None,
-        account_plan: Some("plus".to_owned()),
-    };
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let err = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
-        Some(&metadata_only),
-        Some("api-user@example.com"),
-        Some("page-user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        None,
-        now,
-    )
-    .unwrap_err();
-    assert_eq!(err, OpenAIDashboardFetchError::NoDashboardData);
+    for page_email in [None, Some("other@example.com")] {
+        let api = DashboardAPIData {
+            account_id: None,
+            primary_limit: None,
+            secondary_limit: None,
+            extra_rate_windows: Some(vec![]),
+            credits_remaining: None,
+            credits_available: Some(false),
+            balance_is_workspace: None,
+            codex_credit_limit: None,
+            account_plan: Some("business".into()),
+        };
+        assert!(!api.has_usage_data());
+        let result = OpenAIDashboardFetcher::snapshot_for_unpaired_page(
+            Some(&api),
+            Some("owner@example.com"),
+            page_email,
+            OpenAISubscriptionFetchResult::Unavailable,
+            Some(&identity_previous(
+                Some("owner@example.com"),
+                Some("workspace-a"),
+                Some(true),
+            )),
+            Timestamp::now(),
+        );
+        if page_email.is_none() {
+            assert_eq!(result.unwrap(), None);
+        } else {
+            // Rust's typed NoDashboardData carries no response body; its display/debug must not expose either identity.
+            let error = result.unwrap_err();
+            assert_eq!(error, OpenAIDashboardFetchError::NoDashboardData);
+            for text in [error.to_string(), format!("{error:?}")] {
+                assert!(!text.contains("owner@example.com"));
+                assert!(!text.contains("other@example.com"));
+            }
+        }
+    }
 }
 
 // upstream: OpenAIDashboardIdentityMergeTests.swift:244 matching email cannot reuse another or unknown workspace
 #[test]
 fn matching_email_cannot_reuse_another_or_unknown_workspace() {
-    let mut previous_alpha =
-        make_previous_snapshot_for_merge(Some("user@example.com"), Some("acct-alpha"));
-    previous_alpha.balance_is_workspace = Some(true);
-    let api_beta = make_api_data_for_merge(Some("acct-beta"));
-    let api_unknown = make_api_data_for_merge(None);
-    let now = Timestamp::from_second(1_700_001_000).unwrap();
-
-    let merged_beta = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_beta,
-        Some(&previous_alpha),
-        Some("user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
-    );
-    assert_eq!(merged_beta.code_review_remaining_percent, None);
-    assert!(merged_beta.credit_events.is_empty());
-
-    let merged_unknown = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_unknown,
-        Some(&previous_alpha),
-        Some("user@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
-    );
-    assert_eq!(merged_unknown.code_review_remaining_percent, None);
-    assert!(merged_unknown.credit_events.is_empty());
+    for account_id in [None, Some(""), Some("workspace-b")] {
+        let previous = identity_previous(Some("owner@example.com"), account_id, Some(true));
+        let persisted: OpenAIDashboardSnapshot = serde_json::from_slice(
+            &serde_json::to_vec(&previous.with_subscription_metadata(None)).unwrap(),
+        )
+        .unwrap();
+        let result = identity_merge_api(&identity_api_data(None), "owner@example.com", &persisted);
+        identity_expect_no_cached_fields(&result);
+        assert_eq!(result.account_id.as_deref(), Some("workspace-a"));
+        let incoming = identity_incoming(Some("owner@example.com"), Some("workspace-a"));
+        assert_eq!(
+            identity_fill_page(incoming.clone(), Some(&persisted)),
+            incoming
+        );
+    }
 }
 
 // ============================================================================
 // Suite 11: CodexWorkspaceBalanceDashboardTests.swift
 // ============================================================================
 
-// upstream: CodexWorkspaceBalanceDashboardTests.swift:83 owner balance remains distinct from an exhausted personal cap
-#[tokio::test]
-async fn owner_balance_remains_distinct_from_an_exhausted_personal_cap() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              },
-              "individual_limit": {
-                "limit": 50,
-                "used": 50
-              }
-            }"#,
-        );
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance");
-        then.status(200).body(r#"{"balance": 325.5}"#);
-    });
-
-    let now = Timestamp::from_second(1_776_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(response.api_data.credits_remaining, Some(325.5));
-    assert_eq!(response.api_data.balance_is_workspace, Some(true));
-    let limit = response.api_data.codex_credit_limit.as_ref().unwrap();
-    assert_eq!(limit.remaining, 0.0);
-    assert_eq!(limit.limit, 50.0);
+fn workspace_updated_at() -> Timestamp {
+    Timestamp::from_second(1_786_000_000).unwrap()
 }
 
-// upstream: CodexWorkspaceBalanceDashboardTests.swift:101 unavailable owner endpoint retains hidden credits without rate windows
-#[tokio::test]
-async fn unavailable_owner_endpoint_retains_hidden_credits_without_rate_windows() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              }
-            }"#,
-        );
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/spend-controls/current-user/monthly-usage");
-        then.status(404).body(r#"{}"#);
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance");
-        then.status(403).body(r#"{"detail":"Forbidden"}"#);
-    });
-
-    let now = Timestamp::from_second(1_776_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
-    assert!(response.api_data.has_usage_data());
-    let snapshot = response
-        .api_data
-        .to_snapshot(Some("member@example.com".to_owned()), now);
-    assert!(OpenAIDashboardFetcher::has_returnable_dashboard_data(
-        &snapshot
-    ));
-    let credits = snapshot.to_credits_snapshot().unwrap();
-    assert!(!credits.balance_read_succeeded);
-    assert_eq!(credits.credits_available, Some(true));
-}
-
-// upstream: CodexWorkspaceBalanceDashboardTests.swift:117 missing balance payload never revives a cached workspace amount
-#[test]
-fn missing_balance_payload_never_revives_a_cached_workspace_amount() {
-    let now = Timestamp::from_second(1_776_000_000).unwrap();
-    let previous = OpenAIDashboardSnapshot {
-        signed_in_email: Some("owner@example.com".to_owned()),
-        account_id: Some("acct-workspace".to_owned()),
-        credits_remaining: Some(450.0),
-        credits_available: Some(true),
-        balance_is_workspace: Some(true),
-        updated_at: now,
+fn workspace_snapshot(
+    balance: Option<f64>,
+    available: Option<bool>,
+    workspace: Option<bool>,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardSnapshot {
+        signed_in_email: Some("user@example.com".into()),
+        account_id: Some("workspace-a".into()),
+        credits_remaining: balance,
+        credits_available: available,
+        balance_is_workspace: workspace,
+        updated_at: workspace_updated_at(),
         ..Default::default()
-    };
+    }
+}
 
-    let api_data = DashboardAPIData {
-        account_id: Some("acct-workspace".to_owned()),
+fn workspace_api_data(
+    balance: Option<f64>,
+    available: Option<bool>,
+    workspace: Option<bool>,
+) -> DashboardAPIData {
+    DashboardAPIData {
+        account_id: Some("workspace-a".into()),
         primary_limit: None,
         secondary_limit: None,
-        extra_rate_windows: None,
-        credits_remaining: None,
-        credits_available: Some(true),
-        balance_is_workspace: None,
+        extra_rate_windows: Some(vec![]),
+        credits_remaining: balance,
+        credits_available: available,
+        balance_is_workspace: workspace,
         codex_credit_limit: None,
-        account_plan: Some("team".to_owned()),
+        account_plan: Some("business".into()),
+    }
+}
+
+async fn workspace_fetch_balance_response(
+    status: u16,
+    payload: &str,
+    include_cap: bool,
+) -> DashboardAPIData {
+    let cap = if include_cap {
+        r#", "individual_limit":{"limit":100,"used":100}"#
+    } else {
+        ""
     };
-
-    let merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_data,
-        Some(&previous),
-        Some("owner@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
+    let usage = format!(
+        r#"{{"account_id":"workspace-123","plan_type":"business","credits":{{"has_credits":true,"unlimited":false,"balance":null}}{cap}}}"#
     );
+    let server = https::start_server();
+    let endpoint = endpoint_for_server(&server);
+    let broker = https::broker(NetConfig::default());
+    let usage_mock = server.mock(|when, then| {
+        when.method("GET").path("/backend-api/wham/usage");
+        then.status(200).body(usage);
+    });
+    let balance_mock = server.mock(|when, then| {
+        when.method("GET")
+            .path("/backend-api/accounts/workspace-123/remaining_balance")
+            .header("ChatGPT-Account-Id", "workspace-123")
+            .header("Cookie", "session=fixture");
+        then.status(status).body(payload);
+    });
+    let unexpected = server.mock(|when, then| {
+        when.any_request();
+        then.status(404);
+    });
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs(10);
+    // Partial: the HTTPS server cannot inspect the client's timeoutInterval;
+    // no request-timeout observer is exposed by the public NetBroker API.
+    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
+        &broker,
+        &endpoint,
+        "session=fixture",
+        Some(deadline),
+        Timestamp::now(),
+        &Instant::now,
+        Some(&https::call()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    usage_mock.assert_calls(1);
+    balance_mock.assert_calls(1);
+    unexpected.assert_calls(0);
+    response.api_data
+}
 
-    assert_eq!(merged.credits_remaining, None);
-    assert_eq!(merged.credits_available, Some(true));
-    assert_eq!(merged.balance_is_workspace, None);
+fn workspace_merge_api(
+    api: &DashboardAPIData,
+    previous: Option<&OpenAIDashboardSnapshot>,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardFetcher::snapshot_by_merging_api(
+        api,
+        previous,
+        Some("user@example.com"),
+        OpenAISubscriptionFetchResult::Unavailable,
+        Timestamp::now(),
+    )
+}
+
+// partial-upstream: CodexWorkspaceBalanceDashboardTests.swift:83 owner balance remains distinct from an exhausted personal cap
+#[tokio::test]
+async fn local_owner_balance_remains_distinct_from_an_exhausted_personal_cap() {
+    for balance in [0.0, 1234.0] {
+        let api =
+            workspace_fetch_balance_response(200, &format!(r#"{{"balance":{balance:.1}}}"#), true)
+                .await;
+        let dashboard = workspace_merge_api(&api, None);
+        let credits = dashboard.to_credits_snapshot().unwrap();
+        assert_eq!(
+            credits.codex_credit_limit.as_ref().map(|l| l.remaining),
+            Some(0.0)
+        );
+        assert!(credits.balance_is_workspace);
+        assert!(credits.balance_read_succeeded);
+        assert_eq!(credits.display_remaining(), Some(balance));
+    }
+}
+
+// partial-upstream: CodexWorkspaceBalanceDashboardTests.swift:101 unavailable owner endpoint retains hidden credits without rate windows
+#[tokio::test]
+async fn local_unavailable_owner_endpoint_retains_hidden_credits_without_rate_windows() {
+    for status in [403, 500] {
+        let api =
+            workspace_fetch_balance_response(status, r#"{"error":"unavailable"}"#, false).await;
+        let dashboard = workspace_merge_api(
+            &api,
+            Some(&workspace_snapshot(Some(1234.0), Some(true), Some(true))),
+        );
+        let credits = dashboard.to_credits_snapshot().unwrap();
+        assert!(api.has_usage_data());
+        assert_eq!(credits.credits_available, Some(true));
+        assert!(!credits.balance_read_succeeded);
+        assert!(!credits.balance_is_workspace);
+        assert_eq!(credits.display_remaining(), None);
+    }
+}
+
+// partial-upstream: CodexWorkspaceBalanceDashboardTests.swift:117 missing balance payload never revives a cached workspace amount
+#[tokio::test]
+async fn local_missing_balance_payload_never_revives_a_cached_workspace_amount() {
+    let api = workspace_fetch_balance_response(200, r#"{"balance":null}"#, false).await;
+    let previous = workspace_snapshot(Some(1234.0), Some(true), Some(true));
+    let current = workspace_merge_api(&api, Some(&previous));
+    let filled = OpenAIDashboardFetcher::filling_missing_page_fields(
+        current,
+        Some(&previous),
+        OpenAISubscriptionFetchResult::Unavailable,
+    );
+    assert_eq!(filled.credits_remaining, None);
+    assert_eq!(filled.credits_available, Some(true));
+    assert_ne!(filled.balance_is_workspace, Some(true));
 }
 
 // upstream: CodexWorkspaceBalanceDashboardTests.swift:133 merges keep provenance with the selected numeric balance
 #[test]
 fn merges_keep_provenance_with_the_selected_numeric_balance() {
-    let now = Timestamp::from_second(1_776_000_000).unwrap();
-    let previous_workspace = OpenAIDashboardSnapshot {
-        signed_in_email: Some("owner@example.com".to_owned()),
-        account_id: Some("acct-workspace".to_owned()),
-        credits_remaining: Some(450.0),
-        credits_available: Some(true),
-        balance_is_workspace: Some(true),
-        updated_at: now,
-        ..Default::default()
-    };
-
-    let api_personal_balance = DashboardAPIData {
-        account_id: Some("acct-workspace".to_owned()),
-        primary_limit: None,
-        secondary_limit: None,
-        extra_rate_windows: None,
-        credits_remaining: Some(25.0),
-        credits_available: Some(true),
-        balance_is_workspace: None,
-        codex_credit_limit: None,
-        account_plan: Some("team".to_owned()),
-    };
-
-    let merged = OpenAIDashboardFetcher::snapshot_by_merging_api(
-        &api_personal_balance,
-        Some(&previous_workspace),
-        Some("owner@example.com"),
-        OpenAISubscriptionFetchResult::Unavailable,
-        now,
+    let previous = workspace_snapshot(Some(1234.0), Some(true), Some(true));
+    let inherited = workspace_merge_api(&workspace_api_data(None, None, None), Some(&previous));
+    let replaced = workspace_merge_api(
+        &workspace_api_data(Some(12.0), Some(true), None),
+        Some(&previous),
     );
-
-    assert_eq!(merged.credits_remaining, Some(25.0));
-    assert_eq!(merged.balance_is_workspace, None);
+    let page_replaced = OpenAIDashboardFetcher::filling_missing_page_fields(
+        workspace_snapshot(Some(12.0), None, None),
+        Some(&previous),
+        OpenAISubscriptionFetchResult::Unavailable,
+    );
+    assert_eq!(inherited.credits_remaining, Some(1234.0));
+    assert_eq!(inherited.balance_is_workspace, Some(true));
+    assert_eq!(replaced.credits_remaining, Some(12.0));
+    assert_ne!(replaced.balance_is_workspace, Some(true));
+    assert_eq!(page_replaced.credits_remaining, Some(12.0));
+    assert_ne!(page_replaced.balance_is_workspace, Some(true));
 }
 
 // upstream: CodexWorkspaceBalanceDashboardTests.swift:156 page placeholder cannot replace the API hidden balance state
 #[test]
 fn page_placeholder_cannot_replace_the_api_hidden_balance_state() {
-    let now = Timestamp::from_second(1_776_000_000).unwrap();
     let scrape = DashboardScrapePayload {
-        signed_in_email: Some("member@example.com".to_owned()),
-        auth_status: Some("logged_in".to_owned()),
-        body_text: "Balance\nCredits remaining 0\n5h limit\n80% remaining".to_owned(),
+        login_required: false,
+        body_text: "Credits remaining 0".into(),
+        signed_in_email: Some("user@example.com".into()),
+        has_credits_remaining: true,
         ..Default::default()
     };
-    let api_data = DashboardAPIData {
-        account_id: Some("acct-workspace".to_owned()),
-        primary_limit: Some(RateWindow {
-            used_percent: 20.0,
-            window_minutes: Some(300),
-            resets_at: None,
-            reset_description: None,
-            next_regen_percent: None,
-            is_synthetic_placeholder: false,
-        }),
-        secondary_limit: None,
-        extra_rate_windows: None,
-        credits_remaining: None,
-        credits_available: Some(true),
-        balance_is_workspace: None,
-        codex_credit_limit: None,
-        account_plan: Some("team".to_owned()),
-    };
-
-    let parsed = OpenAIDashboardFetcher::parse_dashboard_scrape_with_api(
+    assert_eq!(
+        OpenAIDashboardParser::parse_credits_remaining(&scrape.body_text),
+        Some(0.0)
+    );
+    // Rust combines parseDashboardScrape and makePageSnapshot/filling in one
+    // public parser call; WebView viewport/scroll-only fields are not inputs.
+    let page = OpenAIDashboardFetcher::parse_dashboard_scrape_with_api(
         &scrape,
-        Some(&api_data),
-        None,
-        now,
+        Some(&workspace_api_data(None, Some(true), None)),
+        Some(&workspace_snapshot(Some(1234.0), Some(true), Some(true))),
+        workspace_updated_at(),
     )
     .unwrap();
-
-    assert_eq!(parsed.credits_remaining, None);
-    assert_eq!(parsed.credits_available, Some(true));
-    assert_eq!(parsed.balance_is_workspace, None);
+    assert!(OpenAIDashboardFetcher::has_returnable_dashboard_data(&page));
+    assert_eq!(page.credits_remaining, None);
+    assert_eq!(
+        page.to_credits_snapshot().map(|c| c.balance_read_succeeded),
+        Some(false)
+    );
 }
 
 // upstream: CodexWorkspaceBalanceDashboardTests.swift:194 dashboard cache preserves provenance and accepts older snapshots
 #[test]
 fn dashboard_cache_preserves_provenance_and_accepts_older_snapshots() {
-    let older_json = r#"{
-      "signedInEmail": "owner@example.com",
-      "accountId": "acct-workspace",
-      "creditEvents": [],
-      "dailyBreakdown": [],
-      "creditsRemaining": 120.5,
-      "updatedAt": "2026-04-12T00:00:00Z"
-    }"#;
-    let older: OpenAIDashboardSnapshot = serde_json::from_str(older_json).unwrap();
-    assert_eq!(older.credits_remaining, Some(120.5));
-    assert_eq!(older.credits_available, None);
-    assert_eq!(older.balance_is_workspace, None);
-
-    let mut with_provenance = older;
-    with_provenance.credits_available = Some(true);
-    with_provenance.balance_is_workspace = Some(true);
-
-    let encoded = serde_json::to_vec(&with_provenance).unwrap();
-    let decoded: OpenAIDashboardSnapshot = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(decoded.credits_available, Some(true));
-    assert_eq!(decoded.balance_is_workspace, Some(true));
-    let credits = decoded.to_credits_snapshot().unwrap();
-    assert!(credits.balance_is_workspace);
+    let original = workspace_snapshot(Some(1234.0), Some(true), Some(true));
+    let data = serde_json::to_vec(&original).unwrap();
+    let restored: OpenAIDashboardSnapshot = serde_json::from_slice(&data).unwrap();
+    assert_eq!(restored, original);
+    assert_eq!(
+        restored
+            .with_subscription_metadata(None)
+            .balance_is_workspace,
+        Some(true)
+    );
+    let mut legacy: serde_json::Value = serde_json::from_slice(&data).unwrap();
+    legacy.as_object_mut().unwrap().remove("creditsAvailable");
+    legacy.as_object_mut().unwrap().remove("balanceIsWorkspace");
+    let decoded: OpenAIDashboardSnapshot = serde_json::from_value(legacy).unwrap();
+    assert_eq!(decoded.credits_remaining, Some(1234.0));
+    assert_eq!(decoded.credits_available, None);
+    assert_eq!(
+        decoded
+            .to_credits_snapshot()
+            .map(|c| c.balance_is_workspace),
+        Some(false)
+    );
 }
 
 // ============================================================================
