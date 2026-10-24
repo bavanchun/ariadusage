@@ -32,7 +32,9 @@ mod macos {
     use std::time::{Duration, Instant};
 
     use ariadusage_macos::appkit::{
-        CardView, FoundationDateTexts, MenuController, png_bytes, set_loading,
+        CardView, FoundationDateTexts, MacOsNotice, MenuController,
+        RecordingUserNotificationBackend, UNUserNotificationCenterBackend, UserNotificationBackend,
+        deliver_notice, has_app_bundle_identity, png_bytes, set_loading, set_notification_backend,
         set_provider_loading, set_snapshot,
     };
     use ariadusage_macos::card::{self, CardPreferences, SubtitleStyle};
@@ -48,7 +50,7 @@ mod macos {
     };
     use ariadusage_macos::switcher::SwitcherSelection;
     use ariadusage_protocol::fixture;
-    use ariadusage_protocol::ipc::{ClientMessage, PROTOCOL_V1, ServerMessage};
+    use ariadusage_protocol::ipc::{ClientMessage, NoticeLevel, PROTOCOL_V1, ServerMessage};
     use ariadusage_protocol::metric::{Confidence, Metric, MetricState};
     use ariadusage_protocol::settings::SettingsPage;
     use ariadusage_protocol::snapshot::EngineSnapshot;
@@ -388,6 +390,10 @@ mod macos {
         (
             "test_disconnect_and_reconnect_over_unix_socket_with_status_icon_loading_api",
             test_disconnect_and_reconnect_over_unix_socket_with_status_icon_loading_api,
+        ),
+        (
+            "test_ipc_notice_delivers_to_injected_user_notification_backend",
+            test_ipc_notice_delivers_to_injected_user_notification_backend,
         ),
     ];
 
@@ -2726,6 +2732,14 @@ mod macos {
             });
         }
 
+        fn push_notice(&self, msg: ServerMessage) {
+            let line = serde_json::to_string(&msg).expect("serialize notice") + "\n";
+            let mut guard = self.clients.lock().unwrap();
+            guard.retain_mut(|stream| {
+                stream.write_all(line.as_bytes()).is_ok() && stream.flush().is_ok()
+            });
+        }
+
         fn refresh_requests(&self) -> Vec<Option<String>> {
             self.refresh_requests.lock().unwrap().clone()
         }
@@ -2868,6 +2882,20 @@ mod macos {
                 }
                 EngineEvent::Settings(_) => {
                     state.1 = true;
+                }
+                EngineEvent::Notice {
+                    level: _,
+                    title,
+                    message,
+                    notification_id,
+                    sound,
+                } => {
+                    deliver_notice(MacOsNotice::from_ipc(
+                        title,
+                        message,
+                        notification_id,
+                        sound,
+                    ));
                 }
                 EngineEvent::Disconnected => {
                     state.1 = false;
@@ -3124,6 +3152,89 @@ mod macos {
             PrimaryContent::Overview { .. }
         ));
         server2.shutdown();
+    }
+
+    fn test_ipc_notice_delivers_to_injected_user_notification_backend(mtm: MainThreadMarker) {
+        assert!(
+            !has_app_bundle_identity(),
+            "test runner binary must not pretend to be a .app bundle"
+        );
+        // Verify `UNUserNotificationCenterBackend` safely no-ops outside a `.app` bundle.
+        UNUserNotificationCenterBackend.post(&MacOsNotice {
+            identifier: "unbundled-check".to_string(),
+            title: "Safe No-Op".to_string(),
+            body: "No exception when unbundled".to_string(),
+            sound_enabled: false,
+        });
+
+        let recorder = RecordingUserNotificationBackend::new();
+        set_notification_backend(Box::new(recorder.clone()));
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock_path = dir.path().join("notice.sock");
+        let snap = sample_snapshot();
+        let server = MockDaemonServer::bind(&sock_path, snap);
+
+        let events: Arc<Mutex<Vec<EngineEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+        let client = EngineClient::spawn(sock_path.clone(), move |ev| {
+            events_clone.lock().unwrap().push(ev);
+        })
+        .expect("spawn EngineClient");
+
+        let menu = MenuController::new_with_callbacks(mtm, client, || {}, |_| {}, |_| {});
+        let mut state: (Option<EngineSnapshot>, bool, Option<SwitcherSelection>) =
+            (None, false, Some(SwitcherSelection::Overview));
+
+        assert!(wait_until(Duration::from_secs(2), || {
+            drain_events(&events, &menu, &mut state);
+            state.1 && state.0.is_some()
+        }));
+
+        server.push_notice(ServerMessage::Notice {
+            level: NoticeLevel::Warning,
+            title: Some("Claude quota reaches 20% left".to_string()),
+            message: "20% of your 5-hour session quota remains.".to_string(),
+            notification_id: Some("quota-warning-claude-primary-20".to_string()),
+            sound: Some(true),
+        });
+        server.push_notice(ServerMessage::Notice {
+            level: NoticeLevel::Info,
+            title: Some("Claude session restored".to_string()),
+            message: "5-hour session quota is available again.".to_string(),
+            notification_id: Some("session-claude-restored".to_string()),
+            sound: Some(true),
+        });
+
+        assert!(
+            wait_until(Duration::from_secs(2), || {
+                drain_events(&events, &menu, &mut state);
+                recorder.posted().len() == 2
+            }),
+            "client should receive ServerMessage::Notice pushes and forward them to UserNotificationBackend"
+        );
+
+        let posted = recorder.posted();
+        assert_eq!(
+            posted[0],
+            MacOsNotice {
+                identifier: "quota-warning-claude-primary-20".to_string(),
+                title: "Claude quota reaches 20% left".to_string(),
+                body: "20% of your 5-hour session quota remains.".to_string(),
+                sound_enabled: true,
+            }
+        );
+        assert_eq!(
+            posted[1],
+            MacOsNotice {
+                identifier: "session-claude-restored".to_string(),
+                title: "Claude session restored".to_string(),
+                body: "5-hour session quota is available again.".to_string(),
+                sound_enabled: true,
+            }
+        );
+
+        server.shutdown();
     }
 
     fn render_card_png(mtm: MainThreadMarker, model: &card::CardModel) -> Vec<u8> {

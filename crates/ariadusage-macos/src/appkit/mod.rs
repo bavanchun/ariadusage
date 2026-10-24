@@ -16,6 +16,7 @@ mod color;
 mod date_texts;
 mod icon_image;
 mod menu;
+mod notifications;
 mod progress_bar_view;
 mod settings_view;
 mod settings_window;
@@ -29,6 +30,10 @@ pub use icon_image::{
     render_morph as render_morph_icon, render_png_for_appearance, tint_image,
 };
 pub use menu::MenuController;
+pub use notifications::{
+    MacOsNotice, RecordingUserNotificationBackend, UNUserNotificationCenterBackend,
+    UserNotificationBackend, has_app_bundle_identity,
+};
 pub use settings_view::SettingsView;
 pub use settings_window::SettingsWindowController;
 pub use switcher_view::SwitcherView;
@@ -119,6 +124,34 @@ struct AppState {
 
 thread_local! {
     static STATE: RefCell<Option<AppState>> = const { RefCell::new(None) };
+    static NOTIFICATION_BACKEND: RefCell<Box<dyn UserNotificationBackend>> = RefCell::new(
+        Box::new(UNUserNotificationCenterBackend::new())
+    );
+}
+
+/// Replaces the active [`UserNotificationBackend`] on the main thread (for example, with
+/// [`RecordingUserNotificationBackend`] in tests).
+pub fn set_notification_backend(backend: Box<dyn UserNotificationBackend>) {
+    NOTIFICATION_BACKEND.with(|cell| {
+        if let Ok(mut guard) = cell.try_borrow_mut() {
+            *guard = backend;
+        }
+    });
+}
+
+/// Delivers a [`MacOsNotice`] through the configured [`UserNotificationBackend`], re-dispatching
+/// to the main queue on borrow contention.
+pub fn deliver_notice(notice: MacOsNotice) {
+    let contended = NOTIFICATION_BACKEND.with(|cell| {
+        let Ok(guard) = cell.try_borrow() else {
+            return true;
+        };
+        guard.post(&notice);
+        false
+    });
+    if contended {
+        DispatchQueue::main().exec_async(move || deliver_notice(notice));
+    }
 }
 
 fn now_secs() -> f64 {
@@ -154,13 +187,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     settings_window
         .view()
         .set_on_setting_changed(Rc::new(|setting_id, value| {
-            STATE.with(|cell| {
-                let mut guard = cell.borrow_mut();
-                let Some(state) = guard.as_mut() else { return };
-                state.settings_state.set_local(setting_id.as_str(), value);
-                sync_state_from_settings(state);
-            });
-            refresh_ui();
+            apply_local_setting_change(setting_id.clone(), value);
         }));
     let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab, open_settings_window);
     menu.set_on_refresh(|provider_id| {
@@ -208,15 +235,21 @@ pub fn set_loading(loading: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
+    let contended = STATE.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else {
-            return;
+            return true;
         };
-        let Some(state) = guard.as_mut() else { return };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         state.global_loading = loading;
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(move || set_loading(loading));
+    }
 }
 
 /// Public icon-state API: sets or clears the per-provider refresh-in-progress state
@@ -225,11 +258,13 @@ pub fn set_provider_loading(provider_id: &str, loading: bool) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
+    let contended = STATE.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else {
-            return;
+            return true;
         };
-        let Some(state) = guard.as_mut() else { return };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         if loading {
             state.provider_loading.insert(provider_id.to_string());
         } else {
@@ -237,18 +272,28 @@ pub fn set_provider_loading(provider_id: &str, loading: bool) {
         }
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        let owned_id = provider_id.to_string();
+        DispatchQueue::main().exec_async(move || set_provider_loading(&owned_id, loading));
+    }
 }
 
 /// Public icon-state API: applies a new engine snapshot, records downward quota
 /// warning threshold crossings for the 60 s flash overlay, and refreshes the UI.
 pub fn set_snapshot(snapshot: Option<EngineSnapshot>) {
-    let updated = STATE.with(|cell| {
+    enum SetSnapshotOutcome {
+        Updated,
+        NoState,
+        Contended(Option<EngineSnapshot>),
+    }
+    let outcome = STATE.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else {
-            return false;
+            return SetSnapshotOutcome::Contended(snapshot);
         };
         let Some(state) = guard.as_mut() else {
-            return false;
+            return SetSnapshotOutcome::NoState;
         };
         if let Some(ref snap) = snapshot {
             state.global_loading = snap.engine.refreshing;
@@ -256,10 +301,14 @@ pub fn set_snapshot(snapshot: Option<EngineSnapshot>) {
             state.settings_window.apply_snapshot(snap.clone());
         }
         state.snapshot = snapshot;
-        true
+        SetSnapshotOutcome::Updated
     });
-    if updated {
-        refresh_ui();
+    match outcome {
+        SetSnapshotOutcome::Updated => refresh_ui(),
+        SetSnapshotOutcome::NoState => {}
+        SetSnapshotOutcome::Contended(snap) => {
+            DispatchQueue::main().exec_async(move || set_snapshot(snap));
+        }
     }
 }
 
@@ -269,18 +318,49 @@ pub fn trigger_quota_warning_flash(provider_id: &str) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
+    let contended = STATE.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else {
-            return;
+            return true;
         };
-        let Some(state) = guard.as_mut() else { return };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         let _ = state
             .animation
             .start_quota_warning_flash(provider_id, now_secs());
         state.last_render_signature = None;
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        let owned_id = provider_id.to_string();
+        DispatchQueue::main().exec_async(move || trigger_quota_warning_flash(&owned_id));
+    }
+}
+
+fn apply_local_setting_change(
+    setting_id: ariadusage_protocol::ids::SettingId,
+    value: serde_json::Value,
+) {
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
+        state
+            .settings_state
+            .set_local(setting_id.as_str(), value.clone());
+        sync_state_from_settings(state);
+        false
+    });
+    if contended {
+        DispatchQueue::main().exec_async(move || apply_local_setting_change(setting_id, value));
+        return;
+    }
+    refresh_ui();
 }
 
 fn sync_state_from_settings(state: &mut AppState) {
@@ -297,11 +377,20 @@ fn sync_state_from_settings(state: &mut AppState) {
 }
 
 fn open_settings_window(pane: Option<SettingsPane>) {
-    STATE.with(|cell| {
-        let guard = cell.borrow();
-        let Some(state) = guard.as_ref() else { return };
+    let pane_for_retry = pane.clone();
+    let contended = STATE.with(move |cell| {
+        let Ok(guard) = cell.try_borrow() else {
+            return true;
+        };
+        let Some(state) = guard.as_ref() else {
+            return false;
+        };
         state.settings_window.show_window(pane);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(move || open_settings_window(pane_for_retry));
+    }
 }
 
 fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
@@ -363,26 +452,45 @@ fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapsho
     }
 }
 
-fn handle_event(event: EngineEvent) {
+/// Processes an [`EngineEvent`] on the main thread (including `EngineEvent::Notice` delivery
+/// through the configured [`UserNotificationBackend`]).
+pub fn handle_event(event: EngineEvent) {
     match event {
-        EngineEvent::Connected { .. } => {
-            STATE.with(|cell| {
+        EngineEvent::Connected { engine_version } => {
+            let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
-                    return;
+                    return true;
                 };
-                let Some(state) = guard.as_mut() else { return };
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
                 state.connected = true;
+                false
             });
+            if contended {
+                DispatchQueue::main().exec_async(move || {
+                    handle_event(EngineEvent::Connected { engine_version });
+                });
+                return;
+            }
             refresh_ui();
         }
         EngineEvent::Snapshot(snapshot) => {
-            STATE.with(|cell| {
+            let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
-                    return;
+                    return true;
                 };
-                let Some(state) = guard.as_mut() else { return };
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
                 state.connected = true;
+                false
             });
+            if contended {
+                DispatchQueue::main()
+                    .exec_async(move || handle_event(EngineEvent::Snapshot(snapshot)));
+                return;
+            }
             set_snapshot(Some(*snapshot));
             let finished: Vec<String> = STATE.with(|cell| {
                 let Ok(guard) = cell.try_borrow() else {
@@ -404,43 +512,76 @@ fn handle_event(event: EngineEvent) {
             }
         }
         EngineEvent::Settings(page) => {
-            STATE.with(|cell| {
+            let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
-                    return;
+                    return true;
                 };
-                let Some(state) = guard.as_mut() else { return };
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
                 state.connected = true;
                 state.settings_state.apply_page(&page);
                 sync_state_from_settings(state);
                 state.settings_window.apply_settings_page(&page);
+                false
             });
+            if contended {
+                DispatchQueue::main().exec_async(move || handle_event(EngineEvent::Settings(page)));
+                return;
+            }
             refresh_ui();
         }
+        EngineEvent::Notice {
+            level: _,
+            title,
+            message,
+            notification_id,
+            sound,
+        } => {
+            let notice = MacOsNotice::from_ipc(title, message, notification_id, sound);
+            deliver_notice(notice);
+        }
         EngineEvent::Disconnected => {
-            STATE.with(|cell| {
+            let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
-                    return;
+                    return true;
                 };
-                let Some(state) = guard.as_mut() else { return };
+                let Some(state) = guard.as_mut() else {
+                    return false;
+                };
                 state.connected = false;
                 state.global_loading = false;
                 state.provider_loading.clear();
                 state.last_render_signature = None;
+                false
             });
+            if contended {
+                DispatchQueue::main().exec_async(move || handle_event(EngineEvent::Disconnected));
+                return;
+            }
             refresh_ui();
         }
     }
 }
 
 fn select_tab(selection: SwitcherSelection) {
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         if let SwitcherSelection::Provider(id) = &selection {
             state.last_provider_id = Some(id.clone());
         }
-        state.selected_tab = Some(selection);
+        state.selected_tab = Some(selection.clone());
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(move || select_tab(selection));
+        return;
+    }
     refresh_ui();
 }
 
@@ -452,13 +593,15 @@ fn trigger_user_refresh(provider_id: Option<String>) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
+    let contended = STATE.with(|cell| {
         let Ok(mut guard) = cell.try_borrow_mut() else {
-            return;
+            return true;
         };
-        let Some(state) = guard.as_mut() else { return };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         let resolved = state.menu.start_user_refresh(
-            provider_id,
+            provider_id.clone(),
             state.snapshot.as_ref(),
             state.connected,
             state.selected_tab.as_ref(),
@@ -471,7 +614,11 @@ fn trigger_user_refresh(provider_id: Option<String>) {
         }
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(move || trigger_user_refresh(provider_id));
+    }
 }
 
 fn provider_needs_loading_animation(state: &AppState, provider_id: Option<&str>) -> bool {
@@ -617,9 +764,13 @@ fn on_loading_timer_tick() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         let now = now_secs();
         let selected_provider_id = match state.selected_tab.as_ref() {
             Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
@@ -635,16 +786,24 @@ fn on_loading_timer_tick() {
             sync_animation_timers(state);
         }
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(on_loading_timer_tick);
+    }
 }
 
 fn on_blink_timer_tick() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         state.blink_timer = None;
         let now = now_secs();
         let selected_provider_id = match state.selected_tab.as_ref() {
@@ -667,16 +826,24 @@ fn on_blink_timer_tick() {
         }
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(on_blink_timer_tick);
+    }
 }
 
 fn on_flash_timer_tick() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         state.flash_timer = None;
         let _ = state
             .animation
@@ -684,7 +851,11 @@ fn on_flash_timer_tick() {
         state.last_render_signature = None;
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(on_flash_timer_tick);
+    }
 }
 
 fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
@@ -799,9 +970,13 @@ fn refresh_ui() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    STATE.with(|cell| {
-        let mut guard = cell.borrow_mut();
-        let Some(state) = guard.as_mut() else { return };
+    let contended = STATE.with(|cell| {
+        let Ok(mut guard) = cell.try_borrow_mut() else {
+            return true;
+        };
+        let Some(state) = guard.as_mut() else {
+            return false;
+        };
         let resolved = state.menu.update(
             state.snapshot.as_ref(),
             state.connected,
@@ -815,5 +990,9 @@ fn refresh_ui() {
         }
         sync_animation_timers(state);
         render_status_item_icon(mtm, state);
+        false
     });
+    if contended {
+        DispatchQueue::main().exec_async(refresh_ui);
+    }
 }

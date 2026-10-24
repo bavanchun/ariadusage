@@ -17,7 +17,7 @@ use std::time::Duration;
 use ariadusage_protocol::MAX_FRAME_BYTES;
 use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
 use ariadusage_protocol::ipc::{
-    ClientInfo, ClientMessage, PROTOCOL_V1, ServerMessage, Topic, parse_server_message,
+    ClientInfo, ClientMessage, NoticeLevel, PROTOCOL_V1, ServerMessage, Topic, parse_server_message,
 };
 use ariadusage_protocol::settings::{SettingsPage, SettingsScope};
 use ariadusage_protocol::snapshot::EngineSnapshot;
@@ -46,6 +46,14 @@ pub enum EngineEvent {
     Snapshot(Box<EngineSnapshot>),
     /// The engine returned a settings page.
     Settings(Box<SettingsPage>),
+    /// The engine pushed a desktop notification or notice.
+    Notice {
+        level: NoticeLevel,
+        title: Option<String>,
+        message: String,
+        notification_id: Option<String>,
+        sound: Option<bool>,
+    },
     /// The connection failed or closed; a reconnect is scheduled.
     Disconnected,
 }
@@ -207,7 +215,7 @@ where
     write_message(
         &mut write_half,
         &ClientMessage::Subscribe {
-            topics: vec![Topic::Snapshot, Topic::Settings],
+            topics: vec![Topic::Snapshot, Topic::Settings, Topic::Notices],
             id: None,
         },
     )?;
@@ -246,7 +254,22 @@ where
                     on_event(EngineEvent::Settings(Box::new(page)));
                 }
             }
-            // Other responses and notices are not used yet.
+            Ok(ServerMessage::Notice {
+                level,
+                title,
+                message,
+                notification_id,
+                sound,
+            }) => {
+                on_event(EngineEvent::Notice {
+                    level,
+                    title,
+                    message,
+                    notification_id,
+                    sound,
+                });
+            }
+            // Other responses are not used yet.
             Ok(_) | Err(_) => {}
         }
     }
