@@ -2101,3 +2101,246 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-engine/tests/antigravity_warm_agy_cases.rs"
 sources = ["Tests/CodexBarTests/AntigravityWarmAgyReuseTests.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/archived-fork-33ce-3869/ORACLE.md"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/archived-fork-33ce-3869/ORACLE.md"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/archived-fork-33ce-3869/codex-home/archived_sessions/child.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/archived-fork-33ce-3869/codex-home/archived_sessions/child.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/archived-fork-33ce-3869/codex-home/archived_sessions/parent.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/archived-fork-33ce-3869/codex-home/archived_sessions/parent.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/archived-fork-33ce-3869/manifest.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/archived-fork-33ce-3869/manifest.json"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/harness-smoke/codex-home/archived_sessions/child.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/harness-smoke/codex-home/archived_sessions/child.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/harness-smoke/codex-home/sessions/2026/07/11/parent.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/harness-smoke/codex-home/sessions/2026/07/11/parent.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/harness-smoke/manifest.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/harness-smoke/manifest.json"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/live-fork-4d90-52bf/ORACLE.md"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/live-fork-4d90-52bf/ORACLE.md"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/live-fork-4d90-52bf/codex-home/archived_sessions/child.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/live-fork-4d90-52bf/codex-home/archived_sessions/child.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/live-fork-4d90-52bf/codex-home/archived_sessions/parent.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/live-fork-4d90-52bf/codex-home/archived_sessions/parent.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/live-fork-4d90-52bf/manifest.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/live-fork-4d90-52bf/manifest.json"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/missing-parent-siblings/ORACLE.md"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/missing-parent-siblings/ORACLE.md"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/missing-parent-siblings/codex-home/archived_sessions/sibling-a.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/missing-parent-siblings/codex-home/archived_sessions/sibling-a.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/missing-parent-siblings/codex-home/archived_sessions/sibling-b.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/missing-parent-siblings/codex-home/archived_sessions/sibling-b.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/cost-usage/issue-2037/missing-parent-siblings/manifest.json"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/CostUsage/Issue2037/missing-parent-siblings/manifest.json"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/mod.rs"
+sources = ["Sources/CodexBarCore/CostUsageFetcher.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/timestamp.rs"
+sources = [
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+Timestamp.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+TimestampOrder.swift",
+    "Sources/CodexBarCore/CostUsageModels.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/pricing.rs"
+sources = [
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricing.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricing+CodexResolver.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricing+Overlay.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricing+Provider.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsagePricingKey.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageCustomPricing.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/ModelsDevPricing.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/ModelsDevPricingTargetResolver.swift",
+    "Sources/CodexBarCore/Vendored/OpenCodexUsage/OpenCodexRouteDispatcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/claude.rs"
+sources = [
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+Claude.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+ClaudeRowDecoding.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageClaudeJSON.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageJsonl.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/codex_priority.rs"
+sources = ["Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+CodexPriority.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/codex.rs"
+sources = [
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CodexSubagentRolloutShape.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+ForkCoverage.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+RequestIdentity.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageScanner+ReportReconciliation.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/ledger.rs"
+sources = [
+    "Sources/CodexBarCore/CostUsageModels.swift",
+    "Sources/CodexBarCore/CostUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/cost/store.rs"
+sources = [
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageStore.swift",
+    "Sources/CodexBarCore/Vendored/CostUsage/CostUsageStoreModels.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_pricing.rs"
+sources = ["Tests/CodexBarTests/CostUsagePricingTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_claude.rs"
+sources = ["Tests/CodexBarTests/CostUsageScannerTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_codex.rs"
+sources = [
+    "Tests/CodexBarTests/CostUsageScannerTests.swift",
+    "Tests/CodexBarTests/CostUsageScannerCodexPriorityTests.swift",
+    "Tests/CodexBarTests/CostUsageScannerCodexPriorityCursorTests.swift",
+    "Tests/CodexBarTests/CostUsageScannerPriorityTests.swift",
+    "Tests/CodexBarTests/CostUsageCodexRequestLedgerTests.swift",
+    "Tests/CodexBarTests/CostUsageCodexRequestLedgerTests+MirrorWindow.swift",
+    "Tests/CodexBarTests/CostUsageCodexSourceRecoveryTests.swift",
+    "Tests/CodexBarTests/CostUsageStoreFailureInjectionTests.swift",
+    "Tests/CodexBarTests/CostUsageCodexSessionTierTests.swift",
+    "Tests/CodexBarTests/CodexForkAppendResumeTests.swift",
+    "Tests/CodexBarTests/CostUsageOrphanForkTests.swift",
+    "Tests/CodexBarTests/CostUsageScannerForkSplitTests.swift",
+    "Tests/CodexBarTests/CodexSubagentRolloutShapeTests.swift",
+    "Tests/CodexBarTests/CodexSubagentForkBaselineTests.swift",
+    "Tests/CodexBarTests/CodexSubagentOrdinalBoundaryTests.swift",
+    "Tests/CodexBarTests/CodexSubagentAccountingIntegrationTests.swift",
+    "Tests/CodexBarTests/CostUsagePriorityDayKeysTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_issue2037.rs"
+sources = [
+    "Tests/CodexBarTests/Issue2037FixtureSupport.swift",
+    "Tests/CodexBarTests/Issue2037FixtureHarnessTests.swift",
+    "Tests/CodexBarTests/Issue2037ProvenanceFixtureTests.swift",
+    "Tests/CodexBarTests/Issue2037ScannerIntegrationTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_ledger.rs"
+sources = [
+    "Tests/CodexBarTests/CostUsageWindowSummaryTests.swift",
+    "Tests/CodexBarTests/CostUsageStoreTests.swift",
+    "Tests/CodexBarTests/CostUsageStoreCutoverTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
