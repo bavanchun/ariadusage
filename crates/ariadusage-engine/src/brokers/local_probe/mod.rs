@@ -284,6 +284,64 @@ impl LocalProbe {
         }
     }
 
+    pub fn owned_process_identity(&self, pid: i32) -> Option<ProcessIdentity> {
+        #[cfg(unix)]
+        {
+            if procscan::process_uid(&self.proc_root, pid) == Some(self.uid) {
+                procscan::process_identity(&self.proc_root, pid)
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            None
+        }
+    }
+
+    /// Returns kernel executable identity only for the same owned process generation.
+    pub fn executable_path(&self, identity: ProcessIdentity) -> Option<std::path::PathBuf> {
+        #[cfg(unix)]
+        {
+            if procscan::process_uid(&self.proc_root, identity.pid) != Some(self.uid)
+                || procscan::process_identity(&self.proc_root, identity.pid) != Some(identity)
+            {
+                return None;
+            }
+            #[cfg(target_os = "macos")]
+            let path = if procscan::is_live_proc_root(&self.proc_root) {
+                use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+                let pid = Pid::from_u32(u32::try_from(identity.pid).ok()?);
+                let mut system = sysinfo::System::new();
+                system.refresh_processes_specifics(
+                    ProcessesToUpdate::Some(&[pid]),
+                    true,
+                    ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
+                );
+                system
+                    .process(pid)
+                    .and_then(|p| p.exe())
+                    .map(std::path::Path::to_path_buf)
+            } else {
+                std::fs::read_link(self.proc_root.join(identity.pid.to_string()).join("exe")).ok()
+            };
+            #[cfg(not(target_os = "macos"))]
+            let path =
+                std::fs::read_link(self.proc_root.join(identity.pid.to_string()).join("exe")).ok();
+            if procscan::process_identity(&self.proc_root, identity.pid) == Some(identity) {
+                path
+            } else {
+                None
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = identity;
+            None
+        }
+    }
+
     /// Discovers listening TCP ports for the specified `pid` from its open socket descriptors.
     pub async fn listening_tcp_ports(
         &self,

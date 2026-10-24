@@ -1,17 +1,21 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+pub mod cli_https;
+pub mod cli_print_failure;
+pub mod cli_session;
 pub mod descriptor;
 pub mod family_visibility;
 pub mod oauth_store;
 pub mod quota_summary;
 pub mod remote_fetcher;
+pub mod scoped_print_fetch;
 pub mod status_probe;
 
 pub use descriptor::{
     ANTIGRAVITY_APP_LOCAL_STRATEGY_ID, ANTIGRAVITY_CLI_HTTPS_STRATEGY_ID,
     ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID, ANTIGRAVITY_OAUTH_STRATEGY_ID,
-    ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityCLIHTTPSPlaceholderStrategy,
-    AntigravityOAuthFetchStrategy, AntigravityOfflinePlaceholderStrategy, AntigravityProviderPlan,
+    ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityOAuthFetchStrategy,
+    AntigravityOfflinePlaceholderStrategy, AntigravityProviderPlan,
     AntigravityProviderPresentation, AntigravitySelectedAccountGuard,
     AntigravityStatusFetchStrategy, AntigravityStatusProbeOverride, AntigravityStrategyConfig,
     AntigravityUsageDataSource, IconWindowsContext, IconWindowsPair, MenuBarMetric,
@@ -46,3 +50,8 @@ pub use status_probe::{
     OperationDeadline, ProcessEntry, ProcessInfoResult, ProcessScope, QUOTA_SUMMARY_PATH,
     QUOTA_SUMMARY_WINDOW_ID_PREFIX, RequestContext, RequestPayload, ResponseSummary, UNLEASH_PATH,
 };
+
+pub use cli_https::*;
+pub use cli_print_failure::{AntigravityCLIPrintFailure, ExitReason};
+pub use cli_session::*;
+pub use scoped_print_fetch::*;

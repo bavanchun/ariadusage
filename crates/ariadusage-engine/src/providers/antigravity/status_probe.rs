@@ -1085,7 +1085,7 @@ impl AntigravityPlanInfoSummary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AntigravityStatusProbeError {
     #[error("Antigravity language server not detected. Launch Antigravity and retry.")]
     NotRunning,
@@ -1099,12 +1099,46 @@ pub enum AntigravityStatusProbeError {
     Transport(TransportClass),
     #[error("Could not parse Antigravity quota: {0}")]
     ParseFailed(String),
+    #[error("Antigravity port discovery is pending")]
+    PortDiscoveryPending {
+        code: i32,
+        stderr: ariadusage_protocol::secret::SecretString,
+    },
+    #[error("Antigravity port discovery failed")]
+    PortDiscoveryFailed {
+        code: i32,
+        stderr: ariadusage_protocol::secret::SecretString,
+    },
+    #[error("Antigravity CLI usage report failed: {0}")]
+    CliReportFailed(super::cli_print_failure::AntigravityCLIPrintFailure),
+    #[error("Antigravity CLI is signed out. Run agy in a terminal to sign in, then retry.")]
+    AuthenticationRequired,
+    #[error(
+        "Antigravity local session does not match the selected account; local usage cannot be used for the selected account."
+    )]
+    AccountMismatch {
+        expected: Option<String>,
+        found: Option<String>,
+    },
     #[error("Antigravity quota request timed out.")]
     TimedOut,
     #[error("Antigravity quota request cancelled.")]
     Cancelled,
 }
 
+impl fmt::Debug for AntigravityStatusProbeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AccountMismatch { .. } => f.write_str("AccountMismatch(<redacted>)"),
+            Self::PortDiscoveryPending { .. } => f.write_str("PortDiscoveryPending(<redacted>)"),
+            Self::PortDiscoveryFailed { .. } => f.write_str("PortDiscoveryFailed(<redacted>)"),
+            Self::ParseFailed(_) => f.write_str("ParseFailed(<redacted>)"),
+            Self::ApiError(_) => f.write_str("ApiError(<redacted>)"),
+            Self::PortDetectionFailed(_) => f.write_str("PortDetectionFailed(<redacted>)"),
+            _ => fmt::Display::fmt(self, f),
+        }
+    }
+}
 impl AntigravityStatusProbeError {
     fn port_detection_description(message: &str) -> String {
         match message {
@@ -1129,7 +1163,11 @@ impl AntigravityStatusProbeError {
 
     pub fn into_classified_error(self) -> ClassifiedError {
         match &self {
-            Self::NotRunning | Self::MissingCSRFToken | Self::PortDetectionFailed(_) => {
+            Self::NotRunning
+            | Self::MissingCSRFToken
+            | Self::PortDetectionFailed(_)
+            | Self::PortDiscoveryPending { .. }
+            | Self::PortDiscoveryFailed { .. } => {
                 ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, self.to_string())
             }
             Self::ApiError(_) => {
@@ -1139,12 +1177,25 @@ impl AntigravityStatusProbeError {
                 ClassifiedError::new(ProviderErrorKind::NetworkFailure, self.to_string())
                     .with_transport(*transport)
             }
+            Self::AuthenticationRequired => {
+                ClassifiedError::new(ProviderErrorKind::AuthenticationExpired, self.to_string())
+            }
+            Self::AccountMismatch { .. } => {
+                ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, self.to_string())
+            }
+            Self::CliReportFailed(_) => {
+                ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, self.to_string())
+            }
             Self::ParseFailed(_) => {
                 ClassifiedError::new(ProviderErrorKind::ParseFailure, self.to_string())
             }
-            Self::TimedOut | Self::Cancelled => {
+            Self::TimedOut => {
                 ClassifiedError::new(ProviderErrorKind::NetworkFailure, self.to_string())
                     .with_transport(TransportClass::Timeout)
+            }
+            Self::Cancelled => {
+                ClassifiedError::new(ProviderErrorKind::NetworkFailure, self.to_string())
+                    .with_transport(TransportClass::Cancelled)
             }
         }
     }
@@ -1426,6 +1477,26 @@ pub type EndpointRequestSender = Arc<
 pub struct AntigravityStatusProbe;
 
 impl AntigravityStatusProbe {
+    pub fn cli_endpoints_for_os(ports: &[u16], linux: bool) -> Vec<AntigravityConnectionEndpoint> {
+        ports
+            .iter()
+            .flat_map(|port| {
+                (if linux {
+                    &["https", "http"][..]
+                } else {
+                    &["https"][..]
+                })
+                .iter()
+                .map(move |scheme| {
+                    AntigravityConnectionEndpoint::new(*scheme, *port, "", EndpointSource::CliHttps)
+                })
+            })
+            .collect()
+    }
+    pub fn cli_endpoints_for_current_platform(ports: &[u16]) -> Vec<AntigravityConnectionEndpoint> {
+        Self::cli_endpoints_for_os(ports, cfg!(target_os = "linux"))
+    }
+
     pub const STEP_TIMEOUT_CAP: Duration = Duration::from_secs(4);
     pub const MIN_REMAINING_TIME: Duration = Duration::from_millis(50);
 

@@ -543,6 +543,7 @@ pub struct AntigravityStrategyConfig {
     pub credentials_update_handler: Option<CredentialsUpdateHandler>,
     pub oauth_client_resolver: Option<OAuthClientResolver>,
     pub clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
+    pub cli: Arc<super::cli_https::CliRuntime>,
 }
 
 impl AntigravityStrategyConfig {
@@ -564,6 +565,7 @@ impl AntigravityStrategyConfig {
             credentials_update_handler: None,
             oauth_client_resolver: None,
             clock: Arc::new(Timestamp::now),
+            cli: Arc::new(super::cli_https::CliRuntime::default()),
         }
     }
 
@@ -895,41 +897,6 @@ impl FetchStrategy for AntigravityOAuthFetchStrategy {
     }
 }
 
-/// Part-1 placeholder strategy for `antigravity.cli-https` (`AntigravityCLIHTTPSFetchStrategy`).
-///
-/// Kept in the strategy pipeline so `resolve_strategies` and fallback ordering match CodexBar
-/// while CLI HTTPS server bootstrap is out of scope for part 1.
-pub struct AntigravityCLIHTTPSPlaceholderStrategy;
-
-impl FetchStrategy for AntigravityCLIHTTPSPlaceholderStrategy {
-    fn id(&self) -> &'static str {
-        ANTIGRAVITY_CLI_HTTPS_STRATEGY_ID
-    }
-
-    fn kind(&self) -> SourceKind {
-        SourceKind::Cli
-    }
-
-    fn is_available<'a>(&'a self, _cx: &'a FetchContext) -> BoxFuture<'a, bool> {
-        Box::pin(async move { false })
-    }
-
-    fn fetch<'a>(
-        &'a self,
-        _cx: &'a FetchContext,
-    ) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
-        Box::pin(async move {
-            Err(FetchError::Classified(
-                AntigravityStatusProbeError::NotRunning.into_classified_error(),
-            ))
-        })
-    }
-
-    fn should_fallback(&self, _error: &FetchError, _cx: &FetchContext) -> bool {
-        true
-    }
-}
-
 /// Part-1 placeholder strategy for `antigravity.offline` (`AntigravityOfflineFetchStrategy`).
 ///
 /// Kept in the strategy pipeline so `resolve_strategies` and fallback ordering match CodexBar
@@ -969,6 +936,15 @@ impl AntigravityOfflinePlaceholderStrategy {
                 } else {
                     "the usage request failed".to_owned()
                 }
+            }
+            AntigravityStatusProbeError::AuthenticationRequired
+            | AntigravityStatusProbeError::CliReportFailed(_) => error.to_string(),
+            AntigravityStatusProbeError::AccountMismatch { .. } => {
+                "the local Antigravity session does not match the selected account".to_owned()
+            }
+            AntigravityStatusProbeError::PortDiscoveryPending { .. }
+            | AntigravityStatusProbeError::PortDiscoveryFailed { .. } => {
+                "check Diagnostics for per-source details".to_owned()
             }
             AntigravityStatusProbeError::Transport(_) => "the usage request failed".to_owned(),
             AntigravityStatusProbeError::NotRunning
@@ -1041,7 +1017,9 @@ impl AntigravityProviderPlan {
                 Box::new(AntigravityStatusFetchStrategy::app_local(
                     self.config.clone(),
                 )),
-                Box::new(AntigravityCLIHTTPSPlaceholderStrategy),
+                Box::new(super::cli_https::AntigravityCLIHTTPSFetchStrategy::new(
+                    self.config.clone(),
+                )),
                 Box::new(AntigravityStatusFetchStrategy::ide_local(
                     self.config.clone(),
                 )),
@@ -1055,7 +1033,9 @@ impl AntigravityProviderPlan {
                     Box::new(AntigravityStatusFetchStrategy::app_local(
                         self.config.clone(),
                     )),
-                    Box::new(AntigravityCLIHTTPSPlaceholderStrategy),
+                    Box::new(super::cli_https::AntigravityCLIHTTPSFetchStrategy::new(
+                        self.config.clone(),
+                    )),
                     Box::new(AntigravityStatusFetchStrategy::ide_local(
                         self.config.clone(),
                     )),
