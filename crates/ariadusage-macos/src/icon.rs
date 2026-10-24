@@ -1,20 +1,27 @@
 // Ported from CodexBar Sources/CodexBar/IconRenderer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/LoadingPattern.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarLayoutRenderer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/SessionQuotaNotifications.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+QuotaWarnings.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Providers.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/ProviderBranding.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Status-item icon geometry for both the "bars" and "critters" styles,
-//! loading-animation waveforms, quota-warning thresholds, and provider tint
-//! contrast checks.
+//! loading-animation waveforms, critter blink/wiggle/tilt state machine,
+//! quota-warning thresholds and flash state, and provider tint contrast checks.
 //!
 //! The icon is an 18 × 18 pt template image rendered at 2×, so every pixel
 //! coordinate here is on a 36 × 36 canvas with the origin at the bottom left
 //! (AppKit's default, unflipped). This module only decides what to draw; the
 //! AppKit bridge turns the result into an `NSImage`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
+use std::hash::{Hash, Hasher};
 
 /// Point size of the rendered icon.
 pub const ICON_SIZE_PT: f64 = 18.0;
@@ -167,11 +174,11 @@ impl IconStyle {
     pub fn from_provider_id(provider_id: &str) -> Self {
         match provider_id {
             "codex" => Self::Codex,
-            "claude" | "kiro" => Self::Claude,
+            "claude" => Self::Claude,
             "gemini" => Self::Gemini,
             "antigravity" => Self::Antigravity,
             "cursor" => Self::Cursor,
-            "factory" | "droid" => Self::Factory,
+            "factory" => Self::Factory,
             "grok" => Self::Grok,
             "copilot" => Self::Copilot,
             "warp" => Self::Warp,
@@ -182,7 +189,7 @@ impl IconStyle {
     /// Critter decorations associated with this style (`ProviderUsagePresentation.iconDecorations`).
     pub const fn decorations(self) -> IconDecorations {
         match self {
-            Self::Codex | Self::Copilot => IconDecorations {
+            Self::Codex => IconDecorations {
                 face: true,
                 ..IconDecorations::empty()
             },
@@ -211,7 +218,7 @@ impl IconStyle {
                 grok: true,
                 ..IconDecorations::empty()
             },
-            Self::Cursor | Self::Combined => IconDecorations::empty(),
+            Self::Copilot | Self::Cursor | Self::Combined => IconDecorations::empty(),
         }
     }
 
@@ -315,7 +322,7 @@ impl Bar {
     }
 }
 
-/// Hat rectangle and tilt transform for the `.face` critter (Codex / Copilot).
+/// Hat rectangle and tilt transform for the `.face` critter (Codex).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HatDecoration {
     pub rect: RectPx,
@@ -324,7 +331,7 @@ pub struct HatDecoration {
     pub y_offset_pt: f64,
 }
 
-/// Eye cutouts, blink refills, and hat for the `.face` critter (Codex / Copilot).
+/// Eye cutouts, blink refills, and hat for the `.face` critter (Codex).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FaceDecoration {
     pub left_eye: RectPx,
@@ -1215,6 +1222,51 @@ impl LoadingPattern {
     }
 }
 
+/// Frame rate of the status-item loading animation (`StatusItemController+Animation.swift:129`).
+pub const LOADING_ANIMATION_FPS: f64 = 30.0;
+
+/// Phase increment in radians per 30 FPS tick (`StatusItemController+Animation.swift:130`).
+pub const LOADING_ANIMATION_PHASE_INCREMENT: f64 = 2.7 / LOADING_ANIMATION_FPS;
+
+/// Maximum continuous duration in seconds before the loading animation caps and falls back
+/// to the static icon (`StatusItemController+Animation.swift:131`).
+pub const LOADING_ANIMATION_MAX_CONTINUOUS_DURATION_SECS: f64 = 30.0;
+
+/// Active tick interval in milliseconds while a critter blink/wiggle/tilt is animating
+/// (`StatusItemController+Animation.swift:7`: `.milliseconds(75)`).
+pub const BLINK_ACTIVE_TICK_INTERVAL_MS: u64 = 75;
+
+/// Fallback idle sleep interval in milliseconds when no blink is pending
+/// (`StatusItemController+Animation.swift:8`: `.seconds(1)`).
+pub const BLINK_IDLE_FALLBACK_INTERVAL_MS: u64 = 1000;
+
+/// Duration in seconds of one critter blink/wiggle/tilt pulse (`StatusItemController+Animation.swift:9`).
+pub const BLINK_DURATION_SECS: f64 = 0.36;
+
+/// Probability (`0.18`) that a scheduled blink triggers a double blink (`StatusItemController+Animation.swift:10`).
+pub const DOUBLE_BLINK_CHANCE: f64 = 0.18;
+
+/// Minimum delay in seconds before the second pulse of a double blink (`StatusItemController+Animation.swift:11`).
+pub const DOUBLE_BLINK_DELAY_MIN_SECS: f64 = 0.22;
+
+/// Maximum delay in seconds before the second pulse of a double blink (`StatusItemController+Animation.swift:11`).
+pub const DOUBLE_BLINK_DELAY_MAX_SECS: f64 = 0.34;
+
+/// Minimum random delay in seconds between idle critter blinks (`StatusItemController+Animation.swift:12`).
+pub const BLINK_RANDOM_DELAY_MIN_SECS: f64 = 3.0;
+
+/// Maximum random delay in seconds between idle critter blinks (`StatusItemController+Animation.swift:12`).
+pub const BLINK_RANDOM_DELAY_MAX_SECS: f64 = 12.0;
+
+/// Whether the loading animation has exceeded its 30 s continuous cap (`StatusItemController+Animation.swift:139-143`).
+pub fn loading_animation_has_exceeded_continuous_cap(
+    started_at_secs: Option<f64>,
+    now_secs: f64,
+) -> bool {
+    started_at_secs
+        .is_some_and(|start| now_secs - start > LOADING_ANIMATION_MAX_CONTINUOUS_DURATION_SECS)
+}
+
 /// Loading-phase blink amount (`StatusItemController+Animation.swift:509-513`):
 /// Warp pulses its eye blink at `sin(phase * 3)` during loading animations.
 pub fn loading_blink_amount(style: IconStyle, phase: Option<f64>, fallback_blink: f64) -> f64 {
@@ -1224,33 +1276,53 @@ pub fn loading_blink_amount(style: IconStyle, phase: Option<f64>, fallback_blink
     }
 }
 
-/// Quota warning threshold sanitization and resolution (`CodexBarConfig.swift:222-265`).
+/// Quota warning threshold sanitization and resolution (`CodexBarConfig.swift:483-511`).
 pub struct QuotaWarningThresholds;
 
 impl QuotaWarningThresholds {
+    /// Clamps a threshold to `0..=99` (`QuotaWarningThresholds.clamped`).
     pub fn clamped(value: i32) -> i32 {
-        value.clamp(1, 99)
+        value.clamp(0, 99)
     }
 
-    /// Clamps each threshold to `1..=99`, deduplicates, and sorts descending (`[50, 20]`).
+    /// Clamps each threshold to `0..=99`, deduplicates, and sorts descending (`[50, 20]` when `values` is empty).
     pub fn sanitized(values: &[i32]) -> Vec<i32> {
+        if values.is_empty() {
+            return DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec();
+        }
         let mut out: Vec<i32> = values.iter().copied().map(Self::clamped).collect();
         out.sort_unstable_by(|a, b| b.cmp(a));
         out.dedup();
-        out
+        if out.is_empty() {
+            DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec()
+        } else {
+            out
+        }
     }
 
-    /// Returns sanitized thresholds, or `[50, 20]` when `values` is `None` or empty.
+    /// Returns sanitized positive thresholds (`> 0`), or `[50, 20]` when `values` is `None` (`QuotaWarningThresholds.active`).
     pub fn active(values: Option<&[i32]>) -> Vec<i32> {
         let Some(values) = values else {
             return DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec();
         };
-        let clean = Self::sanitized(values);
-        if clean.is_empty() {
-            DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec()
-        } else {
-            clean
+        let mut clean = Self::sanitized(values);
+        clean.retain(|&t| t > 0);
+        clean
+    }
+
+    /// Resolves upper/lower threshold pair (`QuotaWarningThresholds.resolved(upper:lower:)`).
+    pub fn resolved_pair(upper: Option<i32>, lower: Option<i32>) -> Vec<i32> {
+        if upper.is_none() && lower.is_none() {
+            return DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec();
         }
+        let resolved_upper = Self::clamped(upper.unwrap_or(DEFAULT_QUOTA_WARNING_THRESHOLDS[0]));
+        let lower_default = if resolved_upper < DEFAULT_QUOTA_WARNING_THRESHOLDS[1] {
+            0
+        } else {
+            DEFAULT_QUOTA_WARNING_THRESHOLDS[1]
+        };
+        let resolved_lower = Self::clamped(lower.unwrap_or(lower_default));
+        Self::sanitized(&[resolved_upper, resolved_lower])
     }
 
     /// Resolves per-provider thresholds when non-empty, otherwise global thresholds (`[50, 20]` default).
@@ -1258,13 +1330,173 @@ impl QuotaWarningThresholds {
         provider_thresholds: Option<&[i32]>,
         global_thresholds: Option<&[i32]>,
     ) -> Vec<i32> {
-        if let Some(p) = provider_thresholds {
-            let clean = Self::sanitized(p);
-            if !clean.is_empty() {
-                return clean;
-            }
+        if let Some(p) = provider_thresholds
+            && !p.is_empty()
+        {
+            return Self::sanitized(p);
         }
-        Self::active(global_thresholds)
+        match global_thresholds {
+            Some(g) => Self::sanitized(g),
+            None => DEFAULT_QUOTA_WARNING_THRESHOLDS.to_vec(),
+        }
+    }
+}
+
+/// Pure threshold crossing and reset logic (`QuotaWarningNotificationLogic` in `SessionQuotaNotifications.swift:372-398`).
+pub struct QuotaWarningNotificationLogic;
+
+impl QuotaWarningNotificationLogic {
+    /// Returns the lowest crossed threshold when `current_remaining` drops to or below an unfired threshold.
+    pub fn crossed_threshold(
+        previous_remaining: Option<f64>,
+        current_remaining: f64,
+        thresholds: &[i32],
+        already_fired: &BTreeSet<i32>,
+    ) -> Option<i32> {
+        let sanitized = QuotaWarningThresholds::active(Some(thresholds));
+        let eligible: Vec<i32> = sanitized
+            .into_iter()
+            .filter(|&t| current_remaining <= f64::from(t) && !already_fired.contains(&t))
+            .collect();
+        if eligible.is_empty() {
+            return None;
+        }
+        if let Some(prev) = previous_remaining {
+            eligible.into_iter().filter(|&t| prev > f64::from(t)).min()
+        } else {
+            eligible.into_iter().min()
+        }
+    }
+
+    /// Returns all active thresholds `>= threshold` that should be marked as fired after warning at `threshold`.
+    pub fn fired_thresholds_after_warning(threshold: i32, thresholds: &[i32]) -> BTreeSet<i32> {
+        QuotaWarningThresholds::active(Some(thresholds))
+            .into_iter()
+            .filter(|&t| t >= threshold)
+            .collect()
+    }
+
+    /// Returns fired thresholds that should be cleared because `current_remaining` recovered above them.
+    pub fn thresholds_to_clear(
+        current_remaining: f64,
+        already_fired: &BTreeSet<i32>,
+    ) -> BTreeSet<i32> {
+        already_fired
+            .iter()
+            .copied()
+            .filter(|&t| current_remaining > f64::from(t))
+            .collect()
+    }
+}
+
+/// Per-window state for quota-warning threshold crossing (`UsageStore+QuotaWarnings.swift:61-106`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct QuotaWarningWindowState {
+    pub previous_remaining: Option<f64>,
+    pub fired_thresholds: BTreeSet<i32>,
+    pub last_resets_at_secs: Option<i64>,
+}
+
+impl QuotaWarningWindowState {
+    /// Evaluates a window update (`remaining_percent` and optional `resets_at_secs`) against `thresholds`.
+    /// Returns `Some(crossed_threshold)` when a warning should fire.
+    pub fn update(
+        &mut self,
+        remaining_percent: Option<f64>,
+        resets_at_secs: Option<i64>,
+        thresholds: &[i32],
+        warnings_enabled: bool,
+    ) -> Option<i32> {
+        let Some(remaining) = remaining_percent else {
+            *self = Self::default();
+            return None;
+        };
+        if let (Some(prev_reset), Some(curr_reset)) = (self.last_resets_at_secs, resets_at_secs)
+            && (prev_reset - curr_reset).abs() > 1
+        {
+            self.fired_thresholds.clear();
+            self.previous_remaining = None;
+        }
+        self.last_resets_at_secs = resets_at_secs;
+
+        let active_set: BTreeSet<i32> = QuotaWarningThresholds::active(Some(thresholds))
+            .into_iter()
+            .collect();
+        self.fired_thresholds.retain(|t| active_set.contains(t));
+
+        let cleared =
+            QuotaWarningNotificationLogic::thresholds_to_clear(remaining, &self.fired_thresholds);
+        for t in cleared {
+            self.fired_thresholds.remove(&t);
+        }
+
+        if !warnings_enabled {
+            self.previous_remaining = Some(remaining);
+            self.fired_thresholds.clear();
+            return None;
+        }
+
+        let crossed = QuotaWarningNotificationLogic::crossed_threshold(
+            self.previous_remaining,
+            remaining,
+            thresholds,
+            &self.fired_thresholds,
+        );
+        if let Some(threshold) = crossed {
+            let mark = QuotaWarningNotificationLogic::fired_thresholds_after_warning(
+                threshold, thresholds,
+            );
+            self.fired_thresholds.extend(mark);
+        }
+        self.previous_remaining = Some(remaining);
+        crossed
+    }
+}
+
+/// Tracks quota-warning state across providers and their primary/secondary lanes.
+#[derive(Debug, Clone, Default)]
+pub struct QuotaWarningTracker {
+    pub primary: BTreeMap<String, QuotaWarningWindowState>,
+    pub secondary: BTreeMap<String, QuotaWarningWindowState>,
+}
+
+impl QuotaWarningTracker {
+    /// Updates both primary and secondary windows for `provider_id` and returns `true`
+    /// if either window crossed a warning threshold.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_provider(
+        &mut self,
+        provider_id: &str,
+        primary_remaining: Option<f64>,
+        primary_resets_at_secs: Option<i64>,
+        secondary_remaining: Option<f64>,
+        secondary_resets_at_secs: Option<i64>,
+        thresholds: &[i32],
+        warnings_enabled: bool,
+    ) -> bool {
+        let p_fired = self
+            .primary
+            .entry(provider_id.to_string())
+            .or_default()
+            .update(
+                primary_remaining,
+                primary_resets_at_secs,
+                thresholds,
+                warnings_enabled,
+            )
+            .is_some();
+        let s_fired = self
+            .secondary
+            .entry(provider_id.to_string())
+            .or_default()
+            .update(
+                secondary_remaining,
+                secondary_resets_at_secs,
+                thresholds,
+                warnings_enabled,
+            )
+            .is_some();
+        p_fired || s_fired
     }
 }
 
@@ -1272,6 +1504,459 @@ impl QuotaWarningThresholds {
 /// (`StatusItemController+Animation.swift:584-593`).
 pub fn quota_warning_flash_active(posted_at_secs: Option<f64>, now_secs: f64) -> bool {
     posted_at_secs.is_some_and(|posted| posted + QUOTA_WARNING_FLASH_DURATION_SECS > now_secs)
+}
+
+/// Critter motion effect selected for a blink pulse (`StatusItemController.MotionEffect`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MotionEffect {
+    #[default]
+    Blink,
+    Wiggle,
+    Tilt,
+}
+
+/// Per-provider critter blink schedule and active pulse state (`StatusItemController.BlinkState`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BlinkState {
+    pub next_blink_secs: f64,
+    pub blink_start_secs: Option<f64>,
+    pub pending_second_start_secs: Option<f64>,
+    pub effect: MotionEffect,
+}
+
+impl BlinkState {
+    /// Creates a new `BlinkState` using a deterministic seed for initial delay (`3.0..=12.0` s).
+    pub fn seeded(now_secs: f64, seed: u64) -> Self {
+        let delay = seeded_range(
+            seed ^ 0x9E37_79B9_7F4A_7C15,
+            BLINK_RANDOM_DELAY_MIN_SECS,
+            BLINK_RANDOM_DELAY_MAX_SECS,
+        );
+        Self {
+            next_blink_secs: now_secs + delay,
+            blink_start_secs: None,
+            pending_second_start_secs: None,
+            effect: MotionEffect::Blink,
+        }
+    }
+}
+
+fn splitmix64(mut x: u64) -> u64 {
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+fn seeded_unit(seed: u64) -> f64 {
+    let bits = splitmix64(seed) >> 11;
+    (bits as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
+fn seeded_range(seed: u64, min: f64, max: f64) -> f64 {
+    min + (max - min) * seeded_unit(seed)
+}
+
+/// Whether a provider's icon style supports critter blinking (`StatusItemController.shouldBlink`).
+pub fn style_supports_blink(style: IconStyle, hide_critters: bool) -> bool {
+    if hide_critters {
+        return false;
+    }
+    let dec = style.decorations();
+    dec.face || dec.notches || dec.gemini || dec.factory || dec.warp
+}
+
+/// Selects the motion effect for `style` using a deterministic random roll (`StatusItemController.motionEffect`).
+pub fn select_motion_effect(style: IconStyle, roll: f64) -> MotionEffect {
+    let dec = style.decorations();
+    if dec.notches {
+        if roll < 0.35 {
+            MotionEffect::Wiggle
+        } else {
+            MotionEffect::Blink
+        }
+    } else if dec.face {
+        if roll < 0.25 {
+            MotionEffect::Tilt
+        } else {
+            MotionEffect::Blink
+        }
+    } else {
+        MotionEffect::Blink
+    }
+}
+
+/// Evaluates whether critter blinking is currently allowed (`StatusItemController.isBlinkingAllowed`).
+pub fn is_blinking_allowed(
+    random_blink_enabled: bool,
+    blink_force_until_secs: Option<f64>,
+    now_secs: f64,
+) -> bool {
+    if random_blink_enabled {
+        return true;
+    }
+    blink_force_until_secs.is_some_and(|until| until > now_secs)
+}
+
+/// Evaluates whether the critter blink task should run (`StatusItemController.shouldRunBlinkTask`).
+pub fn should_run_blink_task(
+    blinking_allowed: bool,
+    needs_menu_bar_icon_animation: bool,
+    hide_critters: bool,
+    has_blinking_providers: bool,
+) -> bool {
+    blinking_allowed && !needs_menu_bar_icon_animation && !hide_critters && has_blinking_providers
+}
+
+/// Computes the sleep duration in milliseconds before the next blink tick
+/// (`StatusItemController.blinkTickSleepDuration`, `StatusItemController+Animation.swift:164-184`).
+pub fn blink_tick_sleep_duration_ms(
+    states: &BTreeMap<String, BlinkState>,
+    providers: &[String],
+    now_secs: f64,
+) -> u64 {
+    let mut earliest_wake: Option<f64> = None;
+    for provider in providers {
+        let Some(state) = states.get(provider) else {
+            return BLINK_ACTIVE_TICK_INTERVAL_MS;
+        };
+        if state.blink_start_secs.is_some() {
+            return BLINK_ACTIVE_TICK_INTERVAL_MS;
+        }
+        let candidate = state
+            .pending_second_start_secs
+            .map_or(state.next_blink_secs, |pending| {
+                pending.min(state.next_blink_secs)
+            });
+        earliest_wake = Some(earliest_wake.map_or(candidate, |cur| cur.min(candidate)));
+    }
+    let Some(earliest) = earliest_wake else {
+        return BLINK_IDLE_FALLBACK_INTERVAL_MS;
+    };
+    let delay_secs = (earliest - now_secs).max(0.0);
+    if delay_secs <= (BLINK_ACTIVE_TICK_INTERVAL_MS as f64) / 1000.0 {
+        BLINK_ACTIVE_TICK_INTERVAL_MS
+    } else {
+        (delay_secs * 1000.0).ceil() as u64
+    }
+}
+
+/// Pure state machine for status-item loading animation, critter blink/wiggle/tilt,
+/// quota-warning flash windows, and render deduplication signatures
+/// (`StatusItemController+Animation.swift`).
+#[derive(Debug, Clone, Default)]
+pub struct StatusItemAnimationState {
+    pub animation_phase: f64,
+    pub loading_started_at_secs: Option<f64>,
+    pub loading_capped: bool,
+    pub debug_force_animation: bool,
+    pub blink_states: BTreeMap<String, BlinkState>,
+    pub blink_amounts: BTreeMap<String, f64>,
+    pub wiggle_amounts: BTreeMap<String, f64>,
+    pub tilt_amounts: BTreeMap<String, f64>,
+    pub blink_force_until_secs: Option<f64>,
+    pub blink_rng_counter: u64,
+    pub quota_warning_flash_until_secs: BTreeMap<String, f64>,
+    pub quota_warning_tracker: QuotaWarningTracker,
+    pub last_rendered_signatures: BTreeMap<String, u64>,
+    pub last_store_observation_signature: Option<u64>,
+}
+
+impl StatusItemAnimationState {
+    /// Synchronizes the loading animation start/cap state at `now_secs`.
+    /// Returns `true` when the 30 FPS loading timer should be running.
+    pub fn sync_loading_animation(&mut self, needs_animation: bool, now_secs: f64) -> bool {
+        if !needs_animation {
+            self.loading_started_at_secs = None;
+            self.loading_capped = false;
+            self.animation_phase = 0.0;
+            return false;
+        }
+        if self.loading_capped {
+            return false;
+        }
+        let start = *self.loading_started_at_secs.get_or_insert(now_secs);
+        if loading_animation_has_exceeded_continuous_cap(Some(start), now_secs) {
+            self.loading_started_at_secs = None;
+            self.loading_capped = true;
+            self.animation_phase = 0.0;
+            return false;
+        }
+        true
+    }
+
+    /// Advances the loading animation by one 30 FPS frame at `now_secs`.
+    /// Returns `true` if still animating, or `false` if the 30 s continuous cap was reached.
+    pub fn advance_loading_frame(&mut self, needs_animation: bool, now_secs: f64) -> bool {
+        if !self.sync_loading_animation(needs_animation, now_secs) {
+            return false;
+        }
+        self.animation_phase += LOADING_ANIMATION_PHASE_INCREMENT;
+        true
+    }
+
+    /// Current loading phase if the loading animation is active and uncapped.
+    pub fn active_loading_phase(&self, needs_animation: bool) -> Option<f64> {
+        (needs_animation && !self.loading_capped && self.loading_started_at_secs.is_some())
+            .then_some(self.animation_phase)
+    }
+
+    /// Starts or refreshes a 60 s quota-warning flash for `provider_id` at `now_secs`
+    /// (`StatusItemController+Animation.swift:595-611`).
+    pub fn start_quota_warning_flash(&mut self, provider_id: &str, now_secs: f64) -> f64 {
+        let until = now_secs + QUOTA_WARNING_FLASH_DURATION_SECS;
+        self.quota_warning_flash_until_secs
+            .insert(provider_id.to_string(), until);
+        until
+    }
+
+    /// Clears expired quota-warning flashes at `now_secs` and returns the provider IDs whose flash expired.
+    pub fn clear_expired_quota_warning_flashes(&mut self, now_secs: f64) -> Vec<String> {
+        let expired: Vec<String> = self
+            .quota_warning_flash_until_secs
+            .iter()
+            .filter(|&(_, &until)| until <= now_secs)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &expired {
+            self.quota_warning_flash_until_secs.remove(id);
+        }
+        expired
+    }
+
+    /// Whether a quota-warning flash is currently active for `provider_id` at `now_secs`.
+    pub fn is_quota_warning_flash_active(&self, provider_id: &str, now_secs: f64) -> bool {
+        self.quota_warning_flash_until_secs
+            .get(provider_id)
+            .is_some_and(|&until| until > now_secs)
+    }
+
+    /// Forces an immediate critter blink across `providers` for 0.6 s (`StatusItemController.forceBlinkNow`).
+    pub fn force_blink_now(
+        &mut self,
+        providers: &[String],
+        hide_critters: bool,
+        now_secs: f64,
+    ) -> Vec<String> {
+        if hide_critters {
+            return Vec::new();
+        }
+        self.blink_force_until_secs = Some(now_secs + 0.6);
+        let mut updated = Vec::new();
+        for provider in providers {
+            let style = IconStyle::from_provider_id(provider);
+            if !style_supports_blink(style, hide_critters) {
+                continue;
+            }
+            self.blink_rng_counter = self.blink_rng_counter.wrapping_add(1);
+            let seed = self.blink_rng_counter;
+            let roll = seeded_unit(seed);
+            let mut state = self
+                .blink_states
+                .get(provider)
+                .copied()
+                .unwrap_or_else(|| BlinkState::seeded(now_secs, seed));
+            state.blink_start_secs = Some(now_secs);
+            state.pending_second_start_secs = None;
+            state.effect = select_motion_effect(style, roll);
+            state.next_blink_secs = now_secs
+                + seeded_range(
+                    seed ^ 0x517C_C1B7_2722_0A95,
+                    BLINK_RANDOM_DELAY_MIN_SECS,
+                    BLINK_RANDOM_DELAY_MAX_SECS,
+                );
+            self.blink_states.insert(provider.clone(), state);
+            self.assign_motion(0.0, provider, state.effect);
+            updated.push(provider.clone());
+        }
+        updated
+    }
+
+    /// Ticks the critter blink state machine at `now_secs` (`StatusItemController.tickBlink`).
+    /// Returns the provider IDs whose icon state changed and needs redrawing.
+    pub fn tick_blink(
+        &mut self,
+        providers: &[String],
+        random_blink_enabled: bool,
+        hide_critters: bool,
+        now_secs: f64,
+    ) -> Vec<String> {
+        let allowed =
+            is_blinking_allowed(random_blink_enabled, self.blink_force_until_secs, now_secs);
+        if !allowed || hide_critters {
+            let had_motion = self.has_any_motion();
+            self.clear_motion();
+            return if had_motion {
+                providers.to_vec()
+            } else {
+                Vec::new()
+            };
+        }
+
+        let mut redraw = Vec::new();
+        for provider in providers {
+            let style = IconStyle::from_provider_id(provider);
+            if !style_supports_blink(style, hide_critters) {
+                self.clear_motion_for(provider);
+                continue;
+            }
+
+            self.blink_rng_counter = self.blink_rng_counter.wrapping_add(1);
+            let seed = self.blink_rng_counter;
+            let mut state = self
+                .blink_states
+                .get(provider)
+                .copied()
+                .unwrap_or_else(|| BlinkState::seeded(now_secs, seed));
+
+            if let Some(pending_second) = state.pending_second_start_secs
+                && now_secs >= pending_second
+            {
+                state.blink_start_secs = Some(now_secs);
+                state.pending_second_start_secs = None;
+            }
+
+            if let Some(start) = state.blink_start_secs {
+                let elapsed = now_secs - start;
+                if elapsed >= BLINK_DURATION_SECS {
+                    state.blink_start_secs = None;
+                    if state.pending_second_start_secs.is_none() {
+                        state.next_blink_secs = now_secs
+                            + seeded_range(
+                                seed ^ 0xA5A5_5A5A_F0F0_0F0F,
+                                BLINK_RANDOM_DELAY_MIN_SECS,
+                                BLINK_RANDOM_DELAY_MAX_SECS,
+                            );
+                    }
+                    self.assign_motion(0.0, provider, state.effect);
+                    redraw.push(provider.clone());
+                } else {
+                    let progress = (elapsed / BLINK_DURATION_SECS).clamp(0.0, 1.0);
+                    let symmetric = if progress < 0.5 {
+                        progress * 2.0
+                    } else {
+                        (1.0 - progress) * 2.0
+                    };
+                    let eased = symmetric.powf(2.2);
+                    self.assign_motion(eased, provider, state.effect);
+                    redraw.push(provider.clone());
+                }
+            } else if now_secs >= state.next_blink_secs {
+                state.blink_start_secs = Some(now_secs);
+                state.effect = select_motion_effect(style, seeded_unit(seed ^ 1));
+                if state.effect == MotionEffect::Blink
+                    && seeded_unit(seed ^ 2) < DOUBLE_BLINK_CHANCE
+                {
+                    state.pending_second_start_secs = Some(
+                        now_secs
+                            + seeded_range(
+                                seed ^ 3,
+                                DOUBLE_BLINK_DELAY_MIN_SECS,
+                                DOUBLE_BLINK_DELAY_MAX_SECS,
+                            ),
+                    );
+                }
+                self.assign_motion(0.0, provider, state.effect);
+                redraw.push(provider.clone());
+            } else {
+                self.clear_motion_for(provider);
+            }
+
+            self.blink_states.insert(provider.clone(), state);
+        }
+        redraw
+    }
+
+    pub fn clear_motion(&mut self) {
+        self.blink_amounts.clear();
+        self.wiggle_amounts.clear();
+        self.tilt_amounts.clear();
+    }
+
+    pub fn clear_motion_for(&mut self, provider_id: &str) {
+        self.blink_amounts.remove(provider_id);
+        self.wiggle_amounts.remove(provider_id);
+        self.tilt_amounts.remove(provider_id);
+    }
+
+    pub fn has_any_motion(&self) -> bool {
+        self.blink_amounts.values().any(|&v| v > 0.0)
+            || self.wiggle_amounts.values().any(|&v| v > 0.0)
+            || self.tilt_amounts.values().any(|&v| v.abs() > 0.0)
+    }
+
+    fn assign_motion(&mut self, amount: f64, provider_id: &str, effect: MotionEffect) {
+        let clamped = amount.clamp(0.0, 1.0);
+        match effect {
+            MotionEffect::Blink => {
+                self.blink_amounts.insert(provider_id.to_string(), clamped);
+                self.wiggle_amounts.remove(provider_id);
+                self.tilt_amounts.remove(provider_id);
+            }
+            MotionEffect::Wiggle => {
+                self.wiggle_amounts.insert(provider_id.to_string(), clamped);
+                self.blink_amounts.remove(provider_id);
+                self.tilt_amounts.remove(provider_id);
+            }
+            MotionEffect::Tilt => {
+                let limit = PI / 28.0;
+                self.tilt_amounts
+                    .insert(provider_id.to_string(), clamped * limit);
+                self.blink_amounts.remove(provider_id);
+                self.wiggle_amounts.remove(provider_id);
+            }
+        }
+    }
+
+    /// Returns `(blink, wiggle, tilt)` for `provider_id`.
+    pub fn motion_for(&self, provider_id: &str) -> (f64, f64, f64) {
+        (
+            self.blink_amounts.get(provider_id).copied().unwrap_or(0.0),
+            self.wiggle_amounts.get(provider_id).copied().unwrap_or(0.0),
+            self.tilt_amounts.get(provider_id).copied().unwrap_or(0.0),
+        )
+    }
+}
+
+/// Computes the render deduplication signature for a status item icon
+/// (`StatusItemController.iconRenderSignature`, `StatusItemController+Animation.swift:415-456`).
+pub fn icon_render_signature(
+    input: &IconInput,
+    show_used: bool,
+    color_by_provider: bool,
+    phase: Option<f64>,
+    loading_pattern: LoadingPattern,
+    quota_warning_flash_active: bool,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    input.style.hash(&mut hasher);
+    quantize_opt(input.primary, 10_000.0).hash(&mut hasher);
+    quantize_opt(input.secondary, 10_000.0).hash(&mut hasher);
+    quantize_opt(input.credits_remaining, 100.0).hash(&mut hasher);
+    input.stale.hash(&mut hasher);
+    (input.status as u8).hash(&mut hasher);
+    quantize(input.blink, 10_000.0).hash(&mut hasher);
+    quantize(input.wiggle, 10_000.0).hash(&mut hasher);
+    quantize(input.tilt, 10_000.0).hash(&mut hasher);
+    show_used.hash(&mut hasher);
+    input.hide_critters.hash(&mut hasher);
+    color_by_provider.hash(&mut hasher);
+    phase.map(|p| (p * 240.0).round() as i64).hash(&mut hasher);
+    loading_pattern.hash(&mut hasher);
+    quota_warning_flash_active.hash(&mut hasher);
+    input.reserves_missing_secondary_lane.hash(&mut hasher);
+    input
+        .treats_exhausted_secondary_as_missing
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+fn quantize(value: f64, scale: f64) -> i64 {
+    (value * scale).round() as i64
+}
+
+fn quantize_opt(value: Option<f64>, scale: f64) -> Option<i64> {
+    value.map(|v| quantize(v, scale))
 }
 
 /// Relative luminance of an sRGB color with channels in `0.0..=1.0`

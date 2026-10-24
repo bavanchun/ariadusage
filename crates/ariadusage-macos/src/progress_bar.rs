@@ -384,7 +384,7 @@ pub fn warning_marker_percents(thresholds: &[i32], show_used: bool) -> Vec<f64> 
     if thresholds.is_empty() {
         return Vec::new();
     }
-    active_thresholds(thresholds)
+    crate::icon::QuotaWarningThresholds::active(Some(thresholds))
         .into_iter()
         .map(|t| {
             if show_used {
@@ -395,21 +395,6 @@ pub fn warning_marker_percents(thresholds: &[i32], show_used: bool) -> Vec<f64> 
         })
         .filter(|p| *p > 0.0 && *p < 100.0)
         .collect()
-}
-
-/// `QuotaWarningThresholds.active` from `CodexBarConfig.swift`: clamp each
-/// threshold to 0–99, deduplicate, sort descending, drop zero; an empty
-/// list means the defaults of 50 and 20.
-fn active_thresholds(raw: &[i32]) -> Vec<i32> {
-    let mut values: Vec<i32> = if raw.is_empty() {
-        vec![50, 20]
-    } else {
-        raw.iter().map(|t| (*t).clamp(0, 99)).collect()
-    };
-    values.sort_unstable_by(|a, b| b.cmp(a));
-    values.dedup();
-    values.retain(|t| *t > 0);
-    values
 }
 
 /// Work-day boundaries for a standard 7-day window, or none when the
