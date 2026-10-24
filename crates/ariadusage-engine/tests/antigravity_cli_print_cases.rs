@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ariadusage_core::model::{ProviderIdentitySnapshot, UsageSnapshot};
 use ariadusage_core::pipeline::{
-    FetchContext, FetchInteraction, FetchPhase, FetchResult, FetchRuntime,
+    FetchContext, FetchInteraction, FetchPhase, FetchResult, FetchRuntime, FetchStrategy,
 };
 use ariadusage_core::providers::SourceMode;
 use ariadusage_engine::brokers::process::{OutputStream, ProcessError};
@@ -607,20 +607,23 @@ async fn unknown_agy_version_is_resolved_once_and_still_fails_the_print_guard() 
 }
 
 // upstream: AntigravityCLIUsageReportTests.swift:344 oversized print output is rejected before decoding
+#[cfg(unix)]
 #[tokio::test]
 async fn oversized_print_output_is_rejected_before_decoding() {
-    let runner = runner(|request| {
-        if request.arguments == vec!["--version"] {
-            return Ok(CliProcessOutput {
-                stdout: b"1.2.2".to_vec(),
-                stderr: Vec::new(),
-                exit_code: 0,
+    let (actual, registry) = child_broker_runner();
+    let runner: CliProcessRunner = Arc::new(move |mut request, cancel| {
+        if request.arguments == ["--version"] {
+            return Box::pin(async {
+                Ok(CliProcessOutput {
+                    stdout: b"1.2.2".to_vec(),
+                    stderr: vec![],
+                    exit_code: 0,
+                })
             });
         }
-        Err(ProcessError::OutputTooLarge {
-            stream: OutputStream::Stdout,
-            cap: 1_048_576,
-        })
+        request.binary = env!("CARGO_BIN_EXE_ariadusage-test-child").into();
+        request.arguments = vec!["print".into(), "stdout-zero".into(), "1100000".into()];
+        actual(request, cancel)
     });
     let result = run_print_usage(
         Path::new("/synthetic/agy"),
@@ -632,10 +635,34 @@ async fn oversized_print_output_is_rejected_before_decoding() {
         &CancellationToken::new(),
     )
     .await;
-    assert!(matches!(
+    assert_eq!(
         result,
-        Err(AntigravityStatusProbeError::ParseFailed(_))
-    ));
+        Err(AntigravityStatusProbeError::ParseFailed(
+            "CLI usage report failed".into()
+        ))
+    );
+    assert_eq!(registry.active_launches(), 0);
+}
+
+#[cfg(unix)]
+fn child_broker_runner() -> (
+    CliProcessRunner,
+    Arc<ariadusage_engine::brokers::process::ProcessRegistry>,
+) {
+    use ariadusage_core::gates::launch::LaunchGate;
+    use ariadusage_engine::brokers::call::BrokerCall;
+    use ariadusage_engine::brokers::process::ProcessRegistry;
+    let registry = Arc::new(ProcessRegistry::new());
+    let runner = ariadusage_engine::providers::antigravity::cli_https::broker_runner(
+        BrokerCall {
+            interaction: FetchInteraction::UserInitiated,
+            cancel: CancellationToken::new(),
+            request_id: "antigravity-print-fixture".into(),
+        },
+        registry.clone(),
+        Arc::new(LaunchGate::default()),
+    );
+    (runner, registry)
 }
 
 #[cfg(unix)]
@@ -871,39 +898,111 @@ async fn older_or_unknown_agy_keeps_the_managed_spawn() {
 // upstream: AntigravityCLIUsageReportTests.swift:462 full fetch retains managed spawning for older and unknown versions
 #[tokio::test]
 async fn full_fetch_retains_managed_spawning_for_older_and_unknown_versions() {
-    for version in [None, Some((1, 2, 1))] {
+    for version in ["", "1.2.1"] {
+        let directory = tempdir().unwrap();
+        let binary = directory.path().join("agy");
+        let expected_binary = binary.clone();
         let called = Arc::new(Mutex::new(false));
-        let seen = Arc::clone(&called);
-        let result = fetch_by_spawning_if_reachable(version, move || {
+        let seen = called.clone();
+        let spawn_fetch = Arc::new(move |binary, expected_email| {
+            assert_eq!(binary, expected_binary);
+            assert_eq!(expected_email, None);
             *seen.lock().unwrap() = true;
-            async { Ok::<_, AntigravityStatusProbeError>("managed-spawn") }
-        })
-        .await
-        .unwrap();
-        assert_eq!(result, "managed-spawn");
+            Box::pin(async {
+                let mut result = fetch_result(Some("fixture@example.com"));
+                result.source_label = "fixture-spawn".into();
+                Ok(result)
+            }) as ariadusage_core::pipeline::BoxFuture<'static, _>
+        });
+        let runner = runner(move |request| {
+            if request.arguments == ["--version"] {
+                Ok(CliProcessOutput {
+                    stdout: version.as_bytes().to_vec(),
+                    stderr: vec![],
+                    exit_code: 0,
+                })
+            } else {
+                Ok(CliProcessOutput {
+                    stdout: vec![],
+                    stderr: vec![],
+                    exit_code: 19,
+                })
+            }
+        });
+        let strategy = full_fetch_strategy(directory.path(), runner, spawn_fetch);
+        let result = strategy
+            .fetch(&context(SourceMode::Cli, None, BTreeMap::new()))
+            .await
+            .unwrap();
+        assert_eq!(result.source_label, "fixture-spawn");
         assert!(*called.lock().unwrap());
     }
 }
 
 // upstream: AntigravityCLIUsageReportTests.swift:481 CSRF gated CLI fetch resolves the agy version once
 #[tokio::test]
-async fn version_resolver_reuses_one_probe_result() {
-    let resolver = AgyVersionResolver::new();
+async fn csrf_gated_cli_fetch_resolves_the_agy_version_once_per_fetch() {
+    let directory = tempdir().unwrap();
     let calls = Arc::new(Mutex::new(0_usize));
+    let seen = calls.clone();
+    let runner = runner(move |request| {
+        if request.arguments == ["--version"] {
+            *seen.lock().unwrap() += 1;
+            return Ok(CliProcessOutput {
+                stdout: b"1.2.2".to_vec(),
+                stderr: vec![],
+                exit_code: 0,
+            });
+        }
+        assert_eq!(request.arguments.first().map(String::as_str), Some("-p"));
+        Ok(CliProcessOutput {
+            stdout: report_json(),
+            stderr: vec![],
+            exit_code: 0,
+        })
+    });
+    let strategy = full_fetch_strategy(
+        directory.path(),
+        runner,
+        Arc::new(|_, _| Box::pin(async { Err(AntigravityStatusProbeError::TimedOut) })),
+    );
+    let cx = context(SourceMode::Cli, None, BTreeMap::new());
     for _ in 0..2 {
-        let seen = Arc::clone(&calls);
-        assert_eq!(
-            resolver
-                .resolve(&CancellationToken::new(), || async move {
-                    *seen.lock().unwrap() += 1;
-                    Ok(Some((1, 2, 2)))
-                })
-                .await
-                .unwrap(),
-            Some((1, 2, 2))
-        );
+        strategy.fetch(&cx).await.unwrap();
     }
-    assert_eq!(*calls.lock().unwrap(), 1);
+    assert_eq!(*calls.lock().unwrap(), 2);
+}
+
+fn full_fetch_strategy(
+    home: &Path,
+    runner: CliProcessRunner,
+    spawn_fetch: ariadusage_engine::providers::antigravity::cli_https::ManagedSpawnFetch,
+) -> ariadusage_engine::providers::antigravity::AntigravityCLIHTTPSFetchStrategy {
+    use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
+    use ariadusage_engine::providers::antigravity::{
+        AntigravityCLIHTTPSFetchStrategy, AntigravityStrategyConfig, CliRuntime,
+    };
+    let binary = home.join("agy");
+    let runtime = CliRuntime {
+        runner: Some(runner),
+        spawn_fetch: Some(spawn_fetch),
+        binary_resolver: Some(Arc::new(move |_, _| Some(binary.clone()))),
+        warm_dependencies: Some(Arc::new(WarmAgyDependencies {
+            process_infos: Arc::new(|_| Box::pin(async { Ok(vec![]) })),
+            listening_ports: Arc::new(|_, _| Box::pin(async { panic!("no warm candidates") })),
+            fetch_snapshot: Arc::new(|_, _| Box::pin(async { panic!("no warm candidates") })),
+            current_uid: 1000,
+            owned_pid: Arc::new(|| Box::pin(async { None })),
+            now: Arc::new(Instant::now),
+        })),
+        ..Default::default()
+    };
+    AntigravityCLIHTTPSFetchStrategy::new(AntigravityStrategyConfig::new(
+        Arc::new(NetBroker::new(NetConfig::default()).unwrap()),
+        home,
+        home,
+    ))
+    .with_runtime(Arc::new(runtime))
 }
 
 // upstream: AntigravityCLIUsageReportTests.swift:524 shared resolver serves the legacy gate and the print report from one run
@@ -958,23 +1057,63 @@ async fn shared_resolver_serves_the_version_gate_and_print_report_from_one_run()
     assert_eq!(*calls.lock().unwrap(), 1);
 }
 
-// upstream: AntigravityCLIUsageReportTests.swift:549 version resolver replays a probe failure to the print report
+// partial-upstream: AntigravityCLIUsageReportTests.swift:549 version resolver replays a probe failure to the print report
+#[cfg(unix)]
 #[tokio::test]
-async fn version_resolver_replays_a_probe_failure() {
+async fn broker_launch_failure_is_cached_before_the_print_probe() {
+    let directory = tempdir().unwrap();
+    let missing = directory.path().join("missing-agy");
+    let calls = Arc::new(Mutex::new(0_usize));
+    let seen = calls.clone();
+    let (actual, registry) = child_broker_runner();
+    let runner: CliProcessRunner = Arc::new(move |request, cancel| {
+        if request.binary.file_name() == Some(std::ffi::OsStr::new("missing-agy")) {
+            return actual(request, cancel);
+        }
+        *seen.lock().unwrap() += usize::from(request.arguments == ["--version"]);
+        Box::pin(async {
+            Ok(CliProcessOutput {
+                stdout: b"1.2.2".to_vec(),
+                stderr: vec![],
+                exit_code: 9,
+            })
+        })
+    });
     let resolver = AgyVersionResolver::new();
-    let first = resolver
-        .resolve(&CancellationToken::new(), || async {
-            Err(AntigravityStatusProbeError::ApiError(
-                "synthetic failure".into(),
-            ))
-        })
-        .await;
-    let second = resolver
-        .resolve(&CancellationToken::new(), || async {
-            panic!("cached version failure must not probe again");
-        })
-        .await;
-    assert_eq!(first, second);
+    let gate = agy_version(
+        ariadusage_engine::providers::antigravity::version_probe_request(
+            &missing,
+            &BTreeMap::new(),
+            Some(directory.path()),
+            Duration::from_secs(3),
+            4096,
+        ),
+        &resolver,
+        &runner,
+        &CancellationToken::new(),
+    )
+    .await
+    .ok()
+    .flatten();
+    assert_eq!(gate, None);
+    let result = run_print_usage(
+        Path::new(env!("CARGO_BIN_EXE_ariadusage-test-child")),
+        &BTreeMap::new(),
+        directory.path(),
+        Duration::from_secs(10),
+        &resolver,
+        &runner,
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        result,
+        Err(AntigravityStatusProbeError::CliReportFailed(
+            AntigravityCLIPrintFailure::LaunchFailed
+        ))
+    );
+    assert_eq!(*calls.lock().unwrap(), 0);
+    assert_eq!(registry.active_launches(), 0);
 }
 
 // upstream: AntigravityCLIUsageReportTests.swift:569 version resolver does not cache cancellation

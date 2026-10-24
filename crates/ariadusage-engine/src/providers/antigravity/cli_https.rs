@@ -653,11 +653,18 @@ impl Drop for ProbeLease {
     }
 }
 
+#[cfg(feature = "test-hooks")]
+pub type ManagedSpawnFetch = Arc<
+    dyn Fn(PathBuf, Option<String>) -> BoxFuture<'static, Result<FetchResult, Error>> + Send + Sync,
+>;
+
 pub struct CliRuntime {
     pub registry: Arc<ProcessRegistry>,
     pub gate: Arc<LaunchGate>,
     pub session: AntigravityCLISession,
     pub runner: Option<CliProcessRunner>,
+    #[cfg(feature = "test-hooks")]
+    pub spawn_fetch: Option<ManagedSpawnFetch>,
     pub binary_resolver: Option<CliBinaryResolver>,
     pub warm_dependencies: Option<Arc<WarmAgyDependencies>>,
     pub persists_cli_sessions: bool,
@@ -672,6 +679,8 @@ impl Default for CliRuntime {
             registry,
             gate,
             runner: None,
+            #[cfg(feature = "test-hooks")]
+            spawn_fetch: None,
             binary_resolver: None,
             warm_dependencies: None,
             persists_cli_sessions: false,
@@ -899,6 +908,10 @@ impl AntigravityCLIHTTPSFetchStrategy {
         expected_account: Option<&str>,
     ) -> Result<FetchResult, Error> {
         check_cancel(&cx.cancel)?;
+        #[cfg(feature = "test-hooks")]
+        if let Some(fetch) = &self.config.cli.spawn_fetch {
+            return fetch(binary.to_path_buf(), expected_account.map(str::to_owned)).await;
+        }
         let session = &self.config.cli.session;
         let request = ProcessLaunchRequest {
             binary: binary.into(),
