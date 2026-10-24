@@ -262,6 +262,25 @@ impl ProviderConfig {
     pub fn sanitized_enterprise_host(&self) -> Option<String> {
         SettingsValue::cleaned(self.enterprise_host.as_deref())
     }
+
+    /// Whether Claude Admin API workspace spend grouping is enabled (`extra["claudeWorkspaceSpendEnabled"]`).
+    pub fn claude_workspace_spend_enabled(&self) -> bool {
+        self.extra
+            .get("claudeWorkspaceSpendEnabled")
+            .and_then(|raw| serde_json::from_str::<bool>(raw.get()).ok())
+            .unwrap_or(false)
+    }
+
+    pub fn set_claude_workspace_spend_enabled(&mut self, enabled: bool) {
+        if enabled {
+            if let Ok(raw) = serde_json::value::to_raw_value(&true) {
+                self.extra
+                    .insert("claudeWorkspaceSpendEnabled".to_owned(), raw);
+            }
+        } else {
+            self.extra.remove("claudeWorkspaceSpendEnabled");
+        }
+    }
 }
 
 impl fmt::Debug for ProviderConfig {
