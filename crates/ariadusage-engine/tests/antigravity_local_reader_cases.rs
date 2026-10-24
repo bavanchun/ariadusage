@@ -5794,3 +5794,71 @@ fn entry_symlinks_pointing_outside_roots_are_rejected_in_discovery_and_jsonl_rea
     assert!(!jsonl_source.is_complete);
     assert!(jsonl_source.events.is_empty());
 }
+
+#[test]
+fn sqlite_copy_parent_uses_injected_directory_and_creates_0700_parent() {
+    let fixture = Fixture::new();
+    fixture.database(&[Fixture::blob()]);
+
+    let default_ctx = fixture.context();
+    let default_expected_parent = ariadusage_engine::cost::store::default_sqlite_copy_parent(Some(
+        &ariadusage_engine::cost::store::resolve_cache_root(
+            &default_ctx.environment,
+            Some(&default_ctx.home),
+        ),
+    ));
+    let default_report = AntigravityLocalReader::make_daily_report_with_status(
+        &default_ctx,
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(default_report.coverage, Coverage::Complete);
+    let default_meta = fs::symlink_metadata(&default_expected_parent).unwrap();
+    assert!(default_meta.file_type().is_dir());
+    assert_eq!(default_meta.permissions().mode() & 0o777, 0o700);
+    assert_eq!(fs::read_dir(&default_expected_parent).unwrap().count(), 0);
+
+    let custom_copy_parent = fixture.root.join("custom-cache").join("sqlite-copies");
+    let ctx = fixture
+        .context()
+        .with_copy_parent(custom_copy_parent.clone());
+    let report = AntigravityLocalReader::make_daily_report_with_status(
+        &ctx,
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(report.coverage, Coverage::Complete);
+    assert_eq!(
+        report.report.summary.as_ref().and_then(|s| s.total_tokens),
+        Some(187)
+    );
+    let meta = fs::symlink_metadata(&custom_copy_parent).unwrap();
+    assert!(meta.file_type().is_dir());
+    assert_eq!(meta.permissions().mode() & 0o777, 0o700);
+    assert_eq!(fs::read_dir(&custom_copy_parent).unwrap().count(), 0);
+
+    let blocked_copy_parent = fixture.root.join("not-a-directory");
+    fs::write(&blocked_copy_parent, b"file").unwrap();
+    let blocked_ctx = fixture.context().with_copy_parent(blocked_copy_parent);
+    let blocked_report = AntigravityLocalReader::make_daily_report_with_status(
+        &blocked_ctx,
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(blocked_report.coverage, Coverage::Partial);
+}

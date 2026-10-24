@@ -233,6 +233,7 @@ sources = [
     "Sources/CodexBarCore/Config/CodexBarConfig.swift",
     "Sources/CodexBarCore/Config/ProviderConfigCoding.swift",
     "Sources/CodexBarCore/Config/ProviderModelRateLimit.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift",
     "Sources/CodexBarCore/TokenAccounts.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
@@ -1823,6 +1824,7 @@ path = "crates/ariadusage-engine/src/providers/antigravity/descriptor.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityOfflineFetchStrategy.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -2417,8 +2419,6 @@ sources = [
     "Tests/CodexBarTests/CostUsageWindowSummaryTests.swift",
     "Tests/CodexBarTests/CostUsageStoreTests.swift",
     "Tests/CodexBarTests/CostUsageStoreCutoverTests.swift",
-]
-commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 

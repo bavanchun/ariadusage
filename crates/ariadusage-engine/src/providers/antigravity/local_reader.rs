@@ -1077,7 +1077,11 @@ impl AntigravityLocalReader {
         clock: impl Fn() -> f64 + Send + Sync + 'static,
         check_cancellation: impl Fn() -> Result<(), ScanFailure> + Send + Sync + 'static,
     ) -> Result<DailyReportResult, ScanFailure> {
-        let budget = Budget::new(limits, clock, check_cancellation);
+        let copy_parent = context
+            .copy_parent
+            .clone()
+            .or_else(|| pricing_cache_root.map(|r| r.join("sqlite-copies")));
+        let budget = Budget::new(limits, clock, check_cancellation).with_copy_parent(copy_parent);
         let pricing = estimate_cost.then(|| ClaudePricingResolver::new(pricing_cache_root));
         let outcome: Result<DailyReportResult, ScanFailure> = (|| {
             let databases = Self::discover(&context.database_roots(), "db", &budget)?;
