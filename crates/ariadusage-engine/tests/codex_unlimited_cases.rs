@@ -25,6 +25,7 @@ fn map(
         CodexPATFetchStrategy::map_result_for_testing(
             &raw,
             Some(&CodexPATWhoami {
+                account_id: None,
                 email: Some("fixture@example.com".into()),
                 plan_type: Some("business".into()),
             }),

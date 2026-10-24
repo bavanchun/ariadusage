@@ -1,4 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATCredentials.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexTokenRefresher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/CodexHomeScope.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/CodexCredentialFileAccess.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -149,6 +150,34 @@ impl CodexOAuthCredentials {
             source: self.source,
             is_api_key: self.is_api_key,
         }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct CodexPATCredentials {
+    pub token: SecretString,
+    pub source: CodexOAuthCredentialSource,
+}
+
+impl fmt::Debug for CodexPATCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CodexPATCredentials")
+            .field("token", &"[redacted]")
+            .field("source", &self.source)
+            .finish()
+    }
+}
+
+impl CodexPATCredentials {
+    pub fn new(token: impl Into<SecretString>, source: CodexOAuthCredentialSource) -> Self {
+        Self {
+            token: token.into(),
+            source,
+        }
+    }
+
+    pub fn token_str(&self) -> &str {
+        self.token.expose_secret()
     }
 }
 
@@ -383,6 +412,55 @@ impl CodexOAuthCredentialsStore {
         Self::parse_oauth_tokens(&data, CodexOAuthCredentialSource::CodexHome)
     }
 
+    pub fn load_pat(
+        env: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        Self::load_pat_with_reader_and_call(env, home_dir, None, None)
+    }
+
+    pub fn load_pat_with_reader(
+        env: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+        reader: Option<&CredentialReadFn>,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        Self::load_pat_with_reader_and_call(env, home_dir, reader, None)
+    }
+
+    pub fn load_pat_with_reader_and_call(
+        env: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+        reader: Option<&CredentialReadFn>,
+        call: Option<&BrokerCall>,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        let path =
+            Self::auth_file_path(env, home_dir).ok_or(CodexOAuthCredentialsError::NotFound)?;
+        let data = Self::read_file(&path, reader, call)?;
+        Self::parse_pat(&data, CodexOAuthCredentialSource::CodexHome)
+    }
+
+    /// Load a PAT from the scoped `CODEX_HOME` when that home has one, otherwise from ambient
+    /// `~/.codex`. Managed and fail-closed homes always use ambient.
+    pub fn load_pat_resolving_scoped_home(
+        env: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        Self::load_pat_resolving_scoped_home_with_reader_and_call(env, home_dir, None, None)
+    }
+
+    pub fn load_pat_resolving_scoped_home_with_reader_and_call(
+        env: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+        reader: Option<&CredentialReadFn>,
+        call: Option<&BrokerCall>,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        let credential_env =
+            super::strategy::CodexPATFetchStrategy::credential_environment_with_reader_and_call(
+                env, reader, call,
+            );
+        Self::load_pat_with_reader_and_call(&credential_env, home_dir, reader, call)
+    }
+
     pub fn load_for_usage(
         env: &BTreeMap<String, String>,
         allow_external_sources: bool,
@@ -525,6 +603,17 @@ impl CodexOAuthCredentialsStore {
     ) -> Result<CodexOAuthCredentials, CodexOAuthCredentialsError> {
         let json = Self::decode_json_object(data)?;
         Self::parse_oauth_tokens_from_map(&json, source)
+    }
+
+    pub fn parse_pat(
+        data: &[u8],
+        source: CodexOAuthCredentialSource,
+    ) -> Result<CodexPATCredentials, CodexOAuthCredentialsError> {
+        let json = Self::decode_json_object(data)?;
+        let token =
+            Self::first_non_empty_string(&json, &["personal_access_token", "personalAccessToken"])
+                .ok_or(CodexOAuthCredentialsError::MissingTokens)?;
+        Ok(CodexPATCredentials::new(token, source))
     }
 
     pub fn parse_open_code(

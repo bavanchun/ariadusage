@@ -1434,6 +1434,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-engine/src/providers/codex/credentials.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexOAuthCredentials.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATCredentials.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexOAuth/CodexTokenRefresher.swift",
     "Sources/CodexBarCore/CodexHomeScope.swift",
     "Sources/CodexBarCore/CodexCredentialFileAccess.swift",
@@ -1484,6 +1485,15 @@ path = "crates/ariadusage-engine/src/providers/codex/reconciled.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexReconciledState.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/pat.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexCLIUserAgent.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATUsageFetcher.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1511,6 +1521,7 @@ sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift",
+    "Sources/CodexBar/Providers/Codex/UsageStore+CodexPATRefresh.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1638,7 +1649,10 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-engine/tests/codex_pat_mapping.rs"
-sources = ["Tests/CodexBarTests/CodexPATTests.swift"]
+sources = [
+    "Tests/CodexBarTests/CodexPATTests.swift",
+    "Tests/CodexBarTests/CodexPATAppPublicationTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]

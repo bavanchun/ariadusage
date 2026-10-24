@@ -1,5 +1,6 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexReconciledState.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATUsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -18,8 +19,10 @@ use super::normalizer::{
 };
 use super::usage_fetcher::CodexUsageResponse;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexPATWhoami {
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub email: Option<String>,
     pub plan_type: Option<String>,
 }
@@ -27,6 +30,10 @@ pub struct CodexPATWhoami {
 impl fmt::Debug for CodexPATWhoami {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CodexPATWhoami")
+            .field(
+                "account_id",
+                &self.account_id.as_ref().map(|_| "[redacted]"),
+            )
             .field("email", &self.email.as_ref().map(|_| "[redacted]"))
             .field("plan_type", &self.plan_type)
             .finish()

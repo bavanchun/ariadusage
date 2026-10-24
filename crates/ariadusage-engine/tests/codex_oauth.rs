@@ -848,6 +848,7 @@ fn token_refresher_failure_classification_and_login_guidance() {
 fn pat_result_mapping_preserves_whoami_and_confidence() {
     let now = "2026-04-18T12:00:00Z".parse::<Timestamp>().unwrap();
     let whoami = CodexPATWhoami {
+        account_id: None,
         email: Some("pat-user@example.test".to_owned()),
         plan_type: Some("team".to_owned()),
     };
@@ -2332,6 +2333,7 @@ fn unlimited_credits_matrix_across_oauth_and_pat_routes() {
     let now = Timestamp::from_second(1_700_000_000).unwrap();
     let creds = make_credentials_with_id_token(None);
     let whoami = CodexPATWhoami {
+        account_id: None,
         email: Some("fixture@example.com".to_owned()),
         plan_type: Some("business".to_owned()),
     };
@@ -2508,10 +2510,12 @@ fn identity_resolver_plan_formatting_and_redacted_debug_match_upstream() {
     let whoami_debug = format!(
         "{:?}",
         CodexPATWhoami {
+            account_id: Some("secret-acct-123".to_owned()),
             email: Some("secret-email@example.test".to_owned()),
             plan_type: Some("pro".to_owned()),
         }
     );
+    assert!(!whoami_debug.contains("secret-acct-123"));
     assert!(!whoami_debug.contains("secret-email@example.test"));
 
     // Plan formatting parity with CodexPlanFormattingTests.swift
