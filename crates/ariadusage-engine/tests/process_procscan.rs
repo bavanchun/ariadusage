@@ -367,18 +367,32 @@ fn darwin_live_procscan_inspects_current_and_child_processes() {
             .expect("spawn exiting test child");
         let exiting_pid = exiting.id() as i32;
         let spin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while process_identity(proc_root, exiting_pid).is_some()
+        while process_state(proc_root, exiting_pid) != Some('Z')
             && std::time::Instant::now() < spin_deadline
         {
+            let identity = process_identity(proc_root, exiting_pid)
+                .expect("process_identity must remain readable throughout exit1() teardown");
+            assert_eq!(identity.pid, exiting_pid);
+            assert!(identity.start_ticks > 0);
+            assert!(process_group(proc_root, exiting_pid).is_some());
+            assert_eq!(process_uid(proc_root, exiting_pid), Some(uid));
             std::hint::spin_loop();
         }
-        assert_eq!(
-            process_state(proc_root, exiting_pid),
-            Some('Z'),
-            "unreaped child must report state 'Z' immediately when process_identity becomes None during exit1()"
+        assert!(
+            std::time::Instant::now() < spin_deadline,
+            "timed out waiting for exiting child {exiting_pid} to reach state 'Z'"
         );
+        assert_eq!(process_state(proc_root, exiting_pid), Some('Z'));
+        let zombie_identity = process_identity(proc_root, exiting_pid)
+            .expect("zombie child must report real process_identity via arg=1");
+        assert_eq!(zombie_identity.pid, exiting_pid);
+        assert!(zombie_identity.start_ticks > 0);
+        assert!(process_group(proc_root, exiting_pid).is_some());
+        assert_eq!(process_uid(proc_root, exiting_pid), Some(uid));
+
         let status = exiting.wait().expect("reap exiting child");
         assert!(status.success());
+        assert_eq!(process_identity(proc_root, exiting_pid), None);
         assert_eq!(process_state(proc_root, exiting_pid), None);
     }
 }

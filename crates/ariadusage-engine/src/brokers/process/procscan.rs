@@ -467,46 +467,72 @@ fn parse_nul_environment(bytes: &[u8], names: &[&str]) -> Option<BTreeMap<String
 }
 
 #[cfg(target_os = "macos")]
-fn darwin_bsd_info(pid: i32) -> Option<proc_pidinfo::ProcBSDInfo> {
-    let pid = u32::try_from(pid).ok()?;
-    if pid == 0 {
+#[allow(unsafe_code)]
+fn darwin_proc_pidinfo_arg1<T: Copy>(pid: i32, flavor: libc::c_int) -> Option<T> {
+    if pid <= 0 {
         return None;
     }
-    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDInfo>(proc_pidinfo::Pid(pid))
+    let buffersize = libc::c_int::try_from(std::mem::size_of::<T>()).ok()?;
+    let mut value = std::mem::MaybeUninit::<T>::uninit();
+    // SAFETY: `value` is a suitably aligned `MaybeUninit<T>` buffer of `buffersize` bytes for
+    // the `#[repr(C)]` `ProcBSDInfo` / `ProcBSDShortInfo` struct matching `flavor`. Passing
+    // `arg = 1` selects XNU's zombie-aware `proc_find_zombref` lookup so processes in `exit1()`
+    // or `SZOMB` still return their real BSD info.
+    let res = unsafe {
+        libc::proc_pidinfo(
+            pid,
+            flavor,
+            1,
+            value.as_mut_ptr().cast::<libc::c_void>(),
+            buffersize,
+        )
+    };
+    if res != buffersize {
+        return None;
+    }
+    // SAFETY: `libc::proc_pidinfo` returned `buffersize` (`size_of::<T>()`), confirming the
+    // kernel initialized the entire `T` value.
+    Some(unsafe { value.assume_init() })
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_bsd_info(pid: i32) -> Option<proc_pidinfo::ProcBSDInfo> {
+    let raw_pid = u32::try_from(pid).ok()?;
+    if raw_pid == 0 {
+        return None;
+    }
+    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDInfo>(proc_pidinfo::Pid(raw_pid))
         .ok()
         .flatten()
+        .or_else(|| darwin_proc_pidinfo_arg1(pid, libc::PROC_PIDTBSDINFO))
 }
 
 #[cfg(target_os = "macos")]
 fn darwin_bsd_short_info(pid: i32) -> Option<proc_pidinfo::ProcBSDShortInfo> {
-    let pid = u32::try_from(pid).ok()?;
-    if pid == 0 {
+    let raw_pid = u32::try_from(pid).ok()?;
+    if raw_pid == 0 {
         return None;
     }
-    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDShortInfo>(proc_pidinfo::Pid(pid))
+    proc_pidinfo::proc_pidinfo::<proc_pidinfo::ProcBSDShortInfo>(proc_pidinfo::Pid(raw_pid))
         .ok()
         .flatten()
+        .or_else(|| darwin_proc_pidinfo_arg1(pid, libc::PROC_PIDT_SHORTBSDINFO))
 }
 
 #[cfg(target_os = "macos")]
 fn darwin_is_zombie_child(pid: i32) -> bool {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, test_kill_process, waitid};
+    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
 
-    let Some(raw_pid) = Pid::from_raw(pid) else {
+    let Some(pid) = Pid::from_raw(pid) else {
         return false;
     };
-    if matches!(
+    matches!(
         waitid(
-            WaitId::Pid(raw_pid),
+            WaitId::Pid(pid),
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         ),
         Ok(Some(_))
-    ) {
-        return true;
-    }
-    test_kill_process(raw_pid).is_ok()
-        && darwin_bsd_info(pid).is_none()
-        && darwin_bsd_short_info(pid).is_none()
+    )
 }
 
 #[cfg(target_os = "macos")]
