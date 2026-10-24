@@ -46,7 +46,7 @@ pty-process = { workspace = true, features = ["async"] }
 aes = { workspace = true }
 cbc = { workspace = true }
 pbkdf2 = { workspace = true }
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, features = ["functions", "hooks", "limits"] }
 sha1 = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]

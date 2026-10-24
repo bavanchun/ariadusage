@@ -5,7 +5,15 @@ pub mod cli_print_failure;
 pub mod cli_session;
 pub mod descriptor;
 pub mod family_visibility;
+pub mod jsonl_object;
+pub mod local_jsonl;
+pub mod local_reader;
+pub mod local_scan;
+pub mod local_sqlite;
+pub mod local_sqlite_schema;
 pub mod oauth_store;
+pub mod offline_store;
+pub mod proto_reader;
 pub mod quota_summary;
 pub mod remote_fetcher;
 pub mod scoped_print_fetch;
@@ -15,7 +23,7 @@ pub use descriptor::{
     ANTIGRAVITY_APP_LOCAL_STRATEGY_ID, ANTIGRAVITY_CLI_HTTPS_STRATEGY_ID,
     ANTIGRAVITY_IDE_LOCAL_STRATEGY_ID, ANTIGRAVITY_OAUTH_STRATEGY_ID,
     ANTIGRAVITY_OFFLINE_STRATEGY_ID, AntigravityOAuthFetchStrategy,
-    AntigravityOfflinePlaceholderStrategy, AntigravityProviderPlan,
+    AntigravityOfflineFetchStrategy, AntigravityOfflinePriorError, AntigravityProviderPlan,
     AntigravityProviderPresentation, AntigravitySelectedAccountGuard,
     AntigravityStatusFetchStrategy, AntigravityStatusProbeOverride, AntigravityStrategyConfig,
     AntigravityUsageDataSource, IconWindowsContext, IconWindowsPair, MenuBarMetric,
@@ -25,9 +33,24 @@ pub use family_visibility::{
     AntigravityQuotaFamilyVisibility, KnownFamily, idle_window_ids, known_family,
     known_family_for_window,
 };
+pub use jsonl_object::{AntigravityJSONLNumber, AntigravityJSONLObject, AntigravityJSONLValue};
+pub use local_reader::{
+    AntigravityLocalReader, CostProvenance, CostUsageCoverageCounts, CostUsageDailyReport,
+    CostUsageDailyReportEntry, CostUsageDailyReportSummary, CostUsageModelBreakdown,
+    CostUsageTokenMix, CostUsageTokenSnapshot, CostUsageWindowSummary, Coverage, DailyReportResult,
+    Event, ModelsDevCache, ModelsDevCatalog, ModelsDevCost, ModelsDevModel, ModelsDevProvider,
+    SourceResult,
+};
+pub use local_scan::{Budget, Context, Discovery, Limits, ScanFailure, Statistics};
+pub use local_sqlite_schema::{SQLitePayload, SQLiteTableSupport};
 pub use oauth_store::{
     AntigravityOAuthClient, AntigravityOAuthConfig, AntigravityOAuthCredentials,
     AntigravityOAuthCredentialsStore,
+};
+pub use offline_store::AntigravityOfflineStore;
+pub use proto_reader::{
+    AntigravityProtoReader, AuxiliaryIdentifier, CheckedSum, ParsedTurn, ParsedUsage, ProtoField,
+    StepMetadata,
 };
 pub use quota_summary::{
     AntigravityQuotaSummary, AntigravityQuotaSummaryBucket, AntigravityQuotaSummaryGroup,

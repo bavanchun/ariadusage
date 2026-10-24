@@ -1,8 +1,9 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityOfflineFetchStrategy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,7 @@ use ariadusage_core::model::{
 };
 use ariadusage_core::pipeline::{
     BoxFuture, ClassifiedError, FetchContext, FetchError, FetchResult, FetchStrategy, ProviderPlan,
+    TransportClass,
 };
 use ariadusage_core::providers::SourceMode;
 use ariadusage_protocol::metric::SourceKind;
@@ -24,7 +26,10 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::local_probe::LocalProbe;
 use crate::brokers::net::NetBroker;
 
+use super::local_reader::{AntigravityLocalReader, CostUsageTokenSnapshot, DailyReportResult};
+use super::local_scan::{Context as LocalScanContext, Limits as LocalScanLimits, ScanFailure};
 use super::oauth_store::{AntigravityOAuthCredentialsStore, EnvValue};
+use super::offline_store::AntigravityOfflineStore;
 use super::remote_fetcher::{
     AntigravityRemoteFetchError, AntigravityRemoteUsageFetcher, CredentialsUpdateHandler,
     OAuthClientResolver, RemoteDataLoader,
@@ -535,6 +540,7 @@ pub struct AntigravityStrategyConfig {
     pub local_probe: LocalProbe,
     pub home_directory: PathBuf,
     pub working_directory: PathBuf,
+    pub additional_profile_homes: Vec<String>,
     pub probe_timeout: Duration,
     pub oauth_timeout: Duration,
     pub selected_token_override: Option<String>,
@@ -557,6 +563,7 @@ impl AntigravityStrategyConfig {
             local_probe: LocalProbe::new(),
             home_directory: home_directory.into(),
             working_directory: working_directory.into(),
+            additional_profile_homes: Vec::new(),
             probe_timeout: Duration::from_secs(8),
             oauth_timeout: Duration::from_secs(15),
             selected_token_override: None,
@@ -567,6 +574,21 @@ impl AntigravityStrategyConfig {
             clock: Arc::new(Timestamp::now),
             cli: Arc::new(super::cli_https::CliRuntime::default()),
         }
+    }
+
+    pub fn with_additional_profile_homes(mut self, homes: Vec<String>) -> Self {
+        self.additional_profile_homes = homes;
+        self
+    }
+
+    pub fn with_provider_config(
+        mut self,
+        provider_config: &ariadusage_core::config::ProviderConfig,
+    ) -> Self {
+        self.additional_profile_homes = provider_config
+            .antigravity_additional_profile_homes()
+            .unwrap_or_default();
+        self
     }
 
     pub fn with_local_probe(mut self, local_probe: LocalProbe) -> Self {
@@ -893,19 +915,224 @@ impl FetchStrategy for AntigravityOAuthFetchStrategy {
     }
 
     fn should_fallback(&self, _error: &FetchError, cx: &FetchContext) -> bool {
-        cx.source_mode == SourceMode::Auto
+        let home = resolve_home_directory(&self.config.home_directory, &cx.env);
+        AntigravityOfflineStore::has_offline_data_with_profiles(
+            &home,
+            &cx.env,
+            &self.config.additional_profile_homes,
+        )
     }
 }
 
-/// Part-1 placeholder strategy for `antigravity.offline` (`AntigravityOfflineFetchStrategy`).
-///
-/// Kept in the strategy pipeline so `resolve_strategies` and fallback ordering match CodexBar
-/// while the offline SQLite/IndexedDB probe is out of scope for part 1.
-pub struct AntigravityOfflinePlaceholderStrategy;
+fn resolve_home_directory<V: EnvValue>(default_home: &Path, env: &BTreeMap<String, V>) -> PathBuf {
+    env.get("HOME")
+        .map(EnvValue::as_env_str)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| default_home.to_path_buf())
+}
 
-impl AntigravityOfflinePlaceholderStrategy {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AntigravityOfflinePriorError {
+    Probe(AntigravityStatusProbeError),
+    Remote(AntigravityRemoteFetchError),
+    CliReportFailedExit(i32),
+    AuthenticationRequired,
+    AccountMismatch {
+        expected: Option<String>,
+        found: Option<String>,
+    },
+    Transport {
+        class: TransportClass,
+        caller_detail: Option<String>,
+    },
+    ForeignSubprocess {
+        code: i32,
+        stderr: String,
+    },
+}
+
+/// Offline fallback (tokscale lesson): when live probes and OAuth have no data,
+/// surface the local Antigravity CLI conversation count from
+/// `~/.gemini/antigravity-cli/conversations/*.db` as a non-quota snapshot.
+pub struct AntigravityOfflineFetchStrategy {
+    home_directory: PathBuf,
+    additional_profile_homes: Vec<String>,
+    clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
+}
+
+impl Default for AntigravityOfflineFetchStrategy {
+    fn default() -> Self {
+        Self {
+            home_directory: PathBuf::new(),
+            additional_profile_homes: Vec::new(),
+            clock: Arc::new(Timestamp::now),
+        }
+    }
+}
+
+impl AntigravityOfflineFetchStrategy {
+    pub fn new(config: AntigravityStrategyConfig) -> Self {
+        Self {
+            home_directory: config.home_directory,
+            additional_profile_homes: config.additional_profile_homes,
+            clock: config.clock,
+        }
+    }
+
+    pub fn with_home_directory(home_directory: impl Into<PathBuf>) -> Self {
+        Self {
+            home_directory: home_directory.into(),
+            additional_profile_homes: Vec::new(),
+            clock: Arc::new(Timestamp::now),
+        }
+    }
+
+    pub fn with_additional_profile_homes(mut self, homes: Vec<String>) -> Self {
+        self.additional_profile_homes = homes;
+        self
+    }
+
+    pub fn with_provider_config(
+        mut self,
+        provider_config: &ariadusage_core::config::ProviderConfig,
+    ) -> Self {
+        self.additional_profile_homes = provider_config
+            .antigravity_additional_profile_homes()
+            .unwrap_or_default();
+        self
+    }
+
+    pub fn local_context(&self, cx: &FetchContext) -> LocalScanContext {
+        let home = resolve_home_directory(&self.home_directory, &cx.env);
+        let mut env: BTreeMap<String, String> = cx
+            .env
+            .iter()
+            .map(|(k, v)| (k.clone(), v.expose_secret().to_owned()))
+            .collect();
+        if !home.as_os_str().is_empty() && env.get("HOME").is_none_or(String::is_empty) {
+            env.insert("HOME".to_owned(), home.to_string_lossy().into_owned());
+        }
+        LocalScanContext {
+            home,
+            additional_profile_homes: self.additional_profile_homes.clone(),
+            environment: env,
+        }
+    }
+
+    pub fn load_local_daily_report(
+        &self,
+        cx: &FetchContext,
+    ) -> Result<DailyReportResult, FetchError> {
+        let local_cx = self.local_context(cx);
+        let cancel = cx.cancel.clone();
+        let epoch = std::time::Instant::now();
+        AntigravityLocalReader::make_daily_report_with_status(
+            &local_cx,
+            0,
+            false,
+            None,
+            LocalScanLimits::default(),
+            move || epoch.elapsed().as_secs_f64(),
+            move || {
+                if cancel.is_cancelled() {
+                    Err(ScanFailure::Cancelled("cancelled".to_owned()))
+                } else {
+                    Ok(())
+                }
+            },
+        )
+        .map_err(|err| match err {
+            ScanFailure::Cancelled(_) => FetchError::Cancelled,
+            other => FetchError::Classified(
+                AntigravityStatusProbeError::ParseFailed(other.to_string()).into_classified_error(),
+            ),
+        })
+    }
+
+    pub fn load_local_token_snapshot(
+        &self,
+        cx: &FetchContext,
+    ) -> Result<CostUsageTokenSnapshot, FetchError> {
+        let local_cx = self.local_context(cx);
+        let cancel = cx.cancel.clone();
+        let now = (self.clock)();
+        AntigravityLocalReader::load_token_snapshot(&local_cx, now, 30, 0, None, move || {
+            if cancel.is_cancelled() {
+                Err(ScanFailure::Cancelled("cancelled".to_owned()))
+            } else {
+                Ok(())
+            }
+        })
+        .map_err(|err| match err {
+            ScanFailure::Cancelled(_) => FetchError::Cancelled,
+            other => FetchError::Classified(
+                AntigravityStatusProbeError::ParseFailed(other.to_string()).into_classified_error(),
+            ),
+        })
+    }
+
     pub fn diagnostic_for_prior_failure(error: &AntigravityRemoteFetchError) -> Option<String> {
+        let reason = Self::reason_for_remote_error(error);
+        Some(format!(
+            "Live Antigravity usage is unavailable; showing offline data. {reason}"
+        ))
+    }
+
+    pub fn diagnostic_for_prior_probe_failure(
+        error: &AntigravityStatusProbeError,
+    ) -> Option<String> {
+        let reason = Self::reason_for_probe_error(error)?;
+        Some(format!(
+            "Live Antigravity usage is unavailable; showing offline data. {reason}"
+        ))
+    }
+
+    pub fn diagnostic_for_prior_error(error: &AntigravityOfflinePriorError) -> Option<String> {
         let reason = match error {
+            AntigravityOfflinePriorError::Probe(probe_err) => {
+                Self::reason_for_probe_error(probe_err)?
+            }
+            AntigravityOfflinePriorError::Remote(remote_err) => {
+                Self::reason_for_remote_error(remote_err)
+            }
+            AntigravityOfflinePriorError::CliReportFailedExit(code) => {
+                format!("Antigravity CLI usage report failed: agy exited {code}")
+            }
+            AntigravityOfflinePriorError::AuthenticationRequired => {
+                "Antigravity authentication required. Sign in and retry.".to_owned()
+            }
+            AntigravityOfflinePriorError::AccountMismatch { .. } => {
+                "the local Antigravity session does not match the selected account".to_owned()
+            }
+            AntigravityOfflinePriorError::Transport { class, .. } => {
+                Self::transport_class_description(*class).to_owned()
+            }
+            AntigravityOfflinePriorError::ForeignSubprocess { .. } => {
+                "check Diagnostics for per-source details".to_owned()
+            }
+        };
+        Some(format!(
+            "Live Antigravity usage is unavailable; showing offline data. {reason}"
+        ))
+    }
+
+    pub const fn transport_class_description(class: TransportClass) -> &'static str {
+        match class {
+            TransportClass::NotConnected | TransportClass::CannotConnect => {
+                "The Internet connection appears to be offline."
+            }
+            TransportClass::Timeout => "The request timed out.",
+            TransportClass::ConnectionLost => "The network connection was lost.",
+            TransportClass::CannotFindHost | TransportClass::Dns => {
+                "A server with the specified hostname could not be found."
+            }
+            TransportClass::Cancelled => "The operation couldn\u{2019}t be completed.",
+        }
+    }
+
+    fn reason_for_remote_error(error: &AntigravityRemoteFetchError) -> String {
+        match error {
             AntigravityRemoteFetchError::NotLoggedIn
             | AntigravityRemoteFetchError::ReauthenticationRequired => error.to_string(),
             AntigravityRemoteFetchError::PermissionDenied(_)
@@ -915,15 +1142,10 @@ impl AntigravityOfflinePlaceholderStrategy {
             | AntigravityRemoteFetchError::NetworkError(_) => {
                 "the Antigravity API request failed".to_owned()
             }
-        };
-        Some(format!(
-            "Live Antigravity usage is unavailable; showing offline data. {reason}"
-        ))
+        }
     }
 
-    pub fn diagnostic_for_prior_probe_failure(
-        error: &AntigravityStatusProbeError,
-    ) -> Option<String> {
+    fn reason_for_probe_error(error: &AntigravityStatusProbeError) -> Option<String> {
         let reason = match error {
             AntigravityStatusProbeError::ApiError(msg) => {
                 if msg.contains("HTTP 401") || msg.contains("HTTP 403") {
@@ -956,13 +1178,11 @@ impl AntigravityOfflinePlaceholderStrategy {
                 "check Diagnostics for per-source details".to_owned()
             }
         };
-        Some(format!(
-            "Live Antigravity usage is unavailable; showing offline data. {reason}"
-        ))
+        Some(reason)
     }
 }
 
-impl FetchStrategy for AntigravityOfflinePlaceholderStrategy {
+impl FetchStrategy for AntigravityOfflineFetchStrategy {
     fn id(&self) -> &'static str {
         ANTIGRAVITY_OFFLINE_STRATEGY_ID
     }
@@ -971,17 +1191,77 @@ impl FetchStrategy for AntigravityOfflinePlaceholderStrategy {
         SourceKind::LocalProbe
     }
 
-    fn is_available<'a>(&'a self, _cx: &'a FetchContext) -> BoxFuture<'a, bool> {
-        Box::pin(async move { false })
+    fn is_available<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, bool> {
+        Box::pin(async move {
+            let home = resolve_home_directory(&self.home_directory, &cx.env);
+            AntigravityOfflineStore::has_offline_data_with_profiles(
+                &home,
+                &cx.env,
+                &self.additional_profile_homes,
+            )
+        })
     }
 
-    fn fetch<'a>(
-        &'a self,
-        _cx: &'a FetchContext,
-    ) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
+    fn fetch<'a>(&'a self, cx: &'a FetchContext) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
         Box::pin(async move {
-            Err(FetchError::Classified(
-                AntigravityStatusProbeError::NotRunning.into_classified_error(),
+            if cx.cancel.is_cancelled() {
+                return Err(FetchError::Cancelled);
+            }
+            let home = resolve_home_directory(&self.home_directory, &cx.env);
+            let count = AntigravityOfflineStore::count_conversations_with_profiles(
+                &home,
+                &cx.env,
+                &self.additional_profile_homes,
+            );
+            if count == 0 {
+                return Err(FetchError::Classified(
+                    AntigravityStatusProbeError::NotRunning.into_classified_error(),
+                ));
+            }
+            let _local_report = self.load_local_daily_report(cx)?;
+            let window = RateWindow::new(0.0, None, None, None, None, false).map_err(|e| {
+                FetchError::Classified(
+                    AntigravityStatusProbeError::ParseFailed(e.to_string()).into_classified_error(),
+                )
+            })?;
+            let title = format!(
+                "Offline \u{00b7} {count} conversation{}",
+                if count == 1 { "" } else { "s" }
+            );
+            let offline_window =
+                NamedRateWindow::new("antigravity-offline-conversations", title, window)
+                    .with_usage_known(false);
+            let identity = ProviderIdentitySnapshot::new(
+                Some(ProviderId::new("antigravity").expect("valid provider id")),
+                None,
+                None,
+                Some("offline".to_owned()),
+                None,
+            );
+            let now = (self.clock)();
+            let snapshot = UsageSnapshot::new(
+                None,
+                None,
+                None,
+                Some(vec![offline_window]),
+                None,
+                Vec::new(),
+                None,
+                None,
+                now,
+                Some(identity),
+                Confidence::Exact,
+            )
+            .map_err(|e| {
+                FetchError::Classified(
+                    AntigravityStatusProbeError::ParseFailed(e.to_string()).into_classified_error(),
+                )
+            })?;
+            Ok(FetchResult::new(
+                snapshot,
+                "offline",
+                ANTIGRAVITY_OFFLINE_STRATEGY_ID,
+                SourceKind::LocalProbe,
             ))
         })
     }
@@ -1023,7 +1303,7 @@ impl AntigravityProviderPlan {
                 Box::new(AntigravityStatusFetchStrategy::ide_local(
                     self.config.clone(),
                 )),
-                Box::new(AntigravityOfflinePlaceholderStrategy),
+                Box::new(AntigravityOfflineFetchStrategy::new(self.config.clone())),
             ],
             SourceMode::Oauth => vec![Box::new(AntigravityOAuthFetchStrategy::new(
                 self.config.clone(),
@@ -1056,7 +1336,9 @@ impl AntigravityProviderPlan {
                         self.config.clone(),
                     )));
                 }
-                strategies.push(Box::new(AntigravityOfflinePlaceholderStrategy));
+                strategies.push(Box::new(AntigravityOfflineFetchStrategy::new(
+                    self.config.clone(),
+                )));
                 strategies
             }
             SourceMode::Web | SourceMode::Api => Vec::new(),

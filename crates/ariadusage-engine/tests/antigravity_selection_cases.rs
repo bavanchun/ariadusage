@@ -81,8 +81,7 @@ fn selected_account_wins_before_quota_richness() {
         Some("selected@example.com")
     );
 }
-// Engine contract only: native menu construction and the Codex UI comparison belong to the native frontend.
-
+// Antigravity half only: native menu construction (`:11`, `:38`) and the Codex UI comparison in `:49` belong to the native frontend.
 // upstream: AntigravityQuotaWindowBoundaryTests.swift:49 Antigravity ignores observed resets while Codex still honors them
 #[test]
 fn antigravity_engine_presentation_ignores_observed_quota_reset_boundaries() {

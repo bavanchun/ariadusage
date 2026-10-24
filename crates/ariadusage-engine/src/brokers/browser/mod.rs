@@ -34,7 +34,7 @@ mod profiles_ini;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod safari;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod sqlite_copy;
+pub(crate) mod sqlite_copy;
 
 #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "test-hooks"))]
 pub mod test_support {

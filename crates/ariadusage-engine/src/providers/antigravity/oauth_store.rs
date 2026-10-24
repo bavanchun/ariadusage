@@ -4,7 +4,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(feature = "test-hooks")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_protocol::secret::SecretString;
@@ -147,8 +150,25 @@ impl AntigravityOAuthClient {
 pub struct AntigravityOAuthConfig;
 
 const MAX_INSTALLED_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
-static INSTALLED_CLIENT_CACHE: OnceLock<Mutex<BTreeMap<Option<PathBuf>, AntigravityOAuthClient>>> =
-    OnceLock::new();
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ArtifactFingerprint {
+    path: PathBuf,
+    modified_ns: Option<u128>,
+    len: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct InstalledClientCacheKey {
+    scope: Vec<PathBuf>,
+    artifacts: Vec<ArtifactFingerprint>,
+}
+
+static INSTALLED_CLIENT_CACHE: OnceLock<
+    Mutex<BTreeMap<InstalledClientCacheKey, Option<AntigravityOAuthClient>>>,
+> = OnceLock::new();
+#[cfg(feature = "test-hooks")]
+static INSTALLED_ARTIFACT_READ_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 impl AntigravityOAuthConfig {
     pub const DEFAULT_SCOPES: &[&str] = &[
@@ -210,34 +230,18 @@ impl AntigravityOAuthConfig {
         Self::installed_client(app_bundle_url, home_directory)
     }
 
+    #[cfg(feature = "test-hooks")]
+    pub fn installed_client_artifact_read_count() -> usize {
+        INSTALLED_ARTIFACT_READ_COUNT.load(Ordering::SeqCst)
+    }
+
     pub fn installed_client_cached(
         home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
-        let key = home_directory.map(Path::to_path_buf);
-        let cache = INSTALLED_CLIENT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
-        if let Ok(guard) = cache.lock()
-            && let Some(cached) = guard.get(&key)
-        {
-            return Some(cached.clone());
-        }
-        let discovered = Self::installed_client_uncached(None, home_directory)?;
-        if let Ok(mut guard) = cache.lock() {
-            guard.insert(key, discovered.clone());
-        }
-        Some(discovered)
+        Self::installed_client(None, home_directory)
     }
 
     pub fn installed_client(
-        app_bundle_url: Option<&Path>,
-        home_directory: Option<&Path>,
-    ) -> Option<AntigravityOAuthClient> {
-        if app_bundle_url.is_none() && home_directory.is_none() {
-            return Self::installed_client_cached(None);
-        }
-        Self::installed_client_uncached(app_bundle_url, home_directory)
-    }
-
-    fn installed_client_uncached(
         app_bundle_url: Option<&Path>,
         home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
@@ -265,32 +269,87 @@ impl AntigravityOAuthConfig {
             }
         };
 
-        for bundle_url in candidate_bundle_urls {
+        let mut candidate_urls = Vec::new();
+        for bundle_url in &candidate_bundle_urls {
             for relative_path in Self::RELATIVE_CLIENT_CONFIG_PATHS {
-                let candidate_url = bundle_url.join(relative_path);
-                let Some(data) = Self::read_bounded_artifact(&candidate_url) else {
-                    continue;
-                };
-                if let Some(client) = Self::parse_client_from_installed_artifact_data(&data) {
-                    return Some(client);
-                }
+                candidate_urls.push(bundle_url.join(relative_path));
             }
         }
-        None
+        Self::discover_client_from_candidate_artifacts(&candidate_bundle_urls, &candidate_urls)
     }
 
     pub fn discover_client_from_installed_app<P: AsRef<Path>>(
         application_roots: &[P],
     ) -> Option<AntigravityOAuthClient> {
-        for candidate_url in Self::candidate_oauth_client_artifact_urls(application_roots) {
-            let Some(data) = Self::read_bounded_artifact(&candidate_url) else {
+        let scope: Vec<PathBuf> = application_roots
+            .iter()
+            .map(|r| normalize_lexical_path(r.as_ref()))
+            .collect();
+        let candidate_urls = Self::candidate_oauth_client_artifact_urls(application_roots);
+        Self::discover_client_from_candidate_artifacts(&scope, &candidate_urls)
+    }
+
+    fn discover_client_from_candidate_artifacts(
+        scope: &[PathBuf],
+        candidate_urls: &[PathBuf],
+    ) -> Option<AntigravityOAuthClient> {
+        let artifacts = Self::fingerprint_candidate_artifacts(candidate_urls);
+        let key = InstalledClientCacheKey {
+            scope: scope.to_vec(),
+            artifacts,
+        };
+        let cache = INSTALLED_CLIENT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+        if let Ok(guard) = cache.lock()
+            && let Some(cached) = guard.get(&key)
+        {
+            return cached.clone();
+        }
+
+        let mut discovered = None;
+        for candidate_url in candidate_urls {
+            let Some(data) = Self::read_bounded_client_artifact(candidate_url) else {
                 continue;
             };
             if let Some(client) = Self::parse_client_from_installed_artifact_data(&data) {
-                return Some(client);
+                discovered = Some(client);
+                break;
             }
         }
-        None
+
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(key, discovered.clone());
+        }
+        discovered
+    }
+
+    fn fingerprint_candidate_artifacts(candidate_urls: &[PathBuf]) -> Vec<ArtifactFingerprint> {
+        let mut out = Vec::new();
+        for url in candidate_urls {
+            let Ok(metadata) = std::fs::metadata(url) else {
+                continue;
+            };
+            if !metadata.is_file() || metadata.len() > MAX_INSTALLED_ARTIFACT_BYTES {
+                continue;
+            }
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_nanos());
+            out.push(ArtifactFingerprint {
+                path: url.clone(),
+                modified_ns,
+                len: metadata.len(),
+            });
+        }
+        out
+    }
+
+    fn read_bounded_client_artifact(path: &Path) -> Option<Vec<u8>> {
+        let data = Self::read_bounded_artifact(path)?;
+        #[cfg(feature = "test-hooks")]
+        INSTALLED_ARTIFACT_READ_COUNT.fetch_add(1, Ordering::SeqCst);
+        Some(data)
     }
 
     pub fn candidate_oauth_client_artifact_urls<P: AsRef<Path>>(
@@ -312,10 +371,7 @@ impl AntigravityOAuthConfig {
         let mut urls = Vec::new();
         for root_ref in application_roots {
             let root = root_ref.as_ref();
-            let antigravity_url = root.join("Antigravity.app");
-            if Self::is_allowed_explicit_bundle(&antigravity_url) {
-                urls.push(antigravity_url);
-            }
+            urls.push(root.join("Antigravity.app"));
 
             // "Gemini.app" is a generic name, so unlike "Antigravity.app" it is
             // only accepted when the bundle identifier confirms the renamed app.
