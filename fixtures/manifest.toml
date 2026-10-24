@@ -930,6 +930,11 @@ sources = [
     "Sources/CodexBar/IconRenderer.swift",
     "Sources/CodexBar/LoadingPattern.swift",
     "Sources/CodexBar/MenuBarLayoutRenderer.swift",
+    "Sources/CodexBar/StatusItemController.swift",
+    "Sources/CodexBar/StatusItemController+Animation.swift",
+    "Sources/CodexBar/SessionQuotaNotifications.swift",
+    "Sources/CodexBar/UsageStore+QuotaWarnings.swift",
+    "Sources/CodexBar/UsageStore.swift",
     "Sources/CodexBarCore/Config/CodexBarConfig.swift",
     "Sources/CodexBarCore/Providers/Providers.swift",
     "Sources/CodexBarCore/Providers/ProviderBranding.swift",
@@ -944,6 +949,9 @@ sources = [
     "Sources/CodexBar/AutomaticQuotaSelection.swift",
     "Sources/CodexBar/UnifiedIconSource.swift",
     "Sources/CodexBar/UnifiedIconProviderResolver.swift",
+    "Sources/CodexBar/StatusItemController.swift",
+    "Sources/CodexBar/StatusItemController+Animation.swift",
+    "Sources/CodexBar/UsageStore.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeMonthlySpendWindow.swift",
@@ -977,7 +985,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/mod.rs"
-sources = ["Sources/CodexBar/StatusItemController+StatusItemVending.swift", "Sources/CodexBar/StatusItemController.swift"]
+sources = ["Sources/CodexBar/StatusItemController+StatusItemVending.swift", "Sources/CodexBar/StatusItemController.swift", "Sources/CodexBar/StatusItemController+Animation.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -1027,7 +1035,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/menu_descriptor.rs"
-sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift", "Sources/CodexBar/StatusItemController+CostMenuCard.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
+sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift", "Sources/CodexBar/StatusItemController+CostMenuCard.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift", "Sources/CodexBar/SettingsStore+MenuPreferences.swift", "Sources/CodexBar/UsageStore+TokenCost.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -1052,7 +1060,11 @@ sources = [
     "Tests/CodexBarTests/IconRendererHideCrittersTests.swift",
     "Tests/CodexBarTests/IconRendererStatusOverlayTests.swift",
     "Tests/CodexBarTests/IconRendererGrokTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationCapTests.swift",
     "Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift",
+    "Tests/CodexBarTests/StatusItemBlinkGatingTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationTests.swift",
+    "Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift",
     "Tests/CodexBarTests/CodexbarTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
@@ -1062,6 +1074,9 @@ path = "crates/ariadusage-macos/tests/presentation.rs"
 sources = [
     "Tests/CodexBarTests/MenuBarMetricWindowResolverTests.swift",
     "Tests/CodexBarTests/ClaudeSpendWindowTests.swift",
+    "Tests/CodexBarTests/MergedWarpIconRenderingTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift",
+    "Tests/CodexBarTests/StatusItemIconObservationSignatureTests.swift",
     "Tests/CodexBarTests/CodexbarTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

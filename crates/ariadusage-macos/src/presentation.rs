@@ -3,6 +3,9 @@
 // Ported from CodexBar Sources/CodexBar/AutomaticQuotaSelection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UnifiedIconSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UnifiedIconProviderResolver.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeMonthlySpendWindow.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -283,7 +286,7 @@ pub fn icon_input_with_override(
             .as_ref()
             .and_then(displayable_value)
             .map(|c| c.remaining),
-        stale: provider.last_error.is_some() || has_stale_window(provider),
+        stale: provider.last_error.is_some(),
         status: provider
             .status
             .as_ref()
@@ -300,8 +303,44 @@ pub fn icon_input_with_override(
     }
 }
 
+/// Resolves the status-item [`IconInput`] and target provider ID from the full
+/// [`EngineSnapshot`], applying `UsageStore.iconStyle` (`IconStyle::Combined`
+/// when `merge_icons` is true and more than one provider is enabled) while
+/// preserving the resolved provider's own `QuotaLayoutPolicy` and window percents
+/// (`StatusItemController+Animation.swift:353, 393-401, 498`).
+pub fn status_item_icon_input<'a>(
+    snapshot: Option<&'a EngineSnapshot>,
+    selected_provider_id: Option<&str>,
+    merge_icons: bool,
+    prefs: IconPreferences,
+) -> (Option<&'a ProviderSnapshot>, IconInput) {
+    let Some(snapshot) = snapshot else {
+        return (
+            None,
+            IconInput {
+                stale: false,
+                hide_critters: prefs.hide_critters,
+                ..IconInput::default()
+            },
+        );
+    };
+    let provider = icon_provider(snapshot, selected_provider_id);
+    let mut input = match provider {
+        Some(p) => icon_input(p, prefs),
+        None => IconInput {
+            stale: false,
+            hide_critters: prefs.hide_critters,
+            ..IconInput::default()
+        },
+    };
+    if merge_icons {
+        input.style = store_icon_style(Some(snapshot));
+    }
+    (provider, input)
+}
+
 /// Resolves the `QuotaLayoutPolicy` for `provider` and its snapshot
-/// (`IconRenderer.QuotaLayoutPolicy.provider(_:snapshot:)`).
+/// (`IconRenderer.QuotaLayoutPolicy.provider(_:snapshot:)`, `IconRenderer.swift:10-21`).
 pub fn quota_layout_policy_for_provider(
     provider: &ProviderSnapshot,
     secondary_override_window_id: Option<&str>,
@@ -310,23 +349,13 @@ pub fn quota_layout_policy_for_provider(
     let id = provider.id.as_str();
     let mut reserves_missing_secondary_lane = id == "claude";
     if reserves_missing_secondary_lane {
-        let raw_primary = provider
-            .windows
-            .primary
-            .as_ref()
-            .and_then(displayable_value);
-        let raw_secondary = provider
-            .windows
-            .secondary
-            .as_ref()
-            .and_then(displayable_value);
+        let raw_primary = measured_window(provider.windows.primary.as_ref());
+        let effective_now = now.or(provider.updated_at);
         let (resolved_primary, resolved_secondary) =
-            resolved_icon_windows(provider, secondary_override_window_id, now);
-        if raw_primary.is_none()
-            && raw_secondary.is_none()
-            && resolved_primary.is_some()
-            && resolved_secondary.is_none()
-        {
+            resolved_icon_windows(provider, secondary_override_window_id, effective_now);
+        let projected_single_window =
+            raw_primary.is_none() && resolved_primary.is_some() && resolved_secondary.is_none();
+        if projected_single_window {
             reserves_missing_secondary_lane = false;
         }
     }
@@ -351,18 +380,8 @@ pub fn resolved_icon_windows(
         "doubao" => doubao_icon_windows(provider),
         "perplexity" => perplexity_icon_windows(provider),
         _ => (
-            provider
-                .windows
-                .primary
-                .as_ref()
-                .and_then(displayable_value)
-                .cloned(),
-            provider
-                .windows
-                .secondary
-                .as_ref()
-                .and_then(displayable_value)
-                .cloned(),
+            measured_window(provider.windows.primary.as_ref()).cloned(),
+            measured_window(provider.windows.secondary.as_ref()).cloned(),
         ),
     }
 }
@@ -421,7 +440,7 @@ pub fn resolved_icon_percents_for_style(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum CodexLaneKind {
     Session,
     Weekly,
@@ -441,45 +460,47 @@ fn codex_icon_windows(
     provider: &ProviderSnapshot,
     now: Option<Timestamp>,
 ) -> (Option<RateWindow>, Option<RateWindow>) {
-    let raw_primary = provider
-        .windows
-        .primary
-        .as_ref()
-        .and_then(displayable_value)
-        .cloned();
-    let raw_secondary = provider
-        .windows
-        .secondary
-        .as_ref()
-        .and_then(displayable_value)
-        .cloned();
+    let raw_primary = measured_window(provider.windows.primary.as_ref()).cloned();
+    let raw_secondary = measured_window(provider.windows.secondary.as_ref()).cloned();
 
-    let mut lanes: Vec<(CodexLaneKind, RateWindow)> = Vec::with_capacity(2);
+    let mut slotted: Vec<(CodexLaneKind, RateWindow)> = Vec::with_capacity(2);
     if let Some(w) = raw_primary {
         let kind = classify_codex_lane(&w, CodexLaneKind::Session);
-        lanes.push((kind, w));
+        slotted.push((kind, w));
     }
     if let Some(w) = raw_secondary {
         let kind = classify_codex_lane(&w, CodexLaneKind::Weekly);
-        if !lanes.iter().any(|(k, _)| *k == kind) {
-            lanes.push((kind, w));
-        }
+        slotted.push((kind, w));
+    }
+
+    // `CodexProviderDescriptor.windowsByLane` (`CodexProviderDescriptor.swift:227-237`):
+    // duplicate lanes are last-wins.
+    let mut windows_by_lane: HashMap<CodexLaneKind, RateWindow> = HashMap::with_capacity(2);
+    for (lane, window) in &slotted {
+        windows_by_lane.insert(*lane, window.clone());
     }
 
     let is_expired =
         |w: &RateWindow| -> bool { now.is_some_and(|n| w.resets_at.is_some_and(|r| r <= n)) };
 
-    let weekly_exhausted_active = lanes
-        .iter()
-        .any(|(k, w)| *k == CodexLaneKind::Weekly && remaining_percent(w) <= 0.0 && !is_expired(w));
+    let weekly_caps_session = windows_by_lane
+        .get(&CodexLaneKind::Weekly)
+        .is_some_and(|w| remaining_percent(w) <= 0.0 && !is_expired(w));
 
+    let mut seen: HashSet<CodexLaneKind> = HashSet::with_capacity(2);
     let mut visible: Vec<RateWindow> = Vec::with_capacity(2);
-    for (kind, mut window) in lanes {
-        if remaining_percent(&window) <= 0.0 && is_expired(&window) {
+    for (kind, _) in slotted {
+        if !seen.insert(kind) {
             continue;
         }
-        if kind == CodexLaneKind::Session && weekly_exhausted_active {
+        let Some(mut window) = windows_by_lane.get(&kind).cloned() else {
+            continue;
+        };
+        if kind == CodexLaneKind::Session && weekly_caps_session {
             window.used_percent = 100.0;
+        }
+        if remaining_percent(&window) <= 0.0 && is_expired(&window) {
+            continue;
         }
         visible.push(window);
     }
@@ -488,23 +509,9 @@ fn codex_icon_windows(
 }
 
 fn claude_icon_windows(provider: &ProviderSnapshot) -> (Option<RateWindow>, Option<RateWindow>) {
-    let raw_primary = provider
-        .windows
-        .primary
-        .as_ref()
-        .and_then(displayable_value)
-        .cloned();
-    let raw_secondary = provider
-        .windows
-        .secondary
-        .as_ref()
-        .and_then(displayable_value)
-        .cloned();
-    let raw_tertiary = provider
-        .windows
-        .tertiary
-        .as_ref()
-        .and_then(displayable_value);
+    let raw_primary = measured_window(provider.windows.primary.as_ref()).cloned();
+    let raw_secondary = measured_window(provider.windows.secondary.as_ref()).cloned();
+    let raw_tertiary = measured_window(provider.windows.tertiary.as_ref());
 
     if raw_primary.is_none()
         && raw_secondary.is_none()
@@ -1303,6 +1310,83 @@ pub fn connection_status(snapshot: Option<&EngineSnapshot>, connected: bool) -> 
     }
 }
 
+/// Resolves the store-level `IconStyle` used by the merged status item (`UsageStore.iconStyle`,
+/// `UsageStore.swift:614-624`): `.combined` when multiple providers are enabled, the single enabled
+/// provider's style when exactly one is enabled, or `.codex` when none are enabled.
+pub fn store_icon_style(snapshot: Option<&EngineSnapshot>) -> IconStyle {
+    let Some(snapshot) = snapshot else {
+        return IconStyle::Codex;
+    };
+    let mut enabled = snapshot.providers.iter().filter(|p| p.enabled);
+    let Some(first) = enabled.next() else {
+        return IconStyle::Codex;
+    };
+    if enabled.next().is_some() {
+        IconStyle::Combined
+    } else {
+        IconStyle::from_provider_id(first.id.as_str())
+    }
+}
+
+/// Computes the store-icon observation signature used to skip redundant icon updates when
+/// non-visual snapshot or status metadata changes (`StatusItemController.storeIconObservationSignature`).
+pub fn store_icon_observation_signature(
+    snapshot: Option<&EngineSnapshot>,
+    selected: Option<&str>,
+    merge_icons: bool,
+    prefs: IconPreferences,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    merge_icons.hash(&mut hasher);
+    prefs.show_used.hash(&mut hasher);
+    prefs.hide_critters.hash(&mut hasher);
+    (prefs.metric_preference as u8).hash(&mut hasher);
+    store_icon_style(snapshot).hash(&mut hasher);
+
+    let Some(snapshot) = snapshot else {
+        false.hash(&mut hasher);
+        return hasher.finish();
+    };
+    true.hash(&mut hasher);
+
+    let hash_provider =
+        |p: &ProviderSnapshot, h: &mut std::collections::hash_map::DefaultHasher| {
+            p.id.as_str().hash(h);
+            let input = icon_input(p, prefs);
+            input.primary.map(|v| (v * 1000.0).round() as i64).hash(h);
+            input.secondary.map(|v| (v * 1000.0).round() as i64).hash(h);
+            input
+                .credits_remaining
+                .map(|v| (v * 100.0).round() as i64)
+                .hash(h);
+            input.stale.hash(h);
+            (input.status as u8).hash(h);
+            input.reserves_missing_secondary_lane.hash(h);
+            input.treats_exhausted_secondary_as_missing.hash(h);
+        };
+
+    if merge_icons {
+        if let Some(primary) = icon_provider(snapshot, selected) {
+            hash_provider(primary, &mut hasher);
+        }
+    } else {
+        for provider in snapshot.providers.iter().filter(|p| p.enabled) {
+            hash_provider(provider, &mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// Returns a measured `RateWindow` when the metric has a real value (`Value` or `Stale`).
+/// In Snapshot v1 (`ariadusage-core::projection::project_window_metric`), a synthetic
+/// placeholder window (`is_synthetic_placeholder == true`) is projected onto the wire as
+/// `MetricState::Unknown` (`value: None`), so this helper matches upstream `RateWindow.measured`
+/// (`ClaudeProviderDescriptor.swift:255, 280` and `IconRenderer.swift:16`).
+pub fn measured_window(metric: Option<&Metric<RateWindow>>) -> Option<&RateWindow> {
+    metric.and_then(displayable_value)
+}
+
 /// A metric's value when its state allows showing it; loading, unknown and
 /// failed metrics never render as a number.
 fn displayable_value<T>(metric: &Metric<T>) -> Option<&T> {
@@ -1319,13 +1403,6 @@ fn remaining_percent(window: &RateWindow) -> f64 {
 fn meter_percent(window: &RateWindow, show_used: bool) -> f64 {
     let used = window.used_percent.clamp(0.0, 100.0);
     if show_used { used } else { 100.0 - used }
-}
-
-fn has_stale_window(provider: &ProviderSnapshot) -> bool {
-    [&provider.windows.primary, &provider.windows.secondary]
-        .into_iter()
-        .flatten()
-        .any(|m| m.state == MetricState::Stale)
 }
 
 fn status_level(indicator: &StatusIndicator) -> StatusLevel {

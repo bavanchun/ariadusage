@@ -803,6 +803,7 @@ pub struct SettingsState {
     pub menu_bar_icon_style: String,
     pub menu_bar_show_used: bool,
     pub menu_bar_merge_icons: bool,
+    pub random_blink_enabled: bool,
     pub show_optional_credits: bool,
     pub notifications_enabled: bool,
     pub source_mode: String,
@@ -828,9 +829,10 @@ impl Default for SettingsState {
         Self {
             available_ids: HashSet::new(),
             refresh_interval_seconds: 900.0,
-            menu_bar_icon_style: "bars".to_string(),
+            menu_bar_icon_style: "critters".to_string(),
             menu_bar_show_used: false,
             menu_bar_merge_icons: true,
+            random_blink_enabled: false,
             show_optional_credits: true,
             notifications_enabled: true,
             source_mode: "cli".to_string(),
@@ -862,6 +864,9 @@ impl SettingsState {
                     }
                     ("menuBar.mergeIcons", DescriptorKind::Toggle { value }) => {
                         self.menu_bar_merge_icons = *value;
+                    }
+                    ("menuBar.randomBlink", DescriptorKind::Toggle { value }) => {
+                        self.random_blink_enabled = *value;
                     }
                     ("menu.showOptionalCreditsAndExtraUsage", DescriptorKind::Toggle { value }) => {
                         self.show_optional_credits = *value;
@@ -932,6 +937,11 @@ impl SettingsState {
                     self.menu_bar_merge_icons = b;
                 }
             }
+            "menuBar.randomBlink" => {
+                if let Some(b) = value.as_bool() {
+                    self.random_blink_enabled = b;
+                }
+            }
             "menu.showOptionalCreditsAndExtraUsage" => {
                 if let Some(b) = value.as_bool() {
                     self.show_optional_credits = b;
@@ -982,7 +992,7 @@ impl SettingsState {
             "bars" => "Bars",
             "critters" => "Critters",
             "iconAndPercent" => "Icon & percent",
-            _ => "Bars",
+            _ => "Critters",
         }
     }
 }
@@ -1273,7 +1283,6 @@ pub const MISSING_ENGINE_INTENTS: &[&str] = &[
     "unifiedIconSource (Menu Bar -> Combined icon -> Combined icon source)",
     "mergedOverviewSelectedProviders (Menu Bar -> Combined icon -> Overview providers)",
     "mergedOverviewAllAccounts (Menu Bar -> Combined icon -> Show all accounts in Overview)",
-    "randomBlinkEnabled (Menu Bar -> Animation -> Surprise me)",
     "quotaWarningMarkersVisible (Menu -> Usage -> Show quota warning markers)",
     "paceVisible (Menu -> Usage -> Show pace)",
     "weeklyProgressWorkDays (Menu -> Usage -> Work days)",
@@ -1879,9 +1888,9 @@ fn menu_bar_pane_model(settings: &SettingsState, snapshot: Option<&EngineSnapsho
             subtitle: Some("Check if you like your agents having some fun up there.".to_string()),
             row_enabled: surprise_row_enabled,
             control: FormControl::Toggle {
-                value: false,
-                enabled: false,
-                setting_id: None,
+                value: settings.random_blink_enabled,
+                enabled: surprise_row_enabled,
+                setting_id: SettingId::new("menuBar.randomBlink").ok(),
             },
         }],
         footer_lines: Vec::new(),

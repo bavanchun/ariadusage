@@ -531,9 +531,27 @@ fn antigravity_with_utilization_attaches_plan_usage_without_burndown_and_codex_w
         [SubmenuEntry::PlanUtilizationChart(_)]
     ));
 
-    // Codex with credits and extra usage but no cost history still splits into
-    // HeaderAndUsage + CreditsOnly + ExtraUsageOnly, without attaching a Cost
-    // submenu to HeaderAndUsage.
+    // Codex with cost history splits into HeaderAndUsage + CreditsOnly + ExtraUsageOnly;
+    // when cost_history is absent (plain CLI snapshot with no web breakdown/credits
+    // history and no cost history), upstream keeps the card in Full mode.
+    let codex_with_cost = menu_descriptor::build(
+        Some(&snap),
+        true,
+        Some(&SwitcherSelection::Provider("codex".to_string())),
+        &CardPreferences::default(),
+        now,
+        &FixedDates::utc(),
+    );
+    let PrimaryContent::Provider {
+        sections: split_sections,
+        ..
+    } = &codex_with_cost.primary
+    else {
+        panic!("expected Provider");
+    };
+    assert_eq!(split_sections.len(), 3);
+    assert!(split_sections[0].has_cost_submenu);
+
     snap.providers[1].cost_history = None;
     let codex_structure = menu_descriptor::build(
         Some(&snap),
@@ -553,7 +571,11 @@ fn antigravity_with_utilization_attaches_plan_usage_without_burndown_and_codex_w
         panic!("expected Provider");
     };
     assert!(!card.shows_submenu_indicator);
-    assert_eq!(sections.len(), 3);
+    assert_eq!(sections.len(), 1);
+    assert_eq!(
+        sections[0].mode,
+        ariadusage_macos::card_layout::CardSectionMode::Full
+    );
     assert!(!sections[0].has_cost_submenu);
     assert!(cost_submenu.is_empty());
 }

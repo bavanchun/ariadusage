@@ -1,5 +1,6 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+StatusItemVending.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! AppKit bridge: the application, its status item and its menu.
 //!
@@ -32,18 +33,19 @@ pub use settings_window::SettingsWindowController;
 pub use switcher_view::SwitcherView;
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use ariadusage_protocol::snapshot::EngineSnapshot;
 use dispatch2::DispatchQueue;
-use objc2::MainThreadMarker;
 use objc2::rc::Retained;
+use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSAccessibility, NSAppearance, NSApplication, NSApplicationActivationPolicy, NSStatusBar,
     NSStatusItem, NSVariableStatusItemLength,
 };
-use objc2_foundation::NSString;
+use objc2_foundation::{NSObject, NSObjectProtocol, NSString, NSTimer};
 
 use crate::card::CardPreferences;
 use crate::engine_client::{EngineClient, EngineEvent};
@@ -57,20 +59,69 @@ const STATUS_ITEM_AUTOSAVE_NAME: &str = "ariadusage-merged";
 const STATUS_ITEM_ACCESSIBILITY_TITLE: &str = "AriadUsage";
 const STATUS_ITEM_ACCESSIBILITY_IDENTIFIER: &str = "AriadUsage.StatusItem";
 
+define_class!(
+    // SAFETY: `NSObject` has no subclassing requirements beyond `init`, and
+    // `StatusItemTimerTarget` does not implement `Drop`.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "AriadUsageStatusItemTimerTarget"]
+    struct StatusItemTimerTarget;
+
+    unsafe impl NSObjectProtocol for StatusItemTimerTarget {}
+
+    impl StatusItemTimerTarget {
+        #[unsafe(method(loadingTimerFired:))]
+        fn loading_timer_fired(&self, _timer: &NSTimer) {
+            on_loading_timer_tick();
+        }
+
+        #[unsafe(method(blinkTimerFired:))]
+        fn blink_timer_fired(&self, _timer: &NSTimer) {
+            on_blink_timer_tick();
+        }
+
+        #[unsafe(method(flashTimerFired:))]
+        fn flash_timer_fired(&self, _timer: &NSTimer) {
+            on_flash_timer_tick();
+        }
+    }
+);
+
+impl StatusItemTimerTarget {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: `init` is `NSObject`'s designated initializer.
+        unsafe { msg_send![super(this), init] }
+    }
+}
+
 struct AppState {
     status_item: Retained<NSStatusItem>,
+    timer_target: Retained<StatusItemTimerTarget>,
+    loading_timer: Option<Retained<NSTimer>>,
+    blink_timer: Option<Retained<NSTimer>>,
+    flash_timer: Option<Retained<NSTimer>>,
     menu: menu::MenuController,
     settings_window: SettingsWindowController,
     snapshot: Option<EngineSnapshot>,
     settings_state: SettingsState,
     connected: bool,
+    global_loading: bool,
+    provider_loading: HashSet<String>,
     selected_tab: Option<SwitcherSelection>,
     last_provider_id: Option<String>,
     prefs: IconPreferences,
+    animation: icon::StatusItemAnimationState,
+    loading_pattern: icon::LoadingPattern,
+    last_render_signature: Option<u64>,
 }
 
 thread_local! {
     static STATE: RefCell<Option<AppState>> = const { RefCell::new(None) };
+}
+
+fn now_secs() -> f64 {
+    jiff::Timestamp::now().as_millisecond() as f64 / 1000.0
 }
 
 /// Starts the app and runs the AppKit event loop until the user quits.
@@ -97,6 +148,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     .map_err(|err| format!("could not start the engine connection: {err}"))?;
 
     let status_item = make_status_item(mtm);
+    let timer_target = StatusItemTimerTarget::new(mtm);
     let settings_window = SettingsWindowController::new(mtm, Some(client.clone()));
     settings_window
         .view()
@@ -120,14 +172,23 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
         };
         *cell.borrow_mut() = Some(AppState {
             status_item,
+            timer_target,
+            loading_timer: None,
+            blink_timer: None,
+            flash_timer: None,
             menu,
             settings_window,
             snapshot: None,
             settings_state,
             connected: false,
+            global_loading: false,
+            provider_loading: HashSet::new(),
             selected_tab: None,
             last_provider_id: None,
             prefs,
+            animation: icon::StatusItemAnimationState::default(),
+            loading_pattern: icon::LoadingPattern::KnightRider,
+            last_render_signature: None,
         });
     });
     refresh_ui();
@@ -136,9 +197,78 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     Ok(())
 }
 
+/// Public icon-state API: sets or clears the global refresh-in-progress state
+/// (`StatusItemController.updateAnimationState`) and refreshes the status item icon.
+pub fn set_loading(loading: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        state.global_loading = loading;
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
+}
+
+/// Public icon-state API: sets or clears the per-provider refresh-in-progress state
+/// (`UsageStore.refreshingProviders`) and refreshes the status item icon.
+pub fn set_provider_loading(provider_id: &str, loading: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        if loading {
+            state.provider_loading.insert(provider_id.to_string());
+        } else {
+            state.provider_loading.remove(provider_id);
+        }
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
+}
+
+/// Public icon-state API: applies a new engine snapshot, records downward quota
+/// warning threshold crossings for the 60 s flash overlay, and refreshes the UI.
+pub fn set_snapshot(snapshot: Option<EngineSnapshot>) {
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        if let Some(ref snap) = snapshot {
+            state.global_loading = snap.engine.refreshing;
+            record_snapshot_quota_warnings(state, snap);
+            state.settings_window.apply_snapshot(snap.clone());
+        }
+        state.snapshot = snapshot;
+    });
+    refresh_ui();
+}
+
+/// Public icon-state API: triggers the 60 s quota-warning red flash overlay on
+/// `provider_id` (`StatusItemController.startQuotaWarningFlash`).
+pub fn trigger_quota_warning_flash(provider_id: &str) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        let _ = state
+            .animation
+            .start_quota_warning_flash(provider_id, now_secs());
+        state.last_render_signature = None;
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
+}
+
 fn sync_state_from_settings(state: &mut AppState) {
     state.prefs.show_used = state.settings_state.menu_bar_show_used;
     state.prefs.hide_critters = state.settings_state.menu_bar_icon_style == "bars";
+    state.last_render_signature = None;
     let card_prefs = CardPreferences {
         show_used: state.settings_state.menu_bar_show_used,
         show_optional_credits_and_extra_usage: state.settings_state.show_optional_credits,
@@ -172,6 +302,43 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     item
 }
 
+fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapshot) {
+    let now = now_secs();
+    for provider in &snapshot.providers {
+        if !provider.enabled {
+            continue;
+        }
+        let (primary, secondary) =
+            presentation::resolved_icon_windows(provider, None, Some(snapshot.generated_at));
+        let p_rem = primary
+            .as_ref()
+            .map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0));
+        let p_reset = primary
+            .as_ref()
+            .and_then(|w| w.resets_at.map(|ts| ts.as_second()));
+        let s_rem = secondary
+            .as_ref()
+            .map(|w| (100.0 - w.used_percent).clamp(0.0, 100.0));
+        let s_reset = secondary
+            .as_ref()
+            .and_then(|w| w.resets_at.map(|ts| ts.as_second()));
+        if state.animation.quota_warning_tracker.update_provider(
+            provider.id.as_str(),
+            p_rem,
+            p_reset,
+            s_rem,
+            s_reset,
+            &icon::DEFAULT_QUOTA_WARNING_THRESHOLDS,
+            true,
+        ) {
+            let _ = state
+                .animation
+                .start_quota_warning_flash(provider.id.as_str(), now);
+            state.last_render_signature = None;
+        }
+    }
+}
+
 fn handle_event(event: EngineEvent) {
     STATE.with(|cell| {
         let mut guard = cell.borrow_mut();
@@ -180,6 +347,8 @@ fn handle_event(event: EngineEvent) {
             EngineEvent::Connected { .. } => state.connected = true,
             EngineEvent::Snapshot(snapshot) => {
                 state.connected = true;
+                state.global_loading = snapshot.engine.refreshing;
+                record_snapshot_quota_warnings(state, &snapshot);
                 state.settings_window.apply_snapshot((*snapshot).clone());
                 state.snapshot = Some(*snapshot);
             }
@@ -189,7 +358,11 @@ fn handle_event(event: EngineEvent) {
                 sync_state_from_settings(state);
                 state.settings_window.apply_settings_page(&page);
             }
-            EngineEvent::Disconnected => state.connected = false,
+            EngineEvent::Disconnected => {
+                state.connected = false;
+                state.global_loading = false;
+                state.provider_loading.clear();
+            }
         }
     });
     refresh_ui();
@@ -207,50 +380,337 @@ fn select_tab(selection: SwitcherSelection) {
     refresh_ui();
 }
 
+fn provider_needs_loading_animation(state: &AppState, provider_id: Option<&str>) -> bool {
+    if state.global_loading || state.snapshot.as_ref().is_some_and(|s| s.engine.refreshing) {
+        return true;
+    }
+    let Some(id) = provider_id else {
+        return false;
+    };
+    if state.provider_loading.contains(id) {
+        return true;
+    }
+    let Some(snapshot) = state.snapshot.as_ref() else {
+        return false;
+    };
+    let Some(provider) = snapshot.providers.iter().find(|p| p.id.as_str() == id) else {
+        return false;
+    };
+    if !provider.enabled || provider.last_error.is_some() {
+        return false;
+    }
+    let has_satisfied_fetch = provider.updated_at.is_some()
+        || presentation::measured_window(provider.windows.primary.as_ref()).is_some()
+        || presentation::measured_window(provider.windows.secondary.as_ref()).is_some()
+        || presentation::measured_window(provider.windows.tertiary.as_ref()).is_some()
+        || !provider.windows.extra.is_empty();
+    !has_satisfied_fetch
+}
+
+fn sync_animation_timers(state: &mut AppState) {
+    let now = now_secs();
+    let selected_provider_id = match state.selected_tab.as_ref() {
+        Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
+        _ => state.last_provider_id.as_deref(),
+    };
+    let target_provider = state
+        .snapshot
+        .as_ref()
+        .and_then(|s| presentation::icon_provider(s, selected_provider_id));
+    let target_id = target_provider.map(|p| p.id.as_str());
+
+    let needs_loading = provider_needs_loading_animation(state, target_id);
+    let loading_active = state.animation.sync_loading_animation(needs_loading, now);
+
+    if loading_active {
+        if state.loading_timer.is_none() {
+            let interval = 1.0 / icon::LOADING_ANIMATION_FPS;
+            // SAFETY: `timer_target` is a valid `NSObject` handling `loadingTimerFired:`.
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    interval,
+                    &state.timer_target,
+                    sel!(loadingTimerFired:),
+                    None,
+                    true,
+                )
+            };
+            state.loading_timer = Some(timer);
+        }
+    } else if let Some(timer) = state.loading_timer.take() {
+        timer.invalidate();
+    }
+
+    let providers_vec: Vec<String> = target_id.map(|id| vec![id.to_string()]).unwrap_or_default();
+    for id in &providers_vec {
+        state
+            .animation
+            .blink_states
+            .entry(id.clone())
+            .or_insert_with(|| icon::BlinkState::seeded(now, 1));
+    }
+    let has_blinking_providers = target_id.is_some_and(|id| {
+        icon::style_supports_blink(
+            icon::IconStyle::from_provider_id(id),
+            state.prefs.hide_critters,
+        )
+    });
+    let blinking_allowed = icon::is_blinking_allowed(
+        state.settings_state.random_blink_enabled,
+        state.animation.blink_force_until_secs,
+        now,
+    );
+    let should_blink = icon::should_run_blink_task(
+        blinking_allowed,
+        loading_active,
+        state.prefs.hide_critters,
+        has_blinking_providers,
+    );
+    if should_blink {
+        if state.blink_timer.is_none() {
+            let delay_secs = (icon::blink_tick_sleep_duration_ms(
+                &state.animation.blink_states,
+                &providers_vec,
+                now,
+            ) as f64)
+                / 1000.0;
+            // SAFETY: `timer_target` is a valid `NSObject` handling `blinkTimerFired:`.
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    delay_secs,
+                    &state.timer_target,
+                    sel!(blinkTimerFired:),
+                    None,
+                    false,
+                )
+            };
+            state.blink_timer = Some(timer);
+        }
+    } else {
+        if let Some(timer) = state.blink_timer.take() {
+            timer.invalidate();
+        }
+        state.animation.clear_motion();
+    }
+
+    let _ = state.animation.clear_expired_quota_warning_flashes(now);
+    let any_flash_active =
+        target_id.is_some_and(|id| state.animation.is_quota_warning_flash_active(id, now));
+    if any_flash_active {
+        if state.flash_timer.is_none() {
+            // SAFETY: `timer_target` is a valid `NSObject` handling `flashTimerFired:`.
+            let timer = unsafe {
+                NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
+                    icon::QUOTA_WARNING_FLASH_DURATION_SECS,
+                    &state.timer_target,
+                    sel!(flashTimerFired:),
+                    None,
+                    false,
+                )
+            };
+            state.flash_timer = Some(timer);
+        }
+    } else if let Some(timer) = state.flash_timer.take() {
+        timer.invalidate();
+    }
+}
+
+fn on_loading_timer_tick() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        let now = now_secs();
+        let selected_provider_id = match state.selected_tab.as_ref() {
+            Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
+            _ => state.last_provider_id.as_deref(),
+        };
+        let target_id = state
+            .snapshot
+            .as_ref()
+            .and_then(|s| presentation::icon_provider(s, selected_provider_id))
+            .map(|p| p.id.as_str());
+        let needs_loading = provider_needs_loading_animation(state, target_id);
+        if !state.animation.advance_loading_frame(needs_loading, now) {
+            sync_animation_timers(state);
+        }
+        render_status_item_icon(mtm, state);
+    });
+}
+
+fn on_blink_timer_tick() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        state.blink_timer = None;
+        let now = now_secs();
+        let selected_provider_id = match state.selected_tab.as_ref() {
+            Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
+            _ => state.last_provider_id.as_deref(),
+        };
+        let target_id = state
+            .snapshot
+            .as_ref()
+            .and_then(|s| presentation::icon_provider(s, selected_provider_id))
+            .map(|p| p.id.as_str())
+            .map(str::to_string);
+        if let Some(id) = target_id {
+            let _ = state.animation.tick_blink(
+                &[id],
+                state.settings_state.random_blink_enabled,
+                state.prefs.hide_critters,
+                now,
+            );
+        }
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
+}
+
+fn on_flash_timer_tick() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
+        state.flash_timer = None;
+        let _ = state
+            .animation
+            .clear_expired_quota_warning_flashes(now_secs());
+        state.last_render_signature = None;
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
+}
+
+fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
+    let now = now_secs();
+    let selected_provider_id = match state.selected_tab.as_ref() {
+        Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
+        _ => state.last_provider_id.as_deref(),
+    };
+    let merged = state.settings_state.menu_bar_merge_icons;
+    let (provider, mut input) = presentation::status_item_icon_input(
+        state.snapshot.as_ref(),
+        selected_provider_id,
+        merged,
+        state.prefs,
+    );
+    let provider_id = provider.map(|p| p.id.as_str()).unwrap_or("codex");
+    let warning_flash = state
+        .animation
+        .is_quota_warning_flash_active(provider_id, now);
+    let needs_loading = provider_needs_loading_animation(state, Some(provider_id));
+    let phase = state.animation.active_loading_phase(needs_loading);
+
+    let effective_pattern = state
+        .loading_pattern
+        .effective_for(input.style, merged, provider_id);
+
+    if let Some(phase_val) = phase {
+        if effective_pattern == icon::LoadingPattern::Unbraid {
+            let signature = icon::icon_render_signature(
+                &input,
+                state.prefs.show_used,
+                false,
+                Some(phase_val),
+                effective_pattern,
+                warning_flash,
+            );
+            if state.last_render_signature == Some(signature) {
+                return;
+            }
+            state.last_render_signature = Some(signature);
+            let morph_progress = effective_pattern.value(phase_val) / 100.0;
+            if let Some(button) = state.status_item.button(mtm)
+                && let Some(base) = icon_image::render_morph(&icon::morph_layout(
+                    morph_progress,
+                    input.style,
+                    input.hide_critters,
+                ))
+            {
+                let image = if warning_flash {
+                    icon_image::quota_warning_flash_image(&base).unwrap_or(base)
+                } else {
+                    base
+                };
+                button.setImage(Some(&image));
+            }
+            return;
+        }
+        input.primary = Some(effective_pattern.value(phase_val));
+        input.secondary =
+            Some(effective_pattern.value(phase_val + effective_pattern.secondary_offset()));
+        input.credits_remaining = None;
+        input.stale = false;
+    }
+
+    let (blink, wiggle, tilt) = state.animation.motion_for(provider_id);
+    if merged && input.style == icon::IconStyle::Combined {
+        input.blink = 0.0;
+        input.wiggle = 0.0;
+        input.tilt = 0.0;
+    } else {
+        input.blink = if merged {
+            blink
+        } else {
+            icon::loading_blink_amount(input.style, phase, blink)
+        };
+        input.wiggle = wiggle;
+        input.tilt = tilt;
+    }
+
+    let signature = icon::icon_render_signature(
+        &input,
+        state.prefs.show_used,
+        false,
+        phase,
+        effective_pattern,
+        warning_flash,
+    );
+    if state.last_render_signature == Some(signature) {
+        return;
+    }
+    state.last_render_signature = Some(signature);
+
+    if let Some(button) = state.status_item.button(mtm)
+        && let Some(base) = icon_image::render(&icon::layout(&input))
+    {
+        let image = if warning_flash {
+            icon_image::quota_warning_flash_image(&base).unwrap_or(base)
+        } else {
+            base
+        };
+        button.setImage(Some(&image));
+    }
+}
+
 /// Redraws the icon and updates the menu from the current state.
 fn refresh_ui() {
     let Some(mtm) = MainThreadMarker::new() else {
         return;
     };
-    let resolved = STATE.with(|cell| {
-        let guard = cell.borrow();
-        let state = guard.as_ref()?;
+    STATE.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        let Some(state) = guard.as_mut() else { return };
         let resolved = state.menu.update(
             state.snapshot.as_ref(),
             state.connected,
             state.selected_tab.as_ref(),
         );
-        let selected_provider_id = match resolved.as_ref() {
-            Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
-            _ => state.last_provider_id.as_deref(),
-        };
-        let provider = state
-            .snapshot
-            .as_ref()
-            .and_then(|s| presentation::icon_provider(s, selected_provider_id));
-        let input = match provider {
-            Some(provider) => presentation::icon_input(provider, state.prefs),
-            // No data yet: draw empty, dimmed lanes rather than a fake value.
-            None => icon::IconInput {
-                stale: true,
-                ..icon::IconInput::default()
-            },
-        };
-        if let Some(button) = state.status_item.button(mtm)
-            && let Some(image) = icon_image::render(&icon::layout(&input))
-        {
-            button.setImage(Some(&image));
-        }
-        resolved
-    });
-    if let Some(selection) = resolved {
-        STATE.with(|cell| {
-            let mut guard = cell.borrow_mut();
-            let Some(state) = guard.as_mut() else { return };
+        if let Some(selection) = resolved {
             if let SwitcherSelection::Provider(id) = &selection {
                 state.last_provider_id = Some(id.clone());
             }
             state.selected_tab = Some(selection);
-        });
-    }
+        }
+        sync_animation_timers(state);
+        render_status_item_icon(mtm, state);
+    });
 }

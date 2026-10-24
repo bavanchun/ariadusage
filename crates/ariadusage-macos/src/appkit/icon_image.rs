@@ -200,13 +200,10 @@ pub fn quota_warning_flash_image(base: &NSImage) -> Option<Retained<NSImage>> {
         1.0,
     );
 
-    NSGraphicsContext::saveGraphicsState_class();
-    context.setCompositingOperation(NSCompositingOperation::SourceAtop);
     NSColor::systemRedColor()
         .colorWithAlphaComponent(0.28)
         .setFill();
     NSBezierPath::fillRect(rect);
-    NSGraphicsContext::restoreGraphicsState_class();
 
     context.flushGraphics();
     NSGraphicsContext::restoreGraphicsState_class();

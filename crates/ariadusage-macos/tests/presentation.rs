@@ -1,12 +1,15 @@
 // Ported from CodexBar Tests/CodexBarTests/MenuBarMetricWindowResolverTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeSpendWindowTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/MergedWarpIconRenderingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemIconObservationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #![cfg(unix)]
 
 use std::collections::HashSet;
 
-use ariadusage_macos::icon::{IconInput, IconStyle, layout};
+use ariadusage_macos::icon::{IconInput, IconStyle, icon_render_signature, layout};
 use ariadusage_macos::presentation::{
     IconPreferences, MenuBarMetricPreference, UnifiedIconContext, UnifiedIconSource,
     VISIBLE_ZERO_PERCENT, antigravity_quota_summary_families_are_all_blocked,
@@ -15,7 +18,8 @@ use ariadusage_macos::presentation::{
     icon_input_with_override, icon_provider, inferred_monthly_window_minutes,
     primary_provider_for_unified_icon, quota_layout_policy_for_provider,
     resolve_menu_bar_metric_window, resolved_claude_reset_window_for_pace, resolved_icon_percents,
-    resolved_icon_percents_for_style, resolved_icon_windows,
+    resolved_icon_percents_for_style, resolved_icon_windows, status_item_icon_input,
+    store_icon_observation_signature, store_icon_style,
 };
 use ariadusage_protocol::fixture::generate_scenario_snapshot;
 use ariadusage_protocol::ids::ProviderId;
@@ -128,13 +132,26 @@ fn loading_unknown_and_failed_windows_never_render_a_number() {
 }
 
 #[test]
-fn stale_windows_keep_their_value_and_dim_the_icon() {
-    // Step 1: Claude stale.
+fn stale_and_no_data_follow_upstream_usage_store_error_rule() {
+    // Upstream `UsageStore.isStale` is `errors[provider] != nil` (`UsageStore.swift:701-703`).
+    // Step 1: Claude has a stale window value without `last_error` -> keeps value and `stale: false`.
     let snapshot = generate_scenario_snapshot(1);
     let claude = icon_provider(&snapshot, Some("claude")).unwrap();
     let input = icon_input(claude, IconPreferences::default());
     assert_eq!(input.primary, Some(58.0));
-    assert!(input.stale);
+    assert!(!input.stale);
+
+    // Step 2: Codex has `last_error.is_some()` -> `stale: true`.
+    let step2 = generate_scenario_snapshot(2);
+    let codex_err = icon_provider(&step2, Some("codex")).unwrap();
+    let err_input = icon_input(codex_err, IconPreferences::default());
+    assert!(err_input.stale);
+
+    // No snapshot -> empty lanes with `stale: false` (0.28 / 0.44 track palette).
+    let (no_prov, no_data_input) =
+        status_item_icon_input(None, None, true, IconPreferences::default());
+    assert!(no_prov.is_none());
+    assert!(!no_data_input.stale);
 }
 
 #[test]
@@ -1029,4 +1046,276 @@ fn unified_icon_source_resolves_current_selection_highest_usage_and_frontmost_ap
     };
     assert_eq!(ctx.resolve("claude", true, &enabled), "codex");
     assert_eq!(ctx.resolve("claude", false, &enabled), "claude");
+}
+
+#[test]
+fn synthetic_placeholder_unknown_window_is_treated_as_missing_in_claude_and_layout_policy() {
+    let march_18: Timestamp = "2026-03-18T14:22:09Z".parse().unwrap();
+    let mut provider = make_provider("claude");
+    // Synthetic placeholder (`MetricState::Unknown` with a fallback `RateWindow(0.0)`) on primary
+    provider.windows.primary = Some(Metric {
+        state: ariadusage_protocol::metric::MetricState::Unknown,
+        value: Some(rate_window(0.0, Some(300), None)),
+        as_of: None,
+        source: None,
+        confidence: Confidence::Exact,
+        error: None,
+    });
+    provider.identity = Some(metric_ok(Identity {
+        provider_id: ProviderId::new("claude").unwrap(),
+        account_email: None,
+        account_organization: None,
+        login_method: Some("Claude API".to_string()),
+        account_id: None,
+        plan: None,
+    }));
+    provider.cost = Some(metric_ok(make_cost(3100.0, Some(5000.0), Some(march_18))));
+
+    // Claude icon windows treat the synthetic placeholder primary as missing and fall back to monthly spend (62%).
+    let (icon_p, icon_s) = resolved_icon_windows(&provider, None, Some(march_18));
+    assert_eq!(icon_p.as_ref().map(|w| w.used_percent), Some(62.0));
+    assert_eq!(icon_s, None);
+
+    // `quota_layout_policy_for_provider` detects `raw_primary.is_none() && resolved_primary.is_some() && resolved_secondary.is_none()`
+    // and sets `reserves_missing_secondary_lane = false`.
+    let policy = quota_layout_policy_for_provider(&provider, None, Some(march_18));
+    assert!(!policy.reserves_missing_secondary_lane);
+
+    // `resolve_menu_bar_metric_window` also ignores the synthetic placeholder and resolves the spend window.
+    let metric = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &provider,
+        false,
+        false,
+        Some(march_18),
+    );
+    assert_eq!(metric.map(|w| w.used_percent), Some(62.0));
+}
+
+#[test]
+fn codex_duplicate_lanes_are_last_wins_and_expired_capped_session_is_dropped() {
+    let now: Timestamp = "2026-04-06T12:00:00Z".parse().unwrap();
+    let future_reset: Timestamp = "2026-04-06T12:30:00Z".parse().unwrap();
+    let expired_reset: Timestamp = "2026-04-06T11:50:00Z".parse().unwrap();
+
+    // 1. Duplicate session lanes: `secondary` has a 300-min session window after `primary` -> last-wins (65% used).
+    let mut dup = make_provider("codex");
+    dup.windows.primary = Some(metric_ok(rate_window(20.0, Some(300), Some(future_reset))));
+    dup.windows.secondary = Some(metric_ok(rate_window(65.0, Some(300), Some(future_reset))));
+    let (dup_p, dup_s) = resolved_icon_windows(&dup, None, Some(now));
+    assert_eq!(dup_p.map(|w| w.used_percent), Some(65.0));
+    assert_eq!(dup_s, None);
+
+    // 2. Weekly cap (`weekly == 100%` with future reset) when session's own reset has already passed:
+    // upstream caps session to 100% first, then drops it because `session.resetsAt <= now`, promoting weekly to primary!
+    let mut capped_expired_session = make_provider("codex");
+    capped_expired_session.windows.primary =
+        Some(metric_ok(rate_window(25.0, Some(300), Some(expired_reset))));
+    capped_expired_session.windows.secondary = Some(metric_ok(rate_window(
+        100.0,
+        Some(10080),
+        Some(future_reset),
+    )));
+    let (cap_p, cap_s) = resolved_icon_windows(&capped_expired_session, None, Some(now));
+    assert_eq!(cap_p.as_ref().map(|w| w.used_percent), Some(100.0));
+    assert_eq!(cap_p.as_ref().and_then(|w| w.window_minutes), Some(10080));
+    assert_eq!(cap_s, None);
+}
+
+#[test]
+fn merged_status_item_signatures_and_merged_warp_bonus_lane_match_upstream() {
+    use ariadusage_macos::icon::LoadingPattern;
+    // 1. `StatusItemAnimationSignatureTests`: merged style is `.combined` when >1 provider is enabled
+    // and switches to the single provider's style when only 1 provider is enabled.
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let mut synthetic = make_provider("synthetic");
+    synthetic.enabled = true;
+
+    let two_enabled = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![codex.clone(), synthetic.clone()],
+    );
+    assert_eq!(store_icon_style(Some(&two_enabled)), IconStyle::Combined);
+    let (_, combined_input) = status_item_icon_input(
+        Some(&two_enabled),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(combined_input.style, IconStyle::Combined);
+    let combined_sig = icon_render_signature(
+        &combined_input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+
+    synthetic.enabled = false;
+    let one_enabled = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![codex, synthetic],
+    );
+    assert_eq!(store_icon_style(Some(&one_enabled)), IconStyle::Codex);
+    let (_, codex_input) = status_item_icon_input(
+        Some(&one_enabled),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(codex_input.style, IconStyle::Codex);
+    let codex_sig = icon_render_signature(
+        &codex_input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    assert_ne!(combined_sig, codex_sig);
+
+    // 2. `StatusItemAnimationSignatureTests`: merged Antigravity icon resolves quota summary with provider style
+    // while rendering with `style=combined`.
+    let mut antigravity = make_provider("antigravity");
+    antigravity.windows.primary = Some(metric_ok(rate_window(99.0, Some(10080), None)));
+    antigravity.windows.secondary = Some(metric_ok(rate_window(16.0, Some(10080), None)));
+    antigravity.windows.extra = vec![
+        extra_window(
+            "antigravity-quota-summary-gemini-5h",
+            "Gemini Session",
+            1.0,
+            Some(300),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-gemini-weekly",
+            "Gemini Weekly",
+            99.0,
+            Some(10080),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-3p-5h",
+            "Claude + GPT Session",
+            2.0,
+            Some(300),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-3p-weekly",
+            "Claude + GPT Weekly",
+            16.0,
+            Some(10080),
+            None,
+        ),
+    ];
+    let mut syn2 = make_provider("synthetic");
+    syn2.enabled = true;
+    let ag_snap = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![antigravity, syn2],
+    );
+    let (_, ag_input) = status_item_icon_input(
+        Some(&ag_snap),
+        Some("antigravity"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(ag_input.style, IconStyle::Combined);
+    assert_eq!(ag_input.primary, Some(98.0));
+    assert_eq!(ag_input.secondary, Some(1.0));
+
+    // 3. `MergedWarpIconRenderingTests`: merged Warp bonus lane is preserved in show-used mode when bonus is unused (`0.1`)
+    // vs exhausted (`0.0`).
+    let mut warp_exhausted = make_provider("warp");
+    warp_exhausted.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    warp_exhausted.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    let snap_ex = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![warp_exhausted, make_provider("codex")],
+    );
+    let (_, ex_input) = status_item_icon_input(
+        Some(&snap_ex),
+        Some("warp"),
+        true,
+        IconPreferences {
+            show_used: true,
+            ..IconPreferences::default()
+        },
+    );
+    let ex_sig = icon_render_signature(
+        &ex_input,
+        true,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+
+    let mut warp_unused = make_provider("warp");
+    warp_unused.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    warp_unused.windows.secondary = Some(metric_ok(rate_window(0.0, None, None)));
+    let snap_un = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![warp_unused, make_provider("codex")],
+    );
+    let (_, un_input) = status_item_icon_input(
+        Some(&snap_un),
+        Some("warp"),
+        true,
+        IconPreferences {
+            show_used: true,
+            ..IconPreferences::default()
+        },
+    );
+    let un_sig = icon_render_signature(
+        &un_input,
+        true,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    assert_ne!(ex_sig, un_sig);
+    assert_eq!(ex_input.secondary, Some(0.0));
+    assert_eq!(un_input.secondary, Some(0.1));
+    assert!(ex_input.treats_exhausted_secondary_as_missing);
+    assert!(un_input.treats_exhausted_secondary_as_missing);
+
+    // 4. `StatusItemIconObservationSignatureTests`: observation signature changes when enabled providers,
+    // window values, or error states change.
+    let prefs = IconPreferences {
+        show_used: true,
+        ..IconPreferences::default()
+    };
+    let obs_ex = store_icon_observation_signature(Some(&snap_ex), Some("warp"), true, prefs);
+    let obs_un = store_icon_observation_signature(Some(&snap_un), Some("warp"), true, prefs);
+    assert_ne!(obs_ex, obs_un);
 }

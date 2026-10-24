@@ -4,6 +4,8 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+CostMenuCard.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/SettingsStore+MenuPreferences.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+TokenCost.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -373,11 +375,7 @@ pub fn provider_card_sections(
         .and_then(displayable_value)
         .is_some_and(|h| !h.daily.is_empty());
     let has_cost_history = provider_supports_token_cost(id) && has_cost_chart;
-    let has_codex_web_extras = id == "codex"
-        && (card.credits.is_some()
-            || card.limit_reset_credits.is_some()
-            || card.inline_usage_dashboard.is_some());
-    let has_openai_web_items = has_codex_web_extras || has_cost_history;
+    let has_openai_web_items = has_cost_history;
     let requires_sectioned_cost = token_cost_requires_provider_snapshot(id) && has_cost_chart;
     if !has_openai_web_items && !requires_sectioned_cost {
         return vec![CardSectionEntry {

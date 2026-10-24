@@ -2,15 +2,27 @@
 // Ported from CodexBar Tests/CodexBarTests/IconRendererHideCrittersTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/IconRendererStatusOverlayTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/IconRendererGrokTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationCapTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemBlinkGatingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use ariadusage_macos::icon::{
-    Bar, DEFAULT_QUOTA_WARNING_THRESHOLDS, IconInput, IconPalette, IconStyle,
-    LOADING_PERCENT_EPSILON, LoadingPattern, QUOTA_WARNING_FLASH_DURATION_SECS,
-    QuotaWarningThresholds, RectPt, RectPx, StatusLevel, StatusOverlay,
-    effective_provider_tint_rgb, fill_width_pixels, layout, loading_blink_amount,
-    meets_appearance_contrast, morph_layout, quota_warning_flash_active,
+    BLINK_ACTIVE_TICK_INTERVAL_MS, BLINK_DURATION_SECS, BLINK_IDLE_FALLBACK_INTERVAL_MS, Bar,
+    BlinkState, DEFAULT_QUOTA_WARNING_THRESHOLDS, IconInput, IconPalette, IconStyle,
+    LOADING_ANIMATION_FPS, LOADING_ANIMATION_MAX_CONTINUOUS_DURATION_SECS,
+    LOADING_ANIMATION_PHASE_INCREMENT, LOADING_PERCENT_EPSILON, LoadingPattern, MotionEffect,
+    QUOTA_WARNING_FLASH_DURATION_SECS, QuotaWarningNotificationLogic, QuotaWarningThresholds,
+    QuotaWarningTracker, RectPt, RectPx, StatusItemAnimationState, StatusLevel, StatusOverlay,
+    blink_tick_sleep_duration_ms, effective_provider_tint_rgb, fill_width_pixels,
+    icon_render_signature, is_blinking_allowed, layout,
+    loading_animation_has_exceeded_continuous_cap, loading_blink_amount, meets_appearance_contrast,
+    morph_layout, quota_warning_flash_active, select_motion_effect, should_run_blink_task,
+    style_supports_blink,
 };
 
 const TOP: RectPx = RectPx::new(3, 19, 30, 12);
@@ -338,7 +350,11 @@ fn quota_warning_thresholds_and_flash_duration_match_upstream() {
     assert_eq!(QUOTA_WARNING_FLASH_DURATION_SECS, 60.0);
     assert_eq!(
         QuotaWarningThresholds::sanitized(&[20, 50, 20, 0, 150]),
-        vec![99, 50, 20, 1]
+        vec![99, 50, 20, 0]
+    );
+    assert_eq!(
+        QuotaWarningThresholds::active(Some(&[20, 50, 20, 0, 150])),
+        vec![99, 50, 20]
     );
     assert_eq!(QuotaWarningThresholds::active(None), vec![50, 20]);
     assert_eq!(QuotaWarningThresholds::active(Some(&[])), vec![50, 20]);
@@ -346,8 +362,291 @@ fn quota_warning_thresholds_and_flash_duration_match_upstream() {
         QuotaWarningThresholds::resolved(Some(&[15, 40]), Some(&[50, 20])),
         vec![40, 15]
     );
+    assert_eq!(
+        QuotaWarningThresholds::resolved_pair(None, None),
+        vec![50, 20]
+    );
     assert!(quota_warning_flash_active(Some(1000.0), 1059.0));
     assert!(!quota_warning_flash_active(Some(1000.0), 1061.0));
+}
+
+#[test]
+fn copilot_style_has_no_decorations_and_unshipped_aliases_are_removed() {
+    assert!(!IconStyle::Copilot.decorations().face);
+    assert_eq!(IconStyle::from_provider_id("copilot"), IconStyle::Copilot);
+    assert_eq!(IconStyle::from_provider_id("kiro"), IconStyle::Combined);
+    assert_eq!(IconStyle::from_provider_id("droid"), IconStyle::Combined);
+}
+
+#[test]
+fn loading_animation_cap_expires_only_after_thirty_seconds() {
+    let now = 2_000_000_000.0;
+    assert_eq!(LOADING_ANIMATION_MAX_CONTINUOUS_DURATION_SECS, 30.0);
+    assert!(!loading_animation_has_exceeded_continuous_cap(
+        Some(now - 30.0),
+        now,
+    ));
+    assert!(loading_animation_has_exceeded_continuous_cap(
+        Some(now - 30.001),
+        now,
+    ));
+}
+
+#[test]
+fn capped_animation_marker_does_not_qualify_as_a_fresh_cap() {
+    let now = 2_000_000_000.0;
+    assert!(!loading_animation_has_exceeded_continuous_cap(None, now));
+    let mut state = StatusItemAnimationState::default();
+    assert!(state.sync_loading_animation(true, now));
+    assert!(!state.sync_loading_animation(true, now + 30.001));
+    assert!(state.loading_capped);
+    assert!(!state.sync_loading_animation(true, now + 31.0));
+}
+
+#[test]
+fn quota_warning_notification_logic_crossing_recovery_and_zero_threshold() {
+    // does nothing without crossing
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(
+            Some(60.0),
+            55.0,
+            &[50, 20],
+            &BTreeSet::new()
+        ),
+        None
+    );
+
+    // detects downward crossing
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(
+            Some(55.0),
+            45.0,
+            &[50, 20],
+            &BTreeSet::new()
+        ),
+        Some(50)
+    );
+
+    // skips already fired thresholds
+    let already_50: BTreeSet<i32> = [50].into_iter().collect();
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(Some(55.0), 45.0, &[50, 20], &already_50),
+        None
+    );
+
+    // chooses most severe threshold when crossing several at once
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(
+            Some(80.0),
+            10.0,
+            &[50, 20],
+            &BTreeSet::new()
+        ),
+        Some(20)
+    );
+
+    // startup below threshold warns once at most severe threshold
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(None, 10.0, &[50, 20], &BTreeSet::new()),
+        Some(20)
+    );
+
+    // warning marks threshold and higher thresholds fired
+    let fired = QuotaWarningNotificationLogic::fired_thresholds_after_warning(20, &[50, 20]);
+    assert_eq!(fired, [50, 20].into_iter().collect::<BTreeSet<i32>>());
+
+    // recovery clears only thresholds below current remaining
+    let cleared = QuotaWarningNotificationLogic::thresholds_to_clear(30.0, &fired);
+    assert_eq!(cleared, [20].into_iter().collect::<BTreeSet<i32>>());
+
+    // zero threshold does not post quota warning
+    let already_10: BTreeSet<i32> = [10].into_iter().collect();
+    assert_eq!(
+        QuotaWarningNotificationLogic::crossed_threshold(Some(10.0), 0.0, &[10, 0], &already_10),
+        None
+    );
+    assert_eq!(
+        QuotaWarningNotificationLogic::fired_thresholds_after_warning(10, &[10, 0]),
+        already_10
+    );
+
+    // QuotaWarningTracker clears fired state on reset timestamp change and recovery
+    let mut tracker = QuotaWarningTracker::default();
+    assert!(tracker.update_provider(
+        "codex",
+        Some(45.0),
+        Some(1_000),
+        None,
+        None,
+        &DEFAULT_QUOTA_WARNING_THRESHOLDS,
+        true
+    ));
+    assert!(!tracker.update_provider(
+        "codex",
+        Some(40.0),
+        Some(1_000),
+        None,
+        None,
+        &DEFAULT_QUOTA_WARNING_THRESHOLDS,
+        true
+    ));
+    assert!(tracker.update_provider(
+        "codex",
+        Some(15.0),
+        Some(1_000),
+        None,
+        None,
+        &DEFAULT_QUOTA_WARNING_THRESHOLDS,
+        true
+    ));
+    // Reset timestamp changes -> clears fired thresholds, warns again at 45%
+    assert!(tracker.update_provider(
+        "codex",
+        Some(45.0),
+        Some(2_000),
+        None,
+        None,
+        &DEFAULT_QUOTA_WARNING_THRESHOLDS,
+        true
+    ));
+}
+
+#[test]
+fn status_item_blink_gating_and_animation_state_lifecycle() {
+    assert_eq!(LOADING_ANIMATION_FPS, 30.0);
+    assert!((LOADING_ANIMATION_PHASE_INCREMENT - 2.7 / 30.0).abs() < 1e-12);
+    assert_eq!(BLINK_ACTIVE_TICK_INTERVAL_MS, 75);
+    assert_eq!(BLINK_IDLE_FALLBACK_INTERVAL_MS, 1000);
+    assert!((BLINK_DURATION_SECS - 0.36).abs() < 1e-9);
+
+    assert!(style_supports_blink(IconStyle::Codex, false));
+    assert!(!style_supports_blink(IconStyle::Codex, true));
+    assert!(style_supports_blink(IconStyle::Claude, false));
+    assert!(style_supports_blink(IconStyle::Warp, false));
+    assert!(!style_supports_blink(IconStyle::Combined, false));
+    assert!(!style_supports_blink(IconStyle::Copilot, false));
+
+    assert_eq!(
+        select_motion_effect(IconStyle::Claude, 0.10),
+        MotionEffect::Wiggle
+    );
+    assert_eq!(
+        select_motion_effect(IconStyle::Claude, 0.50),
+        MotionEffect::Blink
+    );
+    assert_eq!(
+        select_motion_effect(IconStyle::Codex, 0.10),
+        MotionEffect::Tilt
+    );
+    assert_eq!(
+        select_motion_effect(IconStyle::Codex, 0.50),
+        MotionEffect::Blink
+    );
+
+    let now = 2_000_000_000.0;
+    assert!(is_blinking_allowed(true, None, now));
+    assert!(!is_blinking_allowed(false, None, now));
+    assert!(is_blinking_allowed(false, Some(now + 0.5), now));
+
+    assert!(should_run_blink_task(true, false, false, true));
+    assert!(!should_run_blink_task(true, true, false, true));
+    assert!(!should_run_blink_task(true, false, true, true));
+    assert!(!should_run_blink_task(true, false, false, false));
+
+    let mut state = StatusItemAnimationState::default();
+    let providers = vec!["codex".to_string()];
+
+    // Empty blink states -> sleep duration is 75ms to initialize
+    assert_eq!(
+        blink_tick_sleep_duration_ms(&state.blink_states, &providers, now),
+        75
+    );
+
+    // Seed blink state -> sleep duration is >= 3000ms (initial delay in 3.0..=12.0s)
+    state
+        .blink_states
+        .insert("codex".to_string(), BlinkState::seeded(now, 1));
+    assert!(blink_tick_sleep_duration_ms(&state.blink_states, &providers, now) >= 3000);
+
+    // Force blink now -> sleep duration becomes 75ms (active frame cadence)
+    let forced = state.force_blink_now(&providers, false, now);
+    assert_eq!(forced, providers);
+    assert_eq!(
+        blink_tick_sleep_duration_ms(&state.blink_states, &providers, now),
+        75
+    );
+
+    // Force blink when hide_critters == true is a no-op
+    assert!(state.force_blink_now(&providers, true, now).is_empty());
+
+    // Tick at midpoint of blink (now + 0.18s) -> motion amount > 0.9
+    let changed = state.tick_blink(&providers, true, false, now + 0.18);
+    assert_eq!(changed, providers);
+    let (blink, wiggle, tilt) = state.motion_for("codex");
+    assert!(blink > 0.9 || wiggle > 0.9 || tilt.abs() > 0.1);
+    assert_eq!(state.motion_for("claude"), (0.0, 0.0, 0.0));
+
+    // Tick after blink duration (now + 0.40s) -> blink finishes and resets to 0
+    let _ = state.tick_blink(&providers, true, false, now + 0.40);
+    assert_eq!(state.motion_for("codex"), (0.0, 0.0, 0.0));
+
+    let mut custom_states = BTreeMap::new();
+    custom_states.insert(
+        "codex".to_string(),
+        BlinkState {
+            next_blink_secs: now + 0.25,
+            blink_start_secs: None,
+            pending_second_start_secs: None,
+            effect: MotionEffect::Blink,
+        },
+    );
+    assert_eq!(
+        blink_tick_sleep_duration_ms(&custom_states, &providers, now),
+        250
+    );
+
+    // Loading animation lifecycle & 30s cap
+    assert!(state.sync_loading_animation(true, now));
+    assert_eq!(state.active_loading_phase(true), Some(0.0));
+    assert!(state.advance_loading_frame(true, now + 0.033));
+    assert!(state.active_loading_phase(true).unwrap() > 0.0);
+
+    // Exceeding 30s continuous cap stops loading animation until loading clears
+    assert!(!state.sync_loading_animation(true, now + 30.5));
+    assert_eq!(state.active_loading_phase(true), None);
+    assert!(!state.sync_loading_animation(true, now + 31.0));
+    assert!(!state.sync_loading_animation(false, now + 32.0));
+    // Fresh loading run after clearing starts again
+    assert!(state.sync_loading_animation(true, now + 33.0));
+    assert_eq!(state.active_loading_phase(true), Some(0.0));
+
+    // Quota warning flash lifecycle + signature
+    let until = state.start_quota_warning_flash("codex", now);
+    assert_eq!(until, now + QUOTA_WARNING_FLASH_DURATION_SECS);
+    assert!(state.is_quota_warning_flash_active("codex", now + 59.0));
+    assert!(!state.is_quota_warning_flash_active("codex", now + 61.0));
+
+    let input = IconInput {
+        primary: Some(50.0),
+        ..IconInput::default()
+    };
+    let sig_no_flash = icon_render_signature(
+        &input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    let sig_flash = icon_render_signature(
+        &input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        true,
+    );
+    assert_ne!(sig_no_flash, sig_flash);
 }
 
 #[test]
@@ -715,6 +1014,10 @@ mod macos_pixel_tests {
         let rep = bitmap_rep(&flashed);
         let center = rep.colorAtX_y(18, 18).unwrap();
         assert!(center.redComponent() > center.blueComponent());
+        // SourceOver 0.28 red fill covers the entire 36x36 square including (0, 0).
+        let corner = rep.colorAtX_y(0, 0).unwrap();
+        assert!(corner.alphaComponent() > 0.25);
+        assert!(corner.redComponent() > corner.blueComponent());
     }
 
     #[test]
@@ -805,6 +1108,33 @@ mod macos_pixel_tests {
         std::fs::write(
             out_dir.join("codex-morph-35.png"),
             image_png_bytes(&morph).unwrap(),
+        )
+        .unwrap();
+
+        // Also export exact-percent matches for the golden status-item captures
+        let golden_dark_match = layout(&IconInput {
+            primary: Some(90.0),
+            secondary: Some(73.0),
+            hide_critters: true,
+            ..IconInput::default()
+        });
+        std::fs::write(
+            out_dir.join("bars-golden-dark-match.png"),
+            render_png_for_appearance(&golden_dark_match, true, false, None, false).unwrap(),
+        )
+        .unwrap();
+
+        let golden_light_match = layout(&IconInput {
+            primary: None,
+            secondary: None,
+            reserves_missing_secondary_lane: true,
+            stale: true,
+            hide_critters: true,
+            ..IconInput::default()
+        });
+        std::fs::write(
+            out_dir.join("bars-golden-light-match.png"),
+            render_png_for_appearance(&golden_light_match, true, false, None, false).unwrap(),
         )
         .unwrap();
     }
