@@ -202,6 +202,7 @@ fn cost_usage_store_persists_and_rebuilds_on_schema_mismatch() {
         time_zone_identifier: Some("UTC".to_owned()),
         pricing_key: Some("pricing-v4".to_owned()),
         priority_metadata_key: None,
+        priority_turns_cursor: None,
         catch_up_pending: false,
         processed_bytes: Some(1024),
         total_bytes: Some(1024),
@@ -228,6 +229,8 @@ fn cost_usage_store_persists_and_rebuilds_on_schema_mismatch() {
             cache_creation_tokens: None,
             total_tokens: Some(600),
             request_count: Some(2),
+            priced_request_count: Some(2),
+            unpriced_request_count: None,
             unmetered_request_count: None,
             cost_usd: Some(0.05),
             models_used: vec!["gpt-5.2-codex".to_owned()],
@@ -242,6 +245,7 @@ fn cost_usage_store_persists_and_rebuilds_on_schema_mismatch() {
             }],
         }],
         summary: None,
+        priority_data_is_partial: false,
     };
     assert!(store.save_provider_report("codex", &report, 1_700_000_000_000));
     let (loaded_report, ts) = store.load_provider_report("codex").expect("load report");
@@ -408,6 +412,7 @@ fn cost_usage_store_writes_0700_dir_and_0600_files_and_rejects_symlinks_without_
         time_zone_identifier: Some("UTC".to_owned()),
         pricing_key: Some("pricing-v4".to_owned()),
         priority_metadata_key: None,
+        priority_turns_cursor: None,
         catch_up_pending: false,
         processed_bytes: Some(1024),
         total_bytes: Some(1024),
