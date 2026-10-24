@@ -751,6 +751,7 @@ pub async fn run_daemon_with_options(
 ) -> Result<(), DaemonError> {
     let cfg_path = config_path()?;
     let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)?;
+    runtime.start_host_observers();
     runtime.start_timer();
     let backend: Arc<dyn IpcBackend> = runtime.clone();
 
@@ -765,6 +766,7 @@ pub async fn run_daemon_with_options(
     })
     .await;
 
+    runtime.stop_host_observers();
     runtime.stop_timer();
     res
 }

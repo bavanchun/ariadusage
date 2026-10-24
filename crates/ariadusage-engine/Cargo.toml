@@ -53,6 +53,7 @@ sha1 = { workspace = true }
 notify-rust = { workspace = true }
 procfs = { workspace = true }
 secret-service = { workspace = true }
+zbus = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 listeners = { workspace = true }

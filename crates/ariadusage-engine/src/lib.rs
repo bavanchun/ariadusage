@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod error;
 pub mod hardening;
 pub mod hooks;
+pub mod host_observers;
 pub mod ipc_server;
 pub mod paths;
 pub mod private_file;
@@ -32,6 +33,14 @@ pub use hooks::{
     DispatchOutcome, FORWARDED_ENVIRONMENT_KEYS, FakeHookCommandExecutor, HookCommandExecutor,
     HookExecutionOutput, HookExecutionRequest, HookRunner, HookRunnerError, MAXIMUM_PAYLOAD_BYTES,
     ProcessBrokerHookExecutor,
+};
+pub use host_observers::{
+    AgentProcessSnapshot, AgentSessionProvider, AgentSessionRefreshGate,
+    ClaudeDesktopProjectsLocator, ClaudeSessionProjectMapper, DefaultHostPowerThermalProbe,
+    DirectoryMetadataScanBudget, FutureModificationDateClamp, HostPowerThermalProbe,
+    LOCAL_ACTIVITY_SCAN_INTERVAL, LocalActivityScanResult, LocalAgentSessionScanner,
+    ObservedAgentSession, SessionScanConfig, evaluate_upower_low_power_mode,
+    map_macos_thermal_state, read_linux_thermal_pressure_from_sysfs,
 };
 pub use ipc_server::{IpcBackend, IpcServerError, PeerIdentity, verify_peer_uid};
 pub use paths::{

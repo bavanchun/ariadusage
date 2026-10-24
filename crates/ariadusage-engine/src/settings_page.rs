@@ -56,6 +56,8 @@ pub struct AppPreferences {
     pub menu_bar_show_used: bool,
     pub menu_bar_merge_icons: bool,
     pub menu_bar_color_by_provider: bool,
+    pub adaptive_activity_scan_consent: String,
+    pub background_work_low_power_mode_preference: String,
 }
 
 impl Default for AppPreferences {
@@ -78,11 +80,29 @@ impl Default for AppPreferences {
             menu_bar_show_used: false,
             menu_bar_merge_icons: false,
             menu_bar_color_by_provider: false,
+            adaptive_activity_scan_consent: "allowed".to_string(),
+            background_work_low_power_mode_preference: "automatic".to_string(),
         }
     }
 }
 
 impl AppPreferences {
+    /// Returns whether local coding-activity scanning is enabled (`SettingsStore.adaptiveActivityScanningEnabled`,
+    /// `SettingsStore+Defaults.swift:825-828`).
+    pub fn adaptive_activity_scanning_enabled(&self) -> bool {
+        self.refresh_frequency.uses_coding_activity()
+            && self.adaptive_activity_scan_consent == "allowed"
+    }
+
+    /// Evaluates effective background low-power mode from `backgroundWorkLowPowerModePreference`
+    /// (`SettingsStore.backgroundWorkLowPowerModeEnabled`, `SettingsStore+Defaults.swift:841-850`).
+    pub fn effective_low_power_mode(&self, system_low_power_mode: bool) -> bool {
+        match self.background_work_low_power_mode_preference.as_str() {
+            "on" => true,
+            "off" => false,
+            _ => system_low_power_mode,
+        }
+    }
     /// Converts app preferences into [`ariadusage_core::notifications::NotificationPreferences`].
     pub fn notification_preferences(
         &self,
@@ -227,6 +247,22 @@ impl AppPreferences {
             .and_then(Value::as_bool)
         {
             prefs.menu_bar_color_by_provider = color_by_provider;
+        }
+        if let Some(consent) = map
+            .get("adaptiveActivityScanConsent")
+            .or_else(|| map.get("app.refresh.adaptiveActivityScanConsent"))
+            .and_then(Value::as_str)
+            && matches!(consent, "allowed" | "declined" | "undecided")
+        {
+            prefs.adaptive_activity_scan_consent = consent.to_string();
+        }
+        if let Some(pref) = map
+            .get("backgroundWorkLowPowerModePreference")
+            .or_else(|| map.get("app.refresh.lowPowerMode"))
+            .and_then(Value::as_str)
+            && matches!(pref, "automatic" | "on" | "off")
+        {
+            prefs.background_work_low_power_mode_preference = pref.to_string();
         }
 
         prefs
@@ -977,6 +1013,46 @@ pub fn apply_setting_mutation(
                 });
             };
             config.secret_file_fallback = Some(enabled);
+            return Ok((SettingsScope::App, None));
+        }
+        "adaptiveActivityScanConsent" | "app.refresh.adaptiveActivityScanConsent" => {
+            let Some(choice) = value.as_str() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a string choice value".to_string(),
+                });
+            };
+            if !matches!(choice, "allowed" | "declined" | "undecided") {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: format!("unsupported adaptiveActivityScanConsent '{choice}'"),
+                });
+            }
+            update_settings_json_field(
+                config,
+                "adaptiveActivityScanConsent",
+                Value::String(choice.to_string()),
+            );
+            return Ok((SettingsScope::App, None));
+        }
+        "backgroundWorkLowPowerModePreference" | "app.refresh.lowPowerMode" => {
+            let Some(choice) = value.as_str() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a string choice value".to_string(),
+                });
+            };
+            if !matches!(choice, "automatic" | "on" | "off") {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: format!("unsupported backgroundWorkLowPowerModePreference '{choice}'"),
+                });
+            }
+            update_settings_json_field(
+                config,
+                "backgroundWorkLowPowerModePreference",
+                Value::String(choice.to_string()),
+            );
             return Ok((SettingsScope::App, None));
         }
         "providers.active" => {

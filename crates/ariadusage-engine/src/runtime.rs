@@ -414,6 +414,12 @@ pub struct EngineRuntime {
     weak_self: Mutex<Option<std::sync::Weak<Self>>>,
     timer_cancel: Mutex<Option<CancellationToken>>,
     timer_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    power_thermal_probe: RwLock<Arc<dyn crate::host_observers::HostPowerThermalProbe>>,
+    session_scanner_override: RwLock<Option<crate::host_observers::LocalAgentSessionScanner>>,
+    activity_refresh_gate: Mutex<crate::host_observers::AgentSessionRefreshGate>,
+    host_observers_active: std::sync::atomic::AtomicBool,
+    observer_cancel: Mutex<Option<CancellationToken>>,
+    observer_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     engine_version: String,
 }
 
@@ -465,6 +471,19 @@ impl Drop for EngineRuntime {
             cancel.cancel();
         }
         let _ = self.timer_task.lock().expect("timer_task lock").take();
+        if let Some(cancel) = self
+            .observer_cancel
+            .lock()
+            .expect("observer_cancel lock")
+            .take()
+        {
+            cancel.cancel();
+        }
+        let _ = self
+            .observer_task
+            .lock()
+            .expect("observer_task lock")
+            .take();
     }
 }
 
@@ -557,6 +576,14 @@ impl EngineRuntime {
             weak_self: Mutex::new(None),
             timer_cancel: Mutex::new(None),
             timer_task: Mutex::new(None),
+            power_thermal_probe: RwLock::new(Arc::new(
+                crate::host_observers::DefaultHostPowerThermalProbe::new(),
+            )),
+            session_scanner_override: RwLock::new(None),
+            activity_refresh_gate: Mutex::new(crate::host_observers::AgentSessionRefreshGate::new()),
+            host_observers_active: std::sync::atomic::AtomicBool::new(false),
+            observer_cancel: Mutex::new(None),
+            observer_task: Mutex::new(None),
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -2052,11 +2079,12 @@ impl EngineRuntime {
         } else {
             None
         };
+        let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
         let input = AdaptiveRefreshInput::new(
             now,
             adaptive.last_menu_opened_at,
             coding_activity,
-            adaptive.is_low_power_mode,
+            low_power,
             adaptive.thermal_pressure,
         );
         Some(AdaptiveRefreshPolicyCore.next_delay(&input))
@@ -2070,11 +2098,9 @@ impl EngineRuntime {
         let prefs = AppPreferences::from_config(&config);
         if let Some(fixed) = prefs.refresh_frequency.duration() {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-            let effective = BackgroundWorkPowerPolicy::automatic_interval(
-                Some(fixed),
-                adaptive.is_low_power_mode,
-            )
-            .unwrap_or(fixed);
+            let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
+            let effective = BackgroundWorkPowerPolicy::automatic_interval(Some(fixed), low_power)
+                .unwrap_or(fixed);
             adaptive.fixed_refresh_interval = Some(effective);
             adaptive.scheduled_fire_at = Some(add_duration(now, effective));
             return Some(effective);
@@ -2088,19 +2114,18 @@ impl EngineRuntime {
         } else {
             None
         };
+        let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
         let input = AdaptiveRefreshInput::new(
             now,
             adaptive.last_menu_opened_at,
             coding_activity,
-            adaptive.is_low_power_mode,
+            low_power,
             adaptive.thermal_pressure,
         );
         let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
-        let effective = BackgroundWorkPowerPolicy::automatic_interval(
-            Some(decision.delay),
-            adaptive.is_low_power_mode,
-        )
-        .unwrap_or(decision.delay);
+        let effective =
+            BackgroundWorkPowerPolicy::automatic_interval(Some(decision.delay), low_power)
+                .unwrap_or(decision.delay);
         adaptive.adaptive_computed_interval = Some(effective);
         adaptive.scheduled_fire_at = Some(add_duration(now, effective));
         Some(effective)
@@ -2121,19 +2146,18 @@ impl EngineRuntime {
         } else {
             None
         };
+        let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
         let input = AdaptiveRefreshInput::new(
             now,
             adaptive.last_menu_opened_at,
             coding_activity,
-            adaptive.is_low_power_mode,
+            low_power,
             adaptive.thermal_pressure,
         );
         let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
-        let effective = BackgroundWorkPowerPolicy::automatic_interval(
-            Some(decision.delay),
-            adaptive.is_low_power_mode,
-        )
-        .unwrap_or(decision.delay);
+        let effective =
+            BackgroundWorkPowerPolicy::automatic_interval(Some(decision.delay), low_power)
+                .unwrap_or(decision.delay);
         adaptive.adaptive_computed_interval = Some(effective);
         adaptive.scheduled_fire_at = Some(add_duration(now, effective));
         Some(adaptive.sleep_override.unwrap_or(effective))
@@ -2147,8 +2171,7 @@ impl EngineRuntime {
         let (advanced, restart) = {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
             adaptive.last_menu_opened_at = Some(now);
-            let adv =
-                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            let adv = Self::recompute_adaptive_schedule(&mut adaptive, &prefs, now);
             (adv, adv && adaptive.timer_active)
         };
         if restart {
@@ -2182,8 +2205,7 @@ impl EngineRuntime {
             {
                 adaptive.last_coding_activity_at = Some(observed_at);
             }
-            let adv =
-                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            let adv = Self::recompute_adaptive_schedule(&mut adaptive, &prefs, now);
             (adv, adv && adaptive.timer_active)
         };
         if restart {
@@ -2198,6 +2220,254 @@ impl EngineRuntime {
         adaptive.last_coding_activity_at.take().is_some()
     }
 
+    /// Returns the effective low-power mode state (respecting `backgroundWorkLowPowerModePreference`).
+    pub fn is_low_power_mode(&self) -> bool {
+        let prefs = AppPreferences::from_config(&self.load_config());
+        let system_low_power = self
+            .adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .is_low_power_mode;
+        prefs.effective_low_power_mode(system_low_power)
+    }
+
+    /// Returns the currently recorded system thermal pressure.
+    pub fn thermal_pressure(&self) -> ThermalPressure {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .thermal_pressure
+    }
+
+    /// Overrides the [`crate::host_observers::HostPowerThermalProbe`] used when sampling host
+    /// power and thermal state.
+    pub fn set_power_thermal_probe(
+        &self,
+        probe: Arc<dyn crate::host_observers::HostPowerThermalProbe>,
+    ) {
+        *self
+            .power_thermal_probe
+            .write()
+            .expect("power_thermal_probe lock") = probe;
+    }
+
+    /// Overrides the [`crate::host_observers::LocalAgentSessionScanner`] used when scanning local
+    /// coding activity.
+    pub fn set_session_scanner_for_testing(
+        &self,
+        scanner: Option<crate::host_observers::LocalAgentSessionScanner>,
+    ) {
+        *self
+            .session_scanner_override
+            .write()
+            .expect("session_scanner_override lock") = scanner;
+    }
+
+    /// Returns whether background local coding-activity scanning is currently permitted
+    /// (`AgentSessionsStore.shouldScanLocally`).
+    pub fn should_scan_coding_activity_locally(&self) -> bool {
+        let prefs = AppPreferences::from_config(&self.load_config());
+        let adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+        let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
+        crate::host_observers::AgentSessionRefreshGate::should_scan_locally(
+            prefs.adaptive_activity_scanning_enabled(),
+            low_power,
+            adaptive.thermal_pressure,
+        )
+    }
+
+    /// Samples host low-power mode and thermal pressure once through the configured
+    /// [`crate::host_observers::HostPowerThermalProbe`] and feeds `set_low_power_mode` /
+    /// `set_thermal_pressure`.
+    pub async fn poll_host_power_and_thermal_once(&self) {
+        let probe = self
+            .power_thermal_probe
+            .read()
+            .expect("power_thermal_probe lock")
+            .clone();
+        let (low_power, thermal) = probe.sample().await;
+        let now = self.now();
+        if let Some(enabled) = low_power {
+            self.set_low_power_mode(enabled, now);
+        }
+        if let Some(pressure) = thermal {
+            self.set_thermal_pressure(pressure, now);
+        }
+    }
+
+    /// Runs a coalesced local coding-activity scan (`AgentSessionsStore.refreshNow` /
+    /// `applyLocalScanResult`), feeding `note_coding_activity_observed_at` or
+    /// `clear_coding_activity_observation`. Returns `true` if at least one scan executed.
+    pub async fn refresh_coding_activity_once(&self) -> bool {
+        {
+            let prefs = AppPreferences::from_config(&self.load_config());
+            if !prefs.adaptive_activity_scanning_enabled() {
+                self.clear_coding_activity_observation();
+                return false;
+            }
+            let adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
+            if !crate::host_observers::AgentSessionRefreshGate::should_scan_locally(
+                true,
+                low_power,
+                adaptive.thermal_pressure,
+            ) {
+                return false;
+            }
+        }
+        {
+            let mut gate = self
+                .activity_refresh_gate
+                .lock()
+                .expect("activity_refresh_gate lock");
+            if !gate.begin_refresh() {
+                return false;
+            }
+        }
+
+        let mut executed = false;
+        loop {
+            if !self.should_scan_coding_activity_locally() {
+                let prefs = AppPreferences::from_config(&self.load_config());
+                if !prefs.adaptive_activity_scanning_enabled() {
+                    self.clear_coding_activity_observation();
+                }
+                let _ = self
+                    .activity_refresh_gate
+                    .lock()
+                    .expect("activity_refresh_gate lock")
+                    .complete_refresh();
+                break;
+            }
+
+            let scanner = self
+                .session_scanner_override
+                .read()
+                .expect("session_scanner_override lock")
+                .clone()
+                .unwrap_or_else(|| {
+                    let base_env = self.base_environment.read().expect("base_env lock").clone();
+                    crate::host_observers::LocalAgentSessionScanner::new(
+                        crate::host_observers::SessionScanConfig::default(),
+                        crate::brokers::local_probe::LocalProbe::new(),
+                        base_env,
+                        None,
+                    )
+                });
+            let now = self.now();
+            let result = scanner.scan_with_activity(now, false, true).await;
+            executed = true;
+            if let Some(latest_activity_at) = result.latest_activity_at() {
+                self.note_coding_activity_observed_at(latest_activity_at, self.now());
+            } else {
+                self.clear_coding_activity_observation();
+            }
+
+            let should_rerun = self
+                .activity_refresh_gate
+                .lock()
+                .expect("activity_refresh_gate lock")
+                .complete_refresh();
+            if !should_rerun {
+                break;
+            }
+            let mut gate = self
+                .activity_refresh_gate
+                .lock()
+                .expect("activity_refresh_gate lock");
+            if !gate.begin_refresh() {
+                break;
+            }
+        }
+        executed
+    }
+
+    /// Starts the background host power, thermal, and 30-second coding-activity observer loop
+    /// (`AgentSessionsStore.start` + power/thermal polling).
+    pub fn start_host_observers(self: &Arc<Self>) {
+        *self.weak_self.lock().expect("weak_self lock") = Some(Arc::downgrade(self));
+        self.host_observers_active.store(true, Ordering::SeqCst);
+        self.restart_host_observers_internal();
+    }
+
+    /// Stops any active background host power, thermal, and coding-activity observer loop.
+    pub fn stop_host_observers(&self) {
+        self.host_observers_active.store(false, Ordering::SeqCst);
+        if let Some(cancel) = self
+            .observer_cancel
+            .lock()
+            .expect("observer_cancel lock")
+            .take()
+        {
+            cancel.cancel();
+        }
+        let _ = self
+            .observer_task
+            .lock()
+            .expect("observer_task lock")
+            .take();
+    }
+
+    fn restart_host_observers_internal(&self) {
+        if let Some(cancel) = self
+            .observer_cancel
+            .lock()
+            .expect("observer_cancel lock")
+            .take()
+        {
+            cancel.cancel();
+        }
+        let _ = self
+            .observer_task
+            .lock()
+            .expect("observer_task lock")
+            .take();
+
+        if !self.host_observers_active.load(Ordering::SeqCst) {
+            return;
+        }
+        let prefs = AppPreferences::from_config(&self.load_config());
+        if !prefs.adaptive_activity_scanning_enabled() {
+            self.clear_coding_activity_observation();
+        }
+        let Some(weak) = self.weak_self.lock().expect("weak_self lock").clone() else {
+            return;
+        };
+
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let handle = tokio::spawn(async move {
+            if let Some(runtime) = weak.upgrade() {
+                runtime.poll_host_power_and_thermal_once().await;
+                if runtime.should_scan_coding_activity_locally() {
+                    let _ = runtime.refresh_coding_activity_once().await;
+                }
+            } else {
+                return;
+            }
+            loop {
+                tokio::select! {
+                    biased;
+                    () = task_cancel.cancelled() => return,
+                    () = tokio::time::sleep(crate::host_observers::LOCAL_ACTIVITY_SCAN_INTERVAL) => {}
+                }
+                if task_cancel.is_cancelled() {
+                    return;
+                }
+                let Some(runtime) = weak.upgrade() else {
+                    return;
+                };
+                runtime.poll_host_power_and_thermal_once().await;
+                if runtime.should_scan_coding_activity_locally() {
+                    let _ = runtime.refresh_coding_activity_once().await;
+                }
+                drop(runtime);
+            }
+        });
+        *self.observer_cancel.lock().expect("observer_cancel lock") = Some(cancel);
+        *self.observer_task.lock().expect("observer_task lock") = Some(handle);
+    }
+
     /// Updates low-power mode state at `now`.
     pub fn set_low_power_mode(&self, enabled: bool, now: Timestamp) -> bool {
         let config = self.load_config();
@@ -2205,8 +2475,7 @@ impl EngineRuntime {
         let (advanced, restart) = {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
             adaptive.is_low_power_mode = enabled;
-            let adv =
-                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            let adv = Self::recompute_adaptive_schedule(&mut adaptive, &prefs, now);
             let needs_fixed_restart =
                 adaptive.timer_active && prefs.refresh_frequency.duration().is_some();
             (adv, (adv && adaptive.timer_active) || needs_fixed_restart)
@@ -2224,8 +2493,7 @@ impl EngineRuntime {
         let (advanced, restart) = {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
             adaptive.thermal_pressure = pressure;
-            let adv =
-                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            let adv = Self::recompute_adaptive_schedule(&mut adaptive, &prefs, now);
             (adv, adv && adaptive.timer_active)
         };
         if restart {
@@ -2236,9 +2504,10 @@ impl EngineRuntime {
 
     fn recompute_adaptive_schedule(
         adaptive: &mut AdaptiveRuntimeState,
-        frequency: RefreshFrequency,
+        prefs: &AppPreferences,
         now: Timestamp,
     ) -> bool {
+        let frequency = prefs.refresh_frequency;
         if !frequency.uses_adaptive_policy() {
             return false;
         }
@@ -2247,19 +2516,18 @@ impl EngineRuntime {
         } else {
             None
         };
+        let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
         let input = AdaptiveRefreshInput::new(
             now,
             adaptive.last_menu_opened_at,
             coding_activity,
-            adaptive.is_low_power_mode,
+            low_power,
             adaptive.thermal_pressure,
         );
         let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
-        let effective = BackgroundWorkPowerPolicy::automatic_interval(
-            Some(decision.delay),
-            adaptive.is_low_power_mode,
-        )
-        .unwrap_or(decision.delay);
+        let effective =
+            BackgroundWorkPowerPolicy::automatic_interval(Some(decision.delay), low_power)
+                .unwrap_or(decision.delay);
         let candidate = add_duration(now, effective);
         if should_advance_adaptive_timer(adaptive.scheduled_fire_at, candidate) {
             adaptive.adaptive_computed_interval = Some(effective);
@@ -2380,11 +2648,10 @@ impl EngineRuntime {
         let now = self.now();
         let (interval, sleep_override) = {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-            let effective = BackgroundWorkPowerPolicy::automatic_interval(
-                Some(raw_interval),
-                adaptive.is_low_power_mode,
-            )
-            .unwrap_or(raw_interval);
+            let low_power = prefs.effective_low_power_mode(adaptive.is_low_power_mode);
+            let effective =
+                BackgroundWorkPowerPolicy::automatic_interval(Some(raw_interval), low_power)
+                    .unwrap_or(raw_interval);
             adaptive.fixed_refresh_interval = Some(effective);
             adaptive.scheduled_fire_at = Some(add_duration(now, effective));
             (effective, adaptive.sleep_override)
@@ -2520,10 +2787,25 @@ impl EngineRuntime {
 
         if matches!(
             id.as_str(),
-            "app.refresh.cadence" | "refreshCadence" | "refreshInterval" | "refreshIntervalSeconds"
-        ) && self.weak_self.lock().expect("weak_self lock").is_some()
-        {
-            self.restart_timer_internal();
+            "app.refresh.cadence"
+                | "refreshCadence"
+                | "refreshInterval"
+                | "refreshIntervalSeconds"
+                | "adaptiveActivityScanConsent"
+                | "app.refresh.adaptiveActivityScanConsent"
+                | "backgroundWorkLowPowerModePreference"
+                | "app.refresh.lowPowerMode"
+        ) {
+            let prefs = AppPreferences::from_config(&self.load_config());
+            if !prefs.adaptive_activity_scanning_enabled() {
+                self.clear_coding_activity_observation();
+            }
+            if self.weak_self.lock().expect("weak_self lock").is_some() {
+                self.restart_timer_internal();
+            }
+            if self.host_observers_active.load(Ordering::SeqCst) {
+                self.restart_host_observers_internal();
+            }
         }
 
         if let Some(pid) = affected_provider {
@@ -2564,7 +2846,50 @@ impl EngineRuntime {
             }
             "menuOpened" | "noteMenuOpened" => {
                 self.note_menu_opened(self.now());
+                if self.host_observers_active.load(Ordering::SeqCst) {
+                    let _ = self.refresh_coding_activity_once().await;
+                }
                 Ok(None)
+            }
+            "setLowPowerMode.on" => {
+                let advanced = self.set_low_power_mode(true, self.now());
+                Ok(Some(serde_json::json!({
+                    "lowPowerMode": true,
+                    "advanced": advanced,
+                })))
+            }
+            "setLowPowerMode.off" => {
+                let advanced = self.set_low_power_mode(false, self.now());
+                if self.host_observers_active.load(Ordering::SeqCst) {
+                    let _ = self.refresh_coding_activity_once().await;
+                }
+                Ok(Some(serde_json::json!({
+                    "lowPowerMode": false,
+                    "advanced": advanced,
+                })))
+            }
+            "setThermalPressure.nominal" => {
+                let advanced = self.set_thermal_pressure(ThermalPressure::Nominal, self.now());
+                if self.host_observers_active.load(Ordering::SeqCst) {
+                    let _ = self.refresh_coding_activity_once().await;
+                }
+                Ok(Some(serde_json::json!({
+                    "thermalPressure": "nominal",
+                    "advanced": advanced,
+                })))
+            }
+            "setThermalPressure.constrained" => {
+                let advanced = self.set_thermal_pressure(ThermalPressure::Constrained, self.now());
+                Ok(Some(serde_json::json!({
+                    "thermalPressure": "constrained",
+                    "advanced": advanced,
+                })))
+            }
+            "scanCodingActivity" => {
+                let scanned = self.refresh_coding_activity_once().await;
+                Ok(Some(serde_json::json!({
+                    "scanned": scanned,
+                })))
             }
             "refreshProvider" => Err(IpcError::with_static_message(
                 ErrorCode::InvalidRequest,
