@@ -35,7 +35,7 @@ tokio-util = { workspace = true, features = ["codec"] }
 uuid = { workspace = true }
 zeroize = { workspace = true }
 serde_json = { workspace = true }
-rusqlite = { workspace = true }
+rusqlite = { workspace = true, features = ["functions", "hooks", "limits"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["fs", "process", "pipe"] }
