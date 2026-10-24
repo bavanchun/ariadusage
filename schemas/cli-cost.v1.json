@@ -1,0 +1,507 @@
+{
+  "$defs": {
+    "CostDailyEntryPayload": {
+      "description": "Daily token and cost row within [`CostPayload`].",
+      "properties": {
+        "cacheCreationTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cacheReadTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "date": {
+          "type": "string"
+        },
+        "incompleteRequestCount": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modelBreakdowns": {
+          "items": {
+            "$ref": "#/$defs/CostModelBreakdownPayload"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "modelsUsed": {
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoningTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalCost": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "date"
+      ],
+      "type": "object"
+    },
+    "CostErrorPayload": {
+      "description": "Structured error payload embedded in [`CostPayload`] or emitted on CLI failure.",
+      "properties": {
+        "code": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "CostModelBreakdownPayload": {
+      "description": "Per-model cost breakdown entry within [`CostDailyEntryPayload`], [`CostProjectPayload`], or [`CostProjectSourcePayload`].",
+      "properties": {
+        "cost": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "incompleteRequestCount": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "modelName": {
+          "type": "string"
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "modelName"
+      ],
+      "type": "object"
+    },
+    "CostPayload": {
+      "description": "Root JSON payload emitted by `ariadusage cost --format json` (serialized as a list of provider payloads).",
+      "properties": {
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostUsageCoverageCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "currencyCode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "daily": {
+          "items": {
+            "$ref": "#/$defs/CostDailyEntryPayload"
+          },
+          "type": "array"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostErrorPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "historyCoverageIsEstablished": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "historyDays": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "historyLabel": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "incompleteRequestCount": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "last30DaysCostUSD": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "last30DaysTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "meteredCostUSD": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "projects": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CostProjectPayload"
+          },
+          "type": "array"
+        },
+        "provenance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "reportingPeriod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sessionCostUSD": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "sessionTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "totals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostTotalsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "source",
+        "daily"
+      ],
+      "type": "object"
+    },
+    "CostProjectPayload": {
+      "description": "Per-project rollup within [`CostPayload`].",
+      "properties": {
+        "daily": {
+          "items": {
+            "$ref": "#/$defs/CostDailyEntryPayload"
+          },
+          "type": "array"
+        },
+        "modelBreakdowns": {
+          "items": {
+            "$ref": "#/$defs/CostModelBreakdownPayload"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/CostProjectSourcePayload"
+          },
+          "type": "array"
+        },
+        "totalCost": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "daily"
+      ],
+      "type": "object"
+    },
+    "CostProjectSourcePayload": {
+      "description": "Per-source rollup within [`CostProjectPayload`].",
+      "properties": {
+        "daily": {
+          "items": {
+            "$ref": "#/$defs/CostDailyEntryPayload"
+          },
+          "type": "array"
+        },
+        "modelBreakdowns": {
+          "items": {
+            "$ref": "#/$defs/CostModelBreakdownPayload"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "name": {
+          "type": "string"
+        },
+        "path": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "totalCost": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "daily"
+      ],
+      "type": "object"
+    },
+    "CostTotalsPayload": {
+      "description": "Aggregate window totals within [`CostPayload`].",
+      "properties": {
+        "cacheCreationTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cacheReadTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CostUsageCoverageCounts"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "incompleteRequestCount": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "provenance": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalCost": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CostUsageCoverageCounts": {
+      "description": "Request/row coverage counts for a cost window (`CostUsageCoverageCounts` in `CostProvenance.swift`).",
+      "properties": {
+        "estimated": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "priced": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "unmetered": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "unpriced": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "priced",
+        "unpriced",
+        "unmetered",
+        "estimated"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://github.com/bavanchun/ariadusage/schemas/cli-cost.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "items": {
+    "$ref": "#/$defs/CostPayload"
+  },
+  "title": "Array_of_CostPayload",
+  "type": "array"
+}
