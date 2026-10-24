@@ -23,12 +23,17 @@ mod switcher_view;
 pub use card_view::{CardView, png_bytes};
 pub use chart_view::{CostHistoryChartView, PlanUtilizationChartView, QuotaBurndownChartView};
 pub use date_texts::FoundationDateTexts;
+pub use icon_image::{
+    image_png_bytes, quota_warning_flash_image, render as render_icon,
+    render_morph as render_morph_icon, render_png_for_appearance, tint_image,
+};
 pub use settings_view::SettingsView;
 pub use settings_window::SettingsWindowController;
 pub use switcher_view::SwitcherView;
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use ariadusage_protocol::snapshot::EngineSnapshot;
 use dispatch2::DispatchQueue;
@@ -93,25 +98,53 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
 
     let status_item = make_status_item(mtm);
     let settings_window = SettingsWindowController::new(mtm, Some(client.clone()));
+    settings_window
+        .view()
+        .set_on_setting_changed(Rc::new(|setting_id, value| {
+            STATE.with(|cell| {
+                let mut guard = cell.borrow_mut();
+                let Some(state) = guard.as_mut() else { return };
+                state.settings_state.set_local(setting_id.as_str(), value);
+                sync_state_from_settings(state);
+            });
+            refresh_ui();
+        }));
     let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab, open_settings_window);
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
+        let settings_state = SettingsState::default();
+        let prefs = IconPreferences {
+            show_used: settings_state.menu_bar_show_used,
+            hide_critters: settings_state.menu_bar_icon_style == "bars",
+            ..IconPreferences::default()
+        };
         *cell.borrow_mut() = Some(AppState {
             status_item,
             menu,
             settings_window,
             snapshot: None,
-            settings_state: SettingsState::default(),
+            settings_state,
             connected: false,
             selected_tab: None,
             last_provider_id: None,
-            prefs: IconPreferences::default(),
+            prefs,
         });
     });
     refresh_ui();
 
     app.run();
     Ok(())
+}
+
+fn sync_state_from_settings(state: &mut AppState) {
+    state.prefs.show_used = state.settings_state.menu_bar_show_used;
+    state.prefs.hide_critters = state.settings_state.menu_bar_icon_style == "bars";
+    let card_prefs = CardPreferences {
+        show_used: state.settings_state.menu_bar_show_used,
+        show_optional_credits_and_extra_usage: state.settings_state.show_optional_credits,
+        ..CardPreferences::default()
+    };
+    state.menu.set_prefs(card_prefs);
 }
 
 fn open_settings_window(pane: Option<SettingsPane>) {
@@ -153,15 +186,7 @@ fn handle_event(event: EngineEvent) {
             EngineEvent::Settings(page) => {
                 state.connected = true;
                 state.settings_state.apply_page(&page);
-                state.prefs.show_used = state.settings_state.menu_bar_show_used;
-                let card_prefs = CardPreferences {
-                    show_used: state.settings_state.menu_bar_show_used,
-                    show_optional_credits_and_extra_usage: state
-                        .settings_state
-                        .show_optional_credits,
-                    ..CardPreferences::default()
-                };
-                state.menu.set_prefs(card_prefs);
+                sync_state_from_settings(state);
                 state.settings_window.apply_settings_page(&page);
             }
             EngineEvent::Disconnected => state.connected = false,

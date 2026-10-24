@@ -926,12 +926,39 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/icon.rs"
-sources = ["Sources/CodexBar/IconRenderer.swift"]
+sources = [
+    "Sources/CodexBar/IconRenderer.swift",
+    "Sources/CodexBar/LoadingPattern.swift",
+    "Sources/CodexBar/MenuBarLayoutRenderer.swift",
+    "Sources/CodexBarCore/Config/CodexBarConfig.swift",
+    "Sources/CodexBarCore/Providers/Providers.swift",
+    "Sources/CodexBarCore/Providers/ProviderBranding.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/presentation.rs"
-sources = ["Sources/CodexBar/IconRemainingResolver.swift", "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift"]
+sources = [
+    "Sources/CodexBar/IconRemainingResolver.swift",
+    "Sources/CodexBar/MenuBarMetricWindowResolver.swift",
+    "Sources/CodexBar/AutomaticQuotaSelection.swift",
+    "Sources/CodexBar/UnifiedIconSource.swift",
+    "Sources/CodexBar/UnifiedIconProviderResolver.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeMonthlySpendWindow.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeScopedWeeklyLimitMapper.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Copilot/CopilotProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Cursor/CursorProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Doubao/DoubaoProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Gemini/GeminiProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/LiteLLM/LiteLLMProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Mistral/MistralProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Perplexity/PerplexityProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Warp/WarpProviderDescriptor.swift",
+    "Sources/CodexBarCore/UsageFetcher.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -941,7 +968,11 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/icon_image.rs"
-sources = ["Sources/CodexBar/IconRenderer.swift"]
+sources = [
+    "Sources/CodexBar/IconRenderer.swift",
+    "Sources/CodexBar/MenuBarLayoutRenderer.swift",
+    "Sources/CodexBar/StatusItemController.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -1016,7 +1047,23 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/tests/icon_layout.rs"
-sources = ["Sources/CodexBar/IconRenderer.swift"]
+sources = [
+    "Sources/CodexBar/IconRenderer.swift",
+    "Tests/CodexBarTests/IconRendererHideCrittersTests.swift",
+    "Tests/CodexBarTests/IconRendererStatusOverlayTests.swift",
+    "Tests/CodexBarTests/IconRendererGrokTests.swift",
+    "Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift",
+    "Tests/CodexBarTests/CodexbarTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/presentation.rs"
+sources = [
+    "Tests/CodexBarTests/MenuBarMetricWindowResolverTests.swift",
+    "Tests/CodexBarTests/ClaudeSpendWindowTests.swift",
+    "Tests/CodexBarTests/CodexbarTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]

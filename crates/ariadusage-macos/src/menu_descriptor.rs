@@ -326,26 +326,59 @@ pub fn build(
     }
 }
 
+/// Returns true for providers whose descriptor sets `tokenCost.supportsTokenCost = true`
+/// (`SettingsStore.isCostUsageEffectivelyEnabled`, `SettingsStore+MenuPreferences.swift:309-313`).
+pub fn provider_supports_token_cost(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        "antigravity"
+            | "bedrock"
+            | "claude"
+            | "codex"
+            | "cursor"
+            | "grok"
+            | "mistral"
+            | "muse"
+            | "openai"
+            | "opencodego"
+            | "openrouter"
+            | "pi"
+            | "vertexai"
+            | "xai"
+    )
+}
+
+/// Returns true for providers whose token cost is projected from the live provider
+/// snapshot rather than the local JSONL scanner (`UsageStore.tokenCostRequiresProviderSnapshot`,
+/// `UsageStore+TokenCost.swift:747-756`).
+pub fn token_cost_requires_provider_snapshot(provider_id: &str) -> bool {
+    matches!(
+        provider_id,
+        "grok" | "mistral" | "openai" | "opencodego" | "openrouter" | "xai"
+    )
+}
+
 /// Splits a provider's card into separate `NSMenuItem` sections when
 /// `hasOpenAIWebMenuItems || requiresSectionedMenuForProviderDerivedCost` holds
-/// (`addMenuCardSections`, `StatusItemController+Menu.swift:748-749,1290-1400,1521-1523,1584-1587`).
+/// (`openAIWebContext`, `addMenuCardSections`, `requiresSectionedMenuForProviderDerivedCost`,
+/// `StatusItemController+Menu.swift:472-493,748-749,1290-1400,1521-1523,1584-1587`).
 pub fn provider_card_sections(
     provider: &ProviderSnapshot,
     card: &CardModel,
 ) -> Vec<CardSectionEntry> {
+    let id = provider.id.as_str();
     let has_cost_chart = provider
         .cost_history
         .as_ref()
         .and_then(displayable_value)
         .is_some_and(|h| !h.daily.is_empty());
-    let has_openai_web_items = provider.id.as_str() == "codex"
+    let has_cost_history = provider_supports_token_cost(id) && has_cost_chart;
+    let has_codex_web_extras = id == "codex"
         && (card.credits.is_some()
             || card.limit_reset_credits.is_some()
             || card.inline_usage_dashboard.is_some());
-    let requires_sectioned_cost = has_cost_chart
-        && (card.inline_usage_dashboard.is_some()
-            || card.credits.is_some()
-            || card.provider_cost.is_some());
+    let has_openai_web_items = has_codex_web_extras || has_cost_history;
+    let requires_sectioned_cost = token_cost_requires_provider_snapshot(id) && has_cost_chart;
     if !has_openai_web_items && !requires_sectioned_cost {
         return vec![CardSectionEntry {
             mode: CardSectionMode::Full,
@@ -354,11 +387,14 @@ pub fn provider_card_sections(
     }
     let has_credits = card.credits.is_some();
     let usage_bottom = if has_credits { 4.0 } else { 6.0 };
+    let has_usage_cost_submenu = provider_supports_token_cost(id)
+        && has_cost_chart
+        && (matches!(id, "openai" | "mistral") || card.inline_usage_dashboard.is_some());
     let mut sections = vec![CardSectionEntry {
         mode: CardSectionMode::HeaderAndUsage {
             bottom_padding: usage_bottom,
         },
-        has_cost_submenu: card.inline_usage_dashboard.is_some() && has_cost_chart,
+        has_cost_submenu: has_usage_cost_submenu,
     }];
     if has_credits {
         sections.push(CardSectionEntry {
