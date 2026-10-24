@@ -1902,10 +1902,15 @@ sources = [
     "Sources/CodexBarCore/Hooks/HookTransitionDetector.swift",
     "Sources/CodexBarCore/Hooks/HookEvent.swift",
     "Sources/CodexBarCore/Hooks/HookRule.swift",
+    "Sources/CodexBarCore/Hooks/HookRateLimiter.swift",
     "Sources/CodexBarCore/Hooks/HookEvent+UsageUpdated.swift",
+    "Sources/CodexBarCLI/CLIHooksCommand.swift",
+    "Sources/CodexBarCLI/CLIHooksWatchCommand.swift",
     "Sources/CodexBar/SessionQuotaNotifications.swift",
     "Sources/CodexBar/UsageStore+SessionQuotaTransition.swift",
     "Sources/CodexBar/UsageStore+QuotaWarnings.swift",
+    "Sources/CodexBar/UsageStore+Hooks.swift",
+    "Sources/CodexBar/PreferencesHooksPane.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 

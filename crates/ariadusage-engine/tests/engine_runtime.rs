@@ -2367,7 +2367,6 @@ fn configured_claude_workspace_spend_some_false_projects_false_and_reader_treats
 #[tokio::test]
 async fn runtime_persists_notification_state_and_dispatches_injected_notifier_and_hooks() {
     use ariadusage_engine::{FakeHookCommandExecutor, HookRunner, RecordingNotifier};
-    use std::os::unix::fs::PermissionsExt;
 
     let tmp = TempDir::new().unwrap();
     let t0: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
@@ -2432,9 +2431,13 @@ async fn runtime_persists_notification_state_and_dispatches_injected_notifier_an
     assert_eq!(hook_exec.requests().len(), 1);
     assert_eq!(hook_exec.requests()[0].executable, "/bin/true");
 
-    // Verify notifications-state.json exists with mode 0600
-    let metadata = std::fs::metadata(&state_path).expect("persisted notifications-state.json");
-    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    // Verify notifications-state.json exists (and has mode 0600 on Unix)
+    let _metadata = std::fs::metadata(&state_path).expect("persisted notifications-state.json");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(_metadata.permissions().mode() & 0o777, 0o600);
+    }
 
     // Restart EngineRuntime with the same persisted state file: must not re-send already-notified thresholds
     let mut u3 = make_usage(88.0, t0, None, Some(claude_id.clone()));
