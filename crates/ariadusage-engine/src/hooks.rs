@@ -145,15 +145,15 @@ impl ProcessBrokerHookExecutor {
             env = env.with(k.clone(), v.clone());
         }
 
-        let timeout_secs = if request.timeout_seconds.is_finite() && request.timeout_seconds >= 1.0
+        if !request.timeout_seconds.is_finite()
+            || !(HookRule::MINIMUM_TIMEOUT_SECONDS..=HookRule::MAXIMUM_TIMEOUT_SECONDS)
+                .contains(&request.timeout_seconds)
         {
-            request.timeout_seconds
-        } else {
-            30.0
-        };
+            return Err(HookRunnerError::LaunchFailed);
+        }
         let mut cmd = Command::new(program, args)
             .with_env(env)
-            .timeout(Duration::from_secs_f64(timeout_secs));
+            .timeout(Duration::from_secs_f64(request.timeout_seconds));
         cmd.set_stdin(StdinSpec::Bytes(request.payload.clone()));
         cmd.set_stdout(StreamPolicy::Capture {
             cap: DEFAULT_OUTPUT_CAP,
@@ -1618,5 +1618,49 @@ mod tests {
         let events = recorder.events();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].usage_percent, Some(0.8));
+    }
+
+    #[tokio::test]
+    async fn runner_passes_half_second_timeout_through_and_skips_out_of_range_rules() {
+        let executor = Arc::new(FakeHookCommandExecutor::new());
+        let runner = HookRunner::new(Arc::clone(&executor) as _);
+        let event = sample_event(HookEventType::QuotaReached, "codex", Some(1.0), None, None);
+
+        let valid_rule = HookRule::new(HookEventType::QuotaReached, "/usr/bin/true")
+            .with_id("half-second-rule")
+            .with_timeout_seconds(0.5);
+        let too_short_rule = HookRule::new(HookEventType::QuotaReached, "/usr/bin/true")
+            .with_id("too-short-rule")
+            .with_timeout_seconds(0.05);
+        let too_long_rule = HookRule::new(HookEventType::QuotaReached, "/usr/bin/true")
+            .with_id("too-long-rule")
+            .with_timeout_seconds(301.0);
+
+        let config = HooksConfig::new(true, vec![too_short_rule, valid_rule, too_long_rule]);
+        let outcome = runner
+            .dispatch(
+                &event,
+                &config,
+                None,
+                &BTreeMap::new(),
+                Timestamp::from_second(1_700_000_100).expect("ts"),
+            )
+            .await;
+        assert_eq!(outcome, DispatchOutcome::Attempted);
+
+        let requests = executor.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].timeout_seconds, 0.5);
+
+        let cmd = ProcessBrokerHookExecutor::build_command(&requests[0])
+            .expect("0.5s rule builds command");
+        assert_eq!(cmd.timeout, Duration::from_secs_f64(0.5));
+
+        let mut invalid_req = requests[0].clone();
+        invalid_req.timeout_seconds = 0.05;
+        assert_eq!(
+            ProcessBrokerHookExecutor::build_command(&invalid_req).unwrap_err(),
+            HookRunnerError::LaunchFailed
+        );
     }
 }
