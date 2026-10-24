@@ -699,10 +699,13 @@ pub struct AntigravityCLIHTTPSFetchStrategy {
 impl AntigravityCLIHTTPSFetchStrategy {
     pub const SOURCE_LABEL: &'static str = "cli";
     pub fn new(config: AntigravityStrategyConfig) -> Self {
-        Self { config }
+        let runtime = config.cli.clone();
+        Self {
+            config: config.with_cli_runtime(runtime),
+        }
     }
     pub fn with_runtime(mut self, runtime: Arc<CliRuntime>) -> Self {
-        self.config.cli = runtime;
+        self.config = self.config.with_cli_runtime(runtime);
         self
     }
     pub fn resolve_binary(&self, cx: &FetchContext) -> Option<PathBuf> {

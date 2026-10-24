@@ -554,9 +554,11 @@ impl AntigravityStrategyConfig {
         working_directory: impl Into<PathBuf>,
         home_directory: impl Into<PathBuf>,
     ) -> Self {
+        let cli = Arc::new(super::cli_https::CliRuntime::default());
         Self {
             net,
-            local_probe: LocalProbe::new(),
+            local_probe: LocalProbe::new()
+                .with_process_runtime(cli.registry.clone(), cli.gate.clone()),
             home_directory: home_directory.into(),
             working_directory: working_directory.into(),
             probe_timeout: Duration::from_secs(8),
@@ -567,12 +569,21 @@ impl AntigravityStrategyConfig {
             credentials_update_handler: None,
             oauth_client_resolver: None,
             clock: Arc::new(Timestamp::now),
-            cli: Arc::new(super::cli_https::CliRuntime::default()),
+            cli,
         }
     }
 
     pub fn with_local_probe(mut self, local_probe: LocalProbe) -> Self {
-        self.local_probe = local_probe;
+        self.local_probe =
+            local_probe.with_process_runtime(self.cli.registry.clone(), self.cli.gate.clone());
+        self
+    }
+
+    pub fn with_cli_runtime(mut self, runtime: Arc<super::cli_https::CliRuntime>) -> Self {
+        self.local_probe = self
+            .local_probe
+            .with_process_runtime(runtime.registry.clone(), runtime.gate.clone());
+        self.cli = runtime;
         self
     }
 

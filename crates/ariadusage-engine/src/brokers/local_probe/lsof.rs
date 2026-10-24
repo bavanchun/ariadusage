@@ -11,7 +11,7 @@ use ariadusage_protocol::secret::SecretString;
 
 use super::error::{ListenerCommandError, ProbeError};
 use crate::brokers::call::BrokerCall;
-use crate::brokers::exec_resolver::{RealResolverFs, resolve_absolute_candidates};
+use crate::brokers::exec_resolver::{RealResolverFs, ResolveError, resolve_absolute_candidates};
 use crate::brokers::process::{
     self, Command, DEFAULT_OUTPUT_CAP, ProcessEnv, ProcessError, ProcessRegistry, StreamPolicy,
 };
@@ -21,6 +21,7 @@ const LABEL: &str = "antigravity-lsof";
 #[derive(Clone)]
 pub(super) struct ListenerCommand {
     candidates: Vec<PathBuf>,
+    selected_executable: bool,
     registry: Arc<ProcessRegistry>,
     gate: Arc<LaunchGate>,
 }
@@ -35,17 +36,36 @@ impl std::fmt::Debug for ListenerCommand {
 
 impl Default for ListenerCommand {
     fn default() -> Self {
-        Self::with_candidates(vec!["/usr/sbin/lsof".into(), "/usr/bin/lsof".into()])
+        Self {
+            candidates: vec!["/usr/sbin/lsof".into(), "/usr/bin/lsof".into()],
+            selected_executable: false,
+            registry: Arc::new(ProcessRegistry::new()),
+            gate: Arc::new(LaunchGate::default()),
+        }
     }
 }
 
 impl ListenerCommand {
-    pub(super) fn with_candidates(candidates: Vec<PathBuf>) -> Self {
-        Self {
-            candidates,
-            registry: Arc::new(ProcessRegistry::new()),
-            gate: Arc::new(LaunchGate::default()),
-        }
+    pub(super) fn with_candidates(mut self, candidates: Vec<PathBuf>) -> Self {
+        self.candidates = candidates;
+        self.selected_executable = false;
+        self
+    }
+
+    pub(super) fn with_executable(self, executable: Option<PathBuf>) -> Self {
+        let mut command = self.with_candidates(executable.into_iter().collect());
+        command.selected_executable = true;
+        command
+    }
+
+    pub(super) fn with_process_runtime(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.registry = registry;
+        self.gate = gate;
+        self
     }
 
     /// An empty successful result means procfs should be consulted, without a diagnostic.
@@ -58,10 +78,15 @@ impl ListenerCommand {
         if self.candidates.is_empty() {
             return Ok(Vec::new());
         }
-        let program =
-            resolve_absolute_candidates(&self.candidates, &RealResolverFs).map_err(|_| {
-                ProbeError::ListenerDiscoveryPending(ListenerCommandError::ExecutableUnavailable)
-            })?;
+        let program = match resolve_absolute_candidates(&self.candidates, &RealResolverFs) {
+            Ok(program) => program,
+            Err(ResolveError::NotFound) if !self.selected_executable => return Ok(Vec::new()),
+            Err(_) => {
+                return Err(ProbeError::ListenerDiscoveryPending(
+                    ListenerCommandError::ExecutableUnavailable,
+                ));
+            }
+        };
         let environment = ProcessEnv::from_allowlist(
             ["PATH", "LANG", "LC_ALL", "LC_CTYPE"]
                 .into_iter()
