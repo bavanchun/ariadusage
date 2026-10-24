@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+#[cfg(unix)]
 use std::path::PathBuf;
 use std::pin::Pin;
+#[cfg(unix)]
 use std::sync::Arc;
 
 use ariadusage_core::config::{Config, CookieSource, ProviderConfig, ProviderEntry};
@@ -21,8 +23,12 @@ use tokio::sync::{Mutex, broadcast};
 
 use crate::config_store::ConfigStore;
 use crate::error::StoreError;
-use crate::ipc_server::{IpcBackend, IpcServerError, start_ipc_server};
-use crate::paths::{PathError, config_path, socket_path};
+#[cfg(unix)]
+use crate::ipc_server::start_ipc_server;
+use crate::ipc_server::{IpcBackend, IpcServerError};
+use crate::paths::PathError;
+#[cfg(unix)]
+use crate::paths::{config_path, socket_path};
 
 /// Errors encountered by the desktop notification boundary.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

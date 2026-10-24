@@ -1,7 +1,6 @@
 #[cfg(unix)]
 mod unix_tests {
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
@@ -113,7 +112,7 @@ mod unix_tests {
             String::from_utf8_lossy(&out.stderr)
         );
 
-        let plist_path: PathBuf = home_dir
+        let plist_path = home_dir
             .join("Library")
             .join("LaunchAgents")
             .join("io.github.bavanchun.ariadusage.daemon.plist");
