@@ -2,81 +2,104 @@
 
 use std::collections::BTreeSet;
 
-use super::status_probe::{AntigravityModelQuota, AntigravityStatusSnapshot};
+use ariadusage_core::model::{NamedRateWindow, UsageSnapshot};
 
-/// Known Antigravity model family buckets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AntigravityQuotaFamilyVisibility;
+
+impl AntigravityQuotaFamilyVisibility {
+    pub fn idle_window_ids(snapshot: &UsageSnapshot) -> BTreeSet<String> {
+        idle_window_ids(snapshot)
+    }
+
+    pub fn known_family_for_window(window: &NamedRateWindow) -> Option<KnownFamily> {
+        known_family_for_window(window)
+    }
+
+    pub fn known_family(window_id: &str, title: &str) -> Option<KnownFamily> {
+        known_family(window_id, title)
+    }
+}
+
+/// Top-level Antigravity quota family (`gemini` or `claudeGPT`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum KnownFamily {
     Gemini,
     ClaudeGpt,
 }
 
 impl KnownFamily {
-    pub const ALL: [KnownFamily; 2] = [KnownFamily::Gemini, KnownFamily::ClaudeGpt];
+    pub const ALL: [Self; 2] = [Self::Gemini, Self::ClaudeGpt];
 
-    pub const fn window_id(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Gemini => "antigravity-gemini",
-            Self::ClaudeGpt => "antigravity-claude-gpt",
+            Self::Gemini => "gemini",
+            Self::ClaudeGpt => "claudeGPT",
         }
     }
 }
 
-/// Classifies a model quota into a known Antigravity quota family (`Gemini` or `ClaudeGpt`),
-/// excluding tab autocomplete, image models, and Gemini Lite variants.
-pub fn known_family(quota: &AntigravityModelQuota) -> Option<KnownFamily> {
-    for raw_candidate in [&quota.model_id, &quota.label] {
-        let candidate = AntigravityStatusSnapshot::canonical_model_id(raw_candidate);
-        let lower = candidate.trim().to_lowercase();
-        if lower.is_empty() {
+/// Returns the set of `NamedRateWindow.id` values belonging to quota families where all known
+/// windows in that family are completely idle (`used_percent <= 0.0001 && resets_at.is_none()`).
+pub fn idle_window_ids(snapshot: &UsageSnapshot) -> BTreeSet<String> {
+    let windows: Vec<&NamedRateWindow> = snapshot
+        .extra_rate_windows
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .filter(|w| w.usage_known)
+        .collect();
+    if windows.is_empty() {
+        return BTreeSet::new();
+    }
+
+    let mut idle = BTreeSet::new();
+    for family in KnownFamily::ALL {
+        let family_windows: Vec<&&NamedRateWindow> = windows
+            .iter()
+            .filter(|w| known_family_for_window(w) == Some(family))
+            .collect();
+        if family_windows.is_empty() {
             continue;
         }
-        if lower.contains("tab") {
-            return None;
-        }
-        if contains_token("image", &lower) {
-            return None;
-        }
-
-        if lower.contains("claude") || lower.contains("gpt") {
-            return Some(KnownFamily::ClaudeGpt);
-        }
-        if lower.contains("gemini") {
-            if lower.contains("lite") {
-                return None;
+        if family_windows.iter().all(|w| is_idle(w)) {
+            for w in family_windows {
+                idle.insert(w.id.clone());
             }
-            return Some(KnownFamily::Gemini);
         }
     }
+    idle
+}
+
+pub fn known_family_for_window(window: &NamedRateWindow) -> Option<KnownFamily> {
+    known_family(&window.id, &window.title)
+}
+
+pub fn known_family(window_id: &str, title: &str) -> Option<KnownFamily> {
+    let normalized_id = window_id.trim().to_lowercase().replace('_', "-");
+    let normalized_title = title.trim().to_lowercase();
+
+    if normalized_id.starts_with("antigravity-gemini-")
+        || normalized_id.starts_with("antigravity-quota-summary-gemini-")
+        || normalized_title.starts_with("gemini")
+    {
+        return Some(KnownFamily::Gemini);
+    }
+
+    if normalized_id.starts_with("antigravity-claude")
+        || normalized_id.starts_with("antigravity-gpt")
+        || normalized_id.starts_with("antigravity-quota-summary-3p-")
+        || normalized_id.starts_with("antigravity-quota-summary-third-party-")
+        || normalized_id.starts_with("antigravity-quota-summary-claude")
+        || normalized_id.starts_with("antigravity-quota-summary-gpt")
+        || normalized_title.starts_with("claude")
+        || normalized_title.starts_with("gpt")
+    {
+        return Some(KnownFamily::ClaudeGpt);
+    }
+
     None
 }
 
-/// Returns the window IDs (`antigravity-gemini`, `antigravity-claude-gpt`) for families
-/// whose member models all have `remaining_fraction >= 0.999`.
-pub fn idle_window_ids(quotas: &[AntigravityModelQuota]) -> BTreeSet<String> {
-    let mut result = BTreeSet::new();
-    for family in KnownFamily::ALL {
-        let family_quotas: Vec<&AntigravityModelQuota> = quotas
-            .iter()
-            .filter(|q| known_family(q) == Some(family))
-            .collect();
-        if family_quotas.is_empty() {
-            continue;
-        }
-        let has_consumed_member = family_quotas.iter().any(|quota| {
-            let Some(remaining_fraction) = quota.remaining_fraction else {
-                return true;
-            };
-            remaining_fraction < 0.999
-        });
-        if !has_consumed_member {
-            result.insert(family.window_id().to_owned());
-        }
-    }
-    result
-}
-
-pub(crate) fn contains_token(token: &str, text: &str) -> bool {
-    text.split(|c: char| !c.is_alphanumeric())
-        .any(|part| part == token)
+fn is_idle(window: &NamedRateWindow) -> bool {
+    window.window.used_percent <= 0.0001 && window.window.resets_at.is_none()
 }

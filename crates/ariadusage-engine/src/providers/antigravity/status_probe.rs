@@ -3,9 +3,10 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+LocalEndpoints.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+ResponseModels.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalSnapshotSelection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalhostSession.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,12 +29,14 @@ use crate::brokers::local_probe::{LocalProbe, ProbeError};
 use crate::brokers::net::{NetBody, NetBroker, NetError, NetRequest};
 use crate::brokers::process::ProcessIdentity;
 
-use super::family_visibility::{KnownFamily, contains_token, known_family};
+use super::family_visibility::{KnownFamily, known_family_for_window};
 use super::quota_summary::{
-    AntigravityQuotaSummary, AntigravityQuotaSummaryBucket, parse_cli_usage_report,
-    parse_quota_summary_response,
+    AntigravityQuotaSummary, AntigravityQuotaSummaryBucket, AntigravityQuotaSummaryGroup,
+    parse_cli_usage_report, parse_quota_summary_response,
 };
 
+pub const QUOTA_SUMMARY_PATH: &str =
+    "/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
 pub const GET_USER_STATUS_PATH: &str =
     "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 pub const COMMAND_MODEL_CONFIG_PATH: &str =
@@ -43,7 +46,20 @@ pub const QUOTA_SUMMARY_WINDOW_ID_PREFIX: &str = "antigravity-quota-summary-";
 pub const COMPACT_FALLBACK_WINDOW_ID_PREFIX: &str = "antigravity-compact-fallback-";
 pub const CURRENT_FLASH_CANONICAL_ID: &str = "gemini-3.7-flash";
 
-const RETIRED_FLASH_PREFIXES: &[&str] = &["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash"];
+const RETIRED_FLASH_TIERS: &[(&str, &str)] = &[
+    ("gemini-3.6-flash", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.6-flash-low", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.6-flash-medium", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.6-flash-high", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.5-flash-extra-low", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.5-flash-low", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.5-flash-mid", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3.5-flash-high", CURRENT_FLASH_CANONICAL_ID),
+    ("gemini-3-flash-agent", CURRENT_FLASH_CANONICAL_ID),
+];
+
+const MODEL_LABEL_ACRONYMS: &[&str] = &["ai", "api", "gpt", "oss"];
+const SESSION_CADENCE_ALIASES: &[&str] = &["session", "5h", "5-hour", "five hour", "five-hour"];
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AntigravityModelQuota {
@@ -72,15 +88,91 @@ impl AntigravityModelQuota {
     }
 
     pub fn remaining_percent(&self) -> f64 {
-        let fraction = self.remaining_fraction.unwrap_or(0.0);
-        fraction.clamp(0.0, 1.0) * 100.0
+        let Some(fraction) = self.remaining_fraction else {
+            return 0.0;
+        };
+        (fraction * 100.0).clamp(0.0, 100.0)
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AntigravityModelFamily {
+    ClaudeModels = 0,
+    Gpt = 1,
+    GeminiPro = 2,
+    GeminiFlash = 3,
+    Unknown = 4,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AntigravityUsagePool {
+    GeminiAi,
+    ClaudeGpt,
+}
+
+impl AntigravityUsagePool {
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::GeminiAi => "antigravity-gemini",
+            Self::ClaudeGpt => "antigravity-claude-gpt",
+        }
+    }
+
+    pub const fn title(self) -> &'static str {
+        match self {
+            Self::GeminiAi => "Gemini Models",
+            Self::ClaudeGpt => "Claude and GPT models",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct AntigravityModelVersion {
+    major: i32,
+    minor: i32,
+}
+
+#[derive(Debug, Clone)]
+struct AntigravityNormalizedModel {
+    quota: AntigravityModelQuota,
+    family: AntigravityModelFamily,
+    is_image: bool,
+    is_lite: bool,
+    is_autocomplete: bool,
+    version: Option<AntigravityModelVersion>,
+    tier: i32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuotaSummaryBucketKind {
+    Session,
+    Weekly,
+    Other,
+}
+
+impl QuotaSummaryBucketKind {
+    const fn window_minutes(self) -> Option<i64> {
+        match self {
+            Self::Session => Some(300),
+            Self::Weekly => Some(10_080),
+            Self::Other => None,
+        }
+    }
+
+    const fn sort_rank(self) -> i32 {
+        match self {
+            Self::Session => 0,
+            Self::Weekly => 1,
+            Self::Other => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AntigravitySnapshotSource {
     Local,
     Remote,
+    Cli,
 }
 
 #[derive(Clone, PartialEq)]
@@ -114,8 +206,23 @@ impl AntigravityStatusSnapshot {
             model_quotas,
             account_email,
             account_plan,
-            source: AntigravitySnapshotSource::Local,
+            source: AntigravitySnapshotSource::Remote,
             quota_summary: None,
+        }
+    }
+
+    pub fn from_quota_summary(
+        quota_summary: AntigravityQuotaSummary,
+        account_email: Option<String>,
+        account_plan: Option<String>,
+        source: AntigravitySnapshotSource,
+    ) -> Self {
+        Self {
+            model_quotas: Vec::new(),
+            account_email,
+            account_plan,
+            source,
+            quota_summary: Some(quota_summary),
         }
     }
 
@@ -129,15 +236,36 @@ impl AntigravityStatusSnapshot {
         self
     }
 
+    pub fn with_identity(&self, snapshot: Option<&AntigravityStatusSnapshot>) -> Self {
+        let Some(snapshot) = snapshot else {
+            return self.clone();
+        };
+        let account_email = snapshot
+            .account_email
+            .clone()
+            .or_else(|| self.account_email.clone());
+        let account_plan = snapshot
+            .account_plan
+            .clone()
+            .or_else(|| self.account_plan.clone());
+        Self {
+            model_quotas: self.model_quotas.clone(),
+            account_email,
+            account_plan,
+            source: self.source,
+            quota_summary: self.quota_summary.clone(),
+        }
+    }
+
     pub fn has_known_quota_summary(&self) -> bool {
         let Some(quota_summary) = &self.quota_summary else {
             return false;
         };
-        quota_summary
-            .groups
-            .iter()
-            .flat_map(|g| &g.buckets)
-            .any(|b| !b.disabled && b.remaining_fraction.is_some())
+        quota_summary.groups.iter().any(|g| {
+            g.buckets
+                .iter()
+                .any(|b| !b.disabled && b.remaining_fraction.is_some())
+        })
     }
 
     pub fn has_quota_summary_buckets(&self) -> bool {
@@ -147,102 +275,69 @@ impl AntigravityStatusSnapshot {
         quota_summary.groups.iter().any(|g| !g.buckets.is_empty())
     }
 
-    pub fn canonical_model_id(raw: &str) -> String {
-        let trimmed = raw.trim();
-        let lower = trimmed.to_lowercase();
-        let Some(prefix) = Self::retired_flash_prefix(&lower) else {
-            return trimmed.to_owned();
-        };
-        let suffix = lower[prefix.len()..].trim_start_matches('-');
-        if suffix == "lite" || suffix.starts_with("lite-") {
-            return trimmed.to_owned();
+    pub fn canonical_model_id(model_id: &str) -> String {
+        let key = model_id.trim().to_lowercase();
+        for &(retired, replacement) in RETIRED_FLASH_TIERS {
+            if key == retired {
+                return replacement.to_owned();
+            }
         }
-        if contains_token("image", suffix) {
-            return trimmed.to_owned();
-        }
-        CURRENT_FLASH_CANONICAL_ID.to_owned()
+        model_id.to_owned()
     }
 
-    fn retired_flash_prefix(lower: &str) -> Option<&'static str> {
-        RETIRED_FLASH_PREFIXES
-            .iter()
-            .copied()
-            .find(|&prefix| lower == prefix || lower.starts_with(&format!("{prefix}-")))
-    }
-
-    pub fn humanized_model_id(raw: &str) -> String {
-        let canonical = Self::canonical_model_id(raw);
-        let trimmed = canonical.trim();
-        if trimmed.is_empty() {
-            return String::new();
-        }
-
-        let raw_tokens: Vec<&str> = trimmed
-            .split(['-', '_'])
-            .filter(|part| !part.is_empty())
-            .collect();
-        if raw_tokens.is_empty() {
-            return trimmed.to_owned();
-        }
-
-        let mut tokens: Vec<String> = Vec::with_capacity(raw_tokens.len());
+    pub fn humanized_model_id(model_id: &str) -> String {
+        let canonical = Self::canonical_model_id(model_id);
+        let parts: Vec<&str> = canonical.split('-').collect();
+        let mut words: Vec<String> = Vec::new();
         let mut index = 0;
-        while index < raw_tokens.len() {
-            if index + 1 < raw_tokens.len()
-                && Self::is_numeric_version_token(raw_tokens[index])
-                && Self::is_numeric_version_token(raw_tokens[index + 1])
+
+        while index < parts.len() {
+            let part = parts[index];
+            if Self::is_single_digit(part)
+                && index + 1 < parts.len()
+                && Self::is_single_digit(parts[index + 1])
             {
-                tokens.push(format!("{}.{}", raw_tokens[index], raw_tokens[index + 1]));
-                index += 2;
+                let mut version_parts = vec![part];
+                index += 1;
+                while index < parts.len() && Self::is_single_digit(parts[index]) {
+                    version_parts.push(parts[index]);
+                    index += 1;
+                }
+                words.push(version_parts.join("."));
                 continue;
             }
-            tokens.push(raw_tokens[index].to_owned());
+
+            if !part.is_empty() && part.chars().all(|c| c.is_numeric() || c == '.') {
+                words.push(part.to_owned());
+            } else if MODEL_LABEL_ACRONYMS.contains(&part.to_lowercase().as_str()) {
+                words.push(part.to_uppercase());
+            } else {
+                let mut chars = part.chars();
+                match chars.next() {
+                    Some(first) => {
+                        let mut s = first.to_uppercase().to_string();
+                        s.push_str(chars.as_str());
+                        words.push(s);
+                    }
+                    None => words.push(String::new()),
+                }
+            }
             index += 1;
         }
 
-        tokens
-            .into_iter()
-            .map(|token| {
-                let lower = token.to_lowercase();
-                match lower.as_str() {
-                    "gpt" => "GPT".to_owned(),
-                    "oss" => "OSS".to_owned(),
-                    "api" => "API".to_owned(),
-                    _ => {
-                        if token.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                            token
-                        } else {
-                            let mut chars = lower.chars();
-                            match chars.next() {
-                                Some(first) => {
-                                    let mut s = first.to_uppercase().to_string();
-                                    s.push_str(chars.as_str());
-                                    s
-                                }
-                                None => String::new(),
-                            }
-                        }
-                    }
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
+        words.join(" ")
     }
 
-    fn is_numeric_version_token(token: &str) -> bool {
-        !token.is_empty() && token.chars().all(|c| c.is_ascii_digit())
+    fn is_single_digit(value: &str) -> bool {
+        value.len() == 1 && value.chars().all(|c| c.is_numeric())
     }
 
     pub fn quota_display_label(quota: &AntigravityModelQuota) -> String {
-        let trimmed_label = quota.label.trim();
-        let trimmed_model_id = quota.model_id.trim();
-        if !trimmed_label.is_empty() && !trimmed_label.eq_ignore_ascii_case(trimmed_model_id) {
-            return trimmed_label.to_owned();
+        let trimmed = quota.label.trim();
+        if !trimmed.is_empty() && trimmed != quota.model_id {
+            return quota.label.clone();
         }
-        if !trimmed_model_id.is_empty() {
-            return Self::humanized_model_id(trimmed_model_id);
-        }
-        trimmed_label.to_owned()
+        Self::humanized_model_id(&Self::canonical_model_id(&quota.model_id))
     }
 
     pub fn to_usage_snapshot(&self) -> Result<UsageSnapshot, AntigravityStatusProbeError> {
@@ -253,11 +348,8 @@ impl AntigravityStatusSnapshot {
         &self,
         now: Timestamp,
     ) -> Result<UsageSnapshot, AntigravityStatusProbeError> {
-        if (self.has_known_quota_summary()
-            || (self.has_quota_summary_buckets() && self.model_quotas.is_empty()))
-            && let Some(quota_summary) = &self.quota_summary
-        {
-            return Self::quota_summary_to_usage_snapshot(
+        if let Some(quota_summary) = &self.quota_summary {
+            return Self::usage_snapshot_from_quota_summary(
                 quota_summary,
                 self.account_email.as_deref(),
                 self.account_plan.as_deref(),
@@ -265,26 +357,68 @@ impl AntigravityStatusSnapshot {
             );
         }
 
-        let selected = Self::select_models(&self.model_quotas);
-        if selected.is_empty() && self.model_quotas.is_empty() {
+        if self.model_quotas.is_empty() {
             return Err(AntigravityStatusProbeError::ParseFailed(
                 "No quota models available".to_owned(),
             ));
         }
 
-        let primary = selected
-            .first()
-            .and_then(|q| q.as_ref())
+        let normalized: Vec<AntigravityNormalizedModel> = self
+            .model_quotas
+            .iter()
+            .map(Self::normalize_model)
+            .collect();
+        let summary_candidates: Vec<AntigravityNormalizedModel> = normalized
+            .iter()
+            .filter(|m| Self::is_summary_candidate(m))
+            .cloned()
+            .collect();
+
+        let primary_quota =
+            Self::representative(AntigravityUsagePool::GeminiAi, &summary_candidates);
+        let secondary_quota =
+            Self::representative(AntigravityUsagePool::ClaudeGpt, &summary_candidates);
+
+        let fallback_quota = if primary_quota.is_none() && secondary_quota.is_none() {
+            match self.source {
+                AntigravitySnapshotSource::Local | AntigravitySnapshotSource::Cli => {
+                    let unknown_candidates: Vec<AntigravityNormalizedModel> = normalized
+                        .iter()
+                        .filter(|m| {
+                            m.family == AntigravityModelFamily::Unknown
+                                && Self::is_selectable_text_model(m)
+                                && m.quota.remaining_fraction.is_some()
+                        })
+                        .cloned()
+                        .collect();
+                    Self::fallback_representative(&unknown_candidates)
+                }
+                AntigravitySnapshotSource::Remote => None,
+            }
+        } else {
+            None
+        };
+
+        let primary = primary_quota.as_ref().and_then(Self::rate_window_for_quota);
+        let secondary = secondary_quota
+            .as_ref()
             .and_then(Self::rate_window_for_quota);
-        let secondary = selected
-            .get(1)
-            .and_then(|q| q.as_ref())
-            .and_then(Self::rate_window_for_quota);
-        let tertiary = selected
-            .get(2)
-            .and_then(|q| q.as_ref())
-            .and_then(Self::rate_window_for_quota);
-        let extra_rate_windows = Self::build_extra_rate_windows(&self.model_quotas, self.source);
+
+        let mut represented_quotas = BTreeMap::new();
+        if let Some(pq) = primary_quota {
+            represented_quotas.insert(AntigravityUsagePool::GeminiAi, pq);
+        }
+        if let Some(sq) = secondary_quota {
+            represented_quotas.insert(AntigravityUsagePool::ClaudeGpt, sq);
+        }
+
+        let extra_windows = Self::extra_rate_windows(
+            &normalized,
+            &summary_candidates,
+            fallback_quota.as_ref().map(|q| q.model_id.as_str()),
+            &represented_quotas,
+            self.source,
+        );
 
         let identity = ProviderIdentitySnapshot::new(
             Some(ProviderId::new("antigravity").expect("valid provider id")),
@@ -297,8 +431,12 @@ impl AntigravityStatusSnapshot {
         UsageSnapshot::new(
             primary,
             secondary,
-            tertiary,
-            extra_rate_windows,
+            None,
+            if extra_windows.is_empty() {
+                None
+            } else {
+                Some(extra_windows)
+            },
             None,
             Vec::new(),
             None,
@@ -310,15 +448,10 @@ impl AntigravityStatusSnapshot {
         .map_err(|e| AntigravityStatusProbeError::ParseFailed(e.to_string()))
     }
 
-    pub(crate) fn used_percent(remaining_fraction: f64) -> f64 {
-        let clamped_remaining = remaining_fraction.clamp(0.0, 1.0);
-        ((1.0 - clamped_remaining) * 100.0).clamp(0.0, 100.0)
-    }
-
     fn rate_window_for_quota(quota: &AntigravityModelQuota) -> Option<RateWindow> {
-        let remaining_fraction = quota.remaining_fraction?;
+        let used = (100.0 - quota.remaining_percent()).clamp(0.0, 100.0);
         RateWindow::new(
-            Self::used_percent(remaining_fraction),
+            used,
             None,
             quota.reset_time,
             quota.reset_description.clone(),
@@ -328,263 +461,367 @@ impl AntigravityStatusSnapshot {
         .ok()
     }
 
-    fn select_models(models: &[AntigravityModelQuota]) -> Vec<Option<AntigravityModelQuota>> {
-        let ordered = vec![
-            Self::most_constrained_quota(models, KnownFamily::Gemini),
-            Self::most_constrained_quota(models, KnownFamily::ClaudeGpt),
-        ];
-        if ordered.iter().all(Option::is_none) {
-            return Vec::new();
-        }
-        ordered
-    }
-
-    fn most_constrained_quota(
-        models: &[AntigravityModelQuota],
-        family: KnownFamily,
-    ) -> Option<AntigravityModelQuota> {
-        models
+    pub fn models_for_pool(&self, pool: AntigravityUsagePool) -> Vec<AntigravityModelQuota> {
+        self.model_quotas
             .iter()
-            .filter(|q| known_family(q) == Some(family) && q.remaining_fraction.is_some())
-            .min_by(|lhs, rhs| lhs.remaining_percent().total_cmp(&rhs.remaining_percent()))
-            .cloned()
-    }
-
-    fn build_extra_rate_windows(
-        quotas: &[AntigravityModelQuota],
-        source: AntigravitySnapshotSource,
-    ) -> Option<Vec<NamedRateWindow>> {
-        let mut grouped_windows = Vec::new();
-        for group in MODEL_GROUPS {
-            let members: Vec<&AntigravityModelQuota> = quotas
-                .iter()
-                .filter(|q| known_family(q) == Some(group.family))
-                .collect();
-            if let Some(window) = Self::rate_window_for_group(&group, &members) {
-                grouped_windows.push(window);
-            }
-        }
-
-        let ungrouped: Vec<&AntigravityModelQuota> = quotas
-            .iter()
-            .filter(|q| known_family(q).is_none())
-            .collect();
-        let visible = match source {
-            AntigravitySnapshotSource::Local => Self::filter_local(&ungrouped),
-            AntigravitySnapshotSource::Remote => Self::filter_remote(&ungrouped),
-        };
-        let sorted = Self::sort_quotas(&visible);
-
-        let mut seen_ids: BTreeSet<String> = grouped_windows.iter().map(|w| w.id.clone()).collect();
-        let mut result = grouped_windows;
-        for quota in sorted {
-            let base_id = if quota.model_id.trim().is_empty() {
-                quota.label.trim()
-            } else {
-                quota.model_id.trim()
-            };
-            let window_id_base =
-                if source == AntigravitySnapshotSource::Local && known_family(quota).is_none() {
-                    format!("{COMPACT_FALLBACK_WINDOW_ID_PREFIX}{base_id}")
-                } else {
-                    base_id.to_owned()
-                };
-            let mut id = window_id_base.clone();
-            if seen_ids.contains(&id) {
-                let mut suffix = 2usize;
-                while seen_ids.contains(&format!("{window_id_base}#{suffix}")) {
-                    suffix += 1;
-                }
-                id = format!("{window_id_base}#{suffix}");
-            }
-            seen_ids.insert(id.clone());
-
-            let Some(window) = Self::rate_window_for_quota(quota) else {
-                continue;
-            };
-            let title = Self::quota_display_label(quota);
-            result.push(NamedRateWindow::new(id, title, window));
-        }
-
-        if result.is_empty() {
-            None
-        } else {
-            Some(result)
-        }
-    }
-
-    fn rate_window_for_group(
-        group: &ModelGroupSpec,
-        quotas: &[&AntigravityModelQuota],
-    ) -> Option<NamedRateWindow> {
-        if quotas.is_empty() {
-            return None;
-        }
-        let has_measured = quotas.iter().any(|q| q.remaining_fraction.is_some());
-        if has_measured {
-            return None;
-        }
-
-        let reset_source = quotas
-            .iter()
-            .copied()
-            .find(|q| q.reset_time.is_some() || q.reset_description.is_some())
-            .or_else(|| quotas.first().copied())?;
-        let window = RateWindow::new(
-            0.0,
-            None,
-            reset_source.reset_time,
-            reset_source.reset_description.clone(),
-            None,
-            false,
-        )
-        .ok()?;
-        Some(NamedRateWindow::new(group.id, group.title, window).with_usage_known(false))
-    }
-
-    fn filter_local<'a>(quotas: &[&'a AntigravityModelQuota]) -> Vec<&'a AntigravityModelQuota> {
-        quotas.to_vec()
-    }
-
-    fn filter_remote<'a>(quotas: &[&'a AntigravityModelQuota]) -> Vec<&'a AntigravityModelQuota> {
-        quotas
-            .iter()
-            .copied()
-            .filter(|q| {
-                let is_consumed = q.remaining_fraction.is_none_or(|f| f < 0.999);
-                known_family(q).is_some() || is_consumed
-            })
+            .map(Self::normalize_model)
+            .filter(|m| Self::is_summary_candidate(m) && Self::usage_pool(m) == Some(pool))
+            .map(|m| m.quota)
             .collect()
     }
 
-    fn sort_quotas<'a>(quotas: &[&'a AntigravityModelQuota]) -> Vec<&'a AntigravityModelQuota> {
-        let mut sorted = quotas.to_vec();
-        sorted.sort_by(|a, b| {
-            let fam_a = Self::classify_for_sort(a);
-            let fam_b = Self::classify_for_sort(b);
-            if fam_a != fam_b {
-                return fam_a.cmp(&fam_b);
-            }
-
-            let ver_a = Self::extract_version(a);
-            let ver_b = Self::extract_version(b);
-            match (ver_a, ver_b) {
-                (Some(va), Some(vb)) if (va - vb).abs() > 1e-9 => {
-                    return vb.total_cmp(&va);
-                }
-                (Some(_), None) => return std::cmp::Ordering::Less,
-                (None, Some(_)) => return std::cmp::Ordering::Greater,
-                _ => {}
-            }
-
-            let tier_a = Self::extract_tier(a);
-            let tier_b = Self::extract_tier(b);
-            if tier_a != tier_b {
-                return tier_a.cmp(&tier_b);
-            }
-
-            let label_cmp = a.label.cmp(&b.label);
-            if label_cmp != std::cmp::Ordering::Equal {
-                return label_cmp;
-            }
-            a.model_id.cmp(&b.model_id)
-        });
-        sorted
+    pub fn representative_for_pool(
+        &self,
+        pool: AntigravityUsagePool,
+    ) -> Option<AntigravityModelQuota> {
+        let normalized: Vec<AntigravityNormalizedModel> = self
+            .model_quotas
+            .iter()
+            .map(Self::normalize_model)
+            .collect();
+        let summary_candidates: Vec<AntigravityNormalizedModel> = normalized
+            .iter()
+            .filter(|m| Self::is_summary_candidate(m))
+            .cloned()
+            .collect();
+        Self::representative(pool, &summary_candidates)
     }
 
-    fn classify_for_sort(q: &AntigravityModelQuota) -> SortFamily {
-        for raw_candidate in [&q.model_id, &q.label] {
-            let candidate = Self::canonical_model_id(raw_candidate);
-            let lower = candidate.to_lowercase();
-            if lower.contains("claude") {
-                return SortFamily::Claude;
+    fn normalize_model(quota: &AntigravityModelQuota) -> AntigravityNormalizedModel {
+        let canonical_id = Self::canonical_model_id(&quota.model_id);
+        let canonical_quota = if canonical_id != quota.model_id {
+            AntigravityModelQuota {
+                label: quota.label.clone(),
+                model_id: canonical_id,
+                remaining_fraction: quota.remaining_fraction,
+                reset_time: quota.reset_time,
+                reset_description: quota.reset_description.clone(),
             }
-            if lower.contains("gpt") {
-                return SortFamily::Gpt;
-            }
-            if lower.contains("gemini") {
-                if lower.contains("flash") {
-                    return SortFamily::GeminiFlash;
-                }
-                if lower.contains("pro") {
-                    return SortFamily::GeminiPro;
-                }
-            }
+        } else {
+            quota.clone()
+        };
+
+        let model_id = canonical_quota.model_id.to_lowercase();
+        let label = canonical_quota.label.to_lowercase();
+        let family = Self::family_for_model_id_and_label(&model_id, &label);
+
+        let is_lite = model_id.contains("lite") || label.contains("lite");
+        let is_autocomplete = model_id.contains("autocomplete")
+            || label.contains("autocomplete")
+            || model_id.starts_with("tab_");
+        let is_image = model_id.contains("image") || label.contains("image");
+
+        let version = Self::parse_version(&label);
+        let tier = Self::parse_tier(&label, &model_id);
+
+        AntigravityNormalizedModel {
+            quota: canonical_quota,
+            family,
+            is_image,
+            is_lite,
+            is_autocomplete,
+            version,
+            tier,
         }
-        SortFamily::Unknown
     }
 
-    fn extract_version(q: &AntigravityModelQuota) -> Option<f64> {
-        for raw_candidate in [&q.label, &q.model_id] {
-            let candidate = Self::canonical_model_id(raw_candidate);
-            if let Some(ver) = first_number(&candidate) {
-                return Some(ver);
+    fn is_summary_candidate(model: &AntigravityNormalizedModel) -> bool {
+        Self::usage_pool(model).is_some() && Self::is_selectable_text_model(model)
+    }
+
+    fn is_selectable_text_model(model: &AntigravityNormalizedModel) -> bool {
+        !model.is_lite && !model.is_autocomplete && !model.is_image
+    }
+
+    fn usage_pool(model: &AntigravityNormalizedModel) -> Option<AntigravityUsagePool> {
+        match model.family {
+            AntigravityModelFamily::GeminiPro | AntigravityModelFamily::GeminiFlash => {
+                Some(AntigravityUsagePool::GeminiAi)
             }
+            AntigravityModelFamily::ClaudeModels | AntigravityModelFamily::Gpt => {
+                Some(AntigravityUsagePool::ClaudeGpt)
+            }
+            AntigravityModelFamily::Unknown => None,
+        }
+    }
+
+    fn family_for_model_id_and_label(model_id: &str, label: &str) -> AntigravityModelFamily {
+        let model_id_family = Self::family_from_text(model_id);
+        if model_id_family != AntigravityModelFamily::Unknown {
+            return model_id_family;
+        }
+        Self::family_from_text(label)
+    }
+
+    fn family_from_text(text: &str) -> AntigravityModelFamily {
+        if text.contains("claude") {
+            return AntigravityModelFamily::ClaudeModels;
+        }
+        if text.contains("gpt") || text.contains("openai") {
+            return AntigravityModelFamily::Gpt;
+        }
+        if text.contains("gemini") && text.contains("pro") {
+            return AntigravityModelFamily::GeminiPro;
+        }
+        if text.contains("gemini") && text.contains("flash") {
+            return AntigravityModelFamily::GeminiFlash;
+        }
+        AntigravityModelFamily::Unknown
+    }
+
+    fn parse_version(label: &str) -> Option<AntigravityModelVersion> {
+        // Matches `(\d+)(?:[.\-](\d+))?`
+        let bytes = label.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let start_major = i;
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1;
+                }
+                let major = label[start_major..i].parse::<i32>().ok()?;
+                let minor = if i + 1 < bytes.len()
+                    && (bytes[i] == b'.' || bytes[i] == b'-')
+                    && bytes[i + 1].is_ascii_digit()
+                {
+                    i += 1;
+                    let start_minor = i;
+                    while i < bytes.len() && bytes[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                    label[start_minor..i].parse::<i32>().unwrap_or(0)
+                } else {
+                    0
+                };
+                return Some(AntigravityModelVersion { major, minor });
+            }
+            i += 1;
         }
         None
     }
 
-    fn extract_tier(q: &AntigravityModelQuota) -> i32 {
-        for raw_candidate in [&q.label, &q.model_id] {
-            let candidate = Self::canonical_model_id(raw_candidate);
-            let lower = candidate.to_lowercase();
-            let tokens: Vec<&str> = lower.split(|c: char| !c.is_alphanumeric()).collect();
-            if tokens.contains(&"high") {
-                return 0;
-            }
-            if tokens.contains(&"medium") || tokens.contains(&"mid") {
-                return 1;
-            }
-            if tokens.contains(&"low") {
-                return 2;
-            }
+    fn parse_tier(label: &str, model_id: &str) -> i32 {
+        let combined = format!("{label} {model_id}");
+        if combined.contains("high") {
+            return 0;
+        }
+        if combined.contains("medium") {
+            return 1;
+        }
+        if combined.contains("low") {
+            return 2;
         }
         1
     }
 
-    fn quota_summary_to_usage_snapshot(
-        summary: &AntigravityQuotaSummary,
+    fn representative(
+        pool: AntigravityUsagePool,
+        models: &[AntigravityNormalizedModel],
+    ) -> Option<AntigravityModelQuota> {
+        let candidates: Vec<&AntigravityNormalizedModel> = models
+            .iter()
+            .filter(|m| Self::usage_pool(m) == Some(pool) && m.quota.remaining_fraction.is_some())
+            .collect();
+        candidates
+            .into_iter()
+            .min_by(|lhs, rhs| {
+                let l_rem = lhs.quota.remaining_percent();
+                let r_rem = rhs.quota.remaining_percent();
+                if l_rem != r_rem {
+                    return l_rem.total_cmp(&r_rem);
+                }
+                match (lhs.quota.reset_time, rhs.quota.reset_time) {
+                    (Some(left), Some(right)) if left != right => left.cmp(&right),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    _ => lhs
+                        .quota
+                        .label
+                        .to_lowercase()
+                        .cmp(&rhs.quota.label.to_lowercase()),
+                }
+            })
+            .map(|m| m.quota.clone())
+    }
+
+    fn fallback_representative(
+        models: &[AntigravityNormalizedModel],
+    ) -> Option<AntigravityModelQuota> {
+        models
+            .iter()
+            .min_by(|lhs, rhs| {
+                let l_rem = lhs.quota.remaining_percent();
+                let r_rem = rhs.quota.remaining_percent();
+                if l_rem != r_rem {
+                    return l_rem.total_cmp(&r_rem);
+                }
+                lhs.quota
+                    .label
+                    .to_lowercase()
+                    .cmp(&rhs.quota.label.to_lowercase())
+            })
+            .map(|m| m.quota.clone())
+    }
+
+    fn extra_rate_windows(
+        models: &[AntigravityNormalizedModel],
+        summary_candidates: &[AntigravityNormalizedModel],
+        compact_fallback_model_id: Option<&str>,
+        represented_quotas: &BTreeMap<AntigravityUsagePool, AntigravityModelQuota>,
+        source: AntigravitySnapshotSource,
+    ) -> Vec<NamedRateWindow> {
+        let mut reset_only_pool_windows = Vec::new();
+        for pool in [
+            AntigravityUsagePool::GeminiAi,
+            AntigravityUsagePool::ClaudeGpt,
+        ] {
+            if represented_quotas.contains_key(&pool) {
+                continue;
+            }
+            let reset_only = summary_candidates.iter().find(|model| {
+                Self::usage_pool(model) == Some(pool)
+                    && model.quota.remaining_fraction.is_none()
+                    && (model.quota.reset_time.is_some() || model.quota.reset_description.is_some())
+            });
+            if let Some(reset_only) = reset_only
+                && let Some(window) = Self::rate_window_for_quota(&reset_only.quota)
+            {
+                reset_only_pool_windows.push(
+                    NamedRateWindow::new(pool.id(), pool.title(), window).with_usage_known(false),
+                );
+            }
+        }
+
+        let mut grouped: BTreeMap<String, Vec<&AntigravityNormalizedModel>> = BTreeMap::new();
+        for model in models {
+            grouped
+                .entry(model.quota.model_id.to_lowercase())
+                .or_default()
+                .push(model);
+        }
+
+        let mut distinct_models: Vec<AntigravityNormalizedModel> = grouped
+            .into_values()
+            .filter_map(|group| {
+                group
+                    .into_iter()
+                    .min_by(|lhs, rhs| {
+                        let lhs_has = lhs.quota.remaining_fraction.is_some();
+                        let rhs_has = rhs.quota.remaining_fraction.is_some();
+                        if lhs_has != rhs_has {
+                            return if lhs_has {
+                                std::cmp::Ordering::Less
+                            } else {
+                                std::cmp::Ordering::Greater
+                            };
+                        }
+                        let l_rem = lhs.quota.remaining_percent();
+                        let r_rem = rhs.quota.remaining_percent();
+                        if l_rem != r_rem {
+                            return l_rem.total_cmp(&r_rem);
+                        }
+                        lhs.quota.label.cmp(&rhs.quota.label)
+                    })
+                    .cloned()
+            })
+            .filter(|model| {
+                let pool = Self::usage_pool(model).or(if model.is_autocomplete {
+                    Some(AntigravityUsagePool::GeminiAi)
+                } else {
+                    None
+                });
+                let pool_quota = if source == AntigravitySnapshotSource::Remote {
+                    pool.and_then(|p| represented_quotas.get(&p))
+                } else {
+                    None
+                };
+                compact_fallback_model_id == Some(model.quota.model_id.as_str())
+                    || Self::should_show_distinct_extra_window(model, pool_quota)
+            })
+            .collect();
+
+        distinct_models.sort_by(Self::model_order_cmp);
+
+        let distinct_windows: Vec<NamedRateWindow> = distinct_models
+            .into_iter()
+            .filter_map(|m| {
+                let window = Self::rate_window_for_quota(&m.quota)?;
+                let id = if compact_fallback_model_id == Some(m.quota.model_id.as_str()) {
+                    Self::compact_fallback_window_id(&m.quota.model_id)
+                } else {
+                    m.quota.model_id.clone()
+                };
+                let title = Self::quota_display_label(&m.quota);
+                let usage_known = m.quota.remaining_fraction.is_some();
+                Some(NamedRateWindow::new(id, title, window).with_usage_known(usage_known))
+            })
+            .collect();
+
+        reset_only_pool_windows.extend(distinct_windows);
+        reset_only_pool_windows
+    }
+
+    fn compact_fallback_window_id(model_id: &str) -> String {
+        format!("{COMPACT_FALLBACK_WINDOW_ID_PREFIX}{model_id}")
+    }
+
+    fn should_show_distinct_extra_window(
+        model: &AntigravityNormalizedModel,
+        pool_quota: Option<&AntigravityModelQuota>,
+    ) -> bool {
+        if Self::is_summary_candidate(model) {
+            return false;
+        }
+        if let (Some(pool_quota), Some(reset)) = (pool_quota, model.quota.reset_time)
+            && Some(reset) == pool_quota.reset_time
+            && model.quota.remaining_fraction == pool_quota.remaining_fraction
+        {
+            return false;
+        }
+        if model.quota.remaining_fraction.is_none() {
+            return model.quota.reset_time.is_some() || model.quota.reset_description.is_some();
+        }
+        model.quota.remaining_percent() < 99.9
+    }
+
+    fn model_order_cmp(
+        lhs: &AntigravityNormalizedModel,
+        rhs: &AntigravityNormalizedModel,
+    ) -> std::cmp::Ordering {
+        if lhs.family != rhs.family {
+            return lhs.family.cmp(&rhs.family);
+        }
+        match (lhs.version, rhs.version) {
+            (Some(lv), Some(rv)) if lv != rv => return rv.cmp(&lv),
+            (Some(_), None) => return std::cmp::Ordering::Less,
+            (None, Some(_)) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        if lhs.tier != rhs.tier {
+            return lhs.tier.cmp(&rhs.tier);
+        }
+        lhs.quota
+            .label
+            .to_lowercase()
+            .cmp(&rhs.quota.label.to_lowercase())
+    }
+
+    fn usage_snapshot_from_quota_summary(
+        quota_summary: &AntigravityQuotaSummary,
         account_email: Option<&str>,
         account_plan: Option<&str>,
         now: Timestamp,
     ) -> Result<UsageSnapshot, AntigravityStatusProbeError> {
-        let buckets: Vec<(&str, &AntigravityQuotaSummaryBucket)> = summary
-            .groups
-            .iter()
-            .flat_map(|g| g.buckets.iter().map(move |b| (g.name.as_str(), b)))
-            .collect();
-        let measured_buckets: Vec<(&str, &AntigravityQuotaSummaryBucket)> = buckets
-            .iter()
-            .copied()
-            .filter(|(_, b)| !b.disabled && b.remaining_fraction.is_some())
-            .collect();
-
-        let gemini_buckets: Vec<&AntigravityQuotaSummaryBucket> = measured_buckets
-            .iter()
-            .filter(|(g, b)| Self::is_gemini_summary_bucket(g, b))
-            .map(|(_, b)| *b)
-            .collect();
-        let third_party_buckets: Vec<&AntigravityQuotaSummaryBucket> = measured_buckets
-            .iter()
-            .filter(|(g, b)| Self::is_third_party_summary_bucket(g, b))
-            .map(|(_, b)| *b)
-            .collect();
-
-        let mut primary_bucket = Self::preferred_gemini_summary_bucket(&gemini_buckets);
-        let mut secondary_bucket = Self::most_constrained_summary_bucket(&third_party_buckets);
-
-        if primary_bucket.is_none() && secondary_bucket.is_none() {
-            let remaining: Vec<&AntigravityQuotaSummaryBucket> =
-                measured_buckets.iter().map(|(_, b)| *b).collect();
-            primary_bucket = Self::most_constrained_summary_bucket(&remaining);
-            if let Some(pb) = primary_bucket {
-                let rest: Vec<&AntigravityQuotaSummaryBucket> =
-                    remaining.into_iter().filter(|b| b.id != pb.id).collect();
-                secondary_bucket = Self::most_constrained_summary_bucket(&rest);
-            }
+        let named_windows = Self::quota_summary_windows(quota_summary);
+        if named_windows.is_empty() {
+            return Err(AntigravityStatusProbeError::ParseFailed(
+                "No quota buckets available".to_owned(),
+            ));
         }
 
-        let extra_rate_windows = Self::build_quota_summary_extra_windows(summary);
+        let primary = Self::quota_summary_representative(KnownFamily::Gemini, &named_windows);
+        let secondary = Self::quota_summary_representative(KnownFamily::ClaudeGpt, &named_windows);
+
         let identity = ProviderIdentitySnapshot::new(
             Some(ProviderId::new("antigravity").expect("valid provider id")),
             account_email.map(str::to_owned),
@@ -594,10 +831,10 @@ impl AntigravityStatusSnapshot {
         );
 
         UsageSnapshot::new(
-            primary_bucket.and_then(Self::rate_window_for_bucket),
-            secondary_bucket.and_then(Self::rate_window_for_bucket),
+            primary,
+            secondary,
             None,
-            extra_rate_windows,
+            Some(named_windows),
             None,
             Vec::new(),
             None,
@@ -609,239 +846,211 @@ impl AntigravityStatusSnapshot {
         .map_err(|e| AntigravityStatusProbeError::ParseFailed(e.to_string()))
     }
 
-    fn build_quota_summary_extra_windows(
-        summary: &AntigravityQuotaSummary,
-    ) -> Option<Vec<NamedRateWindow>> {
-        let mut seen_ids = BTreeSet::new();
-        let mut windows = Vec::new();
-        let multi_group = summary.groups.len() > 1;
-        for group in &summary.groups {
-            for bucket in &group.buckets {
-                let base_id = format!(
-                    "{QUOTA_SUMMARY_WINDOW_ID_PREFIX}{}",
-                    Self::sanitized_quota_summary_id(&bucket.id)
-                );
-                let mut id = base_id.clone();
-                if seen_ids.contains(&id) {
-                    let mut suffix = 2usize;
-                    while seen_ids.contains(&format!("{base_id}#{suffix}")) {
-                        suffix += 1;
-                    }
-                    id = format!("{base_id}#{suffix}");
-                }
-                seen_ids.insert(id.clone());
+    fn quota_summary_representative(
+        family: KnownFamily,
+        windows: &[NamedRateWindow],
+    ) -> Option<RateWindow> {
+        let family_windows: Vec<&NamedRateWindow> = windows
+            .iter()
+            .filter(|w| w.usage_known && known_family_for_window(w) == Some(family))
+            .collect();
+        if family_windows.is_empty() {
+            return None;
+        }
 
-                let title = Self::quota_summary_bucket_title(&group.name, bucket, multi_group);
+        let preferred_windows: Vec<&NamedRateWindow> = if family == KnownFamily::Gemini {
+            let ordinary: Vec<&NamedRateWindow> = family_windows
+                .iter()
+                .copied()
+                .filter(|w| Self::is_ordinary_gemini_quota_summary_window_id(&w.id))
+                .collect();
+            if ordinary.is_empty() {
+                family_windows
+            } else {
+                ordinary
+            }
+        } else {
+            family_windows
+        };
+
+        preferred_windows
+            .into_iter()
+            .max_by(|lhs, rhs| {
+                if lhs.window.used_percent != rhs.window.used_percent {
+                    return lhs.window.used_percent.total_cmp(&rhs.window.used_percent);
+                }
+                rhs.title.to_lowercase().cmp(&lhs.title.to_lowercase())
+            })
+            .map(|w| w.window.clone())
+    }
+
+    fn quota_summary_windows(quota_summary: &AntigravityQuotaSummary) -> Vec<NamedRateWindow> {
+        let mut sorted_groups = quota_summary.groups.clone();
+        sorted_groups.sort_by_key(Self::quota_summary_group_sort_rank);
+
+        let mut windows = Vec::new();
+        for group in sorted_groups {
+            let group_title = Self::quota_summary_group_display_title(&group.label);
+            let mut sorted_buckets = group.buckets;
+            sorted_buckets.sort_by(Self::quota_summary_bucket_cmp);
+            for bucket in sorted_buckets {
+                let remaining_percent = bucket
+                    .remaining_fraction
+                    .map(|f| (f * 100.0).clamp(0.0, 100.0))
+                    .unwrap_or(0.0);
+                let kind = Self::quota_summary_bucket_kind(&bucket);
+                let bucket_title = Self::quota_summary_bucket_display_title(&bucket);
+                let title = format!("{group_title} {bucket_title}").trim().to_owned();
                 let usage_known = !bucket.disabled && bucket.remaining_fraction.is_some();
-                if let Some(window) = Self::rate_window_for_bucket(bucket) {
+                if let Ok(window) = RateWindow::new(
+                    (100.0 - remaining_percent).clamp(0.0, 100.0),
+                    kind.window_minutes(),
+                    bucket.reset_time,
+                    bucket.reset_description.clone(),
+                    None,
+                    false,
+                ) {
                     windows.push(
-                        NamedRateWindow::new(id, title, window).with_usage_known(usage_known),
+                        NamedRateWindow::new(
+                            format!("{QUOTA_SUMMARY_WINDOW_ID_PREFIX}{}", bucket.bucket_id),
+                            title,
+                            window,
+                        )
+                        .with_usage_known(usage_known),
                     );
                 }
             }
         }
+        windows
+    }
 
-        if windows.is_empty() {
-            None
+    fn quota_summary_group_sort_rank(group: &AntigravityQuotaSummaryGroup) -> i32 {
+        match Self::quota_summary_group_display_title(&group.label).as_str() {
+            "Gemini" => 0,
+            "Claude/GPT" => 1,
+            _ => 2,
+        }
+    }
+
+    fn quota_summary_group_display_title(raw: &str) -> String {
+        let trimmed = raw.trim();
+        let lower = trimmed.to_lowercase();
+        if lower.contains("gemini") {
+            return "Gemini".to_owned();
+        }
+        if lower.contains("claude") || lower.contains("gpt") {
+            return "Claude/GPT".to_owned();
+        }
+        if trimmed.is_empty() {
+            "Quota".to_owned()
         } else {
-            Some(windows)
+            trimmed.to_owned()
         }
     }
 
-    fn rate_window_for_bucket(bucket: &AntigravityQuotaSummaryBucket) -> Option<RateWindow> {
-        let used_percent = match bucket.remaining_fraction {
-            Some(rem) if !bucket.disabled => Self::used_percent(rem),
-            _ => 0.0,
-        };
-        RateWindow::new(
-            used_percent,
-            bucket.window_minutes.map(i64::from),
-            bucket.reset_time,
-            None,
-            None,
-            false,
-        )
-        .ok()
+    fn quota_summary_bucket_cmp(
+        lhs: &AntigravityQuotaSummaryBucket,
+        rhs: &AntigravityQuotaSummaryBucket,
+    ) -> std::cmp::Ordering {
+        let lhs_rank = Self::quota_summary_bucket_kind(lhs).sort_rank();
+        let rhs_rank = Self::quota_summary_bucket_kind(rhs).sort_rank();
+        lhs_rank.cmp(&rhs_rank)
     }
 
-    fn is_gemini_summary_bucket(group_name: &str, bucket: &AntigravityQuotaSummaryBucket) -> bool {
-        if Self::is_ordinary_gemini_summary_bucket_id(&bucket.id) {
-            return true;
+    fn is_ordinary_gemini_quota_summary_window_id(window_id: &str) -> bool {
+        let normalized = window_id.trim().to_lowercase().replace('_', "-");
+        let normalized = normalized
+            .strip_suffix(" limit")
+            .unwrap_or(&normalized)
+            .trim();
+        for alias in SESSION_CADENCE_ALIASES {
+            if normalized == format!("antigravity-quota-summary-gemini-{alias}") {
+                return true;
+            }
         }
-        let text = format!("{} {} {}", group_name, bucket.id, bucket.name).to_lowercase();
-        if text.contains("tab") || contains_token("image", &text) || text.contains("lite") {
-            return false;
+        normalized == "antigravity-quota-summary-gemini-weekly"
+    }
+
+    fn quota_summary_bucket_display_title(bucket: &AntigravityQuotaSummaryBucket) -> String {
+        match Self::quota_summary_bucket_kind(bucket) {
+            QuotaSummaryBucketKind::Session => "5-hour".to_owned(),
+            QuotaSummaryBucketKind::Weekly => "weekly".to_owned(),
+            QuotaSummaryBucketKind::Other => {
+                if let Some(display_name) = bucket
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    return display_name.to_owned();
+                }
+                if let Some(window) = bucket
+                    .window
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    return window.to_owned();
+                }
+                bucket.bucket_id.clone()
+            }
         }
-        text.contains("gemini")
     }
 
-    fn is_third_party_summary_bucket(
-        group_name: &str,
-        bucket: &AntigravityQuotaSummaryBucket,
-    ) -> bool {
-        let text = format!("{} {} {}", group_name, bucket.id, bucket.name).to_lowercase();
-        let tokens = Self::quota_summary_tokens(&text);
-        text.contains("claude")
-            || text.contains("gpt")
-            || text.contains("third-party")
-            || text.contains("third party")
-            || tokens.contains(&"3p")
-    }
-
-    fn preferred_gemini_summary_bucket<'a>(
-        buckets: &[&'a AntigravityQuotaSummaryBucket],
-    ) -> Option<&'a AntigravityQuotaSummaryBucket> {
-        let ordinary: Vec<&'a AntigravityQuotaSummaryBucket> = buckets
+    fn quota_summary_bucket_kind(bucket: &AntigravityQuotaSummaryBucket) -> QuotaSummaryBucketKind {
+        let candidates = Self::quota_cadence_candidates(bucket);
+        if SESSION_CADENCE_ALIASES
             .iter()
-            .copied()
-            .filter(|b| Self::is_ordinary_gemini_summary_bucket_id(&b.id))
-            .collect();
-        let candidates = if ordinary.is_empty() {
-            buckets
+            .any(|alias| candidates.contains(*alias))
+        {
+            return QuotaSummaryBucketKind::Session;
+        }
+        if candidates.contains("weekly") {
+            return QuotaSummaryBucketKind::Weekly;
+        }
+        QuotaSummaryBucketKind::Other
+    }
+
+    fn quota_cadence_candidates(bucket: &AntigravityQuotaSummaryBucket) -> BTreeSet<String> {
+        let explicit = bucket
+            .window
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let values: Vec<&str> = if let Some(explicit) = explicit {
+            vec![explicit]
         } else {
-            &ordinary
+            let mut v = vec![bucket.bucket_id.as_str()];
+            if let Some(dn) = bucket.display_name.as_deref() {
+                v.push(dn);
+            }
+            v
         };
-        Self::most_constrained_summary_bucket(candidates)
-    }
-
-    pub(crate) fn is_ordinary_gemini_summary_bucket_id(id: &str) -> bool {
-        let lower = id.to_lowercase();
-        let tokens = Self::quota_summary_tokens(&lower);
-        if tokens.first().copied() != Some("gemini") || tokens.len() < 2 {
-            return false;
-        }
-        let qualifiers = &tokens[1..];
-        const ALLOWED: &[&str] = &[
-            "5h", "5hr", "5hrs", "hour", "hours", "session", "weekly", "week", "1w", "7d", "day",
-            "daily", "1d", "24h", "quota", "limit",
-        ];
-        qualifiers.iter().all(|q| ALLOWED.contains(q))
-    }
-
-    fn most_constrained_summary_bucket<'a>(
-        buckets: &[&'a AntigravityQuotaSummaryBucket],
-    ) -> Option<&'a AntigravityQuotaSummaryBucket> {
-        buckets.iter().copied().min_by(|lhs, rhs| {
-            let l_rem = lhs.remaining_fraction.unwrap_or(1.0);
-            let r_rem = rhs.remaining_fraction.unwrap_or(1.0);
-            if (l_rem - r_rem).abs() > 0.0001 {
-                return l_rem.total_cmp(&r_rem);
+        let mut candidates = BTreeSet::new();
+        for raw_value in values {
+            let normalized = raw_value.trim().to_lowercase().replace('_', "-");
+            if normalized.is_empty() {
+                continue;
             }
-            Self::summary_bucket_precedence(lhs).cmp(&Self::summary_bucket_precedence(rhs))
-        })
-    }
-
-    fn summary_bucket_precedence(bucket: &AntigravityQuotaSummaryBucket) -> i32 {
-        match bucket.window_minutes {
-            Some(300) => 0,
-            Some(10_080) => 1,
-            Some(minutes) if minutes > 0 => 2,
-            _ => 3,
-        }
-    }
-
-    fn quota_summary_bucket_title(
-        group_name: &str,
-        bucket: &AntigravityQuotaSummaryBucket,
-        include_group: bool,
-    ) -> String {
-        let mut title = bucket.name.trim().to_owned();
-        if let Some(cadence) = Self::formatted_quota_summary_cadence(bucket)
-            && !title.to_lowercase().contains(&cadence.to_lowercase())
-        {
-            title = format!("{title} ({cadence})");
-        }
-        let trimmed_group = group_name.trim();
-        if include_group
-            && !trimmed_group.is_empty()
-            && !title.to_lowercase().contains(&trimmed_group.to_lowercase())
-        {
-            return format!("{trimmed_group} - {title}");
-        }
-        title
-    }
-
-    fn formatted_quota_summary_cadence(bucket: &AntigravityQuotaSummaryBucket) -> Option<String> {
-        match bucket.window_minutes {
-            Some(300) => Some("5h".to_owned()),
-            Some(10_080) => Some("weekly".to_owned()),
-            Some(1440) => Some("daily".to_owned()),
-            _ => {
-                let label = bucket.window_label.as_deref()?.trim();
-                if label.is_empty() {
-                    None
-                } else {
-                    Some(label.to_owned())
+            let mut normalized_candidates = vec![normalized.clone()];
+            if let Some(stripped) = normalized.strip_suffix(" limit") {
+                normalized_candidates.push(stripped.to_owned());
+            }
+            for candidate in normalized_candidates {
+                for alias in SESSION_CADENCE_ALIASES
+                    .iter()
+                    .copied()
+                    .chain(std::iter::once("weekly"))
+                {
+                    if candidate.ends_with(&format!("-{alias}")) {
+                        candidates.insert(alias.to_owned());
+                    }
                 }
+                candidates.insert(candidate);
             }
         }
+        candidates
     }
-
-    fn sanitized_quota_summary_id(raw: &str) -> String {
-        let lower = raw.to_lowercase();
-        let tokens = Self::quota_summary_tokens(&lower);
-        if tokens.is_empty() {
-            "bucket".to_owned()
-        } else {
-            tokens.join("-")
-        }
-    }
-
-    pub(crate) fn quota_summary_tokens(text: &str) -> Vec<&str> {
-        text.split(|c: char| !c.is_alphanumeric())
-            .filter(|part| !part.is_empty())
-            .collect()
-    }
-}
-
-struct ModelGroupSpec {
-    id: &'static str,
-    title: &'static str,
-    family: KnownFamily,
-}
-
-const MODEL_GROUPS: [ModelGroupSpec; 2] = [
-    ModelGroupSpec {
-        id: KnownFamily::Gemini.window_id(),
-        title: "Gemini Models",
-        family: KnownFamily::Gemini,
-    },
-    ModelGroupSpec {
-        id: KnownFamily::ClaudeGpt.window_id(),
-        title: "Claude and GPT",
-        family: KnownFamily::ClaudeGpt,
-    },
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum SortFamily {
-    GeminiPro = 0,
-    GeminiFlash = 1,
-    Claude = 2,
-    Gpt = 3,
-    Unknown = 4,
-}
-
-fn first_number(text: &str) -> Option<f64> {
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i + 1 < bytes.len() && bytes[i] == b'.' && bytes[i + 1].is_ascii_digit() {
-                i += 1;
-                while i < bytes.len() && bytes[i].is_ascii_digit() {
-                    i += 1;
-                }
-            }
-            return text[start..i].parse::<f64>().ok();
-        }
-        i += 1;
-    }
-    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -878,17 +1087,40 @@ pub enum AntigravityStatusProbeError {
     NotRunning,
     #[error("Antigravity CSRF token not found. Restart Antigravity and retry.")]
     MissingCSRFToken,
-    #[error("Antigravity port detection failed: {0}")]
+    #[error("{}", Self::port_detection_description(.0))]
     PortDetectionFailed(String),
-    #[error("Antigravity API error: {0}")]
+    #[error("{}", Self::api_error_description(.0))]
     ApiError(String),
     #[error("Could not parse Antigravity quota: {0}")]
     ParseFailed(String),
-    #[error("Antigravity status probe timed out")]
+    #[error("Antigravity quota request timed out.")]
     TimedOut,
+    #[error("Antigravity quota request cancelled.")]
+    Cancelled,
 }
 
 impl AntigravityStatusProbeError {
+    fn port_detection_description(message: &str) -> String {
+        match message {
+            "lsof not available" => {
+                "Antigravity port detection needs lsof. Install it, then retry.".to_owned()
+            }
+            "no listening ports found" => {
+                "Antigravity is running but not exposing ports yet. Try again in a few seconds."
+                    .to_owned()
+            }
+            _ => format!("Antigravity port detection failed: {message}"),
+        }
+    }
+
+    fn api_error_description(message: &str) -> String {
+        if message.contains("HTTP 401") || message.contains("HTTP 403") {
+            "Antigravity session expired. Restart Antigravity and retry.".to_owned()
+        } else {
+            format!("Antigravity API error: {message}")
+        }
+    }
+
     pub fn into_classified_error(self) -> ClassifiedError {
         match &self {
             Self::NotRunning | Self::MissingCSRFToken | Self::PortDetectionFailed(_) => {
@@ -900,7 +1132,7 @@ impl AntigravityStatusProbeError {
             Self::ParseFailed(_) => {
                 ClassifiedError::new(ProviderErrorKind::ParseFailure, self.to_string())
             }
-            Self::TimedOut => {
+            Self::TimedOut | Self::Cancelled => {
                 ClassifiedError::new(ProviderErrorKind::NetworkFailure, self.to_string())
                     .with_transport(TransportClass::Timeout)
             }
@@ -936,11 +1168,29 @@ impl OperationDeadline {
         }
     }
 
+    pub fn now(&self) -> Instant {
+        (self.now_provider)()
+    }
+
+    pub fn remaining(&self) -> Option<Duration> {
+        AntigravityStatusProbe::remaining_time(self.now(), self.deadline)
+    }
+
+    pub fn fallback_reserving(&self) -> Self {
+        let now = self.now();
+        let remaining = self.deadline.saturating_duration_since(now);
+        let attempt_budget = remaining / 2;
+        Self {
+            deadline: now + attempt_budget,
+            now_provider: Arc::clone(&self.now_provider),
+        }
+    }
+
     pub fn timeout_for_next_step(
         &self,
         cap: Option<Duration>,
     ) -> Result<Duration, AntigravityStatusProbeError> {
-        let now = (self.now_provider)();
+        let now = self.now();
         let Some(remaining) = AntigravityStatusProbe::remaining_time(now, self.deadline) else {
             return Err(AntigravityStatusProbeError::TimedOut);
         };
@@ -952,9 +1202,24 @@ impl OperationDeadline {
         }
     }
 
+    pub fn timeout_for_endpoint_attempt(
+        &self,
+        timeout: Duration,
+        remaining_attempt_count: usize,
+    ) -> Result<Duration, AntigravityStatusProbeError> {
+        let Some(remaining) = self.remaining() else {
+            return Err(AntigravityStatusProbeError::TimedOut);
+        };
+        let count = remaining_attempt_count.max(1) as u32;
+        let per_attempt = remaining / count;
+        if per_attempt.is_zero() {
+            return Err(AntigravityStatusProbeError::TimedOut);
+        }
+        Ok(timeout.min(per_attempt))
+    }
+
     pub fn has_expired(&self) -> bool {
-        let now = (self.now_provider)();
-        AntigravityStatusProbe::should_abort_endpoint_scan(now, self.deadline)
+        AntigravityStatusProbe::should_abort_endpoint_scan(self.now(), self.deadline)
     }
 }
 
@@ -963,8 +1228,23 @@ impl OperationDeadline {
 pub struct LocalhostTrustPolicy;
 
 impl LocalhostTrustPolicy {
+    pub const SERVER_TRUST_AUTH_METHOD: &str = "NSURLAuthenticationMethodServerTrust";
+
     pub fn should_accept_server_trust(host: &str) -> bool {
-        matches!(host, "127.0.0.1" | "localhost" | "::1")
+        matches!(
+            host.trim().to_ascii_lowercase().as_str(),
+            "127.0.0.1" | "localhost"
+        )
+    }
+
+    pub fn should_accept_server_trust_challenge(
+        authentication_method: &str,
+        host: &str,
+        has_server_trust: bool,
+    ) -> bool {
+        authentication_method == Self::SERVER_TRUST_AUTH_METHOD
+            && has_server_trust
+            && Self::should_accept_server_trust(host)
     }
 }
 
@@ -1041,6 +1321,7 @@ impl fmt::Debug for ProcessInfoResult {
 pub enum EndpointSource {
     ExtensionServer,
     LanguageServer,
+    CliHttps,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -1075,6 +1356,19 @@ impl AntigravityConnectionEndpoint {
             csrf_token: csrf_token.into(),
             source,
         }
+    }
+
+    pub fn requires_csrf_token(&self) -> bool {
+        match self.source {
+            EndpointSource::LanguageServer | EndpointSource::ExtensionServer => true,
+            EndpointSource::CliHttps => false,
+        }
+    }
+
+    pub fn matches_request_target(&self, other: &Self) -> bool {
+        self.scheme == other.scheme
+            && self.port == other.port
+            && self.csrf_token == other.csrf_token
     }
 }
 
@@ -1149,12 +1443,7 @@ impl AntigravityStatusProbe {
         if remaining.is_zero() {
             return None;
         }
-        let effective_cap = if cap.is_zero() {
-            Self::STEP_TIMEOUT_CAP
-        } else {
-            cap
-        };
-        let bounded = remaining.min(effective_cap);
+        let bounded = remaining.min(cap);
         if bounded.is_zero() {
             None
         } else {
@@ -1163,10 +1452,7 @@ impl AntigravityStatusProbe {
     }
 
     pub fn should_abort_endpoint_scan(now: Instant, deadline: Instant) -> bool {
-        let Some(remaining) = Self::remaining_time(now, deadline) else {
-            return true;
-        };
-        remaining < Self::MIN_REMAINING_TIME
+        Self::remaining_time(now, deadline).is_none()
     }
 
     // MARK: - Process Classification & Flag Parsing
@@ -1201,25 +1487,30 @@ impl AntigravityStatusProbe {
 
     fn is_language_server_command_line(lower: &str) -> bool {
         // Matches `(^|[/\\])language(?:_|-)server(?:[_-][a-z0-9]+)*(?:\.exe)?(\s|$)`
-        for token in lower.split_whitespace() {
-            let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
-            let stem = basename.strip_suffix(".exe").unwrap_or(basename);
-            let Some(rest) = stem
-                .strip_prefix("language_server")
-                .or_else(|| stem.strip_prefix("language-server"))
-            else {
-                continue;
-            };
-            if rest.is_empty() {
-                return true;
-            }
-            if (rest.starts_with('_') || rest.starts_with('-'))
-                && rest
-                    .split(['_', '-'])
-                    .skip(1)
-                    .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric()))
-            {
-                return true;
+        for prefix in ["language_server", "language-server"] {
+            for (idx, _) in lower.match_indices(prefix) {
+                if idx > 0 {
+                    let prev = lower.as_bytes()[idx - 1];
+                    if prev != b'/' && prev != b'\\' {
+                        continue;
+                    }
+                }
+                let after_prefix = &lower[idx + prefix.len()..];
+                let token_len = after_prefix
+                    .find(char::is_whitespace)
+                    .unwrap_or(after_prefix.len());
+                let suffix = &after_prefix[..token_len];
+                let stem = suffix.strip_suffix(".exe").unwrap_or(suffix);
+                if stem.is_empty() {
+                    return true;
+                }
+                if (stem.starts_with('_') || stem.starts_with('-'))
+                    && stem.split(['_', '-']).skip(1).all(|seg| {
+                        !seg.is_empty() && seg.chars().all(|c| c.is_ascii_alphanumeric())
+                    })
+                {
+                    return true;
+                }
             }
         }
         false
@@ -1273,18 +1564,37 @@ impl AntigravityStatusProbe {
 
     fn is_antigravity_cli_command_line(lower: &str) -> bool {
         // Matches `(^|[/\\])(antigravity-cli|antigravity_cli)([\s/\\]|$)` or `(^|[/\\])agy(\s|$)`
-        for token in lower.split_whitespace() {
-            for component in token.split(['/', '\\']) {
-                if component == "antigravity-cli"
-                    || component == "antigravity_cli"
-                    || component == ".antigravity-cli"
-                    || component == ".antigravity_cli"
-                {
+        for needle in ["antigravity-cli", "antigravity_cli"] {
+            for (idx, _) in lower.match_indices(needle) {
+                if idx > 0 {
+                    let prev = lower.as_bytes()[idx - 1];
+                    if prev != b'/' && prev != b'\\' {
+                        continue;
+                    }
+                }
+                let end = idx + needle.len();
+                if end == lower.len() {
+                    return true;
+                }
+                let next_char = lower[end..].chars().next().unwrap_or(' ');
+                if next_char.is_whitespace() || next_char == '/' || next_char == '\\' {
                     return true;
                 }
             }
-            let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
-            if basename == "agy" || basename == "agy.exe" {
+        }
+        for (idx, _) in lower.match_indices("agy") {
+            if idx > 0 {
+                let prev = lower.as_bytes()[idx - 1];
+                if prev != b'/' && prev != b'\\' {
+                    continue;
+                }
+            }
+            let end = idx + "agy".len();
+            if end == lower.len() {
+                return true;
+            }
+            let next_char = lower[end..].chars().next().unwrap_or(' ');
+            if next_char.is_whitespace() {
                 return true;
             }
         }
@@ -1321,7 +1631,7 @@ impl AntigravityStatusProbe {
         scope: ProcessScope,
     ) -> Result<Vec<ProcessInfoResult>, AntigravityStatusProbeError> {
         let mut matches = Vec::new();
-        let mut saw_antigravity = false;
+        let mut saw_tokenless_ide = false;
 
         for entry in entries {
             let Some(kind) = Self::antigravity_process_kind(&entry.command) else {
@@ -1330,16 +1640,15 @@ impl AntigravityStatusProbe {
             if !Self::matches_scope(kind, scope) {
                 continue;
             }
-            saw_antigravity = true;
-            let csrf = Self::extract_flag("--csrf_token", &entry.command);
+            let Some(token) = Self::resolved_csrf_token_for_kind(kind, &entry.command) else {
+                saw_tokenless_ide = true;
+                continue;
+            };
             let ext_csrf = Self::extract_flag("--extension_server_csrf_token", &entry.command);
             let port = Self::extract_port("--extension_server_port", &entry.command);
-            if csrf.is_none() && ext_csrf.is_none() && port.is_none() {
-                continue;
-            }
             matches.push(ProcessInfoResult {
                 pid: entry.pid,
-                csrf_token: csrf,
+                csrf_token: Some(token),
                 extension_port: port,
                 extension_csrf_token: ext_csrf,
                 command: entry.command.clone(),
@@ -1347,14 +1656,26 @@ impl AntigravityStatusProbe {
             });
         }
 
-        if matches.is_empty() {
-            if saw_antigravity {
-                return Err(AntigravityStatusProbeError::MissingCSRFToken);
-            }
-            return Err(AntigravityStatusProbeError::NotRunning);
+        if !matches.is_empty() {
+            return Ok(matches);
         }
+        if saw_tokenless_ide {
+            return Err(AntigravityStatusProbeError::MissingCSRFToken);
+        }
+        Err(AntigravityStatusProbeError::NotRunning)
+    }
 
-        Ok(matches)
+    pub fn resolved_csrf_token_for_kind(
+        kind: AntigravityProcessKind,
+        command: &str,
+    ) -> Option<String> {
+        if let Some(token) = Self::extract_flag("--csrf_token", command) {
+            return Some(token);
+        }
+        match kind {
+            AntigravityProcessKind::App | AntigravityProcessKind::Ide => None,
+            AntigravityProcessKind::Cli => Some(String::new()),
+        }
     }
 
     pub fn resolved_csrf_token(
@@ -1362,18 +1683,19 @@ impl AntigravityStatusProbe {
         extension_csrf_token: Option<&str>,
         command: &str,
     ) -> Option<String> {
-        for val in [csrf_token, extension_csrf_token].into_iter().flatten() {
-            let trimmed = val.trim();
-            if !trimmed.is_empty() {
-                return Some(trimmed.to_owned());
-            }
+        if let Some(token) = csrf_token {
+            return Some(token.trim().to_owned());
         }
-        let lower = command.to_lowercase();
-        if lower.contains("/.antigravity-cli/")
-            || lower.contains("\\.antigravity-cli\\")
-            || lower.contains("--server_port")
+        if let Some(kind) = Self::antigravity_process_kind(command)
+            && let Some(token) = Self::resolved_csrf_token_for_kind(kind, command)
         {
-            return Some(String::new());
+            return Some(token);
+        }
+        if let Some(ext) = extension_csrf_token
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            return Some(ext.to_owned());
         }
         None
     }
@@ -1385,7 +1707,6 @@ impl AntigravityStatusProbe {
             let token_lower = token.to_lowercase();
             if token_lower == flag_lower {
                 if let Some(next) = tokens.get(idx + 1)
-                    && !next.starts_with('-')
                     && !next.is_empty()
                 {
                     return Some((*next).to_owned());
@@ -1411,7 +1732,6 @@ impl AntigravityStatusProbe {
             if !line.contains("(LISTEN)") {
                 continue;
             }
-            // Match `:<digits> (LISTEN)`
             if let Some(listen_idx) = line.find("(LISTEN)") {
                 let before = line[..listen_idx].trim_end();
                 if let Some(colon_idx) = before.rfind(':') {
@@ -1429,10 +1749,11 @@ impl AntigravityStatusProbe {
     }
 
     pub fn fallback_probe_port(ports: &[u16], extension_port: Option<u16>) -> Option<u16> {
-        if let Some(ext) = extension_port
-            && let Some(&non_ext) = ports.iter().find(|&&p| p != ext)
-        {
+        if let Some(&non_ext) = ports.iter().find(|&&p| Some(p) != extension_port) {
             return Some(non_ext);
+        }
+        if let Some(ext) = extension_port {
+            return Some(ext);
         }
         ports.first().copied()
     }
@@ -1480,57 +1801,79 @@ impl AntigravityStatusProbe {
         extension_csrf_token: Option<&str>,
         schemes: &[&str],
     ) -> Vec<AntigravityConnectionEndpoint> {
-        let mut candidates = Vec::new();
-        let trimmed_csrf = csrf_token.map(str::trim);
-        let trimmed_ext_csrf = extension_csrf_token
+        let language_csrf = csrf_token.map(str::trim).unwrap_or_default();
+        let ext_csrf = extension_csrf_token
             .map(str::trim)
             .filter(|s| !s.is_empty());
 
-        if let Some(csrf) = trimmed_csrf {
-            let mut language_ports = Vec::new();
-            for &port in ports {
-                if Some(port) != extension_port && !language_ports.contains(&port) {
-                    language_ports.push(port);
-                }
-            }
-            if language_ports.is_empty() {
-                for &port in ports {
-                    if !language_ports.contains(&port) {
-                        language_ports.push(port);
-                    }
-                }
-            }
-            for port in language_ports {
-                for &scheme in schemes {
-                    candidates.push(AntigravityConnectionEndpoint::new(
-                        scheme,
-                        port,
-                        csrf,
-                        EndpointSource::LanguageServer,
-                    ));
-                }
+        let mut endpoints = if csrf_token.is_some() {
+            Self::language_server_endpoints(ports, language_csrf, schemes)
+        } else {
+            Vec::new()
+        };
+
+        for endpoint in
+            Self::extension_server_endpoints(extension_port, csrf_token.map(str::trim), ext_csrf)
+        {
+            if !endpoints
+                .iter()
+                .any(|existing| existing.matches_request_target(&endpoint))
+            {
+                endpoints.push(endpoint);
             }
         }
 
-        let resolved_ext_csrf = trimmed_ext_csrf.or_else(|| trimmed_csrf.filter(|s| !s.is_empty()));
-        if let (Some(ext_port), Some(ext_csrf)) = (extension_port, resolved_ext_csrf) {
+        endpoints
+    }
+
+    fn language_server_endpoints(
+        ports: &[u16],
+        language_csrf: &str,
+        schemes: &[&str],
+    ) -> Vec<AntigravityConnectionEndpoint> {
+        let mut endpoints = Vec::new();
+        for &port in ports {
             for &scheme in schemes {
-                let candidate = AntigravityConnectionEndpoint::new(
+                endpoints.push(AntigravityConnectionEndpoint::new(
                     scheme,
-                    ext_port,
-                    ext_csrf,
-                    EndpointSource::ExtensionServer,
-                );
-                if !candidates
-                    .iter()
-                    .any(|e| e.scheme == candidate.scheme && e.port == candidate.port)
-                {
-                    candidates.push(candidate);
-                }
+                    port,
+                    language_csrf,
+                    EndpointSource::LanguageServer,
+                ));
             }
         }
+        endpoints
+    }
 
-        candidates
+    fn extension_server_endpoints(
+        extension_port: Option<u16>,
+        language_csrf: Option<&str>,
+        extension_csrf: Option<&str>,
+    ) -> Vec<AntigravityConnectionEndpoint> {
+        let Some(ext_port) = extension_port else {
+            return Vec::new();
+        };
+        let mut endpoints = Vec::new();
+        if let Some(ext_csrf) = extension_csrf {
+            endpoints.push(AntigravityConnectionEndpoint::new(
+                "http",
+                ext_port,
+                ext_csrf,
+                EndpointSource::ExtensionServer,
+            ));
+        }
+        if let Some(lang_csrf) = language_csrf
+            && !lang_csrf.is_empty()
+            && extension_csrf != Some(lang_csrf)
+        {
+            endpoints.push(AntigravityConnectionEndpoint::new(
+                "http",
+                ext_port,
+                lang_csrf,
+                EndpointSource::ExtensionServer,
+            ));
+        }
+        endpoints
     }
 
     pub fn request_endpoints(
@@ -1538,14 +1881,33 @@ impl AntigravityStatusProbe {
         candidates: &[AntigravityConnectionEndpoint],
     ) -> Vec<AntigravityConnectionEndpoint> {
         let mut ordered = vec![primary.clone()];
+        let (first_source, second_source) = if primary.source == EndpointSource::ExtensionServer {
+            (
+                EndpointSource::ExtensionServer,
+                EndpointSource::LanguageServer,
+            )
+        } else {
+            (
+                EndpointSource::LanguageServer,
+                EndpointSource::ExtensionServer,
+            )
+        };
+
+        for source in [first_source, second_source] {
+            for candidate in candidates.iter().filter(|c| c.source == source) {
+                if !ordered
+                    .iter()
+                    .any(|existing| existing.matches_request_target(candidate))
+                {
+                    ordered.push(candidate.clone());
+                }
+            }
+        }
         for candidate in candidates {
-            let already_included = ordered.iter().any(|existing| {
-                existing.scheme == candidate.scheme
-                    && existing.port == candidate.port
-                    && existing.csrf_token == candidate.csrf_token
-                    && existing.source == candidate.source
-            });
-            if !already_included {
+            if !ordered
+                .iter()
+                .any(|existing| existing.matches_request_target(candidate))
+            {
                 ordered.push(candidate.clone());
             }
         }
@@ -1567,57 +1929,37 @@ impl AntigravityStatusProbe {
             ));
         }
 
-        let mut saw_timeout = false;
-        let mut reachable_fallback: Option<AntigravityConnectionEndpoint> = None;
-
-        for candidate in candidates {
-            if deadline.has_expired() {
-                return Err(AntigravityStatusProbeError::TimedOut);
-            }
-            let step_timeout = match deadline.timeout_for_next_step(Some(Self::STEP_TIMEOUT_CAP)) {
-                Ok(t) => t,
-                Err(_) => return Err(AntigravityStatusProbeError::TimedOut),
-            };
+        for (index, candidate) in candidates.iter().enumerate() {
+            let remaining_attempts = candidates.len() - index;
+            let step_timeout = deadline
+                .timeout_for_endpoint_attempt(Self::STEP_TIMEOUT_CAP, remaining_attempts)?;
             match test_send(candidate.clone(), step_timeout).await {
                 Ok(()) => return Ok(candidate.clone()),
-                Err(AntigravityStatusProbeError::TimedOut) => {
-                    saw_timeout = true;
+                Err(err) if Self::is_reachable_probe_error(&err) => {
+                    return Ok(candidate.clone());
                 }
-                Err(err) => {
-                    if reachable_fallback.is_none() && Self::is_reachable_probe_error(&err) {
-                        reachable_fallback = Some(candidate.clone());
-                    }
-                }
+                Err(_) => {}
             }
         }
 
-        if let Some(fallback) = reachable_fallback {
+        if let Some(fallback) = Self::fallback_probe_endpoint(candidates) {
             return Ok(fallback);
-        }
-        if saw_timeout {
-            return Err(AntigravityStatusProbeError::TimedOut);
-        }
-
-        let language_ports: Vec<u16> = candidates
-            .iter()
-            .filter(|c| c.source == EndpointSource::LanguageServer)
-            .map(|c| c.port)
-            .collect();
-        let ext_port = candidates
-            .iter()
-            .find(|c| c.source == EndpointSource::ExtensionServer)
-            .map(|c| c.port);
-        if let Some(port) = Self::fallback_probe_port(&language_ports, ext_port)
-            && let Some(endpoint) = candidates.iter().find(|c| c.port == port)
-        {
-            return Ok(endpoint.clone());
-        }
-        if let Some(first) = candidates.first() {
-            return Ok(first.clone());
         }
         Err(AntigravityStatusProbeError::PortDetectionFailed(
             "no working API port found".to_owned(),
         ))
+    }
+
+    fn fallback_probe_endpoint(
+        endpoints: &[AntigravityConnectionEndpoint],
+    ) -> Option<AntigravityConnectionEndpoint> {
+        if let Some(language_server) = endpoints
+            .iter()
+            .find(|e| e.source == EndpointSource::LanguageServer)
+        {
+            return Some(language_server.clone());
+        }
+        endpoints.first().cloned()
     }
 
     pub async fn fetch_process_snapshots<F, Fut>(
@@ -1631,25 +1973,52 @@ impl AntigravityStatusProbe {
                 Output = Result<AntigravityStatusSnapshot, AntigravityStatusProbeError>,
             >,
     {
+        if deadline.has_expired() {
+            return Err(AntigravityStatusProbeError::TimedOut);
+        }
+
+        let mut pending: Vec<Option<std::pin::Pin<Box<Fut>>>> = processes
+            .iter()
+            .cloned()
+            .map(|p| Some(Box::pin(fetch_process(p))))
+            .collect();
+        let mut results: Vec<
+            Option<Result<AntigravityStatusSnapshot, AntigravityStatusProbeError>>,
+        > = vec![None; processes.len()];
+
+        std::future::poll_fn(|cx| {
+            let mut all_done = true;
+            for (index, slot) in pending.iter_mut().enumerate() {
+                if let Some(fut) = slot {
+                    match fut.as_mut().poll(cx) {
+                        std::task::Poll::Ready(res) => {
+                            results[index] = Some(res);
+                            *slot = None;
+                        }
+                        std::task::Poll::Pending => {
+                            all_done = false;
+                        }
+                    }
+                }
+            }
+            if all_done {
+                std::task::Poll::Ready(())
+            } else {
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+
         let mut snapshots = Vec::new();
         let mut last_error: Option<AntigravityStatusProbeError> = None;
 
-        for process in processes {
-            if deadline.has_expired() {
-                if !snapshots.is_empty() {
-                    break;
-                }
-                return Err(AntigravityStatusProbeError::TimedOut);
-            }
-            match fetch_process(process.clone()).await {
+        for outcome in results.into_iter().flatten() {
+            match outcome {
                 Ok(snapshot) => {
                     snapshots.push(snapshot);
                 }
-                Err(AntigravityStatusProbeError::TimedOut) => {
-                    last_error = Some(AntigravityStatusProbeError::TimedOut);
-                    if deadline.has_expired() {
-                        break;
-                    }
+                Err(AntigravityStatusProbeError::Cancelled) => {
+                    return Err(AntigravityStatusProbeError::Cancelled);
                 }
                 Err(err) => {
                     last_error = Some(err);
@@ -1668,57 +2037,74 @@ impl AntigravityStatusProbe {
         deadline: &OperationDeadline,
         send: EndpointRequestSender,
     ) -> Result<AntigravityStatusSnapshot, AntigravityStatusProbeError> {
-        match Self::make_parsed_request(
+        let (quota_summary_ctx, quota_summary_deadline) =
+            Self::fallback_reserving_request_context(context, deadline);
+        if let Ok(quota_summary) = Self::make_parsed_request(
+            RequestPayload::new(QUOTA_SUMMARY_PATH, Self::quota_summary_request_body()),
+            &quota_summary_ctx,
+            &quota_summary_deadline,
+            Arc::clone(&send),
+            Self::parse_quota_summary_response,
+        )
+        .await
+            && quota_summary.has_known_quota_summary()
+        {
+            let identity_ctx = Self::identity_request_context(context);
+            let identity = Self::make_parsed_request(
+                RequestPayload::new(GET_USER_STATUS_PATH, Self::default_request_body()),
+                &identity_ctx,
+                deadline,
+                Arc::clone(&send),
+                Self::parse_user_status_response,
+            )
+            .await
+            .ok();
+            return Ok(quota_summary.with_identity(identity.as_ref()));
+        }
+
+        let (user_status_ctx, user_status_deadline) =
+            Self::fallback_reserving_request_context(context, deadline);
+        if let Ok(snapshot) = Self::make_parsed_request(
             RequestPayload::new(GET_USER_STATUS_PATH, Self::default_request_body()),
-            context,
-            deadline,
+            &user_status_ctx,
+            &user_status_deadline,
             Arc::clone(&send),
             Self::parse_user_status_response,
         )
         .await
         {
-            Ok(snapshot) => Ok(snapshot),
-            Err(AntigravityStatusProbeError::TimedOut) => {
-                Err(AntigravityStatusProbeError::TimedOut)
-            }
-            Err(user_status_error) => {
-                match Self::make_parsed_request(
-                    RequestPayload::new(COMMAND_MODEL_CONFIG_PATH, Self::default_request_body()),
-                    context,
-                    deadline,
-                    send,
-                    Self::parse_command_model_response,
-                )
-                .await
-                {
-                    Ok(snapshot) => Ok(snapshot),
-                    Err(AntigravityStatusProbeError::TimedOut) => {
-                        Err(AntigravityStatusProbeError::TimedOut)
-                    }
-                    Err(fallback_error) => {
-                        if Self::should_prefer_user_status_error(
-                            &user_status_error,
-                            &fallback_error,
-                        ) {
-                            Err(user_status_error)
-                        } else {
-                            Err(fallback_error)
-                        }
-                    }
-                }
-            }
+            return Ok(snapshot);
         }
+
+        Self::make_parsed_request(
+            RequestPayload::new(COMMAND_MODEL_CONFIG_PATH, Self::default_request_body()),
+            context,
+            deadline,
+            send,
+            Self::parse_command_model_response,
+        )
+        .await
     }
 
-    fn should_prefer_user_status_error(
-        user_status_error: &AntigravityStatusProbeError,
-        fallback_error: &AntigravityStatusProbeError,
-    ) -> bool {
-        matches!(
-            fallback_error,
-            AntigravityStatusProbeError::ApiError(msg)
-                if msg.contains("HTTP 404") || msg.contains("HTTP 405") || msg.contains("HTTP 501")
-        ) && !matches!(user_status_error, AntigravityStatusProbeError::TimedOut)
+    fn fallback_reserving_request_context(
+        context: &RequestContext,
+        deadline: &OperationDeadline,
+    ) -> (RequestContext, OperationDeadline) {
+        let sub_deadline = deadline.fallback_reserving();
+        let remaining = deadline.remaining().unwrap_or(Duration::ZERO);
+        let attempt_budget = remaining / 2;
+        let sub_context = RequestContext {
+            endpoints: context.endpoints.clone(),
+            timeout: context.timeout.min(attempt_budget),
+        };
+        (sub_context, sub_deadline)
+    }
+
+    fn identity_request_context(context: &RequestContext) -> RequestContext {
+        RequestContext {
+            endpoints: context.endpoints.clone(),
+            timeout: context.timeout.min(Duration::from_secs(1)),
+        }
     }
 
     pub async fn make_parsed_request<T, P>(
@@ -1734,12 +2120,11 @@ impl AntigravityStatusProbe {
         let mut last_error: Option<AntigravityStatusProbeError> = None;
 
         for endpoint in &context.endpoints {
-            if deadline.has_expired() {
-                return Err(AntigravityStatusProbeError::TimedOut);
-            }
-            let step_timeout = match deadline.timeout_for_next_step(Some(Self::STEP_TIMEOUT_CAP)) {
-                Ok(t) => t.min(context.timeout),
-                Err(_) => return Err(AntigravityStatusProbeError::TimedOut),
+            let Ok(step_timeout) = deadline.timeout_for_next_step(Some(context.timeout)) else {
+                if last_error.is_none() {
+                    last_error = Some(AntigravityStatusProbeError::TimedOut);
+                }
+                break;
             };
             match send(payload.clone(), endpoint.clone(), step_timeout).await {
                 Ok(data) => match parse(&data) {
@@ -1748,12 +2133,6 @@ impl AntigravityStatusProbe {
                         last_error = Some(err);
                     }
                 },
-                Err(AntigravityStatusProbeError::TimedOut) => {
-                    last_error = Some(AntigravityStatusProbeError::TimedOut);
-                    if deadline.has_expired() {
-                        return Err(AntigravityStatusProbeError::TimedOut);
-                    }
-                }
                 Err(err) => {
                     last_error = Some(err);
                 }
@@ -1761,51 +2140,90 @@ impl AntigravityStatusProbe {
         }
 
         Err(last_error.unwrap_or_else(|| {
-            AntigravityStatusProbeError::ApiError("No Antigravity endpoints available".to_owned())
+            AntigravityStatusProbeError::ApiError("Invalid response".to_owned())
         }))
     }
 
-    pub fn local_snapshot_score(snapshot: &AntigravityStatusSnapshot) -> (i32, i32, i32, i32, i32) {
-        let has_email = i32::from(
-            snapshot
-                .account_email
-                .as_deref()
-                .is_some_and(|e| !e.trim().is_empty()),
-        );
-        let has_plan = i32::from(
-            snapshot
-                .account_plan
-                .as_deref()
-                .is_some_and(|p| !p.trim().is_empty()),
-        );
-        let has_gemini = i32::from(snapshot.model_quotas.iter().any(|q| {
-            known_family(q) == Some(KnownFamily::Gemini) && q.remaining_fraction.is_some()
-        }));
-        let has_claude_gpt = i32::from(snapshot.model_quotas.iter().any(|q| {
-            known_family(q) == Some(KnownFamily::ClaudeGpt) && q.remaining_fraction.is_some()
-        }));
-        let family_coverage = has_gemini + has_claude_gpt;
-        let measured_count = snapshot
-            .model_quotas
-            .iter()
-            .filter(|q| q.remaining_fraction.is_some())
-            .count() as i32;
-        (
-            has_email,
-            has_plan,
-            family_coverage,
-            measured_count,
-            snapshot.model_quotas.len() as i32,
-        )
+    pub fn local_snapshot_score(snapshot: &AntigravityStatusSnapshot) -> i32 {
+        let mut score = 0;
+        if let Some(quota_summary) = &snapshot.quota_summary {
+            let buckets: Vec<&AntigravityQuotaSummaryBucket> = quota_summary
+                .groups
+                .iter()
+                .flat_map(|g| g.buckets.iter())
+                .collect();
+            let known_buckets = buckets
+                .iter()
+                .filter(|b| !b.disabled && b.remaining_fraction.is_some())
+                .count() as i32;
+            score += 1000;
+            score += (quota_summary.groups.len() as i32) * 10;
+            score += buckets.len() as i32;
+            score += known_buckets * 20;
+        } else {
+            let known_rows = snapshot
+                .model_quotas
+                .iter()
+                .filter(|q| q.remaining_fraction.is_some())
+                .count() as i32;
+            score += snapshot.model_quotas.len() as i32;
+            score += known_rows * 10;
+        }
+        if snapshot.account_email.is_some() {
+            score += 2;
+        }
+        if snapshot.account_plan.is_some() {
+            score += 1;
+        }
+        score
+    }
+
+    pub fn preferred_local_snapshot_matching(
+        snapshots: &[AntigravityStatusSnapshot],
+        expected_account_email: Option<&str>,
+    ) -> Option<AntigravityStatusSnapshot> {
+        let mut candidates: Vec<&AntigravityStatusSnapshot> = snapshots.iter().collect();
+        if let Some(expected) = Self::normalized_account_email(expected_account_email) {
+            let matches: Vec<&AntigravityStatusSnapshot> = snapshots
+                .iter()
+                .filter(|s| {
+                    let Some(found) = Self::normalized_account_email(s.account_email.as_deref())
+                    else {
+                        return false;
+                    };
+                    found.eq_ignore_ascii_case(&expected)
+                })
+                .collect();
+            if !matches.is_empty() {
+                candidates = matches;
+            }
+        }
+
+        let mut best_snapshot: Option<&AntigravityStatusSnapshot> = None;
+        let mut best_score = i32::MIN;
+        for snapshot in candidates {
+            let score = Self::local_snapshot_score(snapshot);
+            if score > best_score {
+                best_snapshot = Some(snapshot);
+                best_score = score;
+            }
+        }
+        best_snapshot.cloned()
     }
 
     pub fn preferred_local_snapshot(
         snapshots: &[AntigravityStatusSnapshot],
     ) -> Option<AntigravityStatusSnapshot> {
-        snapshots
-            .iter()
-            .max_by_key(|s| Self::local_snapshot_score(s))
-            .cloned()
+        Self::preferred_local_snapshot_matching(snapshots, None)
+    }
+
+    fn normalized_account_email(email: Option<&str>) -> Option<String> {
+        let trimmed = email?.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
     }
 
     // MARK: - Live LocalProbe + NetBroker Execution
@@ -1816,6 +2234,17 @@ impl AntigravityStatusProbe {
         call: &BrokerCall,
         timeout: Duration,
         scope: ProcessScope,
+    ) -> Result<AntigravityStatusSnapshot, AntigravityStatusProbeError> {
+        Self::fetch_with_expected_account(local_probe, net, call, timeout, scope, None).await
+    }
+
+    pub async fn fetch_with_expected_account(
+        local_probe: &LocalProbe,
+        net: &Arc<NetBroker>,
+        call: &BrokerCall,
+        timeout: Duration,
+        scope: ProcessScope,
+        expected_account_email: Option<&str>,
     ) -> Result<AntigravityStatusSnapshot, AntigravityStatusProbeError> {
         let deadline = OperationDeadline::new(timeout);
         if deadline.has_expired() {
@@ -1849,7 +2278,8 @@ impl AntigravityStatusProbe {
         })
         .await?;
 
-        Self::preferred_local_snapshot(&snapshots).ok_or(AntigravityStatusProbeError::NotRunning)
+        Self::preferred_local_snapshot_matching(&snapshots, expected_account_email)
+            .ok_or(AntigravityStatusProbeError::NotRunning)
     }
 
     async fn fetch_snapshot_for_process(
@@ -1953,14 +2383,19 @@ impl AntigravityStatusProbe {
             HeaderValue::from_static("1"),
         );
 
+        let mut credentials = Vec::new();
+        if endpoint.requires_csrf_token() && !endpoint.csrf_token.is_empty() {
+            credentials.push((
+                HeaderName::from_static("x-codeium-csrf-token"),
+                SecretString::new(endpoint.csrf_token.clone()),
+            ));
+        }
+
         let req = NetRequest {
             method: Method::POST,
             url,
             headers,
-            credentials: vec![(
-                HeaderName::from_static("x-codeium-csrf-token"),
-                SecretString::new(endpoint.csrf_token.clone()),
-            )],
+            credentials,
             body: NetBody::Plain(body_bytes),
             timeout: Some(timeout),
             body_cap: None,
@@ -1971,11 +2406,9 @@ impl AntigravityStatusProbe {
             .await
             .map_err(Self::map_net_error)?;
         if response.status != reqwest::StatusCode::OK {
-            let body_text = String::from_utf8_lossy(&response.body);
             return Err(AntigravityStatusProbeError::ApiError(format!(
-                "HTTP {}: {}",
-                response.status.as_u16(),
-                body_text
+                "HTTP {}",
+                response.status.as_u16()
             )));
         }
         Ok(response.body.to_vec())
@@ -1986,7 +2419,8 @@ impl AntigravityStatusProbe {
             ProbeError::NoListeningPorts => AntigravityStatusProbeError::PortDetectionFailed(
                 "no listening ports found".to_owned(),
             ),
-            ProbeError::TimedOut | ProbeError::Cancelled => AntigravityStatusProbeError::TimedOut,
+            ProbeError::TimedOut => AntigravityStatusProbeError::TimedOut,
+            ProbeError::Cancelled => AntigravityStatusProbeError::Cancelled,
             ProbeError::Unsupported | ProbeError::ProcUnavailable => {
                 AntigravityStatusProbeError::PortDetectionFailed(err.to_string())
             }
@@ -1995,14 +2429,19 @@ impl AntigravityStatusProbe {
 
     fn map_net_error(err: NetError) -> AntigravityStatusProbeError {
         match err {
-            NetError::Transport(TransportClass::Timeout) | NetError::Cancelled => {
-                AntigravityStatusProbeError::TimedOut
-            }
+            NetError::Transport(TransportClass::Timeout) => AntigravityStatusProbeError::TimedOut,
+            NetError::Cancelled => AntigravityStatusProbeError::Cancelled,
             NetError::Http { status } => {
                 AntigravityStatusProbeError::ApiError(format!("HTTP {status}"))
             }
             other => AntigravityStatusProbeError::ApiError(other.to_string()),
         }
+    }
+
+    pub fn quota_summary_request_body() -> serde_json::Value {
+        json!({
+            "forceRefresh": true,
+        })
     }
 
     pub fn default_request_body() -> serde_json::Value {
@@ -2042,9 +2481,7 @@ impl AntigravityStatusProbe {
         let response: UserStatusResponse = serde_json::from_slice(data)
             .map_err(|e| AntigravityStatusProbeError::ParseFailed(e.to_string()))?;
         if let Some(invalid) = Self::invalid_code(response.code.as_ref()) {
-            return Err(AntigravityStatusProbeError::ApiError(format!(
-                "Code {invalid}"
-            )));
+            return Err(AntigravityStatusProbeError::ApiError(invalid));
         }
         let Some(user_status) = response.user_status else {
             return Err(AntigravityStatusProbeError::ParseFailed(
@@ -2059,17 +2496,41 @@ impl AntigravityStatusProbe {
             .iter()
             .filter_map(Self::quota_from_config)
             .collect();
-        let plan_info = user_status
-            .plan_status
-            .and_then(|p| p.plan_info)
-            .and_then(|info| info.into_summary().preferred_name());
+        let plan_name = user_status
+            .user_tier
+            .and_then(|t| t.preferred_name())
+            .or_else(|| {
+                user_status
+                    .plan_status
+                    .and_then(|p| p.plan_info)
+                    .and_then(|info| info.into_summary().preferred_name())
+            });
         Ok(AntigravityStatusSnapshot {
             model_quotas: models,
             account_email: user_status.email,
-            account_plan: plan_info,
+            account_plan: plan_name,
             source: AntigravitySnapshotSource::Local,
             quota_summary: None,
         })
+    }
+
+    pub fn parse_plan_info_summary(
+        data: &[u8],
+    ) -> Result<Option<AntigravityPlanInfoSummary>, AntigravityStatusProbeError> {
+        let response: UserStatusResponse = serde_json::from_slice(data)
+            .map_err(|e| AntigravityStatusProbeError::ParseFailed(e.to_string()))?;
+        if let Some(invalid) = Self::invalid_code(response.code.as_ref()) {
+            return Err(AntigravityStatusProbeError::ApiError(invalid));
+        }
+        let Some(user_status) = response.user_status else {
+            return Err(AntigravityStatusProbeError::ParseFailed(
+                "Missing userStatus".to_owned(),
+            ));
+        };
+        Ok(user_status
+            .plan_status
+            .and_then(|p| p.plan_info)
+            .map(PlanInfoWire::into_summary))
     }
 
     pub fn parse_command_model_response(
@@ -2078,9 +2539,7 @@ impl AntigravityStatusProbe {
         let response: CommandModelConfigResponse = serde_json::from_slice(data)
             .map_err(|e| AntigravityStatusProbeError::ParseFailed(e.to_string()))?;
         if let Some(invalid) = Self::invalid_code(response.code.as_ref()) {
-            return Err(AntigravityStatusProbeError::ApiError(format!(
-                "Code {invalid}"
-            )));
+            return Err(AntigravityStatusProbeError::ApiError(invalid));
         }
         let model_configs = response.client_model_configs.unwrap_or_default();
         let models: Vec<AntigravityModelQuota> = model_configs
@@ -2111,14 +2570,10 @@ impl AntigravityStatusProbe {
     fn quota_from_config(config: &ModelConfigWire) -> Option<AntigravityModelQuota> {
         let quota = config.quota_info.as_ref()?;
         let reset_time = quota.reset_time.as_deref().and_then(Self::parse_date);
-        if quota.remaining_fraction.is_none() && reset_time.is_none() {
-            return None;
-        }
         let model_id = config
             .model_or_alias
             .as_ref()
-            .and_then(|m| m.model.clone())
-            .unwrap_or_else(|| config.label.clone());
+            .and_then(|m| m.model.clone())?;
         Some(AntigravityModelQuota {
             label: config.label.clone(),
             model_id,
@@ -2177,6 +2632,28 @@ struct UserStatusWire {
     plan_status: Option<PlanStatusWire>,
     #[serde(rename = "cascadeModelConfigData")]
     cascade_model_config_data: Option<ModelConfigDataWire>,
+    #[serde(rename = "userTier")]
+    user_tier: Option<UserTierWire>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct UserTierWire {
+    #[allow(dead_code)]
+    id: Option<String>,
+    name: Option<String>,
+    #[allow(dead_code)]
+    description: Option<String>,
+}
+
+impl UserTierWire {
+    fn preferred_name(&self) -> Option<String> {
+        let name = self.name.as_deref()?.trim();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name.to_owned())
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

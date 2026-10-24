@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_protocol::secret::SecretString;
@@ -104,6 +106,18 @@ impl AntigravityOAuthCredentials {
             .unwrap_or(now);
         threshold >= expiry
     }
+
+    pub fn resolved_account_email(&self) -> Option<String> {
+        AntigravityOAuthConfig::extract_email_from_id_token(self.id_token.as_deref()).or_else(
+            || {
+                self.email
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+            },
+        )
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -132,19 +146,17 @@ impl AntigravityOAuthClient {
 
 pub struct AntigravityOAuthConfig;
 
+const MAX_INSTALLED_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
+static INSTALLED_CLIENT_CACHE: OnceLock<Option<AntigravityOAuthClient>> = OnceLock::new();
+
 impl AntigravityOAuthConfig {
     pub const DEFAULT_SCOPES: &[&str] = &[
         "https://www.googleapis.com/auth/cloud-platform",
         "https://www.googleapis.com/auth/userinfo.email",
-        "https://www.googleapis.com/auth/userinfo.profile",
-        "https://www.googleapis.com/auth/cclog",
-        "https://www.googleapis.com/auth/experimentsandconfigs",
     ];
 
     pub const CLIENT_ID_ENV_KEY: &str = "ANTIGRAVITY_OAUTH_CLIENT_ID";
     pub const CLIENT_SECRET_ENV_KEY: &str = "ANTIGRAVITY_OAUTH_CLIENT_SECRET";
-    pub const ARIADUSAGE_CLIENT_ID_ENV_KEY: &str = "ARIADUSAGE_ANTIGRAVITY_OAUTH_CLIENT_ID";
-    pub const ARIADUSAGE_CLIENT_SECRET_ENV_KEY: &str = "ARIADUSAGE_ANTIGRAVITY_OAUTH_CLIENT_SECRET";
     pub const CONSUMER_CLIENT_ID: &str =
         "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
 
@@ -168,29 +180,54 @@ impl AntigravityOAuthConfig {
         "bin/antigravity",
     ];
 
-    pub fn resolve_client(
+    pub fn resolve_client_from_env(
         environment: &BTreeMap<String, String>,
-        app_bundle_url: Option<&Path>,
-        home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
         let client_id = environment
-            .get(Self::ARIADUSAGE_CLIENT_ID_ENV_KEY)
-            .or_else(|| environment.get(Self::CLIENT_ID_ENV_KEY))
+            .get(Self::CLIENT_ID_ENV_KEY)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         let client_secret = environment
-            .get(Self::ARIADUSAGE_CLIENT_SECRET_ENV_KEY)
-            .or_else(|| environment.get(Self::CLIENT_SECRET_ENV_KEY))
+            .get(Self::CLIENT_SECRET_ENV_KEY)
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
         if let (Some(id), Some(secret)) = (client_id, client_secret) {
             return Some(AntigravityOAuthClient::new(id, secret));
         }
+        None
+    }
+
+    pub fn resolve_client(
+        environment: &BTreeMap<String, String>,
+        app_bundle_url: Option<&Path>,
+        home_directory: Option<&Path>,
+    ) -> Option<AntigravityOAuthClient> {
+        if let Some(client) = Self::resolve_client_from_env(environment) {
+            return Some(client);
+        }
 
         Self::installed_client(app_bundle_url, home_directory)
     }
 
+    pub fn installed_client_cached(
+        home_directory: Option<&Path>,
+    ) -> Option<AntigravityOAuthClient> {
+        INSTALLED_CLIENT_CACHE
+            .get_or_init(|| Self::installed_client_uncached(None, home_directory))
+            .clone()
+    }
+
     pub fn installed_client(
+        app_bundle_url: Option<&Path>,
+        home_directory: Option<&Path>,
+    ) -> Option<AntigravityOAuthClient> {
+        if app_bundle_url.is_none() && home_directory.is_none() {
+            return Self::installed_client_cached(None);
+        }
+        Self::installed_client_uncached(app_bundle_url, home_directory)
+    }
+
+    fn installed_client_uncached(
         app_bundle_url: Option<&Path>,
         home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
@@ -202,7 +239,7 @@ impl AntigravityOAuthConfig {
         for bundle_url in candidate_bundle_urls {
             for relative_path in Self::RELATIVE_CLIENT_CONFIG_PATHS {
                 let candidate_url = bundle_url.join(relative_path);
-                let Ok(data) = std::fs::read(&candidate_url) else {
+                let Some(data) = Self::read_bounded_artifact(&candidate_url) else {
                     continue;
                 };
                 if let Some(client) = Self::parse_client_from_installed_artifact_data(&data) {
@@ -211,6 +248,19 @@ impl AntigravityOAuthConfig {
             }
         }
         None
+    }
+
+    fn read_bounded_artifact(path: &Path) -> Option<Vec<u8>> {
+        let metadata = std::fs::metadata(path).ok()?;
+        if !metadata.is_file() || metadata.len() > MAX_INSTALLED_ARTIFACT_BYTES {
+            return None;
+        }
+        let file = std::fs::File::open(path).ok()?;
+        let mut buf = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_INSTALLED_ARTIFACT_BYTES)
+            .read_to_end(&mut buf)
+            .ok()?;
+        Some(buf)
     }
 
     pub fn parse_client_from_installed_artifact_data(
@@ -966,8 +1016,6 @@ pub struct AntigravityOAuthCredentialsStore;
 
 impl AntigravityOAuthCredentialsStore {
     pub const ENVIRONMENT_CREDENTIALS_KEY: &str = "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON";
-    pub const ARIADUSAGE_ENVIRONMENT_CREDENTIALS_KEY: &str =
-        "ARIADUSAGE_ANTIGRAVITY_OAUTH_CREDENTIALS_JSON";
 
     pub fn default_directory_url(home_directory: &Path) -> PathBuf {
         home_directory.join(".ariadusage").join("antigravity")
@@ -985,8 +1033,7 @@ impl AntigravityOAuthCredentialsStore {
         environment: &BTreeMap<String, V>,
     ) -> bool {
         environment
-            .get(Self::ARIADUSAGE_ENVIRONMENT_CREDENTIALS_KEY)
-            .or_else(|| environment.get(Self::ENVIRONMENT_CREDENTIALS_KEY))
+            .get(Self::ENVIRONMENT_CREDENTIALS_KEY)
             .is_some_and(|raw| !raw.as_env_str().trim().is_empty())
     }
 
@@ -1017,8 +1064,7 @@ impl AntigravityOAuthCredentialsStore {
         environment: &BTreeMap<String, V>,
     ) -> Result<Option<AntigravityOAuthCredentials>, AntigravityRemoteFetchError> {
         let Some(raw) = environment
-            .get(Self::ARIADUSAGE_ENVIRONMENT_CREDENTIALS_KEY)
-            .or_else(|| environment.get(Self::ENVIRONMENT_CREDENTIALS_KEY))
+            .get(Self::ENVIRONMENT_CREDENTIALS_KEY)
             .map(|s| s.as_env_str().trim())
             .filter(|s| !s.is_empty())
         else {
@@ -1049,6 +1095,10 @@ impl AntigravityOAuthCredentialsStore {
         Self::decode_credentials(trimmed.as_bytes()).ok()
     }
 
+    pub fn resolved_account_email(credentials: &AntigravityOAuthCredentials) -> Option<String> {
+        credentials.resolved_account_email()
+    }
+
     pub fn save(
         credentials: &AntigravityOAuthCredentials,
         credentials_url: &Path,
@@ -1069,10 +1119,12 @@ impl AntigravityOAuthCredentialsStore {
         credentials: &AntigravityOAuthCredentials,
     ) -> Result<Vec<u8>, AntigravityRemoteFetchError> {
         let mut payload = Map::new();
-        payload.insert(
-            "access_token".to_owned(),
-            Value::String(credentials.access_token.clone()),
-        );
+        if !credentials.access_token.is_empty() {
+            payload.insert(
+                "access_token".to_owned(),
+                Value::String(credentials.access_token.clone()),
+            );
+        }
         if let Some(refresh_token) = &credentials.refresh_token {
             payload.insert(
                 "refresh_token".to_owned(),
@@ -1116,21 +1168,14 @@ impl AntigravityOAuthCredentialsStore {
         let json: Map<String, Value> = serde_json::from_slice(data)
             .map_err(|e| AntigravityRemoteFetchError::ParseFailed(e.to_string()))?;
 
-        let access_token = json
-            .get("access_token")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .ok_or(AntigravityRemoteFetchError::NotLoggedIn)?
-            .to_owned();
-
-        let refresh_token = Self::non_empty_field(&json, "refresh_token");
-        let id_token = Self::non_empty_field(&json, "id_token");
-        let email = Self::non_empty_field(&json, "email")
-            .or_else(|| AntigravityOAuthConfig::extract_email_from_id_token(id_token.as_deref()));
-        let project_id = Self::non_empty_field(&json, "project_id");
-        let client_id = Self::non_empty_field(&json, "client_id");
-        let client_secret = Self::non_empty_field(&json, "client_secret");
+        let access_token =
+            Self::non_empty_field_dual(&json, "access_token", "accessToken").unwrap_or_default();
+        let refresh_token = Self::non_empty_field_dual(&json, "refresh_token", "refreshToken");
+        let id_token = Self::non_empty_field_dual(&json, "id_token", "idToken");
+        let email = Self::non_empty_field(&json, "email");
+        let project_id = Self::non_empty_field_dual(&json, "project_id", "projectId");
+        let client_id = Self::non_empty_field_dual(&json, "client_id", "clientId");
+        let client_secret = Self::non_empty_field_dual(&json, "client_secret", "clientSecret");
         let expiry_date = Self::parse_expiry_millis(&json);
 
         Ok(AntigravityOAuthCredentials {
@@ -1154,8 +1199,16 @@ impl AntigravityOAuthCredentialsStore {
         }
     }
 
+    fn non_empty_field_dual(
+        json: &Map<String, Value>,
+        snake_key: &str,
+        camel_key: &str,
+    ) -> Option<String> {
+        Self::non_empty_field(json, snake_key).or_else(|| Self::non_empty_field(json, camel_key))
+    }
+
     fn parse_expiry_millis(json: &Map<String, Value>) -> Option<Timestamp> {
-        let val = json.get("expiry_date")?;
+        let val = json.get("expiry_date").or_else(|| json.get("expiresAt"))?;
         let millis = match val {
             Value::Number(num) => num.as_f64()?,
             Value::String(s) => s.trim().parse::<f64>().ok()?,

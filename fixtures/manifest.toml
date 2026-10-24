@@ -1739,7 +1739,6 @@ path = "crates/ariadusage-engine/src/providers/antigravity/descriptor.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift",
-    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1762,6 +1761,7 @@ sources = [
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift",
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+ResponseModels.swift",
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalhostSession.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalSnapshotSelection.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1786,9 +1786,12 @@ sources = [
     "Tests/CodexBarTests/AntigravityOAuthCredentialsStoreTests.swift",
     "Tests/CodexBarTests/AntigravityRemoteUsageFetcherTests.swift",
     "Tests/CodexBarTests/AntigravitySourceAccountIsolationTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalSnapshotSelectionTests.swift",
     "Tests/CodexBarTests/AntigravityModelLabelTests.swift",
     "Tests/CodexBarTests/AntigravityGeminiRenameTests.swift",
+    "Tests/CodexBarTests/AntigravityPoolDeduplicationTests.swift",
     "Tests/CodexBarTests/AntigravityCompactFallbackTests.swift",
+    "Tests/CodexBarTests/AntigravityCLIUsageReportTests.swift",
     "TestsLinux/AntigravityQuotaRepresentativeTests.swift",
     "TestsLinux/AntigravityLocalhostSessionLifetimeTests.swift",
 ]
