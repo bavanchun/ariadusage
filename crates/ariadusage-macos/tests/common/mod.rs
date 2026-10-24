@@ -63,7 +63,7 @@ pub fn line_height(font: Font) -> f64 {
         TextStyle::Title2 => 22.0,
         TextStyle::Headline | TextStyle::Body => 16.0,
         TextStyle::Subheadline => 14.0,
-        TextStyle::Footnote | TextStyle::Caption => 13.0,
+        TextStyle::Footnote | TextStyle::Caption | TextStyle::Caption2 => 13.0,
     }
 }
 
@@ -72,7 +72,7 @@ pub fn baseline(font: Font) -> f64 {
         TextStyle::Title2 => 18.0,
         TextStyle::Headline | TextStyle::Body => 13.0,
         TextStyle::Subheadline => 11.0,
-        TextStyle::Footnote | TextStyle::Caption => 10.0,
+        TextStyle::Footnote | TextStyle::Caption | TextStyle::Caption2 => 10.0,
     }
 }
 

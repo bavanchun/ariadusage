@@ -10,6 +10,7 @@
 #![allow(unsafe_code)]
 
 mod card_view;
+mod chart_view;
 mod color;
 mod date_texts;
 mod icon_image;
@@ -20,6 +21,7 @@ mod settings_window;
 mod switcher_view;
 
 pub use card_view::{CardView, png_bytes};
+pub use chart_view::{CostHistoryChartView, PlanUtilizationChartView, QuotaBurndownChartView};
 pub use date_texts::FoundationDateTexts;
 pub use settings_view::SettingsView;
 pub use settings_window::SettingsWindowController;
@@ -33,8 +35,8 @@ use dispatch2::DispatchQueue;
 use objc2::MainThreadMarker;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSAccessibility, NSApplication, NSApplicationActivationPolicy, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSAccessibility, NSAppearance, NSApplication, NSApplicationActivationPolicy, NSStatusBar,
+    NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::NSString;
 
@@ -70,6 +72,17 @@ thread_local! {
 pub fn run(socket: PathBuf) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("the app must start on the main thread")?;
     let app = NSApplication::sharedApplication(mtm);
+    if let Ok(appearance) = std::env::var("ARIADUSAGE_APPEARANCE") {
+        let name = match appearance.as_str() {
+            "light" => Some("NSAppearanceNameAqua"),
+            "dark" => Some("NSAppearanceNameDarkAqua"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            let app_appearance = NSAppearance::appearanceNamed(&NSString::from_str(name));
+            app.setAppearance(app_appearance.as_deref());
+        }
+    }
     // A menu-bar app has no Dock icon and no main window.
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
 

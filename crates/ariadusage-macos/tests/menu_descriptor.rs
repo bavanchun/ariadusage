@@ -178,28 +178,55 @@ fn claude_tab_builds_history_submenus_switch_account_dashboard_and_status_page()
         structure.selection,
         Some(SwitcherSelection::Provider("claude".to_string()))
     );
-    let PrimaryContent::Provider { buy_credits, .. } = &structure.primary else {
+    let PrimaryContent::Provider {
+        sections,
+        cost_submenu,
+        buy_credits,
+        ..
+    } = &structure.primary
+    else {
         panic!("expected Provider primary content");
     };
     assert!(buy_credits.is_none());
+    assert_eq!(sections.len(), 2);
+    assert!(sections[0].has_cost_submenu);
+    assert_eq!(cost_submenu.len(), 1);
+    assert!(matches!(
+        &cost_submenu[0],
+        SubmenuEntry::CostHistoryChart(_)
+    ));
 
     assert_eq!(structure.history.len(), 2);
-    assert_eq!(
-        structure.history[0],
-        MenuEntry::Submenu {
-            title: "Plan Usage".to_string(),
-            system_image: None,
-            items: vec![
-                SubmenuEntry::SecondaryText("Session: 58% left".to_string()),
-                SubmenuEntry::SecondaryText("Weekly: 36% left".to_string()),
-                SubmenuEntry::SecondaryText("Sonnet: 82% left".to_string()),
-            ],
-        }
-    );
+    let MenuEntry::Submenu {
+        title: plan_title,
+        items: plan_items,
+        ..
+    } = &structure.history[0]
+    else {
+        panic!("expected Plan Usage submenu");
+    };
+    assert_eq!(plan_title, "Plan Usage");
+    assert_eq!(plan_items.len(), 3);
     assert!(matches!(
-        &structure.history[1],
-        MenuEntry::Submenu { title, .. } if title == "Cost"
+        &plan_items[0],
+        SubmenuEntry::QuotaBurndownChart(_)
     ));
+    assert_eq!(plan_items[1], SubmenuEntry::Separator);
+    assert!(matches!(
+        &plan_items[2],
+        SubmenuEntry::PlanUtilizationChart(_)
+    ));
+    let MenuEntry::Submenu {
+        title: cost_title,
+        items: cost_items,
+        ..
+    } = &structure.history[1]
+    else {
+        panic!("expected Cost submenu");
+    };
+    assert_eq!(cost_title, "Cost");
+    assert_eq!(cost_items.len(), 1);
+    assert!(matches!(&cost_items[0], SubmenuEntry::CostHistoryChart(_)));
 
     assert_eq!(
         structure.actions,

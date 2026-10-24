@@ -566,3 +566,55 @@ fn session_warning_markers_flip_in_used_mode() {
     let card = build(&claude_with_session(), &prefs);
     assert_eq!(card.metrics[0].warning_marker_percents, [50.0, 80.0]);
 }
+
+#[test]
+fn fixture_cards_populate_session_equivalent_renewal_reset_credits_dashboard_and_costs() {
+    let snap = ariadusage_protocol::fixture::generate_scenario_snapshot(0);
+    let claude = snap
+        .providers
+        .iter()
+        .find(|p| p.id.as_str() == "claude")
+        .unwrap();
+    let codex = snap
+        .providers
+        .iter()
+        .find(|p| p.id.as_str() == "codex")
+        .unwrap();
+    let ref_now: Timestamp = "2026-10-06T12:52:00Z".parse().unwrap();
+
+    let claude_card = provider_card(
+        claude,
+        &CardPreferences::default(),
+        ref_now,
+        &FixedDates::utc(),
+    );
+    assert!(claude_card.shows_submenu_indicator);
+    assert_eq!(claude_card.usage_notes, ["Plan renews: Nov 1, 2026"]);
+    assert_eq!(
+        claude_card.metrics[1].meta_text().as_deref(),
+        Some(
+            "9% in deficit · Runs out in 2d (75% risk) · Est. 2.4 session quotas left · 16 windows until reset"
+        )
+    );
+    assert!(claude_card.inline_usage_dashboard.is_some());
+    let claude_dash = claude_card.inline_usage_dashboard.as_ref().unwrap();
+    assert_eq!(claude_dash.kpis.len(), 6);
+    assert_eq!(claude_dash.points.len(), 30);
+    assert!(!claude_dash.recent_windows.is_empty());
+    assert!(claude_card.cloud_credits.is_some());
+    assert!(claude_card.provider_cost.is_some());
+
+    let codex_card = provider_card(
+        codex,
+        &CardPreferences::default(),
+        ref_now,
+        &FixedDates::utc(),
+    );
+    assert!(codex_card.shows_submenu_indicator);
+    assert_eq!(codex_card.usage_notes, ["Plan renews: Nov 15, 2026"]);
+    let reset_credits = codex_card.limit_reset_credits.as_ref().unwrap();
+    assert_eq!(reset_credits.count_text, "2 available");
+    assert_eq!(reset_credits.expiry_text.as_deref(), Some("13d 11h"));
+    assert!(codex_card.inline_usage_dashboard.is_some());
+    assert!(codex_card.credits.is_some());
+}

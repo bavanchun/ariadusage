@@ -403,6 +403,63 @@ static BOILERPLATE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static WHITESPACE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s+").expect("valid whitespace pattern"));
+static MODEL_DATE_SUFFIX_1: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:-|\s)\d{8}$").expect("valid model date suffix 1"));
+static MODEL_DATE_SUFFIX_2: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:-|\s)\d{4}-\d{2}-\d{2}$").expect("valid model date suffix 2"));
+static MODEL_DATE_SUFFIX_3: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s\d{4}\s\d{4}$").expect("valid model date suffix 3"));
+
+/// Display name for a model identifier (`UsageFormatter.modelDisplayName`).
+pub fn model_display_name(raw: &str) -> String {
+    let mut cleaned = raw.trim().to_string();
+    if cleaned.is_empty() {
+        return raw.to_string();
+    }
+    if cleaned == "codex-auto-review" {
+        return "Codex Auto Review".to_string();
+    }
+    if cleaned == "unknown" || cleaned == "<unknown>" || cleaned == "unattributed" {
+        return "Unknown model".to_string();
+    }
+    for pattern in [
+        &*MODEL_DATE_SUFFIX_1,
+        &*MODEL_DATE_SUFFIX_2,
+        &*MODEL_DATE_SUFFIX_3,
+    ] {
+        if let Some(m) = pattern.find(&cleaned) {
+            cleaned.truncate(m.start());
+            break;
+        }
+    }
+    let trimmed = cleaned.trim_end_matches([' ', '\t', '-']);
+    if trimmed.is_empty() {
+        raw.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Subtitle for a model breakdown row (`UsageFormatter.modelCostDetail`).
+pub fn model_cost_detail(
+    _model: &str,
+    cost_usd: Option<f64>,
+    total_tokens: Option<u64>,
+    currency_code: &str,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(cost) = cost_usd {
+        parts.push(currency_string(cost, currency_code));
+    }
+    if let Some(tokens) = total_tokens {
+        parts.push(token_count_string(tokens as i64));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
+}
 
 /// Removes ANSI escape sequences (`TextParsing.stripANSICodes`).
 pub fn strip_ansi_codes(text: &str) -> String {
@@ -498,4 +555,59 @@ pub fn plan_display(provider_id: &str, text: &str) -> String {
     } else {
         cleaned
     }
+}
+
+const MONTH_ABBR: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Formats a timestamp as `MMM d, yyyy` in `en_US_POSIX` (`MenuCardView+ModelHelpers.swift:753`).
+pub fn month_day_year(date: Timestamp, tz: TimeZone) -> String {
+    let zoned = date.to_zoned(tz);
+    let month_idx = (zoned.month() - 1).clamp(0, 11) as usize;
+    format!(
+        "{} {}, {}",
+        MONTH_ABBR[month_idx],
+        zoned.day(),
+        zoned.year()
+    )
+}
+
+/// Formats a timestamp as `MMM d` in `en_US_POSIX` (e.g. `Oct 6`).
+pub fn month_day_short(date: Timestamp, tz: TimeZone) -> String {
+    let zoned = date.to_zoned(tz);
+    let month_idx = (zoned.month() - 1).clamp(0, 11) as usize;
+    format!("{} {}", MONTH_ABBR[month_idx], zoned.day())
+}
+
+/// Formats a `yyyy-MM-dd` day key as `MMM d` (`Oct 6`), falling back to `day_key` if invalid.
+pub fn short_day_key_label(day_key: &str) -> String {
+    let parts: Vec<&str> = day_key.trim().split('-').collect();
+    if parts.len() == 3
+        && let (Ok(_year), Ok(month), Ok(day)) = (
+            parts[0].parse::<i32>(),
+            parts[1].parse::<usize>(),
+            parts[2].parse::<u32>(),
+        )
+        && (1..=12).contains(&month)
+        && (1..=31).contains(&day)
+    {
+        return format!("{} {day}", MONTH_ABBR[month - 1]);
+    }
+    day_key.to_string()
+}
+
+/// Formats a start and end `yyyy-MM-dd` day key pair (`Sep 30 - Oct 6` or `Oct 6`).
+pub fn day_key_range_label(start_day_key: &str, end_day_key: &str) -> Option<String> {
+    let start = start_day_key.trim();
+    let end = end_day_key.trim();
+    if start.is_empty() || end.is_empty() {
+        return None;
+    }
+    let end_label = short_day_key_label(end);
+    if start == end {
+        return Some(end_label);
+    }
+    let start_label = short_day_key_label(start);
+    Some(format!("{start_label} - {end_label}"))
 }

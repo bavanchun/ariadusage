@@ -2,7 +2,7 @@
 
 //! Pace labels under a usage bar: `7% in deficit · Runs out in 3d`.
 
-use ariadusage_protocol::usage::PaceStage;
+use ariadusage_protocol::usage::{PaceStage, SessionEquivalentForecast};
 
 use crate::format;
 
@@ -121,4 +121,48 @@ fn duration_text(seconds: f64) -> String {
 fn rounded_risk_percent(probability: f64) -> i64 {
     let percent = probability.clamp(0.0, 1.0) * 100.0;
     ((percent / 5.0).round() * 5.0) as i64
+}
+
+/// The two halves of a session-equivalent forecast line
+/// (`UsagePaceText.SessionEquivalentDetail`, `UsagePaceText.swift:12-16,39-74`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEquivalentDetail {
+    pub left: String,
+    pub right: String,
+}
+
+impl SessionEquivalentDetail {
+    /// `<left> · <right>`.
+    pub fn summary(&self) -> String {
+        format!("{} · {}", self.left, self.right)
+    }
+}
+
+/// Builds the session-equivalent forecast labels
+/// (`UsagePaceText.sessionEquivalentDetail`, `UsagePaceText.swift:39-74`).
+pub fn session_equivalent_detail(forecast: &SessionEquivalentForecast) -> SessionEquivalentDetail {
+    let (displayed, unit) =
+        if forecast.estimated_sessions.is_finite() && forecast.estimated_sessions > 0.0 {
+            let bounded = forecast.estimated_sessions.min(1_000_000.0);
+            let rounded = (bounded * 10.0).round() / 10.0;
+            let text = if (rounded.fract()).abs() < 1e-9 {
+                format::grouped_u64(rounded as u64)
+            } else {
+                format!("{rounded:.1}")
+            };
+            let unit = if rounded <= 1.0 {
+                "session quota"
+            } else {
+                "session quotas"
+            };
+            (text, unit)
+        } else {
+            ("0".to_string(), "session quotas")
+        };
+    let left = format!("Est. {displayed} {unit} left");
+    let right = match forecast.windows_until_reset {
+        1 => "1 window until reset".to_string(),
+        n => format!("{n} windows until reset"),
+    };
+    SessionEquivalentDetail { left, right }
 }

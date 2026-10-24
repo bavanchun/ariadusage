@@ -6,6 +6,7 @@
 
 pub mod card;
 pub mod card_layout;
+pub mod chart;
 #[cfg(unix)]
 pub mod engine_client;
 pub mod format;

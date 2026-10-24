@@ -31,10 +31,11 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL};
 
 use super::card_view::CardView;
+use super::chart_view::{CostHistoryChartView, PlanUtilizationChartView, QuotaBurndownChartView};
 use super::date_texts::FoundationDateTexts;
 use super::switcher_view::SwitcherView;
 use crate::card::CardPreferences;
-use crate::card_layout;
+use crate::card_layout::{self, CardSectionMode};
 use crate::engine_client::EngineClient;
 use crate::menu_descriptor::{
     self, MenuAction, MenuEntry, MenuStructure, PrimaryContent, SubmenuEntry,
@@ -281,12 +282,13 @@ impl MenuController {
         connected: bool,
         selected_tab: Option<&SwitcherSelection>,
     ) -> Option<SwitcherSelection> {
+        let now = effective_now(snapshot);
         let structure = menu_descriptor::build(
             snapshot,
             connected,
             selected_tab,
             &self.prefs,
-            Timestamp::now(),
+            now,
             &self.dates,
         );
         let resolved = structure.selection.clone();
@@ -373,27 +375,41 @@ impl MenuController {
             (
                 PrimaryContent::Provider {
                     provider_id: prev_id,
+                    sections: prev_sections,
+                    cost_submenu: prev_cost_sub,
                     buy_credits: prev_buy,
                     ..
                 },
                 PrimaryContent::Provider {
                     provider_id: next_id,
                     card: next_card,
+                    sections: next_sections,
+                    cost_submenu: next_cost_sub,
                     buy_credits: next_buy,
                 },
             ) => {
-                if prev_id != next_id || prev_buy != next_buy {
-                    return false;
-                }
-                let Some(first) = cards.first() else {
-                    return false;
-                };
-                if require_same_height && !first.view.has_compatible_height(next_card, width, false)
+                if prev_id != next_id
+                    || prev_sections != next_sections
+                    || prev_cost_sub != next_cost_sub
+                    || prev_buy != next_buy
+                    || cards.len() != next_sections.len()
                 {
                     return false;
                 }
-                if first.view.update(next_card, width) {
-                    self.menu.itemChanged(&first.item);
+                if require_same_height {
+                    for (hc, sec) in cards.iter().zip(next_sections.iter()) {
+                        if !hc
+                            .view
+                            .has_compatible_section_height(next_card, sec.mode, width)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                for (hc, sec) in cards.iter().zip(next_sections.iter()) {
+                    if hc.view.update_section(next_card, sec.mode, width) {
+                        self.menu.itemChanged(&hc.item);
+                    }
                 }
                 true
             }
@@ -490,25 +506,54 @@ impl MenuController {
                 self.menu.addItem(&NSMenuItem::separatorItem(mtm));
             }
             PrimaryContent::Provider {
-                card, buy_credits, ..
+                card,
+                sections,
+                cost_submenu,
+                buy_credits,
+                ..
             } => {
-                let card_view = CardView::new(mtm);
-                card_view.update(card, width);
-                let card_item = NSMenuItem::new(mtm);
-                card_item.setTitle(&NSString::from_str(""));
-                card_item.setView(Some(&card_view));
-                card_item.setEnabled(false);
-                self.menu.addItem(&card_item);
-                if let Some(buy) = buy_credits {
+                let mut buy_inserted = false;
+                for (sec_idx, section) in sections.iter().enumerate() {
+                    if sec_idx > 0 {
+                        self.menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    }
+                    let card_view = CardView::new(mtm);
+                    card_view.update_section(card, section.mode, width);
+                    let card_item = NSMenuItem::new(mtm);
+                    card_item.setTitle(&NSString::from_str(""));
+                    card_item.setView(Some(&card_view));
+                    let has_sub = section.has_cost_submenu && !cost_submenu.is_empty();
+                    if has_sub {
+                        let sub = self.make_submenu_from_items(
+                            mtm,
+                            "Cost",
+                            cost_submenu,
+                            &mut url_actions,
+                        );
+                        card_item.setSubmenu(Some(&sub));
+                        card_item.setEnabled(true);
+                    } else {
+                        card_item.setEnabled(false);
+                    }
+                    self.menu.addItem(&card_item);
+                    cards.push(HighlightableCard {
+                        item: card_item,
+                        view: card_view,
+                        allows_highlight: has_sub,
+                    });
+                    if matches!(section.mode, CardSectionMode::CreditsOnly { .. })
+                        && let Some(buy) = buy_credits
+                    {
+                        let buy_item = self.make_entry_item(mtm, buy, width, &mut url_actions);
+                        self.menu.addItem(&buy_item);
+                        buy_inserted = true;
+                    }
+                }
+                if !buy_inserted && let Some(buy) = buy_credits {
                     let buy_item = self.make_entry_item(mtm, buy, width, &mut url_actions);
                     self.menu.addItem(&buy_item);
                 }
                 self.menu.addItem(&NSMenuItem::separatorItem(mtm));
-                cards.push(HighlightableCard {
-                    item: card_item,
-                    view: card_view,
-                    allows_highlight: false,
-                });
             }
             PrimaryContent::Overview {
                 spend_summary,
@@ -551,6 +596,15 @@ impl MenuController {
                     card_item.setView(Some(&card_view));
                     card_item.setEnabled(true);
                     card_item.setTag(index as isize);
+                    if !ov.cost_submenu.is_empty() {
+                        let sub = self.make_submenu_from_items(
+                            mtm,
+                            "Cost",
+                            &ov.cost_submenu,
+                            &mut url_actions,
+                        );
+                        card_item.setSubmenu(Some(&sub));
+                    }
                     // SAFETY: `self.target` lives as long as `MenuController`, which owns `self.menu`.
                     unsafe {
                         card_item.setTarget(Some(&self.target));
@@ -630,34 +684,68 @@ impl MenuController {
                 if let Some(symbol) = system_image {
                     set_symbol_image(&it, symbol);
                 }
-                let sub = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
-                sub.setAutoenablesItems(false);
-                for sub_entry in items {
-                    match sub_entry {
-                        SubmenuEntry::SecondaryText(text) => {
-                            let child = item(mtm, text, None, "");
-                            child.setEnabled(false);
-                            sub.addItem(&child);
-                        }
-                        SubmenuEntry::Separator => {
-                            sub.addItem(&NSMenuItem::separatorItem(mtm));
-                        }
-                        SubmenuEntry::Action {
-                            title: child_title,
-                            action,
-                            enabled,
-                        } => {
-                            let child =
-                                self.make_action_item(mtm, child_title, "", action, url_actions);
-                            child.setEnabled(*enabled);
-                            sub.addItem(&child);
-                        }
-                    }
-                }
+                let sub = self.make_submenu_from_items(mtm, title, items, url_actions);
                 it.setSubmenu(Some(&sub));
                 it
             }
         }
+    }
+
+    fn make_submenu_from_items(
+        &self,
+        mtm: MainThreadMarker,
+        title: &str,
+        items: &[SubmenuEntry],
+        url_actions: &mut Vec<String>,
+    ) -> Retained<NSMenu> {
+        let sub = NSMenu::initWithTitle(NSMenu::alloc(mtm), &NSString::from_str(title));
+        sub.setAutoenablesItems(false);
+        for sub_entry in items {
+            match sub_entry {
+                SubmenuEntry::SecondaryText(text) => {
+                    let child = item(mtm, text, None, "");
+                    child.setEnabled(false);
+                    sub.addItem(&child);
+                }
+                SubmenuEntry::Separator => {
+                    sub.addItem(&NSMenuItem::separatorItem(mtm));
+                }
+                SubmenuEntry::Action {
+                    title: child_title,
+                    action,
+                    enabled,
+                } => {
+                    let child = self.make_action_item(mtm, child_title, "", action, url_actions);
+                    child.setEnabled(*enabled);
+                    sub.addItem(&child);
+                }
+                SubmenuEntry::QuotaBurndownChart(model) => {
+                    let view = QuotaBurndownChartView::new(mtm, (**model).clone());
+                    let child = NSMenuItem::new(mtm);
+                    child.setTitle(&NSString::from_str(""));
+                    child.setView(Some(&view));
+                    child.setEnabled(false);
+                    sub.addItem(&child);
+                }
+                SubmenuEntry::PlanUtilizationChart(model) => {
+                    let view = PlanUtilizationChartView::new(mtm, (**model).clone());
+                    let child = NSMenuItem::new(mtm);
+                    child.setTitle(&NSString::from_str(""));
+                    child.setView(Some(&view));
+                    child.setEnabled(false);
+                    sub.addItem(&child);
+                }
+                SubmenuEntry::CostHistoryChart(model) => {
+                    let view = CostHistoryChartView::new(mtm, (**model).clone());
+                    let child = NSMenuItem::new(mtm);
+                    child.setTitle(&NSString::from_str(""));
+                    child.setView(Some(&view));
+                    child.setEnabled(false);
+                    sub.addItem(&child);
+                }
+            }
+        }
+        sub
     }
 
     fn make_action_item(
@@ -723,6 +811,22 @@ fn set_symbol_image(menu_item: &NSMenuItem, symbol_name: &str) {
         image.setTemplate(true);
         image.setSize(NSSize::new(16.0, 16.0));
         menu_item.setImage(Some(&image));
+    }
+}
+
+/// Returns `Timestamp::now()` for live snapshots, or `max_updated + 4 min` when
+/// running against a static fixture snapshot more than 24h away from wall clock.
+fn effective_now(snapshot: Option<&EngineSnapshot>) -> Timestamp {
+    let real_now = Timestamp::now();
+    let Some(max_updated) =
+        snapshot.and_then(|s| s.providers.iter().filter_map(|p| p.updated_at).max())
+    else {
+        return real_now;
+    };
+    if (real_now.as_second() - max_updated.as_second()).abs() > 86_400 {
+        Timestamp::from_second(max_updated.as_second() + 240).unwrap_or(real_now)
+    } else {
+        real_now
     }
 }
 
