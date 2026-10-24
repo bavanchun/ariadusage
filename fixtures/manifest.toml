@@ -2046,3 +2046,58 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-macos/src/appkit/notifications.rs"
 sources = ["Sources/CodexBar/AppNotifications.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/cli_https.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/cli_print_failure.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityCLIPrintFailure.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/cli_session.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityCLISession.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/scoped_print_fetch.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityScopedPrintFetch.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/brokers/process/session_records.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityCLISession.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_cli_https_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityCLIHTTPSFetchStrategyTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_cli_locator_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityBinaryLocatorTests.swift", "TestsLinux/AntigravityCLIStrategyLinuxTests.swift", "TestsLinux/AntigravityPortDiscoveryTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_cli_print_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityCLIUsageReportTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_cli_session_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityCLISessionTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_scoped_print_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityScopedPrintFetchTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_warm_agy_cases.rs"
+sources = ["Tests/CodexBarTests/AntigravityWarmAgyReuseTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

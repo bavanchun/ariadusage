@@ -405,6 +405,12 @@ async fn execute_fetch_plan_falls_back_from_app_to_ide_and_validates_selected_ac
             })
         });
 
+    let mut config = config;
+    let cli = ariadusage_engine::providers::antigravity::CliRuntime {
+        binary_resolver: Some(Arc::new(|_, _| None)),
+        ..Default::default()
+    };
+    config.cli = Arc::new(cli);
     let plan = AntigravityProviderPlan::new(config);
     let mut auto_cx = make_fetch_context(SourceMode::Auto);
     auto_cx.selected_token_account = Some("selected@example.com".to_owned());

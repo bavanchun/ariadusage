@@ -13,6 +13,7 @@ mod registry;
 pub mod rpc;
 mod run;
 pub mod scan;
+pub mod session_records;
 mod signal;
 #[cfg(unix)]
 mod teardown;
@@ -136,3 +137,6 @@ fn session_target(
     target.refresh_descendants();
     Ok(target)
 }
+
+#[cfg(all(unix, feature = "test-hooks"))]
+pub use pty::drain_bounded_for_test;

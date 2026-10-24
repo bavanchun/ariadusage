@@ -242,6 +242,81 @@ impl PtySession {
         self.inner.close().await;
     }
 
+    /// Returns the root child PID while the PTY process is still alive.
+    pub fn pid(&self) -> Option<u32> {
+        #[cfg(unix)]
+        {
+            self.inner.pid()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    /// Whether the broker-owned child has exited.
+    pub fn is_running(&self) -> bool {
+        #[cfg(unix)]
+        {
+            !self.inner.has_exited()
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    /// Returns the executable path and stable process start identity.
+    #[cfg(unix)]
+    pub fn process_identity(&self) -> Option<(std::path::PathBuf, u64)> {
+        self.inner.process_identity()
+    }
+
+    #[cfg(not(unix))]
+    pub fn process_identity(&self) -> Option<(std::path::PathBuf, u64)> {
+        None
+    }
+
+    /// Returns the broker ownership marker assigned to this PTY child.
+    pub fn marker(&self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            self.inner.marker()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn process_group(&self) -> Option<u32> {
+        self.inner.process_group()
+    }
+
+    #[cfg(not(unix))]
+    pub fn process_group(&self) -> Option<u32> {
+        None
+    }
+
+    /// Closes a warm PTY without sending interactive input.
+    pub async fn terminate(&mut self) {
+        #[cfg(unix)]
+        self.inner.terminate_without_input().await;
+    }
+
+    /// Drains currently available PTY bytes, bounded to 64 × 8 KiB per call.
+    pub async fn drain_output(&mut self) -> Result<Vec<u8>, PtyError> {
+        #[cfg(unix)]
+        {
+            return self.inner.drain_output().await;
+        }
+        #[cfg(not(unix))]
+        {
+            Err(PtyError::Unsupported)
+        }
+    }
+
     pub(crate) async fn read_once(
         &mut self,
         buffer: &mut [u8],
@@ -283,6 +358,11 @@ impl fmt::Debug for PtySession {
             .field("state", &"redacted")
             .finish()
     }
+}
+
+#[cfg(all(unix, feature = "test-hooks"))]
+pub async fn drain_bounded_for_test(source: Vec<u8>) -> Result<(Vec<u8>, usize), PtyError> {
+    unix::drain_bounded_for_test(source).await
 }
 
 #[cfg(unix)]
@@ -345,8 +425,32 @@ mod unix {
         errno.map_or(PtyError::Infrastructure, PtyError::open_failed)
     }
 
+    trait DrainReader {
+        fn read_chunk<'a>(
+            &'a mut self,
+            chunk: &'a mut [u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<DrainClassification, PtyError>> + Send + 'a,
+            >,
+        >;
+    }
+
+    async fn drain_bounded<R: DrainReader + ?Sized>(reader: &mut R) -> Result<Vec<u8>, PtyError> {
+        let mut output = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        for _ in 0..64 {
+            match reader.read_chunk(&mut chunk).await? {
+                DrainClassification::Data(count) => output.extend_from_slice(&chunk[..count]),
+                DrainClassification::WouldBlock | DrainClassification::Closed => break,
+            }
+        }
+        Ok(output)
+    }
+
     pub(super) struct PtyInner {
         master: Option<pty_process::Pty>,
+        marker: Option<String>,
         call: BrokerCall,
         guard: Option<PtyGuard>,
         exit_rx: watch::Receiver<bool>,
@@ -390,7 +494,8 @@ mod unix {
         registry: &ProcessRegistry,
         gate: &LaunchGate,
     ) -> Result<PtyInner, PtyError> {
-        let binary = command.program.as_path().to_string_lossy().into_owned();
+        let binary_path = command.program.as_path().to_path_buf();
+        let binary = binary_path.to_string_lossy().into_owned();
         if let Err(until) = gate.check(&binary, call.interaction) {
             return Err(super::PtyError::Process(
                 crate::brokers::process::ProcessError::LaunchSuppressed { until },
@@ -502,6 +607,7 @@ mod unix {
         });
         Ok(PtyInner {
             master: Some(master),
+            marker: marker.clone(),
             call,
             guard: Some(PtyGuard {
                 target,
@@ -511,6 +617,19 @@ mod unix {
             exit_rx,
             ran_script: false,
         })
+    }
+
+    impl DrainReader for PtyInner {
+        fn read_chunk<'a>(
+            &'a mut self,
+            chunk: &'a mut [u8],
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<DrainClassification, PtyError>> + Send + 'a,
+            >,
+        > {
+            Box::pin(self.read_once(chunk, Duration::from_millis(1)))
+        }
     }
 
     impl PtyInner {
@@ -820,6 +939,43 @@ mod unix {
             *self.exit_rx.borrow()
         }
 
+        pub(super) fn pid(&self) -> Option<u32> {
+            self.guard
+                .as_ref()
+                .map(|guard| guard.target.root.pid as u32)
+        }
+
+        pub(super) fn process_identity(&self) -> Option<(std::path::PathBuf, u64)> {
+            let guard = self.guard.as_ref()?;
+            let identity = guard.target.root;
+            #[cfg(target_os = "linux")]
+            {
+                let current = crate::brokers::process::procscan::process_identity(
+                    std::path::Path::new("/proc"),
+                    identity.pid,
+                )?;
+                if current != identity {
+                    return None;
+                }
+                let executable = std::fs::read_link(format!("/proc/{}/exe", identity.pid)).ok()?;
+                Some((executable, identity.start_ticks))
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let executable =
+                    crate::brokers::local_probe::LocalProbe::new().executable_path(identity)?;
+                Some((executable, identity.start_ticks))
+            }
+        }
+
+        pub(super) fn process_group(&self) -> Option<u32> {
+            self.guard.as_ref().map(|guard| guard.target.pgid as u32)
+        }
+
+        pub(super) fn marker(&self) -> Option<String> {
+            self.marker.clone()
+        }
+
         pub(super) async fn wait_for_exit(&mut self, timeout: Duration) -> bool {
             if self.has_exited() {
                 return true;
@@ -838,6 +994,16 @@ mod unix {
             self.shutdown_process().await;
         }
 
+        pub async fn terminate_without_input(&mut self) {
+            self.release_slave_hold();
+            self.master.take();
+            self.shutdown_process().await;
+        }
+
+        pub async fn drain_output(&mut self) -> Result<Vec<u8>, PtyError> {
+            drain_bounded(self).await
+        }
+
         async fn shutdown_process(&mut self) {
             self.release_slave_hold();
             if let Some(mut guard) = self.guard.take() {
@@ -845,6 +1011,44 @@ mod unix {
             }
             let _ = self.wait_for_exit(Duration::from_secs(1)).await;
         }
+    }
+
+    #[cfg(feature = "test-hooks")]
+    pub(super) async fn drain_bounded_for_test(
+        source: Vec<u8>,
+    ) -> Result<(Vec<u8>, usize), PtyError> {
+        struct Fixture {
+            source: Vec<u8>,
+            offset: usize,
+        }
+
+        impl DrainReader for Fixture {
+            fn read_chunk<'a>(
+                &'a mut self,
+                chunk: &'a mut [u8],
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<DrainClassification, PtyError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                let count = (self.source.len() - self.offset).min(chunk.len());
+                chunk[..count].copy_from_slice(&self.source[self.offset..self.offset + count]);
+                self.offset += count;
+                Box::pin(async move {
+                    if count == 0 {
+                        Ok(DrainClassification::Closed)
+                    } else {
+                        Ok(DrainClassification::Data(count))
+                    }
+                })
+            }
+        }
+
+        let mut reader = Fixture { source, offset: 0 };
+        let output = drain_bounded(&mut reader).await?;
+        Ok((output, reader.offset))
     }
 
     impl Drop for PtyInner {
@@ -940,5 +1144,50 @@ mod unix {
         }
         let text = String::from_utf8_lossy(&plain).into_owned();
         Zeroizing::new(text)
+    }
+    #[cfg(test)]
+    mod drain_tests {
+        use super::{DrainClassification, DrainReader, PtyError, drain_bounded};
+
+        struct Fixture {
+            source: Vec<u8>,
+            offset: usize,
+        }
+
+        impl DrainReader for Fixture {
+            fn read_chunk<'a>(
+                &'a mut self,
+                chunk: &'a mut [u8],
+            ) -> std::pin::Pin<
+                Box<
+                    dyn std::future::Future<Output = Result<DrainClassification, PtyError>>
+                        + Send
+                        + 'a,
+                >,
+            > {
+                let count = (self.source.len() - self.offset).min(chunk.len());
+                chunk[..count].copy_from_slice(&self.source[self.offset..self.offset + count]);
+                self.offset += count;
+                Box::pin(async move {
+                    if count == 0 {
+                        Ok(DrainClassification::Closed)
+                    } else {
+                        Ok(DrainClassification::Data(count))
+                    }
+                })
+            }
+        }
+
+        #[tokio::test]
+        async fn bounded_drain_preserves_exact_bytes_and_source_offset() {
+            let source = vec![1_u8; 8192 * 65];
+            let mut reader = Fixture {
+                source: source.clone(),
+                offset: 0,
+            };
+            let output = drain_bounded(&mut reader).await.unwrap();
+            assert_eq!(output, source[..8192 * 64]);
+            assert_eq!(reader.offset, 8192 * 64);
+        }
     }
 }
