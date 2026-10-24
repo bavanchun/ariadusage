@@ -4,6 +4,7 @@ use ariadusage_core::model::{RateWindow, UsageSnapshot};
 use ariadusage_protocol::Confidence;
 use jiff::Timestamp;
 
+// upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:101 usage snapshot defaults legacy payloads to unknown confidence without reencoding unknown
 #[test]
 fn usage_snapshot_defaults_legacy_payloads_to_unknown_confidence_without_reencoding_unknown() {
     let json = r#"{
@@ -23,6 +24,7 @@ fn usage_snapshot_defaults_legacy_payloads_to_unknown_confidence_without_reencod
     assert!(!encoded.contains("dataConfidence"));
 }
 
+// upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:125 usage snapshot preserves explicit confidence through Codable
 #[test]
 fn usage_snapshot_preserves_explicit_confidence_through_codable() {
     let now = Timestamp::from_second(1_700_000_000).expect("timestamp");
@@ -49,6 +51,7 @@ fn usage_snapshot_preserves_explicit_confidence_through_codable() {
     assert_eq!(decoded.data_confidence, Confidence::Exact);
 }
 
+// upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:147 usage snapshot treats future confidence values as unknown
 #[test]
 fn usage_snapshot_treats_future_confidence_values_as_unknown() {
     let json = r#"{

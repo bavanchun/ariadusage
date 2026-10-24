@@ -67,11 +67,16 @@ impl std::fmt::Debug for CookieCacheEntry {
 /// Scope isolating cookie cache entries beyond provider identity.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum CacheScope {
+    ManagedAccount(String),
     ProfileHome(String),
     ProviderVariant(String),
 }
 
 impl CacheScope {
+    pub fn managed_account(account_id: &str) -> Self {
+        Self::ManagedAccount(account_id.to_ascii_lowercase())
+    }
+
     pub fn profile_home(path: &str) -> Self {
         let standardized = path.trim_end_matches('/');
         let digest = sha256_hex("profile_home", &[standardized.as_bytes()]);
@@ -85,10 +90,59 @@ impl CacheScope {
 
     pub fn isolation_identifier(&self) -> String {
         match self {
+            Self::ManagedAccount(account_id) => format!("managed.{account_id}"),
             Self::ProfileHome(digest) => format!("profile-home.{digest}"),
             Self::ProviderVariant(digest) => format!("provider-variant.{digest}"),
         }
     }
+}
+
+/// Summary of a cookie cache clear operation (`CookieHeaderCache.ClearSummary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClearSummary {
+    pub cleared_count: usize,
+    pub failed_count: usize,
+}
+
+impl ClearSummary {
+    pub const fn new(cleared_count: usize, failed_count: usize) -> Self {
+        Self {
+            cleared_count,
+            failed_count,
+        }
+    }
+}
+
+/// Token representing an active refresh read suppression gate (`CookieRefreshReadSuppressionGate`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CookieRefreshReadSuppressionGate {
+    token: u64,
+}
+
+/// Summary returned when committing a refresh read suppression gate (`CookieRefreshCommitSummary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CookieRefreshCommitSummary {
+    pub staged_count: usize,
+    pub committed_count: usize,
+    pub failed_count: usize,
+}
+
+#[derive(Clone)]
+enum RefreshStagedMutation {
+    Store(CookieCacheEntry),
+    Clear,
+}
+
+#[derive(Clone)]
+struct RefreshSuppressionState {
+    provider: ProviderId,
+    staged_mutations: HashMap<CacheKey, RefreshStagedMutation>,
+    validated_nonpersistent_session: bool,
+}
+
+enum RefreshReadResolution {
+    NoGate,
+    Visible(Option<CookieCacheEntry>),
 }
 
 pub type CacheKey = (ProviderId, Option<CacheScope>);
@@ -181,6 +235,44 @@ impl ConditionalMutationObservation {
 #[derive(Default)]
 struct CacheState {
     entries: HashMap<CacheKey, CookieCacheEntry>,
+    next_suppression_token: u64,
+    suppressions: HashMap<u64, RefreshSuppressionState>,
+}
+
+impl CacheState {
+    fn active_suppression_token_for(&self, provider: &ProviderId) -> Option<u64> {
+        self.suppressions
+            .iter()
+            .filter(|(_, state)| &state.provider == provider)
+            .map(|(token, _)| *token)
+            .max()
+    }
+
+    fn resolve_refresh_read(&self, key: &CacheKey) -> RefreshReadResolution {
+        let Some(token) = self.active_suppression_token_for(&key.0) else {
+            return RefreshReadResolution::NoGate;
+        };
+        let Some(suppression) = self.suppressions.get(&token) else {
+            return RefreshReadResolution::NoGate;
+        };
+        match suppression.staged_mutations.get(key) {
+            Some(RefreshStagedMutation::Store(entry)) => {
+                RefreshReadResolution::Visible(Some(entry.clone()))
+            }
+            Some(RefreshStagedMutation::Clear) | None => RefreshReadResolution::Visible(None),
+        }
+    }
+
+    fn stage_refresh_mutation(&mut self, key: CacheKey, mutation: RefreshStagedMutation) -> bool {
+        let Some(token) = self.active_suppression_token_for(&key.0) else {
+            return false;
+        };
+        if let Some(suppression) = self.suppressions.get_mut(&token) {
+            suppression.staged_mutations.insert(key, mutation);
+            return true;
+        }
+        false
+    }
 }
 
 /// In-memory cookie cache with scopes, conditional mutation, and generation gates.
@@ -197,6 +289,115 @@ impl CookieCache {
 
     pub fn default_coordinator(&self) -> &ConditionalMutationCoordinator {
         &self.default_coordinator
+    }
+
+    /// Suppresses persisted cookie cache reads for `provider` during an interactive cookie refresh,
+    /// staging any writes or clears until `commit_refresh_read_suppression` is called.
+    pub fn begin_refresh_read_suppression(
+        &self,
+        provider: &ProviderId,
+    ) -> Option<CookieRefreshReadSuppressionGate> {
+        let mut state = self.state.lock().expect("lock not poisoned");
+        state.next_suppression_token = state.next_suppression_token.wrapping_add(1);
+        let token = state.next_suppression_token;
+        state.suppressions.insert(
+            token,
+            RefreshSuppressionState {
+                provider: provider.clone(),
+                staged_mutations: HashMap::new(),
+                validated_nonpersistent_session: false,
+            },
+        );
+        Some(CookieRefreshReadSuppressionGate { token })
+    }
+
+    /// Records that a provider validated a fresh browser session that intentionally does not persist
+    /// a cookie header in `CookieCache`.
+    pub fn mark_nonpersistent_refresh_validated(&self, provider: &ProviderId) {
+        let mut state = self.state.lock().expect("lock not poisoned");
+        if let Some(token) = state.active_suppression_token_for(provider)
+            && let Some(suppression) = state.suppressions.get_mut(&token)
+        {
+            suppression.validated_nonpersistent_session = true;
+        }
+    }
+
+    /// Commits staged mutations for `gate` and detaches the suppression gate.
+    pub fn commit_refresh_read_suppression(
+        &self,
+        gate: &CookieRefreshReadSuppressionGate,
+    ) -> CookieRefreshCommitSummary {
+        let mut state = self.state.lock().expect("lock not poisoned");
+        let Some(suppression) = state.suppressions.remove(&gate.token) else {
+            return CookieRefreshCommitSummary {
+                staged_count: 0,
+                committed_count: 0,
+                failed_count: 0,
+            };
+        };
+
+        let replacement_count = suppression
+            .staged_mutations
+            .values()
+            .filter(|m| matches!(m, RefreshStagedMutation::Store(_)))
+            .count();
+
+        if replacement_count > 1 {
+            return CookieRefreshCommitSummary {
+                staged_count: replacement_count,
+                committed_count: 0,
+                failed_count: replacement_count,
+            };
+        }
+
+        if replacement_count == 0 {
+            for (key, mutation) in suppression.staged_mutations {
+                if matches!(mutation, RefreshStagedMutation::Clear) {
+                    state.entries.remove(&key);
+                }
+            }
+            if suppression.validated_nonpersistent_session {
+                return CookieRefreshCommitSummary {
+                    staged_count: 1,
+                    committed_count: 1,
+                    failed_count: 0,
+                };
+            }
+            return CookieRefreshCommitSummary {
+                staged_count: 0,
+                committed_count: 0,
+                failed_count: 0,
+            };
+        }
+
+        for (key, mutation) in suppression.staged_mutations {
+            match mutation {
+                RefreshStagedMutation::Store(entry) => {
+                    state.entries.insert(key, entry);
+                }
+                RefreshStagedMutation::Clear => {
+                    state.entries.remove(&key);
+                }
+            }
+        }
+
+        CookieRefreshCommitSummary {
+            staged_count: 1,
+            committed_count: 1,
+            failed_count: 0,
+        }
+    }
+
+    /// Ends a refresh read suppression gate, discarding any uncommitted staged mutations.
+    pub fn end_refresh_read_suppression(&self, gate: &CookieRefreshReadSuppressionGate) {
+        let mut state = self.state.lock().expect("lock not poisoned");
+        state.suppressions.remove(&gate.token);
+    }
+
+    /// Returns true if refresh read suppression is currently active for `provider`.
+    pub fn is_refresh_read_suppressed(&self, provider: &ProviderId) -> bool {
+        let state = self.state.lock().expect("lock not poisoned");
+        state.active_suppression_token_for(provider).is_some()
     }
 
     /// Stores a normalized cookie header. If the header normalizes to empty, the entry is cleared.
@@ -232,6 +433,24 @@ impl CookieCache {
 
         let key = (provider.clone(), scope.cloned());
         let mut state = self.state.lock().expect("lock not poisoned");
+        let entry = CookieCacheEntry {
+            header: SecretString::from(normalized),
+            stored_at: now,
+            source_label: source_label.to_string(),
+            auth_failure_policy,
+        };
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            if visible.is_some_and(|existing| {
+                existing.auth_failure_policy
+                    == Some(CookieAuthenticationFailurePolicy::StopFallback)
+                    && auth_failure_policy != Some(CookieAuthenticationFailurePolicy::StopFallback)
+            }) {
+                return false;
+            }
+            let _ = state.stage_refresh_mutation(key, RefreshStagedMutation::Store(entry));
+            return true;
+        }
+
         if state.entries.get(&key).is_some_and(|existing| {
             existing.auth_failure_policy == Some(CookieAuthenticationFailurePolicy::StopFallback)
                 && auth_failure_policy != Some(CookieAuthenticationFailurePolicy::StopFallback)
@@ -239,15 +458,7 @@ impl CookieCache {
             return false;
         }
 
-        state.entries.insert(
-            key,
-            CookieCacheEntry {
-                header: SecretString::from(normalized),
-                stored_at: now,
-                source_label: source_label.to_string(),
-                auth_failure_policy,
-            },
-        );
+        state.entries.insert(key, entry);
         true
     }
 
@@ -259,6 +470,9 @@ impl CookieCache {
     ) -> Option<CookieCacheEntry> {
         let key = (provider.clone(), scope.cloned());
         let state = self.state.lock().expect("lock not poisoned");
+        if let RefreshReadResolution::Visible(entry) = state.resolve_refresh_read(&key) {
+            return entry;
+        }
         state.entries.get(&key).cloned()
     }
 
@@ -266,6 +480,11 @@ impl CookieCache {
     pub fn has_pinned_entry(&self, provider: &ProviderId, scope: Option<&CacheScope>) -> bool {
         let key = (provider.clone(), scope.cloned());
         let state = self.state.lock().expect("lock not poisoned");
+        if let RefreshReadResolution::Visible(entry) = state.resolve_refresh_read(&key) {
+            return entry.is_some_and(|e| {
+                e.auth_failure_policy == Some(CookieAuthenticationFailurePolicy::StopFallback)
+            });
+        }
         state.entries.get(&key).is_some_and(|e| {
             e.auth_failure_policy == Some(CookieAuthenticationFailurePolicy::StopFallback)
         })
@@ -275,23 +494,38 @@ impl CookieCache {
     pub fn clear(&self, provider: &ProviderId, scope: Option<&CacheScope>) -> bool {
         let key = (provider.clone(), scope.cloned());
         let mut state = self.state.lock().expect("lock not poisoned");
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            let was_present = visible.is_some();
+            let _ = state.stage_refresh_mutation(key, RefreshStagedMutation::Clear);
+            return was_present;
+        }
         state.entries.remove(&key).is_some()
     }
 
     /// Clears all entries across all scopes for a specific provider.
     pub fn clear_all_scopes(&self, provider: &ProviderId) -> usize {
+        self.clear_all_scopes_detailed(provider).cleared_count
+    }
+
+    /// Clears all entries across all scopes for a specific provider and returns a detailed summary.
+    pub fn clear_all_scopes_detailed(&self, provider: &ProviderId) -> ClearSummary {
         let mut state = self.state.lock().expect("lock not poisoned");
         let initial = state.entries.len();
         state.entries.retain(|(p, _), _| p != provider);
-        initial - state.entries.len()
+        ClearSummary::new(initial - state.entries.len(), 0)
     }
 
     /// Clears all entries for all providers.
     pub fn clear_all(&self) -> usize {
+        self.clear_all_detailed().cleared_count
+    }
+
+    /// Clears all entries for all providers and returns a detailed summary.
+    pub fn clear_all_detailed(&self) -> ClearSummary {
         let mut state = self.state.lock().expect("lock not poisoned");
         let count = state.entries.len();
         state.entries.clear();
-        count
+        ClearSummary::new(count, 0)
     }
 
     /// Stores a replacement only if current entry matches expected entry.
@@ -313,6 +547,25 @@ impl CookieCache {
 
         let key = (provider.clone(), scope.cloned());
         let mut state = self.state.lock().expect("lock not poisoned");
+        let entry = CookieCacheEntry {
+            header: SecretString::from(normalized),
+            stored_at: now,
+            source_label: source_label.to_string(),
+            auth_failure_policy: None,
+        };
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            if visible.as_ref() != expected {
+                return false;
+            }
+            if visible.is_some_and(|existing| {
+                existing.auth_failure_policy
+                    == Some(CookieAuthenticationFailurePolicy::StopFallback)
+            }) {
+                return false;
+            }
+            return state.stage_refresh_mutation(key, RefreshStagedMutation::Store(entry));
+        }
+
         if state.entries.get(&key) != expected {
             return false;
         }
@@ -323,15 +576,7 @@ impl CookieCache {
             return false;
         }
 
-        state.entries.insert(
-            key,
-            CookieCacheEntry {
-                header: SecretString::from(normalized),
-                stored_at: now,
-                source_label: source_label.to_string(),
-                auth_failure_policy: None,
-            },
-        );
+        state.entries.insert(key, entry);
         true
     }
 
@@ -344,6 +589,12 @@ impl CookieCache {
     ) -> bool {
         let key = (provider.clone(), scope.cloned());
         let mut state = self.state.lock().expect("lock not poisoned");
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            if visible.as_ref() != expected {
+                return false;
+            }
+            return state.stage_refresh_mutation(key, RefreshStagedMutation::Clear);
+        }
         if state.entries.get(&key) != expected {
             return false;
         }
@@ -443,6 +694,23 @@ impl CookieCache {
 
         let key = (provider.clone(), scope.cloned());
         let mut state = self.state.lock().expect("lock not poisoned");
+        let entry = CookieCacheEntry {
+            header: SecretString::from(normalized),
+            stored_at: now,
+            source_label: source_label.to_string(),
+            auth_failure_policy,
+        };
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            if visible.is_some_and(|existing| {
+                existing.auth_failure_policy
+                    == Some(CookieAuthenticationFailurePolicy::StopFallback)
+                    && auth_failure_policy != Some(CookieAuthenticationFailurePolicy::StopFallback)
+            }) {
+                return false;
+            }
+            return state.stage_refresh_mutation(key, RefreshStagedMutation::Store(entry));
+        }
+
         if state.entries.get(&key).is_some_and(|existing| {
             existing.auth_failure_policy == Some(CookieAuthenticationFailurePolicy::StopFallback)
                 && auth_failure_policy != Some(CookieAuthenticationFailurePolicy::StopFallback)
@@ -450,15 +718,7 @@ impl CookieCache {
             return false;
         }
 
-        state.entries.insert(
-            key,
-            CookieCacheEntry {
-                header: SecretString::from(normalized),
-                stored_at: now,
-                source_label: source_label.to_string(),
-                auth_failure_policy,
-            },
-        );
+        state.entries.insert(key, entry);
         true
     }
 
@@ -496,6 +756,25 @@ impl CookieCache {
         }
 
         let mut state = self.state.lock().expect("lock not poisoned");
+        let entry = CookieCacheEntry {
+            header: SecretString::from(normalized),
+            stored_at: now,
+            source_label: source_label.to_string(),
+            auth_failure_policy: None,
+        };
+        if let RefreshReadResolution::Visible(visible) = state.resolve_refresh_read(&key) {
+            if visible.as_ref() != expected.entry.as_ref() {
+                return false;
+            }
+            if visible.is_some_and(|existing| {
+                existing.auth_failure_policy
+                    == Some(CookieAuthenticationFailurePolicy::StopFallback)
+            }) {
+                return false;
+            }
+            return state.stage_refresh_mutation(key, RefreshStagedMutation::Store(entry));
+        }
+
         let current = state.entries.get(&key);
         if current != expected.entry.as_ref() {
             return false;
@@ -507,15 +786,7 @@ impl CookieCache {
             return false;
         }
 
-        state.entries.insert(
-            key,
-            CookieCacheEntry {
-                header: SecretString::from(normalized),
-                stored_at: now,
-                source_label: source_label.to_string(),
-                auth_failure_policy: None,
-            },
-        );
+        state.entries.insert(key, entry);
         true
     }
 }

@@ -308,6 +308,48 @@ impl ProviderConfig {
             }
         }
     }
+
+    pub fn has_browser_id_extension(&self) -> bool {
+        self.extra.contains_key("browserID")
+    }
+
+    pub fn browser_id(&self) -> Option<String> {
+        self.extra
+            .get("browserID")
+            .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+    }
+
+    pub fn set_browser_id(&mut self, browser_id: Option<&str>) {
+        match browser_id {
+            Some(id) => {
+                if let Ok(raw) = serde_json::value::to_raw_value(id) {
+                    self.extra.insert("browserID".to_owned(), raw);
+                }
+            }
+            None => {
+                self.extra.remove("browserID");
+            }
+        }
+    }
+
+    pub fn browser_profile_id(&self) -> Option<String> {
+        self.extra
+            .get("browserProfileID")
+            .and_then(|raw| serde_json::from_str::<String>(raw.get()).ok())
+    }
+
+    pub fn set_browser_profile_id(&mut self, profile_id: Option<&str>) {
+        match profile_id {
+            Some(id) => {
+                if let Ok(raw) = serde_json::value::to_raw_value(id) {
+                    self.extra.insert("browserProfileID".to_owned(), raw);
+                }
+            }
+            None => {
+                self.extra.remove("browserProfileID");
+            }
+        }
+    }
 }
 
 impl fmt::Debug for ProviderConfig {

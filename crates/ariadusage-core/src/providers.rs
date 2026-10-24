@@ -53,6 +53,8 @@ pub struct ProviderDescriptor {
     pub status_page_url: Option<&'static str>,
     pub status_link_url: Option<&'static str>,
     pub status_workspace_product_id: Option<&'static str>,
+    pub supports_browser_cookies: bool,
+    pub selected_profile_browsers: Option<&'static [&'static str]>,
 }
 
 impl ProviderDescriptor {
@@ -123,6 +125,8 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             status_page_url: Some("https://status.openai.com/"),
             status_link_url: None,
             status_workspace_product_id: None,
+            supports_browser_cookies: true,
+            selected_profile_browsers: None,
         },
         // Claude (CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift:126-129, 135, 151-154, 158, 233, 239-245)
         ProviderDescriptor {
@@ -156,6 +160,8 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             status_page_url: Some("https://status.claude.com/"),
             status_link_url: None,
             status_workspace_product_id: None,
+            supports_browser_cookies: true,
+            selected_profile_browsers: None,
         },
         // Antigravity (CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift:26-30, 36, 46-48, 52, 71, 102)
         ProviderDescriptor {
@@ -185,6 +191,8 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
                 "https://www.google.com/appsstatus/dashboard/products/npdyhgECDJ6tB66MxXyo/history",
             ),
             status_workspace_product_id: Some("npdyhgECDJ6tB66MxXyo"),
+            supports_browser_cookies: false,
+            selected_profile_browsers: None,
         },
     ]
 });

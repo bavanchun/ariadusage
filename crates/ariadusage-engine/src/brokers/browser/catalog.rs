@@ -1,5 +1,7 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::BrowserPaths;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -37,6 +39,7 @@ pub const DEFAULT_IMPORT_ORDER: [Browser; 7] = [
     Browser::Opera,
 ];
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug)]
 pub(super) struct ProfileRoot {
     pub path: PathBuf,
@@ -55,6 +58,33 @@ impl Browser {
             Self::Firefox => "Firefox",
             Self::Opera => "Opera",
             Self::Safari => "Safari",
+        }
+    }
+
+    pub fn raw_id(self) -> &'static str {
+        match self {
+            Self::Chrome => "chrome",
+            Self::Edge => "edge",
+            Self::Brave => "brave",
+            Self::Chromium => "chromium",
+            Self::Vivaldi => "vivaldi",
+            Self::Firefox => "firefox",
+            Self::Opera => "opera",
+            Self::Safari => "safari",
+        }
+    }
+
+    pub fn from_raw_id(id: &str) -> Option<Self> {
+        match id {
+            "chrome" => Some(Self::Chrome),
+            "edge" => Some(Self::Edge),
+            "brave" => Some(Self::Brave),
+            "chromium" => Some(Self::Chromium),
+            "vivaldi" => Some(Self::Vivaldi),
+            "firefox" => Some(Self::Firefox),
+            "opera" => Some(Self::Opera),
+            "safari" => Some(Self::Safari),
+            _ => None,
         }
     }
 
@@ -86,6 +116,7 @@ impl Browser {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(super) fn roots(self, paths: &BrowserPaths) -> Vec<ProfileRoot> {
         #[cfg(target_os = "macos")]
         {
@@ -165,6 +196,7 @@ impl std::fmt::Display for Browser {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn firefox_roots(paths: &BrowserPaths) -> Vec<ProfileRoot> {
     #[cfg(target_os = "macos")]
     {
