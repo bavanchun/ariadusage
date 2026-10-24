@@ -694,13 +694,13 @@ impl CodexSpendControlsMonthlyUsageGate {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CodexOAuthFetchError {
     #[error("Codex OAuth token expired or invalid. Run `codex login` to re-authenticate.")]
     Unauthorized,
     #[error("Invalid response from Codex usage API.")]
     InvalidResponse,
-    #[error("{}", format_server_error(*.0, .1.as_deref()))]
+    #[error("Codex API error {0}.")]
     ServerError(u16, Option<String>),
     #[error("Network error: {0}")]
     NetworkError(String),
@@ -708,13 +708,19 @@ pub enum CodexOAuthFetchError {
     Cancelled,
 }
 
-fn format_server_error(code: u16, message: Option<&str>) -> String {
-    if let Some(msg) = message
-        && !msg.is_empty()
-    {
-        format!("Codex API error {code}: {msg}")
-    } else {
-        format!("Codex API error {code}.")
+impl fmt::Debug for CodexOAuthFetchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unauthorized => f.write_str("Unauthorized"),
+            Self::InvalidResponse => f.write_str("InvalidResponse"),
+            Self::ServerError(status, message) => f
+                .debug_tuple("ServerError")
+                .field(status)
+                .field(&message.as_ref().map(|_| "[redacted]"))
+                .finish(),
+            Self::NetworkError(message) => f.debug_tuple("NetworkError").field(message).finish(),
+            Self::Cancelled => f.write_str("Cancelled"),
+        }
     }
 }
 
@@ -1379,10 +1385,7 @@ impl CodexOAuthUsageFetcher {
         match resp.status.as_u16() {
             200..=299 => Ok(resp.body().to_vec()),
             401 => Err(CodexOAuthFetchError::Unauthorized),
-            status => {
-                let message = std::str::from_utf8(resp.body()).ok().map(str::to_owned);
-                Err(CodexOAuthFetchError::ServerError(status, message))
-            }
+            status => Err(CodexOAuthFetchError::ServerError(status, None)),
         }
     }
 }

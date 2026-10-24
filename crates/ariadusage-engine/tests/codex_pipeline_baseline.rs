@@ -50,6 +50,37 @@ impl Sleeper for NoRetry {
 async fn outcome(cfg: CodexStrategyConfig, cx: &FetchContext) -> FetchOutcome {
     fetch_outcome(&cx.provider, &CodexProviderPlan::new(cfg), cx, &NoRetry).await
 }
+fn attempt_ids(out: &FetchOutcome) -> Vec<&str> {
+    out.attempts
+        .iter()
+        .map(|a| a.strategy_id.as_str())
+        .collect()
+}
+fn attempt_avail(out: &FetchOutcome) -> Vec<bool> {
+    out.attempts.iter().map(|a| a.was_available).collect()
+}
+fn save_oauth_with_dead_loopback(home: &std::path::Path, cfg: &CodexStrategyConfig) {
+    CodexOAuthCredentialsStore::save(
+        &CodexOAuthCredentials::new(
+            "access-token",
+            "refresh-token",
+            None,
+            Some("account-id".into()),
+            Some(Timestamp::now()),
+            None,
+            CodexOAuthCredentialSource::CodexHome,
+            false,
+        ),
+        &cfg.environment,
+        Some(home),
+    )
+    .unwrap();
+    fs::write(
+        home.join("config.toml"),
+        "chatgpt_base_url = \"http://127.0.0.1:9\"",
+    )
+    .unwrap();
+}
 
 // upstream: CodexBaselineCharacterizationTests.swift:143 app auto pipeline order is PAT then OAuth then CLI without web
 #[tokio::test]
@@ -121,20 +152,8 @@ async fn app_auto_records_unavailable_oauth_before_successful_cli_fallback() {
     let mut cfg = config(home.path());
     cfg.cli_fetcher = fetcher;
     let out = outcome(cfg, &context(SourceMode::Auto, FetchRuntime::Daemon)).await;
-    assert_eq!(
-        out.attempts
-            .iter()
-            .map(|a| a.strategy_id.as_str())
-            .collect::<Vec<_>>(),
-        ["codex.pat", "codex.oauth", "codex.cli"]
-    );
-    assert_eq!(
-        out.attempts
-            .iter()
-            .map(|a| a.was_available)
-            .collect::<Vec<_>>(),
-        [false, false, true]
-    );
+    assert_eq!(attempt_ids(&out), ["codex.pat", "codex.oauth", "codex.cli"]);
+    assert_eq!(attempt_avail(&out), [false, false, true]);
     let r = out.result.unwrap();
     assert_eq!(r.source_label, "codex-cli");
     let id = r.usage.identity.unwrap();
@@ -147,41 +166,10 @@ async fn app_auto_records_unavailable_oauth_before_successful_cli_fallback() {
 async fn app_auto_does_not_fall_back_from_non_auth_failing_oauth() {
     let home = TempDir::new().unwrap();
     let cfg = config(home.path());
-    CodexOAuthCredentialsStore::save(
-        &CodexOAuthCredentials::new(
-            "access-token",
-            "refresh-token",
-            None,
-            Some("account-id".into()),
-            Some(Timestamp::now()),
-            None,
-            CodexOAuthCredentialSource::CodexHome,
-            false,
-        ),
-        &cfg.environment,
-        Some(home.path()),
-    )
-    .unwrap();
-    fs::write(
-        home.path().join("config.toml"),
-        "chatgpt_base_url = \"http://127.0.0.1:9\"",
-    )
-    .unwrap();
+    save_oauth_with_dead_loopback(home.path(), &cfg);
     let out = outcome(cfg, &context(SourceMode::Auto, FetchRuntime::Daemon)).await;
-    assert_eq!(
-        out.attempts
-            .iter()
-            .map(|a| a.strategy_id.as_str())
-            .collect::<Vec<_>>(),
-        ["codex.pat", "codex.oauth"]
-    );
-    assert_eq!(
-        out.attempts
-            .iter()
-            .map(|a| a.was_available)
-            .collect::<Vec<_>>(),
-        [false, true]
-    );
+    assert_eq!(attempt_ids(&out), ["codex.pat", "codex.oauth"]);
+    assert_eq!(attempt_avail(&out), [false, true]);
     assert!(out.attempts[1].failure.is_some());
     let FetchError::Classified(c) = out.result.unwrap_err() else {
         panic!("expected network error")
@@ -271,5 +259,46 @@ async fn codex_cli_strategy_maps_monthly_credit_limit() {
     assert_eq!(
         cap.resets_at,
         Some(Timestamp::from_second(1_782_864_000).unwrap())
+    );
+}
+
+// upstream: CodexBaselineCharacterizationTests.swift:327 CLI auto records unavailable OAuth before successful CLI
+#[tokio::test]
+async fn cli_auto_records_unavailable_oauth_before_successful_cli() {
+    let (home, fetcher) = rpc::fixture(
+        json!({"result":{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1766948068_i64},"secondary":{"usedPercent":43,"windowDurationMins":10080,"resetsAt":1767407914_i64},"credits":{"hasCredits":true,"unlimited":false,"balance":"7"}}}}),
+        "pro",
+    );
+    let mut cfg = config(home.path());
+    cfg.cli_fetcher = fetcher;
+    let out = outcome(cfg, &context(SourceMode::Auto, FetchRuntime::Cli)).await;
+    assert_eq!(attempt_ids(&out), ["codex.pat", "codex.oauth", "codex.cli"]);
+    assert_eq!(attempt_avail(&out), [false, false, true]);
+    let r = out.result.unwrap();
+    assert_eq!(r.source_label, "codex-cli");
+    assert_eq!(
+        r.usage.identity.unwrap().account_email.as_deref(),
+        Some("stub@example.com")
+    );
+}
+
+// upstream: CodexBaselineCharacterizationTests.swift:361 CLI auto tries OAuth before missing CLI fallback
+#[tokio::test]
+async fn cli_auto_tries_oauth_before_missing_cli_fallback() {
+    let home = TempDir::new().unwrap();
+    let mut cfg = config(home.path());
+    cfg.environment
+        .insert("CODEX_CLI_PATH".into(), "/missing/codex".into());
+    save_oauth_with_dead_loopback(home.path(), &cfg);
+    let out = outcome(cfg, &context(SourceMode::Auto, FetchRuntime::Cli)).await;
+    assert_eq!(attempt_ids(&out), ["codex.pat", "codex.oauth"]);
+    assert_eq!(attempt_avail(&out), [false, true]);
+    assert!(out.attempts[1].failure.is_some());
+    let FetchError::Classified(c) = out.result.unwrap_err() else {
+        panic!("expected network error")
+    };
+    assert_eq!(
+        c.kind,
+        ariadusage_protocol::usage::ProviderErrorKind::NetworkFailure
     );
 }
