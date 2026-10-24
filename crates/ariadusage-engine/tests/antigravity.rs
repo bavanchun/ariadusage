@@ -3674,7 +3674,7 @@ async fn remote_fetch_selected_account_precedence_refresh_and_error_handling() {
 // CodexBar: Tests/CodexBarTests/AntigravityRemoteUsageFetcherTests.swift:348-1388
 async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() {
     use ariadusage_engine::providers::antigravity::{
-        AntigravityOAuthFetchStrategy, AntigravityOfflinePlaceholderStrategy,
+        AntigravityOAuthFetchStrategy, AntigravityOfflineFetchStrategy,
     };
     // 1. Verifies full model quotas with retrieveUserQuota and drops rows absent from partial verification (lines 405-510, 731-794)
     let env = TestEnvironment::new();
@@ -4250,7 +4250,7 @@ async fn remote_fetch_models_verification_onboarding_refresh_and_tos_recovery() 
         *tos_paths.lock().unwrap(),
         vec!["/v1internal:loadCodeAssist".to_owned()]
     );
-    let diag = AntigravityOfflinePlaceholderStrategy::diagnostic_for_prior_failure(
+    let diag = AntigravityOfflineFetchStrategy::diagnostic_for_prior_failure(
         &AntigravityRemoteFetchError::ReauthenticationRequired,
     );
     assert!(diag.unwrap().contains("Sign in to it again."));

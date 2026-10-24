@@ -308,28 +308,6 @@ impl ProviderConfig {
             }
         }
     }
-
-    /// Raw optional `antigravityPrioritizeExhaustedQuotas` setting from `extra["antigravityPrioritizeExhaustedQuotas"]`.
-    pub fn antigravity_prioritize_exhausted_quotas(&self) -> Option<bool> {
-        self.extra
-            .get("antigravityPrioritizeExhaustedQuotas")
-            .and_then(|raw| serde_json::from_str::<bool>(raw.get()).ok())
-    }
-
-    /// Sets or clears `extra["antigravityPrioritizeExhaustedQuotas"]`.
-    pub fn set_antigravity_prioritize_exhausted_quotas(&mut self, enabled: Option<bool>) {
-        match enabled {
-            Some(value) => {
-                if let Ok(raw) = serde_json::value::to_raw_value(&value) {
-                    self.extra
-                        .insert("antigravityPrioritizeExhaustedQuotas".to_owned(), raw);
-                }
-            }
-            None => {
-                self.extra.remove("antigravityPrioritizeExhaustedQuotas");
-            }
-        }
-    }
 }
 
 impl fmt::Debug for ProviderConfig {

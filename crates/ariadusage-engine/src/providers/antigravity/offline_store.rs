@@ -80,13 +80,23 @@ impl AntigravityOfflineStore {
 
     /// Count offline conversations (`.db` files). Cheap, no SQLite open.
     pub fn count_conversations<V: EnvValue>(home: &Path, env: &BTreeMap<String, V>) -> usize {
-        let primary = Self::conversations_directory(home, env);
-        let app_data = Self::app_data_directory(home, env);
-        let app_data_conversations = app_data.join("conversations");
-        let primary_count = Self::count_db_files(&primary);
-        let app_data_count = Self::count_db_files(&app_data);
-        let app_data_conv_count = Self::count_db_files(&app_data_conversations);
-        let total_db = primary_count + app_data_count + app_data_conv_count;
+        Self::count_conversations_with_profiles(home, env, &[])
+    }
+
+    pub fn count_conversations_with_profiles<V: EnvValue>(
+        home: &Path,
+        env: &BTreeMap<String, V>,
+        additional_profile_homes: &[String],
+    ) -> usize {
+        let mut total_db = 0usize;
+        for gemini_home in Self::gemini_home_directories(home, env, additional_profile_homes) {
+            let primary = gemini_home.join("antigravity-cli").join("conversations");
+            let app_data = gemini_home.join("antigravity");
+            let app_data_conversations = app_data.join("conversations");
+            total_db += Self::count_db_files(&primary)
+                + Self::count_db_files(&app_data)
+                + Self::count_db_files(&app_data_conversations);
+        }
         if total_db > 0 {
             return total_db;
         }
@@ -96,6 +106,14 @@ impl AntigravityOfflineStore {
 
     pub fn has_offline_data<V: EnvValue>(home: &Path, env: &BTreeMap<String, V>) -> bool {
         Self::count_conversations(home, env) > 0
+    }
+
+    pub fn has_offline_data_with_profiles<V: EnvValue>(
+        home: &Path,
+        env: &BTreeMap<String, V>,
+        additional_profile_homes: &[String],
+    ) -> bool {
+        Self::count_conversations_with_profiles(home, env, additional_profile_homes) > 0
     }
 
     fn count_db_files(directory: &Path) -> usize {
@@ -118,6 +136,9 @@ impl AntigravityOfflineStore {
                     return false;
                 };
                 if file_name.starts_with('.') {
+                    return false;
+                }
+                if !entry.file_type().is_ok_and(|ft| ft.is_file()) {
                     return false;
                 }
                 path.extension()

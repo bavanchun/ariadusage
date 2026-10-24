@@ -1582,7 +1582,7 @@ async fn remote_fetch_asks_for_sign_in_again_when_the_oauth_client_cannot_read_c
         *tos_paths.lock().unwrap(),
         vec!["/v1internal:loadCodeAssist".to_owned()]
     );
-    let diag = AntigravityOfflinePlaceholderStrategy::diagnostic_for_prior_failure(
+    let diag = AntigravityOfflineFetchStrategy::diagnostic_for_prior_failure(
         &AntigravityRemoteFetchError::ReauthenticationRequired,
     );
     assert!(diag.unwrap().contains("Sign in to it again."));
