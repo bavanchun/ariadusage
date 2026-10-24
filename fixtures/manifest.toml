@@ -1879,3 +1879,99 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-engine/tests/support/antigravity-quota.rs"
 sources = ["Tests/CodexBarTests/AntigravityQuotaSummaryTests.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/src/refresh/cadence.rs"
+sources = [
+    "Sources/AdaptiveRefreshCore/AdaptiveRefreshPolicyCore.swift",
+    "Sources/CodexBar/AdaptiveRefreshPolicy.swift",
+    "Sources/CodexBar/UsageStore+AdaptiveRefresh.swift",
+    "Sources/CodexBar/BackgroundWorkPowerPolicy.swift",
+    "Sources/CodexBar/SettingsStore.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/src/refresh/transitions.rs"
+sources = [
+    "Sources/CodexBarCore/Hooks/HookTransitionDetector.swift",
+    "Sources/CodexBarCore/Hooks/HookEvent.swift",
+    "Sources/CodexBarCore/Hooks/HookRule.swift",
+    "Sources/CodexBarCore/Hooks/HookEvent+UsageUpdated.swift",
+    "Sources/CodexBar/SessionQuotaNotifications.swift",
+    "Sources/CodexBar/UsageStore+SessionQuotaTransition.swift",
+    "Sources/CodexBar/UsageStore+QuotaWarnings.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-core/src/status.rs"
+sources = [
+    "Sources/CodexBarCore/ProviderStatus.swift",
+    "Sources/CodexBarCore/ProviderStatusFetcher.swift",
+    "Tests/CodexBarTests/StatuspageSummaryTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/coordinator.rs"
+sources = [
+    "Sources/CodexBar/ProviderRefreshCoordinator.swift",
+    "Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/registry.rs"
+sources = [
+    "Sources/CodexBar/ProviderRegistry.swift",
+    "Sources/CodexBarCore/Providers/ProviderDescriptor.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/runtime.rs"
+sources = [
+    "Sources/CodexBar/UsageStore.swift",
+    "Sources/CodexBar/UsageStore+Refresh.swift",
+    "Sources/CodexBar/UsageStore+ProviderStatus.swift",
+    "Sources/CodexBar/AdaptiveRefreshController.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/settings_page.rs"
+sources = [
+    "Sources/CodexBarCore/Config/PreferencesDocument.swift",
+    "Sources/CodexBar/SettingsStore.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/status.rs"
+sources = [
+    "Sources/CodexBarCore/ProviderStatus.swift",
+    "Sources/CodexBarCore/ProviderStatusFetcher.swift",
+    "Sources/CodexBar/UsageStore+ProviderStatus.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/status_feeds.rs"
+sources = [
+    "Tests/CodexBarTests/ProviderStatusFetchTests.swift",
+    "Tests/CodexBarTests/StatuspageSummaryTests.swift",
+    "Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/engine_runtime.rs"
+sources = [
+    "Tests/CodexBarTests/ProviderRefreshCoordinatorTests.swift",
+    "Tests/CodexBarTests/RequiredRefreshCoalescingTests.swift",
+    "Tests/CodexBarTests/AdaptiveRefreshTimerTests.swift",
+    "Tests/CodexBarTests/ClaudeResilienceTests.swift",
+    "Tests/CodexBarTests/HookTransitionDetectorLinuxTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

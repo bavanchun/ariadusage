@@ -15,6 +15,7 @@ pub mod projection;
 pub mod providers;
 pub mod refresh;
 pub mod settings_value;
+pub mod status;
 
 pub use config::*;
 pub use error::ModelError;
@@ -29,3 +30,4 @@ pub use providers::{
 };
 pub use refresh::*;
 pub use settings_value::SettingsValue;
+pub use status::*;
