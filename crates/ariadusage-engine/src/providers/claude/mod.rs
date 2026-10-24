@@ -22,12 +22,14 @@ pub mod web_fetcher;
 pub use account_profile::{ClaudeAccountProfile, ConfigOwnershipEvidence};
 pub use admin_api::{
     ADMIN_API_HOST, ADMIN_API_USER_AGENT, ANTHROPIC_VERSION_HEADER, ANTHROPIC_VERSION_VALUE,
-    API_KEY_HEADER, COST_REPORT_PATH, ClaudeAdminAPIEndpointConfig, ClaudeAdminAPISettingsError,
-    ClaudeAdminAPISettingsReader, ClaudeAdminAPIUsageError, ClaudeAdminAPIUsageFetcher,
-    ClaudeAdminAPIUsageSnapshot, ClaudeOptionalDetailPolicy, CostBreakdown,
-    CostUsageBucketInterval, DEFAULT_ADMIN_API_BASE_URL, DEFAULT_ADMIN_API_TIMEOUT, DailyBucket,
-    MESSAGES_REPORT_PATH, ModelBreakdown, Summary, claude_admin_api_declared_origins,
-    claude_env_descriptor, claude_token_account_env_override, validate_admin_api_url,
+    API_KEY_HEADER, COST_REPORT_ENDPOINT, COST_REPORT_PATH, ClaudeAdminAPIEndpointConfig,
+    ClaudeAdminAPISettingsError, ClaudeAdminAPISettingsReader, ClaudeAdminAPIUsageError,
+    ClaudeAdminAPIUsageFetcher, ClaudeAdminAPIUsageSnapshot, ClaudeOptionalDetailPolicy,
+    CostBreakdown, CostUsageBucketInterval, DEFAULT_ADMIN_API_BASE_URL, DEFAULT_ADMIN_API_TIMEOUT,
+    DailyBucket, MESSAGES_ENDPOINT, MESSAGES_REPORT_PATH, ModelBreakdown, Summary,
+    claude_admin_api_declared_origins, claude_env_descriptor,
+    claude_provider_config_env_descriptor, claude_token_account_env_override,
+    validate_admin_api_url,
 };
 pub use cli_gates::{
     ClaudeCLIAuthStatusProbe, ClaudeCLIAuthenticationStatus, ClaudeCLIBackgroundAvailabilityStore,

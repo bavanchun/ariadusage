@@ -958,7 +958,7 @@ async fn fetch_usage_sends_pinned_headers_and_query_params_and_parses_reports() 
         .user(call)
         .set(
             &api_key_id,
-            &SecretString::new("Bearer sk-ant-admin01-test-key"),
+            &SecretString::new("  \"sk-ant-admin01-test-key\"  "),
         )
         .await
         .expect("store api key");
@@ -988,6 +988,28 @@ async fn fetch_usage_sends_pinned_headers_and_query_params_and_parses_reports() 
 
 #[tokio::test]
 async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
+    let net = https::broker(NetConfig::default());
+    let now = "2026-03-21T15:30:00Z".parse::<Timestamp>().unwrap();
+    let call = BrokerCall {
+        interaction: FetchInteraction::UserInitiated,
+        cancel: CancellationToken::new(),
+        request_id: "err-401".to_owned(),
+    };
+
+    // Empty key maps to MissingCredentials before any network call
+    let default_endpoint = ClaudeAdminAPIEndpointConfig::default();
+    let empty_err =
+        ClaudeAdminAPIUsageFetcher::fetch_usage(&net, &default_endpoint, "   ", false, now, &call)
+            .await
+            .expect_err("empty key should fail with MissingCredentials");
+    assert_eq!(empty_err, ClaudeAdminAPIUsageError::MissingCredentials);
+    assert_eq!(empty_err.to_string(), "Missing Anthropic Admin API key.");
+    assert_eq!(
+        empty_err.into_classified_error().kind,
+        ProviderErrorKind::MissingCredential
+    );
+
+    let sentinel_401 = "SENTINEL_401_BODY_DO_NOT_LEAK";
     let server = https::start_server();
 
     server
@@ -995,10 +1017,10 @@ async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
             when.method(GET).path(COST_REPORT_PATH);
             then.status(401)
                 .header("content-type", "application/json")
-                .body(r#"{"error":{"message":"invalid x-api-key"}}"#);
+                .body(format!(r#"{{"error":{{"message":"{sentinel_401}"}}}}"#));
         })
         .await;
-    server
+    let messages_mock_401 = server
         .mock_async(|when, then| {
             when.method(GET).path(MESSAGES_REPORT_PATH);
             then.status(200)
@@ -1007,15 +1029,8 @@ async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
         })
         .await;
 
-    let net = https::broker(NetConfig::default());
     let endpoint =
         ClaudeAdminAPIEndpointConfig::with_base_url_str(&server.base_url()).expect("loopback url");
-    let now = "2026-03-21T15:30:00Z".parse::<Timestamp>().unwrap();
-    let call = BrokerCall {
-        interaction: FetchInteraction::UserInitiated,
-        cancel: CancellationToken::new(),
-        request_id: "err-401".to_owned(),
-    };
 
     let err = ClaudeAdminAPIUsageFetcher::fetch_usage(
         &net,
@@ -1027,22 +1042,44 @@ async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
     )
     .await
     .expect_err("401 should fail");
-    assert_eq!(err, ClaudeAdminAPIUsageError::Unauthorized);
+    // Sequential request order: messages endpoint is not called when cost_report fails
+    messages_mock_401.assert_calls_async(0).await;
     assert_eq!(
-        err.into_classified_error().kind,
+        err,
+        ClaudeAdminAPIUsageError::ApiError {
+            endpoint: "cost_report",
+            status_code: 401,
+        }
+    );
+    assert_eq!(
+        err.to_string(),
+        "Claude API usage cost_report error: HTTP 401"
+    );
+    assert!(!err.to_string().contains(sentinel_401));
+    assert!(!format!("{err:?}").contains(sentinel_401));
+    let classified_401 = err.into_classified_error();
+    assert_eq!(
+        classified_401.kind,
         ProviderErrorKind::AuthenticationExpired
     );
+    assert_eq!(
+        classified_401.message,
+        "Claude API usage cost_report error: HTTP 401"
+    );
+    assert!(!classified_401.message.contains(sentinel_401));
+    assert!(!format!("{classified_401:?}").contains(sentinel_401));
 
+    let sentinel_503 = "SENTINEL_503_BODY_DO_NOT_LEAK";
     let server_500 = https::start_server();
     server_500
         .mock_async(|when, then| {
             when.method(GET).path(COST_REPORT_PATH);
             then.status(503)
                 .header("content-type", "application/json")
-                .body(r#"{"error":{"message":"Organization cost report unavailable"}}"#);
+                .body(format!(r#"{{"error":{{"message":"{sentinel_503}"}}}}"#));
         })
         .await;
-    server_500
+    let messages_mock_500 = server_500
         .mock_async(|when, then| {
             when.method(GET).path(MESSAGES_REPORT_PATH);
             then.status(200)
@@ -1063,27 +1100,72 @@ async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
     )
     .await
     .expect_err("503 should fail");
+    messages_mock_500.assert_calls_async(0).await;
     assert_eq!(
         err_500,
-        ClaudeAdminAPIUsageError::HttpError {
+        ClaudeAdminAPIUsageError::ApiError {
+            endpoint: "cost_report",
             status_code: 503,
-            message: Some("Organization cost report unavailable".to_owned()),
         }
     );
+    assert_eq!(
+        err_500.to_string(),
+        "Claude API usage cost_report error: HTTP 503"
+    );
+    assert!(!err_500.to_string().contains(sentinel_503));
+    assert!(!format!("{err_500:?}").contains(sentinel_503));
     let classified = err_500.into_classified_error();
     assert_eq!(classified.kind, ProviderErrorKind::ProviderUnavailable);
     assert_eq!(
         classified.message,
-        "Anthropic Admin API returned HTTP 503: Organization cost report unavailable"
+        "Claude API usage cost_report error: HTTP 503"
     );
+    assert!(!classified.message.contains(sentinel_503));
+    assert!(!format!("{classified:?}").contains(sentinel_503));
+
+    // ParseFailed carries only the endpoint name and omits serde_json error text / body fragments
+    let sentinel_parse = "SENTINEL_PARSE_BODY_DO_NOT_LEAK";
+    let err_parse = ClaudeAdminAPIUsageFetcher::parse_snapshot(
+        format!(r#"{{"data":"{sentinel_parse}"}}"#).as_bytes(),
+        br#"{"data":[]}"#,
+        false,
+        now,
+    )
+    .expect_err("invalid cost_report JSON should fail");
+    assert_eq!(
+        err_parse,
+        ClaudeAdminAPIUsageError::ParseFailed {
+            endpoint: "cost_report",
+        }
+    );
+    assert_eq!(
+        err_parse.to_string(),
+        "Failed to parse Claude API usage cost_report"
+    );
+    assert!(!err_parse.to_string().contains(sentinel_parse));
+    assert!(!format!("{err_parse:?}").contains(sentinel_parse));
+    let classified_parse = err_parse.into_classified_error();
+    assert_eq!(classified_parse.kind, ProviderErrorKind::ParseFailure);
+    assert!(!classified_parse.message.contains(sentinel_parse));
+    assert!(!format!("{classified_parse:?}").contains(sentinel_parse));
+
+    // Explicit Api mode without a key reports is_available == false
+    let (_temp, no_key_cfg) = make_strategy_config();
+    let no_key_strategy = ClaudeAdminAPIFetchStrategy::new(no_key_cfg);
+    let no_key_cx = make_context(SourceMode::Api, BTreeMap::new(), None);
+    assert!(!no_key_strategy.is_available(&no_key_cx).await);
 }
 
 #[test]
 fn claude_env_descriptor_projects_config_api_key_and_scrubs_on_selected_account() {
     struct TestClaudeCfg {
         api_key: Option<String>,
+        workspace_spend_enabled: Option<bool>,
     }
-    let descriptor = claude_env_descriptor(|c: &TestClaudeCfg| c.api_key.clone());
+    let descriptor = claude_env_descriptor(
+        |c: &TestClaudeCfg| c.api_key.clone(),
+        |c: &TestClaudeCfg| c.workspace_spend_enabled.map(|v| v.to_string()),
+    );
     let mut base = BTreeMap::new();
     base.insert(
         "ANTHROPIC_ADMIN_KEY".to_owned(),
@@ -1100,6 +1182,7 @@ fn claude_env_descriptor_projects_config_api_key_and_scrubs_on_selected_account(
 
     let cfg = TestClaudeCfg {
         api_key: Some("sk-ant-admin-config".to_owned()),
+        workspace_spend_enabled: Some(true),
     };
     let resolved = ProviderEnvironmentResolver::resolve(&base, Some(&cfg), None, &descriptor);
     assert_eq!(
@@ -1108,6 +1191,24 @@ fn claude_env_descriptor_projects_config_api_key_and_scrubs_on_selected_account(
             .map(SecretString::expose_secret),
         Some("sk-ant-admin-config")
     );
+    assert_eq!(
+        resolved
+            .get("ANTHROPIC_ADMIN_WORKSPACE_SPEND")
+            .map(SecretString::expose_secret),
+        Some("true")
+    );
+    assert!(ClaudeAdminAPISettingsReader::workspace_spend_enabled(
+        &resolved
+    ));
+
+    let mut non_exact = BTreeMap::new();
+    non_exact.insert(
+        "ANTHROPIC_ADMIN_WORKSPACE_SPEND".to_owned(),
+        SecretString::new("TRUE"),
+    );
+    assert!(!ClaudeAdminAPISettingsReader::workspace_spend_enabled(
+        &non_exact
+    ));
 
     let selected = SecretString::new("sk-ant-oat-selected");
     let scrubbed =
