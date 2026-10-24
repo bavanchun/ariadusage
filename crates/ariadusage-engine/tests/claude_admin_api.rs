@@ -11,7 +11,8 @@ use std::time::Duration;
 
 use ariadusage_core::pipeline::{
     BoxFuture, ClassifiedError, FetchContext, FetchError, FetchInteraction, FetchPhase,
-    FetchRuntime, FetchStrategy, ProviderEnvironmentResolver, ProviderPlan, Sleeper, fetch_outcome,
+    FetchRuntime, FetchStrategy, ProviderEnvironmentResolver, ProviderPlan, Sleeper,
+    TransportClass, fetch_outcome,
 };
 use ariadusage_core::projection::{ProjectionInput, RefreshState, provider_snapshot};
 use ariadusage_core::providers::SourceMode;
@@ -1148,6 +1149,45 @@ async fn fetch_usage_maps_401_to_unauthorized_and_500_to_http_error_message() {
     assert_eq!(classified_parse.kind, ProviderErrorKind::ParseFailure);
     assert!(!classified_parse.message.contains(sentinel_parse));
     assert!(!format!("{classified_parse:?}").contains(sentinel_parse));
+
+    // NetworkError preserves TransportClass on ClassifiedError, and date-math uses a fixed string
+    let timeout_err = ClaudeAdminAPIUsageError::network_error(
+        "network transport failed",
+        Some(TransportClass::Timeout),
+    );
+    let classified_timeout = timeout_err.into_classified_error();
+    assert_eq!(classified_timeout.kind, ProviderErrorKind::NetworkFailure);
+    assert_eq!(classified_timeout.transport, Some(TransportClass::Timeout));
+
+    let dns_err = ClaudeAdminAPIUsageError::network_error(
+        "network transport failed",
+        Some(TransportClass::Dns),
+    );
+    let classified_dns = dns_err.into_classified_error();
+    assert_eq!(classified_dns.kind, ProviderErrorKind::NetworkFailure);
+    assert_eq!(classified_dns.transport, Some(TransportClass::Dns));
+
+    let date_err = ClaudeAdminAPIUsageFetcher::fetch_usage(
+        &net,
+        &endpoint,
+        "sk-ant-admin-valid",
+        false,
+        Timestamp::MIN,
+        &call,
+    )
+    .await
+    .expect_err("Timestamp::MIN should fail date range calculation");
+    assert_eq!(
+        date_err,
+        ClaudeAdminAPIUsageError::NetworkError {
+            message: "Failed to compute usage date range".to_owned(),
+            transport: None,
+        }
+    );
+    assert_eq!(
+        date_err.to_string(),
+        "Claude API usage network error: Failed to compute usage date range"
+    );
 
     // Explicit Api mode without a key reports is_available == false
     let (_temp, no_key_cfg) = make_strategy_config();

@@ -6,6 +6,7 @@
 // Ported from CodexBar Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemBlinkGatingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
@@ -20,9 +21,9 @@ use ariadusage_macos::icon::{
     QuotaWarningTracker, RectPt, RectPx, StatusItemAnimationState, StatusLevel, StatusOverlay,
     blink_tick_sleep_duration_ms, effective_provider_tint_rgb, fill_width_pixels,
     icon_render_signature, is_blinking_allowed, layout,
-    loading_animation_has_exceeded_continuous_cap, loading_blink_amount, meets_appearance_contrast,
-    morph_layout, quota_warning_flash_active, select_motion_effect, should_run_blink_task,
-    style_supports_blink,
+    loading_animation_has_exceeded_continuous_cap, loading_blink_amount, loading_frame_percents,
+    meets_appearance_contrast, morph_layout, quota_warning_flash_active, select_motion_effect,
+    should_run_blink_task, style_supports_blink,
 };
 
 const TOP: RectPx = RectPx::new(3, 19, 30, 12);
@@ -325,16 +326,20 @@ fn loading_patterns_and_unbraid_fallback_match_upstream() {
     assert_eq!(LoadingPattern::OutsideIn.value(0.0), 100.0);
     assert_eq!(LoadingPattern::Pulse.value(0.0), 70.0);
     assert_eq!(
-        LoadingPattern::Unbraid.effective_for(IconStyle::Combined, true, "codex"),
+        LoadingPattern::Unbraid.effective_for(IconStyle::Combined, true, Some("codex")),
         LoadingPattern::Cylon
     );
     assert_eq!(
-        LoadingPattern::Unbraid.effective_for(IconStyle::Claude, false, "claude"),
+        LoadingPattern::Unbraid.effective_for(IconStyle::Claude, false, Some("claude")),
         LoadingPattern::Cylon
     );
     assert_eq!(
-        LoadingPattern::Unbraid.effective_for(IconStyle::Codex, false, "codex"),
+        LoadingPattern::Unbraid.effective_for(IconStyle::Codex, false, Some("codex")),
         LoadingPattern::Unbraid
+    );
+    assert_eq!(
+        LoadingPattern::Unbraid.effective_for(IconStyle::Codex, false, None),
+        LoadingPattern::KnightRider
     );
     assert_eq!(LOADING_PERCENT_EPSILON, 0.0001);
     assert!(loading_blink_amount(IconStyle::Warp, Some(0.5), 0.0) > 0.9);
@@ -744,6 +749,295 @@ fn morph_layout_interpolates_ribbons_and_critters() {
     let end_bars = morph_layout(1.0, IconStyle::Codex, true);
     let (end_bars_layout, _) = end_bars.crossfade_bars.expect("crossfade bars at t=1.0");
     assert!(end_bars_layout.critters.is_empty());
+}
+
+// --- Ported from StatusItemAnimationTests.swift, StatusItemQuotaWarningFlashTests.swift,
+//     StatusItemAnimationCapTests.swift, StatusItemBlinkGatingTests.swift, and
+//     StatusItemAnimationSignatureTests.swift ---
+
+#[test]
+fn known_unavailable_limits_stop_loading_animation() {
+    use ariadusage_macos::presentation::should_animate_provider;
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::snapshot::ProviderSnapshot;
+
+    // Fresh enabled provider with no updated_at, no measured windows, and no error animates:
+    let mut provider =
+        ProviderSnapshot::new(ProviderId::new("cursor").unwrap(), "Cursor", true, "web");
+    assert!(should_animate_provider(&provider, false));
+
+    // Once updated_at is populated (even with primary=None and secondary=None, as for an empty/unavailable plan),
+    // `should_animate_provider` returns false and stops the loading animation:
+    provider.updated_at = Some("2026-04-06T12:00:00Z".parse().unwrap());
+    assert!(!should_animate_provider(&provider, false));
+
+    let mut state = StatusItemAnimationState::default();
+    let now = 2_000_000_000.0;
+    assert!(state.sync_loading_animation(true, now));
+    assert_eq!(state.active_loading_phase(true), Some(0.0));
+    assert!(!state.sync_loading_animation(should_animate_provider(&provider, false), now + 1.0));
+    assert_eq!(state.active_loading_phase(false), None);
+}
+
+#[test]
+fn merged_icon_loading_animation_tracks_selected_provider_only() {
+    use ariadusage_macos::presentation::{
+        any_enabled_provider_needs_loading_animation, needs_menu_bar_icon_animation,
+    };
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::metric::{Confidence, Metric};
+    use ariadusage_protocol::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot};
+    use ariadusage_protocol::usage::RateWindow;
+
+    let mut codex = ProviderSnapshot::new(ProviderId::new("codex").unwrap(), "Codex", true, "cli");
+    codex.windows.primary = Some(Metric::value(
+        RateWindow::new(50.0),
+        None,
+        None,
+        Confidence::Exact,
+    ));
+    codex.updated_at = Some("2026-04-06T12:00:00Z".parse().unwrap());
+
+    // Claude is enabled and has no data / no error -> loading:
+    let claude = ProviderSnapshot::new(ProviderId::new("claude").unwrap(), "Claude", true, "cli");
+
+    let snapshot = EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        vec![codex, claude],
+    );
+
+    // Selected provider is Codex (already loaded), while Claude is still loading:
+    // Merged mode tracks the selected provider (`needs_menu_bar_icon_animation` == false for Codex),
+    // whereas split mode animates if any enabled provider is loading (`any_enabled_provider_needs_loading_animation` == true).
+    assert!(!needs_menu_bar_icon_animation(
+        &snapshot,
+        Some("codex"),
+        true,
+        false,
+    ));
+    assert!(needs_menu_bar_icon_animation(
+        &snapshot,
+        Some("claude"),
+        true,
+        false,
+    ));
+    assert!(any_enabled_provider_needs_loading_animation(
+        &snapshot, false
+    ));
+    assert!(needs_menu_bar_icon_animation(
+        &snapshot,
+        Some("codex"),
+        false,
+        false,
+    ));
+
+    // When switching selection in merged mode from Claude (loading) to Codex (loaded) while Claude is still loading,
+    // the timer stops (`sync_loading_animation_with_any_loading` returns false).
+    let mut anim = StatusItemAnimationState::default();
+    let now = 2_000_000_000.0;
+    assert!(anim.sync_loading_animation_with_any_loading(true, true, now));
+    assert!(!anim.sync_loading_animation_with_any_loading(false, true, now + 0.5));
+}
+
+#[test]
+fn merged_icon_loading_animation_does_not_flip_layout_when_weekly_hits_zero() {
+    // At phase = pi / 2, KnightRider secondary raw value is `50 + 50 * sin(pi / 2 + pi) = 0.0`.
+    // Without `LOADING_PERCENT_EPSILON` clamping, `secondary == Some(0.0)` triggers the weekly-exhausted
+    // layout (`CREDITS_RECT` + `CREDITS_BOTTOM_RECT`) instead of normal `TOP_RECT` + `BOTTOM_RECT`.
+    let phase = std::f64::consts::FRAC_PI_2;
+    let raw_secondary =
+        LoadingPattern::KnightRider.value(phase + LoadingPattern::KnightRider.secondary_offset());
+    assert!(raw_secondary.abs() < 1e-9);
+
+    let (primary, secondary) = loading_frame_percents(LoadingPattern::KnightRider, phase);
+    assert!((primary - 100.0).abs() < 1e-9);
+    assert_eq!(secondary, LOADING_PERCENT_EPSILON);
+
+    let frame_layout = layout(&IconInput {
+        primary: Some(primary),
+        secondary: Some(secondary),
+        style: IconStyle::Combined,
+        ..IconInput::default()
+    });
+    assert_eq!(frame_layout.bars.len(), 2);
+    assert_eq!(frame_layout.bars[0].rect, TOP);
+    assert_eq!(frame_layout.bars[1].rect, BOTTOM);
+    // And fill width of `LOADING_PERCENT_EPSILON` (0.0001%) on 30px is 0px:
+    assert_eq!(
+        fill_width_pixels(frame_layout.bars[1].percent.unwrap(), 30),
+        0
+    );
+}
+
+#[test]
+fn warp_no_bonus_layout_is_preserved_in_show_used_mode_when_bonus_is_exhausted() {
+    use ariadusage_macos::presentation::resolved_icon_percents_for_style;
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::metric::{Confidence, Metric};
+    use ariadusage_protocol::snapshot::ProviderSnapshot;
+    use ariadusage_protocol::usage::RateWindow;
+
+    let mut warp = ProviderSnapshot::new(ProviderId::new("warp").unwrap(), "Warp", true, "web");
+    warp.windows.primary = Some(Metric::value(
+        RateWindow::new(25.0),
+        None,
+        None,
+        Confidence::Exact,
+    ));
+    warp.windows.secondary = Some(Metric::value(
+        RateWindow::new(100.0),
+        None,
+        None,
+        Confidence::Exact,
+    ));
+
+    let (p_used, s_used) =
+        resolved_icon_percents_for_style(&warp, IconStyle::Warp, true, None, None);
+    let policy = IconStyle::Warp.quota_layout_policy();
+    let used_layout = layout(&IconInput {
+        primary: p_used,
+        secondary: s_used,
+        style: IconStyle::Warp,
+        reserves_missing_secondary_lane: policy.reserves_missing_secondary_lane,
+        treats_exhausted_secondary_as_missing: policy.treats_exhausted_secondary_as_missing,
+        ..IconInput::default()
+    });
+    let no_bonus_layout = layout(&IconInput {
+        primary: Some(25.0),
+        secondary: None,
+        style: IconStyle::Warp,
+        reserves_missing_secondary_lane: policy.reserves_missing_secondary_lane,
+        treats_exhausted_secondary_as_missing: policy.treats_exhausted_secondary_as_missing,
+        ..IconInput::default()
+    });
+    assert_eq!(used_layout, no_bonus_layout);
+}
+
+#[test]
+fn warp_bonus_lane_is_preserved_in_show_used_mode_when_bonus_is_unused() {
+    use ariadusage_macos::presentation::resolved_icon_percents_for_style;
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::metric::{Confidence, Metric};
+    use ariadusage_protocol::snapshot::ProviderSnapshot;
+    use ariadusage_protocol::usage::RateWindow;
+
+    let mut warp = ProviderSnapshot::new(ProviderId::new("warp").unwrap(), "Warp", true, "web");
+    warp.windows.primary = Some(Metric::value(
+        RateWindow::new(25.0),
+        None,
+        None,
+        Confidence::Exact,
+    ));
+    warp.windows.secondary = Some(Metric::value(
+        RateWindow::new(0.0),
+        None,
+        None,
+        Confidence::Exact,
+    ));
+
+    let (p_used, s_used) =
+        resolved_icon_percents_for_style(&warp, IconStyle::Warp, true, None, None);
+    let policy = IconStyle::Warp.quota_layout_policy();
+    let unused_bonus_layout = layout(&IconInput {
+        primary: p_used,
+        secondary: s_used,
+        style: IconStyle::Warp,
+        reserves_missing_secondary_lane: policy.reserves_missing_secondary_lane,
+        treats_exhausted_secondary_as_missing: policy.treats_exhausted_secondary_as_missing,
+        ..IconInput::default()
+    });
+    let no_bonus_layout = layout(&IconInput {
+        primary: Some(25.0),
+        secondary: None,
+        style: IconStyle::Warp,
+        reserves_missing_secondary_lane: policy.reserves_missing_secondary_lane,
+        treats_exhausted_secondary_as_missing: policy.treats_exhausted_secondary_as_missing,
+        ..IconInput::default()
+    });
+    assert_ne!(unused_bonus_layout, no_bonus_layout);
+    assert_eq!(unused_bonus_layout.bars[1].percent, Some(0.1));
+}
+
+#[test]
+fn split_provider_icon_skips_unchanged_render_signature() {
+    let mut anim = StatusItemAnimationState::default();
+    let input = IconInput {
+        primary: Some(50.0),
+        secondary: Some(75.0),
+        style: IconStyle::Codex,
+        ..IconInput::default()
+    };
+    let sig = icon_render_signature(
+        &input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    assert!(!anim.should_skip_provider_icon_render("codex", sig));
+    assert!(anim.should_skip_provider_icon_render("codex", sig));
+
+    let updated = IconInput {
+        primary: Some(45.0),
+        ..input
+    };
+    let sig2 = icon_render_signature(
+        &updated,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    assert!(!anim.should_skip_provider_icon_render("codex", sig2));
+}
+
+#[test]
+fn quota_warning_flash_state_lasts_for_configured_duration() {
+    let mut anim = StatusItemAnimationState::default();
+    let now = 2_000_000_000.0;
+    let until = anim.start_quota_warning_flash("codex", now);
+    assert_eq!(until, now + QUOTA_WARNING_FLASH_DURATION_SECS);
+    assert!(anim.is_quota_warning_flash_active("codex", now));
+    assert!(anim.is_quota_warning_flash_active("codex", now + 59.0));
+    assert!(!anim.is_quota_warning_flash_active("codex", now + 61.0));
+    assert!(!anim.is_quota_warning_flash_active("claude", now));
+}
+
+#[test]
+fn merged_icon_render_signature_includes_quota_warning_flash_for_selected_provider() {
+    let mut anim = StatusItemAnimationState::default();
+    let now = 2_000_000_000.0;
+    let input = IconInput {
+        primary: Some(40.0),
+        secondary: Some(60.0),
+        style: IconStyle::Combined,
+        ..IconInput::default()
+    };
+    let base_sig = icon_render_signature(
+        &input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        anim.is_quota_warning_flash_active("codex", now),
+    );
+    let _ = anim.start_quota_warning_flash("codex", now);
+    let flash_sig = icon_render_signature(
+        &input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        anim.is_quota_warning_flash_active("codex", now),
+    );
+    assert_ne!(base_sig, flash_sig);
 }
 
 #[cfg(target_os = "macos")]

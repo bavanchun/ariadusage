@@ -3,29 +3,34 @@
 // Ported from CodexBar Tests/CodexBarTests/MergedWarpIconRenderingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemIconObservationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #![cfg(unix)]
 
 use std::collections::HashSet;
 
-use ariadusage_macos::icon::{IconInput, IconStyle, icon_render_signature, layout};
+use ariadusage_macos::icon::{IconInput, IconStyle, StatusLevel, icon_render_signature, layout};
 use ariadusage_macos::presentation::{
     IconPreferences, MenuBarMetricPreference, UnifiedIconContext, UnifiedIconSource,
     VISIBLE_ZERO_PERCENT, antigravity_quota_summary_families_are_all_blocked,
     antigravity_quota_summary_ranking_window, claude_monthly_spend_window,
     claude_scoped_weekly_window, connection_status, end_of_utc_month, icon_input,
     icon_input_with_override, icon_provider, inferred_monthly_window_minutes,
-    primary_provider_for_unified_icon, quota_layout_policy_for_provider,
-    resolve_menu_bar_metric_window, resolved_claude_reset_window_for_pace, resolved_icon_percents,
+    primary_provider_for_unified_icon, primary_provider_for_unified_icon_with_overview,
+    quota_layout_policy_for_provider, resolve_menu_bar_metric_window,
+    resolved_claude_reset_window_for_pace, resolved_icon_percents,
     resolved_icon_percents_for_style, resolved_icon_windows, status_item_icon_input,
-    store_icon_observation_signature, store_icon_style,
+    store_icon_observation_signature, store_icon_observation_signature_with_override,
+    store_icon_style,
 };
 use ariadusage_protocol::fixture::generate_scenario_snapshot;
 use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::metric::{Confidence, Metric};
 use ariadusage_protocol::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot};
-use ariadusage_protocol::usage::{Cost, Identity, NamedWindow, RateWindow};
+use ariadusage_protocol::usage::{
+    Cost, Credits, Identity, NamedWindow, ProviderStatus, RateWindow, StatusIndicator,
+};
 use jiff::Timestamp;
 
 fn metric_ok<T>(val: T) -> Metric<T> {
@@ -1318,4 +1323,826 @@ fn merged_status_item_signatures_and_merged_warp_bonus_lane_match_upstream() {
     let obs_ex = store_icon_observation_signature(Some(&snap_ex), Some("warp"), true, prefs);
     let obs_un = store_icon_observation_signature(Some(&snap_un), Some("warp"), true, prefs);
     assert_ne!(obs_ex, obs_un);
+}
+
+// --- Ported from StatusItemAnimationSignatureTests.swift ---
+
+fn make_snapshot_with_providers(providers: Vec<ProviderSnapshot>) -> EngineSnapshot {
+    EngineSnapshot::new(
+        "2026-04-06T12:00:00Z".parse().unwrap(),
+        900,
+        EngineInfo {
+            version: "0.1.0".to_string(),
+            refreshing: false,
+        },
+        providers,
+    )
+}
+
+#[test]
+fn merged_render_signature_changes_when_unified_icon_style_changes() {
+    use ariadusage_macos::icon::{LoadingPattern, StatusItemAnimationState};
+
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let mut synthetic = make_provider("synthetic");
+    synthetic.enabled = true;
+
+    let two_enabled = make_snapshot_with_providers(vec![codex.clone(), synthetic.clone()]);
+    let (_, combined_input) = status_item_icon_input(
+        Some(&two_enabled),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    let combined_sig = icon_render_signature(
+        &combined_input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+
+    let mut anim = StatusItemAnimationState::default();
+    assert!(!anim.should_skip_merged_icon_render(combined_sig, true));
+    assert!(anim.should_skip_merged_icon_render(combined_sig, true));
+
+    synthetic.enabled = false;
+    let one_enabled = make_snapshot_with_providers(vec![codex, synthetic]);
+    let (_, codex_input) = status_item_icon_input(
+        Some(&one_enabled),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    let codex_sig = icon_render_signature(
+        &codex_input,
+        false,
+        false,
+        None,
+        LoadingPattern::KnightRider,
+        false,
+    );
+    assert_ne!(combined_sig, codex_sig);
+    assert!(!anim.should_skip_merged_icon_render(codex_sig, true));
+}
+
+#[test]
+fn merged_antigravity_icon_resolves_quota_summary_with_provider_style() {
+    let mut antigravity = make_provider("antigravity");
+    antigravity.windows.primary = Some(metric_ok(rate_window(99.0, Some(10080), None)));
+    antigravity.windows.secondary = Some(metric_ok(rate_window(16.0, Some(10080), None)));
+    antigravity.windows.extra = vec![
+        extra_window(
+            "antigravity-quota-summary-gemini-5h",
+            "Gemini Session",
+            1.0,
+            Some(300),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-gemini-weekly",
+            "Gemini Weekly",
+            99.0,
+            Some(10080),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-3p-5h",
+            "Claude + GPT Session",
+            2.0,
+            Some(300),
+            None,
+        ),
+        extra_window(
+            "antigravity-quota-summary-3p-weekly",
+            "Claude + GPT Weekly",
+            16.0,
+            Some(10080),
+            None,
+        ),
+    ];
+    let mut synthetic = make_provider("synthetic");
+    synthetic.enabled = true;
+    let snap = make_snapshot_with_providers(vec![antigravity, synthetic]);
+    let (_, input) = status_item_icon_input(
+        Some(&snap),
+        Some("antigravity"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(input.style, IconStyle::Combined);
+    assert_eq!(input.primary, Some(98.0));
+    assert_eq!(input.secondary, Some(1.0));
+}
+
+#[test]
+fn merged_mistral_icon_uses_monthly_plan_metric_when_selected() {
+    let mut mistral = make_provider("mistral");
+    mistral.windows.extra = vec![extra_window(
+        "mistral-monthly-plan",
+        "Monthly plan",
+        48.0,
+        None,
+        None,
+    )];
+    let mut synthetic = make_provider("synthetic");
+    synthetic.enabled = true;
+    let snap = make_snapshot_with_providers(vec![mistral, synthetic]);
+    let (_, input) = status_item_icon_input(
+        Some(&snap),
+        Some("mistral"),
+        true,
+        IconPreferences {
+            metric_preference: MenuBarMetricPreference::MonthlyPlan,
+            ..IconPreferences::default()
+        },
+    );
+    assert_eq!(input.style, IconStyle::Combined);
+    assert_eq!(input.primary, Some(52.0));
+    assert_eq!(input.secondary, None);
+}
+
+#[test]
+fn mistral_pay_as_you_go_icon_ignores_balance_primary_percent() {
+    let mut mistral = make_provider("mistral");
+    mistral.windows.primary = Some(metric_ok(rate_window(25.0, None, None)));
+    mistral.cost = Some(metric_ok(make_cost(25.0, Some(100.0), None)));
+    let input = icon_input(&mistral, IconPreferences::default());
+    assert_eq!(input.primary, None);
+    assert_eq!(input.secondary, None);
+}
+
+#[test]
+fn merged_fallback_provider_follows_enabled_provider_order() {
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![claude, codex]);
+
+    // When selected provider is not enabled / not found, falls back to first enabled provider in order ("claude").
+    let resolved = primary_provider_for_unified_icon(
+        &snap,
+        Some("cursor"),
+        UnifiedIconSource::CurrentSelection,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+}
+
+#[test]
+fn merged_icon_status_indicator_follows_rendered_provider() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(30.0, None, None)));
+    codex.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::None,
+        description: None,
+        updated_at: None,
+        page_url: Some("https://status.openai.com".to_string()),
+        components: Vec::new(),
+    }));
+
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(80.0, None, None)));
+    claude.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::Minor,
+        description: Some("Elevated errors".to_string()),
+        updated_at: None,
+        page_url: Some("https://status.anthropic.com".to_string()),
+        components: Vec::new(),
+    }));
+
+    let snap = make_snapshot_with_providers(vec![codex, claude]);
+    let (rendered_prov, input) = status_item_icon_input(
+        Some(&snap),
+        Some("claude"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(rendered_prov.map(|p| p.id.as_str()), Some("claude"));
+    assert_eq!(input.status, StatusLevel::Minor);
+}
+
+#[test]
+fn highest_usage_icon_ranks_only_overview_providers() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(90.0, None, None)));
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(75.0, None, None)));
+    let mut cursor = make_provider("cursor");
+    cursor.windows.primary = Some(metric_ok(rate_window(40.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![codex, claude, cursor]);
+
+    // Overview only includes claude and cursor (excluding codex at 90%):
+    let overview = ["claude", "cursor"];
+    let resolved = primary_provider_for_unified_icon_with_overview(
+        &snap,
+        Some("cursor"),
+        Some(&overview),
+        false,
+        UnifiedIconSource::HighestUsage,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+}
+
+#[test]
+fn highest_usage_icon_keeps_nonempty_overview_authoritative_when_unrankable() {
+    // Overview provider is exhausted (100% used -> remaining 0%, unrankable by providerWithHighestUsage),
+    // while a non-overview provider has 50% used. Non-empty overview stays authoritative and falls back to overview.first!
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![codex, claude]);
+
+    let overview = ["claude"];
+    let resolved = primary_provider_for_unified_icon_with_overview(
+        &snap,
+        Some("codex"),
+        Some(&overview),
+        false,
+        UnifiedIconSource::HighestUsage,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+}
+
+#[test]
+fn highest_usage_icon_allows_broad_fallback_for_explicit_empty_overview() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(80.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![codex, claude]);
+
+    let empty_overview: [&str; 0] = [];
+    let resolved = primary_provider_for_unified_icon_with_overview(
+        &snap,
+        Some("codex"),
+        Some(&empty_overview),
+        false,
+        UnifiedIconSource::HighestUsage,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(resolved.map(|p| p.id.as_str()), Some("codex"));
+}
+
+#[test]
+fn merged_icon_follows_overview_provider_order_when_first_overview_provider_is_loading() {
+    // Claude is first in overview and still loading (no windows yet); Codex is second in overview with data.
+    // When `last_selected_was_overview` is true, `defaultProviderForUnifiedIcon` picks `overview.first` ("claude").
+    let claude = make_provider("claude");
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(45.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![codex, claude]);
+
+    let overview = ["claude", "codex"];
+    let resolved = primary_provider_for_unified_icon_with_overview(
+        &snap,
+        None,
+        Some(&overview),
+        true,
+        UnifiedIconSource::CurrentSelection,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+}
+
+// --- Ported from StatusItemIconObservationSignatureTests.swift ---
+
+#[test]
+fn store_icon_observation_signature_ignores_refresh_and_status_metadata_churn() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
+    codex.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::Minor,
+        description: Some("Initial description".to_string()),
+        updated_at: Some("2026-04-06T12:00:00Z".parse().unwrap()),
+        page_url: Some("https://status.openai.com".to_string()),
+        components: Vec::new(),
+    }));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::Minor,
+        description: Some("Updated description".to_string()),
+        updated_at: Some("2026-04-06T12:15:00Z".parse().unwrap()),
+        page_url: Some("https://status.openai.com".to_string()),
+        components: Vec::new(),
+    }));
+    let mut snap2 = make_snapshot_with_providers(vec![codex]);
+    snap2.engine.refreshing = true;
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_eq!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_ignores_non_visual_snapshot_churn() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
+    codex.updated_at = Some("2026-04-06T12:00:00Z".parse().unwrap());
+    codex.identity = Some(metric_ok(Identity {
+        provider_id: ProviderId::new("codex").unwrap(),
+        account_email: Some("one@example.com".to_string()),
+        account_organization: None,
+        login_method: Some("Plus".to_string()),
+        account_id: None,
+        plan: None,
+    }));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.updated_at = Some("2026-04-06T12:10:00Z".parse().unwrap());
+    codex.identity = Some(metric_ok(Identity {
+        provider_id: ProviderId::new("codex").unwrap(),
+        account_email: Some("two@example.com".to_string()),
+        account_organization: None,
+        login_method: Some("Pro".to_string()),
+        account_id: None,
+        plan: None,
+    }));
+    let snap2 = make_snapshot_with_providers(vec![codex]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_eq!(sig1, sig2);
+}
+
+#[test]
+fn merged_store_icon_observation_signature_ignores_non_primary_snapshot_churn() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
+
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+
+    let snap1 = make_snapshot_with_providers(vec![codex.clone(), claude.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+
+    claude.windows.primary = Some(metric_ok(rate_window(85.0, None, None)));
+    let snap2 = make_snapshot_with_providers(vec![codex, claude]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_changes_when_icon_percentages_change() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.windows.primary = Some(metric_ok(rate_window(61.0, None, None)));
+    let snap2 = make_snapshot_with_providers(vec![codex]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_ne!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_tracks_selected_copilot_budget() {
+    let mut copilot = make_provider("copilot");
+    copilot.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    copilot.windows.secondary = Some(metric_ok(rate_window(35.0, None, None)));
+    copilot.windows.extra = vec![
+        extra_window(
+            "copilot-premium-shared-1",
+            "Premium shared budget 1",
+            45.0,
+            None,
+            None,
+        ),
+        extra_window(
+            "copilot-premium-shared-2",
+            "Premium shared budget 2",
+            80.0,
+            None,
+            None,
+        ),
+    ];
+    let snap = make_snapshot_with_providers(vec![copilot]);
+    let sig1 = store_icon_observation_signature_with_override(
+        Some(&snap),
+        Some("copilot"),
+        false,
+        IconPreferences::default(),
+        Some("copilot-premium-shared-1"),
+    );
+    let sig2 = store_icon_observation_signature_with_override(
+        Some(&snap),
+        Some("copilot"),
+        false,
+        IconPreferences::default(),
+        Some("copilot-premium-shared-2"),
+    );
+    assert_ne!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_changes_when_credit_fallback_changes() {
+    // Primary is exhausted (100% used -> 0% remaining), so credits fallback is active.
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
+    codex.credits = Some(metric_ok(Credits::new(42.0)));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.credits = Some(metric_ok(Credits::new(15.0)));
+    let snap2 = make_snapshot_with_providers(vec![codex]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_ne!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_ignores_unused_credit_balance() {
+    // Neither primary (28% used) nor secondary (54% used) is exhausted, so credits fallback is NOT used.
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
+    codex.credits = Some(metric_ok(Credits::new(42.0)));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.credits = Some(metric_ok(Credits::new(99.0)));
+    let snap2 = make_snapshot_with_providers(vec![codex]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_eq!(sig1, sig2);
+}
+
+#[test]
+fn merged_store_icon_observation_signature_ignores_non_primary_status_changes() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(40.0, None, None)));
+    claude.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::None,
+        description: None,
+        updated_at: None,
+        page_url: Some("https://status.anthropic.com".to_string()),
+        components: Vec::new(),
+    }));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone(), claude.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+
+    claude.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::Major,
+        description: Some("Outage".to_string()),
+        updated_at: None,
+        page_url: Some("https://status.anthropic.com".to_string()),
+        components: Vec::new(),
+    }));
+    let snap2 = make_snapshot_with_providers(vec![codex, claude]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_changes_when_status_indicator_changes() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    codex.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::None,
+        description: None,
+        updated_at: None,
+        page_url: Some("https://status.openai.com".to_string()),
+        components: Vec::new(),
+    }));
+    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
+    let sig1 = store_icon_observation_signature(
+        Some(&snap1),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+
+    codex.status = Some(metric_ok(ProviderStatus {
+        indicator: StatusIndicator::Major,
+        description: None,
+        updated_at: None,
+        page_url: Some("https://status.openai.com".to_string()),
+        components: Vec::new(),
+    }));
+    let snap2 = make_snapshot_with_providers(vec![codex]);
+    let sig2 = store_icon_observation_signature(
+        Some(&snap2),
+        Some("codex"),
+        false,
+        IconPreferences::default(),
+    );
+    assert_ne!(sig1, sig2);
+}
+
+#[test]
+fn store_icon_observation_signature_changes_when_hide_critters_toggles() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
+    let snap = make_snapshot_with_providers(vec![codex]);
+    let sig_critters = store_icon_observation_signature(
+        Some(&snap),
+        Some("codex"),
+        false,
+        IconPreferences {
+            hide_critters: false,
+            ..IconPreferences::default()
+        },
+    );
+    let sig_bars = store_icon_observation_signature(
+        Some(&snap),
+        Some("codex"),
+        false,
+        IconPreferences {
+            hide_critters: true,
+            ..IconPreferences::default()
+        },
+    );
+    assert_ne!(sig_critters, sig_bars);
+}
+
+// --- Ported from StatusItemAnimationTests.swift (MenuBarMetricWindowResolver cases) ---
+
+#[test]
+fn menu_bar_percent_uses_configured_metric() {
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(20.0, Some(300), None)));
+    claude.windows.secondary = Some(metric_ok(rate_window(60.0, Some(10080), None)));
+
+    let sec = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Secondary,
+        &claude,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(sec.map(|w| w.used_percent), Some(60.0));
+}
+
+#[test]
+fn combined_codex_menu_bar_metric_window_uses_most_constrained_visible_lane() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(25.0, Some(300), None)));
+    codex.windows.secondary = Some(metric_ok(rate_window(75.0, Some(10080), None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::PrimaryAndSecondary,
+        &codex,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(75.0));
+}
+
+#[test]
+fn menu_bar_percent_uses_average_for_gemini() {
+    let mut gemini = make_provider("gemini");
+    gemini.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    gemini.windows.secondary = Some(metric_ok(rate_window(60.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Average,
+        &gemini,
+        true,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(40.0));
+}
+
+#[test]
+fn menu_bar_percent_automatic_keeps_gemini_primary_over_higher_tertiary() {
+    let mut gemini = make_provider("gemini");
+    gemini.windows.primary = Some(metric_ok(rate_window(25.0, None, None)));
+    gemini.windows.tertiary = Some(metric_ok(rate_window(80.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &gemini,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(25.0));
+}
+
+#[test]
+fn menu_bar_percent_automatic_picks_highest_cursor_lane_including_api() {
+    let mut cursor = make_provider("cursor");
+    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    cursor.windows.secondary = Some(metric_ok(rate_window(45.0, None, None)));
+    cursor.windows.tertiary = Some(metric_ok(rate_window(70.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &cursor,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(70.0));
+}
+
+#[test]
+fn menu_bar_percent_automatic_falls_back_to_purchased_perplexity_lane_when_bonus_is_exhausted() {
+    let mut perplexity = make_provider("perplexity");
+    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    perplexity.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &perplexity,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(35.0));
+}
+
+#[test]
+fn menu_bar_percent_automatic_falls_through_after_recurring_perplexity_credits_are_exhausted() {
+    let mut perplexity = make_provider("perplexity");
+    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    perplexity.windows.secondary = Some(metric_ok(rate_window(25.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &perplexity,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(25.0));
+}
+
+#[test]
+fn menu_bar_percent_automatic_prefers_purchased_perplexity_credits_before_bonus() {
+    let mut perplexity = make_provider("perplexity");
+    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    perplexity.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
+    perplexity.windows.tertiary = Some(metric_ok(rate_window(45.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &perplexity,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(45.0));
+}
+
+#[test]
+fn menu_bar_percent_primary_preference_stays_on_recurring_perplexity_credits() {
+    let mut perplexity = make_provider("perplexity");
+    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Primary,
+        &perplexity,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(100.0));
+}
+
+#[test]
+fn menu_bar_percent_tertiary_preference_uses_purchased_perplexity_lane() {
+    let mut perplexity = make_provider("perplexity");
+    perplexity.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Tertiary,
+        &perplexity,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(35.0));
+}
+
+#[test]
+fn menu_bar_percent_tertiary_preference_uses_api_lane_for_cursor() {
+    let mut cursor = make_provider("cursor");
+    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    cursor.windows.tertiary = Some(metric_ok(rate_window(65.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Tertiary,
+        &cursor,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(65.0));
+}
+
+#[test]
+fn menu_bar_tertiary_preference_falls_back_to_automatic_when_cursor_api_lane_is_missing() {
+    let mut cursor = make_provider("cursor");
+    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    cursor.windows.secondary = Some(metric_ok(rate_window(55.0, None, None)));
+
+    let win = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Tertiary,
+        &cursor,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(win.map(|w| w.used_percent), Some(55.0));
 }
