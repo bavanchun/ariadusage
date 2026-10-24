@@ -289,7 +289,7 @@ impl Dependencies {
         let Ok(state_directory) = state_directory else {
             return self;
         };
-        let state_root = state_directory.join("antigravity");
+        let state_root = state_directory.join("ariadusage").join("antigravity");
         self.with_session_coordination(
             Arc::new(FileSessionRecordStore::new(
                 state_root.join("agy-session.json"),
@@ -963,8 +963,9 @@ mod tests {
         assert!(dependencies.launch_lock.is_none());
     }
 
-    #[test]
-    fn session_records_use_the_resolved_state_directory() {
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn session_records_use_the_resolved_state_directory() {
         let home = tempfile::tempdir().unwrap();
         let state_directory =
             crate::paths::resolve_state_dir(|_| Some(" relative-state ".into()), Some(home.path()))
@@ -984,10 +985,18 @@ mod tests {
         dependencies.record_store.unwrap().save(&record).unwrap();
         let path = home
             .path()
-            .join(".local/state/antigravity/agy-session.json");
+            .join(".local/state/ariadusage/antigravity/agy-session.json");
         let records: Vec<super::SessionRecord> =
             serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         assert_eq!(records, vec![record]);
+        let lock = dependencies.launch_lock.unwrap();
+        lock.acquire().await.unwrap();
+        let lock_path = home
+            .path()
+            .join(".local/state/ariadusage/antigravity/agy-session.lock");
+        assert!(lock_path.is_file());
+        assert!(!home.path().join(".local/state/antigravity").exists());
+        lock.release();
     }
 
     #[test]
