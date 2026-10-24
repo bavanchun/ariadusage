@@ -1201,6 +1201,22 @@ fn claude_env_descriptor_projects_config_api_key_and_scrubs_on_selected_account(
         &resolved
     ));
 
+    let cfg_false = TestClaudeCfg {
+        api_key: Some("sk-ant-admin-config".to_owned()),
+        workspace_spend_enabled: Some(false),
+    };
+    let resolved_false =
+        ProviderEnvironmentResolver::resolve(&base, Some(&cfg_false), None, &descriptor);
+    assert_eq!(
+        resolved_false
+            .get("ANTHROPIC_ADMIN_WORKSPACE_SPEND")
+            .map(SecretString::expose_secret),
+        Some("false")
+    );
+    assert!(!ClaudeAdminAPISettingsReader::workspace_spend_enabled(
+        &resolved_false
+    ));
+
     let mut non_exact = BTreeMap::new();
     non_exact.insert(
         "ANTHROPIC_ADMIN_WORKSPACE_SPEND".to_owned(),

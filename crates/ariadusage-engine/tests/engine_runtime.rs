@@ -2306,3 +2306,60 @@ async fn configured_claude_admin_key_wins_over_ambient_and_projects_workspace_sp
         "selected token account must scrub ambient ANTHROPIC_ADMIN_API_KEY"
     );
 }
+
+#[test]
+fn configured_claude_workspace_spend_some_false_projects_false_and_reader_treats_it_as_off() {
+    use std::collections::BTreeMap;
+
+    use ariadusage_core::config::{Config, ProviderConfig, ProviderEntry};
+    use ariadusage_engine::providers::claude::ClaudeAdminAPISettingsReader;
+    use ariadusage_engine::registry::ProviderPlanInputs;
+    use ariadusage_protocol::secret::SecretString;
+
+    let tmp = TempDir::new().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+    let registry = ProviderRegistry::default().with_directories(tmp.path(), tmp.path());
+
+    let mut claude_cfg = ProviderConfig::new(claude_id.clone());
+    claude_cfg.enabled = Some(true);
+    claude_cfg.extra.insert(
+        "claudeWorkspaceSpendEnabled".to_owned(),
+        serde_json::value::to_raw_value(&false).unwrap(),
+    );
+    assert_eq!(claude_cfg.claude_workspace_spend_enabled_opt(), Some(false));
+    let config = Config::new(
+        Config::CURRENT_VERSION,
+        vec![ProviderEntry::Typed(claude_cfg)],
+    );
+
+    let mut base_env = BTreeMap::new();
+    base_env.insert(
+        ClaudeAdminAPISettingsReader::WORKSPACE_SPEND_ENV_KEY.to_string(),
+        SecretString::new("true"),
+    );
+
+    let inputs = ProviderPlanInputs {
+        base_environment: base_env,
+        api_key: None,
+        manual_cookie_header: None,
+        selected_account_token: None,
+        include_optional_usage: true,
+        secret_store: None,
+    };
+
+    let spec = registry
+        .resolve_spec(&claude_id, &config, &inputs)
+        .expect("resolved claude spec");
+
+    assert_eq!(
+        spec.environment
+            .get(ClaudeAdminAPISettingsReader::WORKSPACE_SPEND_ENV_KEY)
+            .map(SecretString::expose_secret),
+        Some("false"),
+        "Some(false) workspace spend must project as 'false' and override ambient ANTHROPIC_ADMIN_WORKSPACE_SPEND"
+    );
+    assert!(
+        !ClaudeAdminAPISettingsReader::workspace_spend_enabled(&spec.environment),
+        "ClaudeAdminAPISettingsReader must treat projected 'false' as off"
+    );
+}
