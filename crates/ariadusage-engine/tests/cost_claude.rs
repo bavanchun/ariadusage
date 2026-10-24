@@ -1,5 +1,3 @@
-// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-
 use std::fs;
 
 use ariadusage_engine::cost::claude::{self, ClaudeLogProviderFilter, ClaudePathRole};
@@ -22,6 +20,9 @@ fn write_jsonl(path: &std::path::Path, entries: &[Value]) {
     fs::write(path, text).expect("write jsonl");
 }
 
+// Upstream test ports (each marker identifies one @Test declaration).
+
+// upstream: CostUsageScannerTests.swift:99 vertex daily report filters claude logs
 #[test]
 fn vertex_daily_report_filters_claude_logs() {
     let tmp = TempDir::new().expect("tempdir");
@@ -82,6 +83,7 @@ fn vertex_daily_report_filters_claude_logs() {
     assert_eq!(report.data[0].total_tokens, Some(15));
 }
 
+// upstream: CostUsageScannerTests.swift:165 vertex daily report detects by vrtx id prefix
 #[test]
 fn vertex_daily_report_detects_by_vrtx_id_prefix() {
     let tmp = TempDir::new().expect("tempdir");
@@ -152,6 +154,7 @@ fn vertex_daily_report_detects_by_vrtx_id_prefix() {
     assert_eq!(claude_report.data[0].total_tokens, Some(300));
 }
 
+// upstream: CostUsageScannerTests.swift:246 claude report preserves per-request threshold pricing
 #[test]
 fn claude_report_preserves_per_request_threshold_pricing() {
     let tmp = TempDir::new().expect("tempdir");
@@ -234,6 +237,7 @@ fn claude_report_preserves_per_request_threshold_pricing() {
     assert!((actual_cost - aggregate_cost).abs() > 1e-6);
 }
 
+// upstream: CostUsageScannerTests.swift:321 claude parses large lines with usage at tail
 #[test]
 fn claude_parses_large_lines_with_usage_at_tail() {
     let tmp = TempDir::new().expect("tempdir");
@@ -269,6 +273,7 @@ fn claude_parses_large_lines_with_usage_at_tail() {
     assert_eq!(report.data[0].total_tokens, Some(3715));
 }
 
+// upstream: CostUsageScannerTests.swift:366 claude daily report refreshes when file changes
 #[test]
 fn claude_daily_report_refreshes_when_file_changes() {
     let tmp = TempDir::new().expect("tempdir");
@@ -320,6 +325,7 @@ fn claude_daily_report_refreshes_when_file_changes() {
     assert_eq!(second_report.data[0].total_tokens, Some(430));
 }
 
+// upstream: CostUsageScannerTests.swift:905 claude incremental parsing reads appended lines only
 #[test]
 fn claude_incremental_parsing_reads_appended_lines_only() {
     let tmp = TempDir::new().expect("tempdir");
@@ -386,6 +392,7 @@ fn claude_incremental_parsing_reads_appended_lines_only() {
     assert_eq!(row.output, 20);
 }
 
+// upstream: CostUsageScannerTests.swift:974 day key from timestamp matches ISO parsing
 #[test]
 fn day_key_from_timestamp_matches_iso_parsing() {
     for ts in ["2025-12-20T23:59:59Z", "2025-12-20T23:59:59+02:00"] {
@@ -404,6 +411,7 @@ fn day_key_from_timestamp_matches_iso_parsing() {
     );
 }
 
+// upstream: CostUsageScannerTests.swift:988 claude deduplicates streaming chunks
 #[test]
 fn claude_deduplicates_streaming_chunks() {
     let tmp = TempDir::new().expect("tempdir");
@@ -451,6 +459,7 @@ fn claude_deduplicates_streaming_chunks() {
     assert_eq!(report.data[0].total_tokens, Some(185));
 }
 
+// upstream: CostUsageScannerTests.swift:1076 claude counts entries without ids as separate
 #[test]
 fn claude_counts_entries_without_ids_as_separate() {
     let tmp = TempDir::new().expect("tempdir");
@@ -501,6 +510,7 @@ fn claude_counts_entries_without_ids_as_separate() {
     assert_eq!(report.data[0].total_tokens, Some(450));
 }
 
+// upstream: CostUsageScannerTests.swift:1140 claude counts different request ids separately
 #[test]
 fn claude_counts_different_request_ids_separately() {
     let tmp = TempDir::new().expect("tempdir");
@@ -555,6 +565,9 @@ fn claude_counts_different_request_ids_separately() {
     assert_eq!(report.data[0].total_tokens, Some(45));
 }
 
+// Rust-added tests (no direct upstream @Test equivalent; excluded from parity totals).
+
+// Rust-added: JSONL line debug redacts line bytes.
 #[test]
 fn jsonl_line_debug_redacts_line_bytes() {
     let line = claude::JsonlLine {
@@ -568,6 +581,7 @@ fn jsonl_line_debug_redacts_line_bytes() {
     assert!(dbg.contains("byte_len"));
 }
 
+// Rust-added: Claude scanner skips symlinks in walk and file open.
 #[cfg(unix)]
 #[test]
 fn claude_scanner_skips_symlinks_in_walk_and_file_open() {
