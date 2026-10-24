@@ -1,9 +1,6 @@
 // Ported from CodexBar Sources/CodexBarCLI/CLIHooksCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLIHooksWatchCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/CLIHooksTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CLICommonOptionsTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/CLIHooksWatchSleepLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! CLI `hooks` command (`list`, `enable`, `disable`, `test`, `watch`).
 //!
@@ -18,7 +15,6 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,33 +25,53 @@ use ariadusage_core::pipeline::{
 };
 use ariadusage_core::providers;
 use ariadusage_core::refresh::{
-    HookEvent, HookEventType, HookProviderObservation, HookProviderStatus, HookRateLimiter,
-    HookTestResult, HookTransitionDetector, HookTransportErrorKind, HooksConfig,
-    HooksWatchStopSignal, decode_hooks_watch_interval, decode_hooks_watch_provider_names,
-    decode_hooks_watch_web_timeout, hook_account_discriminator, hook_account_display_name,
-    hook_refresh_failure_status, hooks_watch_lanes, hooks_watch_providers, sample_hook_event,
-    sleep_interruptibly, validate_hooks_watch_flags,
+    HookEvent, HookEventType, HookProviderObservation, HookProviderStatus, HookTestResult,
+    HookTransitionDetector, HookTransportErrorKind, HooksConfig, HooksWatchStopSignal,
+    decode_hooks_watch_interval, decode_hooks_watch_provider_names, hook_account_discriminator,
+    hook_account_display_name, hook_refresh_failure_status, hooks_watch_lanes,
+    hooks_watch_providers, sample_hook_event, sleep_interruptibly, validate_hooks_watch_flags,
 };
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
-use ariadusage_engine::brokers::secret_store::file::FileBackend;
-use ariadusage_engine::brokers::secret_store::service::ServiceBackend;
-use ariadusage_engine::brokers::secret_store::{SecretId, SecretLookup, SecretStore};
+use ariadusage_engine::brokers::secret_store::SecretStore;
 use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::hooks::{
     DispatchOutcome, HookCommandExecutor, HookRunner, ProcessBrokerHookExecutor,
 };
 use ariadusage_engine::paths;
-use ariadusage_engine::registry::{ProviderPlanInputs, ProviderRegistry};
+use ariadusage_engine::registry::ProviderRegistry;
 use ariadusage_engine::status::ProviderStatusFetcher;
-use ariadusage_engine::{AppPreferences, TokioSleeper};
-use ariadusage_protocol::ids::SettingId;
+use ariadusage_engine::{AppPreferences, EngineRuntime, TokioSleeper, build_default_secret_store};
 use ariadusage_protocol::usage::ProviderErrorKind;
 use ariadusage_protocol::{ProviderId, SecretString, StatusIndicator};
 use clap::{Args, Subcommand};
 use jiff::Timestamp;
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
+
+/// Extended `--help` description for `ariadusage hooks` (`CLIHelp.hooksHelp`).
+pub const HOOKS_LONG_ABOUT: &str = "\
+Run external commands when quota/provider events occur. Rules are stored in the
+shared config file and are disabled by default. Events:
+quota_low, quota_reached, quota_reset, usage_updated, provider_unavailable,
+provider_recovered, refresh_failed.
+
+Commands run directly (no shell), receive event metadata via ARIADUSAGE_* environment
+variables and a JSON payload on stdin, and are timed out. Only configure commands you trust.
+
+`watch` polls the selected providers and fires rules on real transitions, so hooks
+work without the macOS app. Events are edge-triggered against the previous poll, so a
+persisting condition does not re-fire. The first successful poll can emit usage_updated;
+quota-transition baselines are established without firing. Keep one continuous process so transition
+baselines and event rate limits survive between polls. Default interval 300s, minimum 60s.
+
+Examples:
+  ariadusage hooks list
+  ariadusage hooks enable
+  ariadusage hooks test quota_reached --provider codex
+  ariadusage hooks test quota_low --provider claude
+  ariadusage hooks watch --interval 600
+  ariadusage hooks watch --provider codex";
 
 /// Output format for `ariadusage hooks` subcommands (`OutputFormat` in `CLIOptions.swift`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,16 +120,18 @@ pub struct HooksOutputPreferences {
 }
 
 impl HooksOutputPreferences {
+    /// Explicit `--format` wins over `--json` / `--json-only` (`CLIOutputPreferences.resolveOutputFormat`).
     pub fn from_args(args: &HooksOutputArgs) -> Self {
         let json_only = args.json_only;
         let pretty = args.pretty;
-        let format = if json_only || args.json {
+        let json_shortcut = args.json || json_only;
+        let format = if let Some(parsed) = args.format.as_deref().and_then(HooksOutputFormat::parse)
+        {
+            parsed
+        } else if json_shortcut {
             HooksOutputFormat::Json
         } else {
-            args.format
-                .as_deref()
-                .and_then(HooksOutputFormat::parse)
-                .unwrap_or(HooksOutputFormat::Text)
+            HooksOutputFormat::Text
         };
         Self {
             format,
@@ -123,7 +141,7 @@ impl HooksOutputPreferences {
     }
 
     pub const fn uses_json_output(&self) -> bool {
-        matches!(self.format, HooksOutputFormat::Json) || self.json_only
+        self.json_only || matches!(self.format, HooksOutputFormat::Json)
     }
 }
 
@@ -181,12 +199,8 @@ pub struct HooksWatchArgs {
     #[arg(long = "provider")]
     pub provider: Vec<String>,
 
-    /// Web fetch timeout (seconds)
-    #[arg(long = "web-timeout", allow_hyphen_values = true)]
-    pub web_timeout: Option<String>,
-
     /// Print fetch diagnostics
-    #[arg(short = 'v', long = "verbose")]
+    #[arg(long = "verbose")]
     pub verbose: bool,
 
     /// Hidden flag so `--once` is caught by `validate_hooks_watch_flags` with upstream's error message.
@@ -374,7 +388,6 @@ pub trait HooksWatchObserver: Send + Sync {
         provider: &'a ProviderId,
         config: &'a Config,
         verbose: bool,
-        web_timeout: f64,
     ) -> BoxFuture<'a, HookProviderObservation>;
 }
 
@@ -399,17 +412,9 @@ impl std::fmt::Debug for EngineHooksWatchObserver {
 impl EngineHooksWatchObserver {
     pub fn from_environment(config: &Config) -> Result<Self, String> {
         let net = Arc::new(NetBroker::new(NetConfig::default()).map_err(|e| e.to_string())?);
-        let consented = config.secret_file_fallback == Some(true);
         let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
             == Some(std::ffi::OsStr::new("1"));
-        let secret_store = paths::data_dir().ok().map(|data_dir| {
-            let file_backend =
-                FileBackend::new(data_dir.join("ariadusage").join("secrets.json"), consented);
-            Arc::new(
-                SecretStore::new(ServiceBackend::new(disable_keyring))
-                    .with_file_fallback(file_backend, consented),
-            )
-        });
+        let secret_store = build_default_secret_store(config, disable_keyring).ok();
         let base_environment = std::env::vars()
             .map(|(k, v)| (k, SecretString::new(v)))
             .collect();
@@ -421,21 +426,6 @@ impl EngineHooksWatchObserver {
             base_environment,
         })
     }
-
-    async fn lookup_background_secret(&self, setting_id_str: &str) -> Option<SecretString> {
-        let store = self.secret_store.as_ref()?;
-        let setting_id = SettingId::new(setting_id_str).ok()?;
-        let secret_id = SecretId::from_setting_id(&setting_id).ok()?;
-        let call = BrokerCall {
-            interaction: FetchInteraction::Background,
-            cancel: CancellationToken::new(),
-            request_id: format!("hooks-watch-secret-{setting_id_str}"),
-        };
-        match store.background(call).lookup(&secret_id).await {
-            SecretLookup::Found(secret) => Some(secret),
-            _ => None,
-        }
-    }
 }
 
 impl HooksWatchObserver for EngineHooksWatchObserver {
@@ -444,7 +434,6 @@ impl HooksWatchObserver for EngineHooksWatchObserver {
         provider: &'a ProviderId,
         config: &'a Config,
         _verbose: bool,
-        web_timeout: f64,
     ) -> BoxFuture<'a, HookProviderObservation> {
         Box::pin(async move {
             let status_call = BrokerCall {
@@ -467,50 +456,37 @@ impl HooksWatchObserver for EngineHooksWatchObserver {
                 HookProviderStatus::Unknown
             };
 
-            let prefs = AppPreferences::from_config(config);
+            let mut prefs = AppPreferences::from_config(config);
+            // `hooks watch` runs with `includeCredits = false` (`CLIHooksWatchCommand.swift:166`).
+            prefs.show_optional_credits_and_extra_usage = false;
             let provider_cfg = config.provider_config(provider.as_str());
             let selected_account = ProviderRegistry::selected_account(provider_cfg);
 
-            let api_key = self
-                .lookup_background_secret(&format!("providers.{}.apiKey", provider.as_str()))
-                .await;
-            let manual_cookie_header = self
-                .lookup_background_secret(&format!("providers.{}.cookieHeader", provider.as_str()))
-                .await;
-            let selected_account_token = if let Some(acct) = &selected_account {
-                let tok = self
-                    .lookup_background_secret(&format!(
-                        "providers.{}.accounts.{}.token",
-                        provider.as_str(),
-                        acct.id
-                    ))
-                    .await;
-                if tok.is_none() {
-                    return HookProviderObservation::new(
-                        provider.as_str(),
-                        None,
-                        Vec::new(),
-                        None,
-                        status,
-                        Some(
-                            hook_refresh_failure_status(HookTransportErrorKind::AuthRequired)
-                                .to_string(),
-                        ),
-                    );
-                }
-                tok
-            } else {
-                None
-            };
+            let inputs = EngineRuntime::resolve_plan_inputs_with_store(
+                self.secret_store.as_ref(),
+                provider,
+                config,
+                &prefs,
+                self.base_environment.clone(),
+                FetchInteraction::Background,
+                CancellationToken::new(),
+                format!("hooks-watch-secret-{}", provider.as_str()),
+            )
+            .await;
 
-            let inputs = ProviderPlanInputs {
-                base_environment: self.base_environment.clone(),
-                api_key,
-                manual_cookie_header,
-                selected_account_token,
-                include_optional_usage: false,
-                secret_store: self.secret_store.clone(),
-            };
+            if selected_account.is_some() && inputs.selected_account_token.is_none() {
+                return HookProviderObservation::new(
+                    provider.as_str(),
+                    None,
+                    Vec::new(),
+                    None,
+                    status,
+                    Some(
+                        hook_refresh_failure_status(HookTransportErrorKind::AuthRequired)
+                            .to_string(),
+                    ),
+                );
+            }
 
             let Some(spec) = self.registry.resolve_spec(provider, config, &inputs) else {
                 return HookProviderObservation::new(
@@ -523,17 +499,6 @@ impl HooksWatchObserver for EngineHooksWatchObserver {
                 );
             };
 
-            let cancel = CancellationToken::new();
-            let timeout_guard = if web_timeout.is_finite() && web_timeout > 0.0 {
-                let token = cancel.clone();
-                Some(tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_secs_f64(web_timeout)).await;
-                    token.cancel();
-                }))
-            } else {
-                None
-            };
-
             let cx = FetchContext {
                 provider: provider.clone(),
                 runtime: FetchRuntime::Cli,
@@ -544,14 +509,11 @@ impl HooksWatchObserver for EngineHooksWatchObserver {
                 env: spec.environment,
                 include_credits: false,
                 selected_token_account: spec.selected_account.as_ref().map(|a| a.id.clone()),
-                cancel,
+                cancel: CancellationToken::new(),
             };
 
             let sleeper = TokioSleeper;
             let outcome = fetch_outcome(provider, spec.plan.as_ref(), &cx, &sleeper).await;
-            if let Some(guard) = timeout_guard {
-                guard.abort();
-            }
 
             match outcome.result {
                 Ok(result) => {
@@ -811,7 +773,7 @@ pub async fn run_hooks_watch_with_observer<F, Fut>(
     args: &HooksWatchArgs,
     config_store: &ConfigStore,
     observer: &dyn HooksWatchObserver,
-    executor: &dyn HookCommandExecutor,
+    executor: Arc<dyn HookCommandExecutor>,
     base_env: &BTreeMap<String, String>,
     stop: &HooksWatchStopSignal,
     mut sleep_fn: F,
@@ -862,7 +824,7 @@ where
             return Err(HooksCliError::failure(
                 err.message,
                 output,
-                HooksErrorKind::Config,
+                HooksErrorKind::Args,
             ));
         }
     };
@@ -883,10 +845,9 @@ where
     }
 
     let verbose = args.verbose;
-    let web_timeout = decode_hooks_watch_web_timeout(args.web_timeout.as_deref());
 
     let mut detector = HookTransitionDetector::new();
-    let mut rate_limiter = HookRateLimiter::default();
+    let runner = HookRunner::new(executor);
 
     if !output.uses_json_output() {
         let names = providers
@@ -908,9 +869,7 @@ where
             if stop.is_requested() {
                 break;
             }
-            let observation = observer
-                .observe(provider, &config, verbose, web_timeout)
-                .await;
+            let observation = observer.observe(provider, &config, verbose).await;
             let now = Timestamp::now();
             let now = Timestamp::from_second(now.as_second()).unwrap_or(now);
             let dispatches = detector.evaluate(&observation, &hooks, now);
@@ -919,16 +878,15 @@ where
                     Some(rules) => HooksConfig::new(true, rules),
                     None => hooks.clone(),
                 };
-                let outcome = HookRunner::dispatch_with_executor(
-                    executor,
-                    &dispatch.event,
-                    &dispatch_config,
-                    &mut rate_limiter,
-                    dispatch.account_discriminator.as_deref(),
-                    base_env,
-                    now,
-                )
-                .await;
+                let outcome = runner
+                    .dispatch(
+                        &dispatch.event,
+                        &dispatch_config,
+                        dispatch.account_discriminator.as_deref(),
+                        base_env,
+                        now,
+                    )
+                    .await;
                 if outcome == DispatchOutcome::Attempted {
                     report_hook_event(&dispatch.event, output, stdout);
                 }
@@ -1017,8 +975,7 @@ pub fn run_hooks_command(args: HooksCommandArgs) -> Result<(), HooksCliError> {
         }
         Some(HooksSubcommand::Test(test_args)) => {
             let output = HooksOutputPreferences::from_args(&test_args.output);
-            let store_path = paths::config_path().unwrap_or_else(|_| Path::new("").to_path_buf());
-            let store = ConfigStore::new(store_path);
+            let store = default_config_store(output)?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1072,7 +1029,7 @@ pub fn run_hooks_command(args: HooksCommandArgs) -> Result<(), HooksCliError> {
             let config = load_config_from_store(&store, output)?;
             let observer = EngineHooksWatchObserver::from_environment(&config)
                 .map_err(|err| HooksCliError::failure(err, output, HooksErrorKind::Runtime))?;
-            let executor = ProcessBrokerHookExecutor::new();
+            let executor: Arc<dyn HookCommandExecutor> = Arc::new(ProcessBrokerHookExecutor::new());
             let base_env: BTreeMap<String, String> = std::env::vars().collect();
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -1089,7 +1046,7 @@ pub fn run_hooks_command(args: HooksCommandArgs) -> Result<(), HooksCliError> {
                     &watch_args,
                     &store,
                     &observer,
-                    &executor,
+                    executor,
                     &base_env,
                     &stop,
                     |ns| tokio::time::sleep(Duration::from_nanos(ns)),
@@ -1111,12 +1068,10 @@ mod tests {
     };
     use ariadusage_core::model::{ProviderIdentitySnapshot, RateWindow, UsageSnapshot};
     use ariadusage_core::pipeline::ClassifiedError;
-    use ariadusage_core::refresh::{
-        HOOKS_WATCH_SLEEP_TICK_NANOSECONDS, HookQuotaLaneKey, HookRule,
-    };
+    use ariadusage_core::refresh::{HookQuotaLaneKey, HookRule};
     use ariadusage_engine::hooks::{FakeHookCommandExecutor, HookExecutionOutput, HookRunnerError};
     use ariadusage_protocol::Confidence;
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
     use tempfile::TempDir;
 
     #[derive(Parser, Debug)]
@@ -1150,296 +1105,6 @@ mod tests {
             Confidence::Exact,
         )
         .expect("valid sample UsageSnapshot")
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:8 watch provider option accepts all both and deduplicates concrete names
-    #[test]
-    fn watch_provider_option_accepts_all_both_and_deduplicates_concrete_names() {
-        let all = decode_hooks_watch_provider_names(&["all"]).expect("all must succeed");
-        let expected_all: Vec<ProviderId> = providers::first_party_order()
-            .iter()
-            .map(|d| d.id.clone())
-            .collect();
-        assert_eq!(all, Some(expected_all));
-
-        let codex = ProviderId::new("codex").expect("valid provider id");
-        let claude = ProviderId::new("claude").expect("valid provider id");
-        let both = decode_hooks_watch_provider_names(&["both", "codex", "codex"])
-            .expect("both+codex must succeed")
-            .expect("non-empty provider list");
-        assert_eq!(both, vec![codex, claude]);
-
-        assert!(
-            decode_hooks_watch_provider_names(&["bogus"]).is_err(),
-            "Expected an unknown provider to fail"
-        );
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:27 watch privacy keeps account routing private and skips synthetic lanes
-    #[test]
-    fn watch_privacy_keeps_account_routing_private_and_skips_synthetic_lanes() {
-        let now = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
-        let codex = ProviderId::new("codex").expect("valid provider id");
-        let primary =
-            RateWindow::new(0.0, Some(300), None, None, None, false).expect("valid primary");
-        let secondary =
-            RateWindow::new(0.0, None, None, None, None, true).expect("synthetic secondary");
-        let identity = ProviderIdentitySnapshot {
-            provider_id: Some(codex.clone()),
-            account_id: None,
-            account_email: Some("fixture@example.invalid".to_string()),
-            account_organization: None,
-            login_method: None,
-        };
-        let usage = sample_usage_snapshot(Some(primary), Some(secondary), Some(identity), now);
-
-        let lanes = hooks_watch_lanes(
-            &codex,
-            &usage,
-            &Config::new(Config::CURRENT_VERSION, Vec::new()),
-            Some("private-owner"),
-            true,
-        );
-        assert_eq!(lanes.len(), 1);
-        assert_eq!(lanes[0].account_display_name, None);
-        assert_eq!(
-            lanes[0].key.account_discriminator.as_deref(),
-            Some("private-owner")
-        );
-        assert_eq!(
-            lanes[0].rate_window.as_ref().map(|w| w.used_percent),
-            Some(0.0)
-        );
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:55 sample quota-low event matches maximum threshold
-    #[test]
-    fn sample_quota_low_event_matches_maximum_threshold() {
-        let now = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
-        let event = sample_hook_event(HookEventType::QuotaLow, "codex", now);
-        let rule = HookRule::new(HookEventType::QuotaLow, "/bin/echo").with_threshold(1.0);
-
-        assert_eq!(event.usage_percent, Some(1.0));
-        assert!(rule.matches(&event));
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:64 sample refresh failure uses production status
-    #[test]
-    fn sample_refresh_failure_uses_production_status() {
-        let now = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
-        let event = sample_hook_event(HookEventType::RefreshFailed, "codex", now);
-
-        assert_eq!(event.status.as_deref(), Some("error"));
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:71 sample usage update represents session and weekly windows
-    #[test]
-    fn sample_usage_update_represents_session_and_weekly_windows() {
-        let now = Timestamp::from_second(1_700_000_000).expect("valid timestamp");
-        let event = sample_hook_event(HookEventType::UsageUpdated, "codex", now);
-
-        assert_eq!(event.usage_percent, Some(0.5));
-        assert_eq!(event.window_minutes, Some(300));
-        assert!(event.reset_at.is_some());
-        assert_eq!(event.secondary_usage_percent, Some(0.4));
-        assert_eq!(event.secondary_window_minutes, Some(10080));
-        assert!(event.secondary_reset_at.is_some());
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:83 usage updated event carries primary and secondary quota windows
-    #[test]
-    fn usage_updated_event_carries_primary_and_secondary_quota_windows() {
-        let primary_reset: Timestamp = "2026-09-08T12:00:00Z".parse().expect("valid primary reset");
-        let secondary_reset: Timestamp = "2026-09-10T12:00:00Z"
-            .parse()
-            .expect("valid secondary reset");
-        let event = HookEvent {
-            event: HookEventType::UsageUpdated,
-            provider: "codex".to_string(),
-            account: None,
-            window: Some("Session".to_string()),
-            usage_percent: Some(0.2),
-            window_minutes: None,
-            used: None,
-            limit: None,
-            reset_at: Some(primary_reset),
-            secondary_usage_percent: Some(0.6),
-            secondary_window_minutes: None,
-            secondary_reset_at: Some(secondary_reset),
-            status: None,
-            timestamp: primary_reset,
-        };
-
-        let data = event.json_payload().expect("json payload should encode");
-        let decoded: HookEvent = serde_json::from_slice(&data).expect("json payload should decode");
-
-        assert_eq!(decoded.event, HookEventType::UsageUpdated);
-        assert_eq!(decoded.usage_percent, Some(0.2));
-        assert_eq!(decoded.secondary_usage_percent, Some(0.6));
-        assert_eq!(decoded.secondary_reset_at, Some(secondary_reset));
-    }
-
-    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:108 hook test JSON result is structured
-    #[test]
-    fn hook_test_json_result_is_structured() {
-        let result = HookTestResult {
-            rule_id: "fixture".to_string(),
-            executable: "/bin/echo".to_string(),
-            event: "quota_reached".to_string(),
-            provider: "codex".to_string(),
-            success: true,
-            stdout: Some("ok".to_string()),
-            error: None,
-        };
-        let encoded =
-            encode_json(std::slice::from_ref(&result), false).expect("encode HookTestResult");
-        let decoded: Vec<HookTestResult> =
-            serde_json::from_str(&encoded).expect("decode HookTestResult");
-
-        assert_eq!(decoded, vec![result]);
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:7 already requested stop skips every sleep tick
-    #[tokio::test]
-    async fn already_requested_stop_skips_every_sleep_tick() {
-        let stop = HooksWatchStopSignal::new();
-        stop.request();
-
-        sleep_interruptibly(30.0, &stop, |_nanoseconds| {
-            panic!("An already requested stop must not sleep");
-            #[allow(unreachable_code)]
-            async {}
-        })
-        .await;
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:17 stop requested during a tick prevents the next sleep
-    #[tokio::test]
-    async fn stop_requested_during_a_tick_prevents_the_next_sleep() {
-        let stop = HooksWatchStopSignal::new();
-        let mut ticks = Vec::new();
-        sleep_interruptibly(10.0, &stop, |nanoseconds| {
-            ticks.push(nanoseconds);
-            stop.request();
-            async {}
-        })
-        .await;
-
-        assert_eq!(ticks, vec![200_000_000]);
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:31 unsignaled sleep requests the full interval in bounded ticks
-    #[tokio::test]
-    async fn unsignaled_sleep_requests_the_full_interval_in_bounded_ticks() {
-        for interval in [0.0, -1.0, 0.05, 0.4, 0.45] {
-            let stop = HooksWatchStopSignal::new();
-            let mut ticks = Vec::new();
-            sleep_interruptibly(interval, &stop, |nanoseconds| {
-                ticks.push(nanoseconds);
-                async {}
-            })
-            .await;
-
-            let expected = (interval.max(0.0) * 1_000_000_000.0).round() as u64;
-            assert_eq!(ticks.iter().copied().sum::<u64>(), expected);
-            assert!(
-                ticks
-                    .iter()
-                    .all(|&t| t > 0 && t <= HOOKS_WATCH_SLEEP_TICK_NANOSECONDS)
-            );
-            assert_eq!(ticks.len(), expected.div_ceil(200_000_000) as usize);
-        }
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:23 once mode is rejected because watch state must survive between polls
-    #[test]
-    fn once_mode_is_rejected_because_watch_state_must_survive_between_polls() {
-        let err = validate_hooks_watch_flags(true).expect_err("expected --once to be rejected");
-        assert!(err.message.contains("--once"));
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:35 interval below the floor is rejected without reading config
-    #[test]
-    fn interval_below_the_floor_is_rejected_without_reading_config() {
-        let err = decode_hooks_watch_interval(Some("5"))
-            .expect_err("expected failure for an interval below the floor");
-        assert!(err.message.contains("at least 60"));
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:45 non numeric interval is rejected without reading config
-    #[test]
-    fn non_numeric_interval_is_rejected_without_reading_config() {
-        let err = decode_hooks_watch_interval(Some("abc"))
-            .expect_err("expected failure for a non-numeric interval");
-        assert!(err.message.contains("Invalid --interval"));
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:55 interval defaults when absent
-    #[test]
-    fn interval_defaults_when_absent() {
-        let interval = decode_hooks_watch_interval(None).expect("expected the default interval");
-        assert_eq!(
-            interval,
-            ariadusage_core::refresh::HOOKS_WATCH_DEFAULT_INTERVAL
-        );
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:65 interval at the floor is accepted
-    #[test]
-    fn interval_at_the_floor_is_accepted() {
-        let interval = decode_hooks_watch_interval(Some("60"))
-            .expect("expected the floor value to be accepted");
-        assert_eq!(interval, 60.0);
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:77 unknown provider name is rejected without reading config
-    #[test]
-    fn unknown_provider_name_is_rejected_without_reading_config() {
-        let err = decode_hooks_watch_provider_names(&["nosuchprovider"])
-            .expect_err("expected failure for an unknown provider");
-        assert!(err.message.contains("Unknown provider"));
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:88 absent provider option defers to config
-    #[test]
-    fn absent_provider_option_defers_to_config() {
-        let providers = decode_hooks_watch_provider_names(&[])
-            .expect("expected success when no --provider is given");
-        assert_eq!(providers, None);
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:99 explicit providers resolve without consulting config
-    #[test]
-    fn explicit_providers_resolve_without_consulting_config() {
-        let codex = ProviderId::new("codex").expect("valid id");
-        let providers = decode_hooks_watch_provider_names(&["codex", "codex"])
-            .expect("expected success for a known provider");
-        assert_eq!(providers, Some(vec![codex]));
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:113 explicit providers win over the enabled set
-    #[test]
-    fn explicit_providers_win_over_the_enabled_set() {
-        let codex = ProviderId::new("codex").expect("valid id");
-        let config = Config::new(Config::CURRENT_VERSION, Vec::new());
-        let providers = hooks_watch_providers(Some(vec![codex.clone()]), &config)
-            .expect("expected explicit providers to resolve");
-        assert_eq!(providers, vec![codex]);
-    }
-
-    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:124 empty enabled set reports no providers
-    #[test]
-    fn empty_enabled_set_reports_no_providers() {
-        let mut entries = Vec::new();
-        for desc in providers::first_party_order() {
-            let mut p = ProviderConfig::new(desc.id.clone());
-            p.enabled = Some(false);
-            entries.push(ProviderEntry::Typed(p));
-        }
-        let config = Config::new(Config::CURRENT_VERSION, entries);
-        let err = hooks_watch_providers(None, &config)
-            .expect_err("expected failure when nothing is enabled");
-        assert!(err.message.contains("No providers are enabled"));
     }
 
     // Additional coverage for helper functions in `hooks.rs`
@@ -1523,55 +1188,99 @@ mod tests {
     // upstream: Tests/CodexBarTests/CLICommonOptionsTests.swift:91 hooks output groups retain their own help and flags
     #[test]
     fn hooks_output_groups_retain_their_own_help_and_flags() {
-        let test_parsed = TestHooksCli::try_parse_from([
-            "ariadusage",
-            "hooks",
-            "test",
-            "quota_reached",
-            "--format",
-            "json",
-            "--json",
-            "--json-only",
-            "--pretty",
-        ])
-        .expect("hooks test output flags must parse");
-        match test_parsed.command {
-            TestTopCommand::Hooks(HooksCommandArgs {
-                subcommand: Some(HooksSubcommand::Test(args)),
-                ..
-            }) => {
-                assert_eq!(args.event.as_deref(), Some("quota_reached"));
-                assert_eq!(args.output.format.as_deref(), Some("json"));
-                assert!(args.output.json);
-                assert!(args.output.json_only);
-                assert!(args.output.pretty);
+        let root_cmd = TestHooksCli::command();
+        let hooks_cmd = root_cmd
+            .find_subcommand("hooks")
+            .expect("hooks subcommand exists");
+        for sub_name in ["test", "watch"] {
+            let sub = hooks_cmd
+                .find_subcommand(sub_name)
+                .unwrap_or_else(|| panic!("{sub_name} subcommand exists"));
+            for flag in ["format", "json", "json-only", "pretty"] {
+                assert!(
+                    sub.get_arguments().any(|a| a.get_long() == Some(flag)),
+                    "expected flattened --{flag} on hooks {sub_name}"
+                );
             }
-            other => panic!("unexpected subcommand: {other:?}"),
+            let json_arg = sub
+                .get_arguments()
+                .find(|a| a.get_long() == Some("json"))
+                .expect("--json flag exists");
+            assert_eq!(
+                json_arg.get_help().map(ToString::to_string).as_deref(),
+                Some("Emit JSON")
+            );
         }
 
-        let watch_parsed = TestHooksCli::try_parse_from([
-            "ariadusage",
-            "hooks",
-            "watch",
-            "--format",
-            "json",
-            "--json",
-            "--json-only",
-            "--pretty",
-        ])
-        .expect("hooks watch output flags must parse");
-        match watch_parsed.command {
-            TestTopCommand::Hooks(HooksCommandArgs {
-                subcommand: Some(HooksSubcommand::Watch(args)),
-                ..
-            }) => {
-                assert_eq!(args.output.format.as_deref(), Some("json"));
-                assert!(args.output.json);
-                assert!(args.output.json_only);
-                assert!(args.output.pretty);
+        for path in [
+            vec!["hooks", "test", "quota_reached"],
+            vec!["hooks", "watch"],
+        ] {
+            let mut argv = vec!["ariadusage"];
+            argv.extend_from_slice(&path);
+            argv.extend_from_slice(&["--format", "json", "--json", "--json-only", "--pretty"]);
+            let parsed =
+                TestHooksCli::try_parse_from(&argv).expect("hooks output flags must parse");
+            match (path[1], parsed.command) {
+                (
+                    "test",
+                    TestTopCommand::Hooks(HooksCommandArgs {
+                        subcommand: Some(HooksSubcommand::Test(args)),
+                        ..
+                    }),
+                ) => {
+                    assert_eq!(args.event.as_deref(), Some("quota_reached"));
+                    assert_eq!(args.output.format.as_deref(), Some("json"));
+                    assert!(args.output.json);
+                    assert!(args.output.json_only);
+                    assert!(args.output.pretty);
+                }
+                (
+                    "watch",
+                    TestTopCommand::Hooks(HooksCommandArgs {
+                        subcommand: Some(HooksSubcommand::Watch(args)),
+                        ..
+                    }),
+                ) => {
+                    assert_eq!(args.output.format.as_deref(), Some("json"));
+                    assert!(args.output.json);
+                    assert!(args.output.json_only);
+                    assert!(args.output.pretty);
+                }
+                other => panic!("unexpected subcommand: {other:?}"),
             }
-            other => panic!("unexpected subcommand: {other:?}"),
         }
+    }
+
+    #[test]
+    fn explicit_format_wins_over_json_shortcut_in_hooks_output_preferences() {
+        let explicit_text = HooksOutputPreferences::from_args(&HooksOutputArgs {
+            format: Some("text".to_string()),
+            json: true,
+            json_only: false,
+            pretty: false,
+        });
+        assert_eq!(explicit_text.format, HooksOutputFormat::Text);
+        assert!(!explicit_text.uses_json_output());
+
+        let explicit_text_with_json_only = HooksOutputPreferences::from_args(&HooksOutputArgs {
+            format: Some("text".to_string()),
+            json: false,
+            json_only: true,
+            pretty: false,
+        });
+        assert_eq!(explicit_text_with_json_only.format, HooksOutputFormat::Text);
+        assert!(explicit_text_with_json_only.uses_json_output());
+
+        let shortcut_json = HooksOutputPreferences::from_args(&HooksOutputArgs {
+            format: None,
+            json: true,
+            json_only: false,
+            pretty: true,
+        });
+        assert_eq!(shortcut_json.format, HooksOutputFormat::Json);
+        assert!(shortcut_json.uses_json_output());
+        assert!(shortcut_json.pretty);
     }
 
     #[test]
@@ -1842,7 +1551,6 @@ mod tests {
             provider: &'a ProviderId,
             _config: &'a Config,
             _verbose: bool,
-            _web_timeout: f64,
         ) -> BoxFuture<'a, HookProviderObservation> {
             Box::pin(async move {
                 let mut guard = self.observations.lock().expect("sequence observer lock");
@@ -1866,6 +1574,34 @@ mod tests {
     async fn hooks_watch_dispatches_transitions_and_stops_on_signal() {
         let dir = TempDir::new().expect("tempdir");
         let store = ConfigStore::new(dir.path().join("config.json"));
+
+        // Empty enabled provider set reports kind = Args ("No providers are enabled.")
+        let mut disabled_entries = Vec::new();
+        for desc in providers::first_party_order() {
+            let mut p = ProviderConfig::new(desc.id.clone());
+            p.enabled = Some(false);
+            disabled_entries.push(ProviderEntry::Typed(p));
+        }
+        store
+            .save(&Config::new(Config::CURRENT_VERSION, disabled_entries))
+            .expect("save disabled providers config");
+        let empty_err = run_hooks_watch_with_observer(
+            &HooksWatchArgs::default(),
+            &store,
+            &SequenceWatchObserver::new(Vec::new()),
+            Arc::new(FakeHookCommandExecutor::new()),
+            &BTreeMap::new(),
+            &HooksWatchStopSignal::new(),
+            |_ns| async {},
+            &mut Vec::new(),
+        )
+        .await
+        .expect_err("no enabled providers must fail");
+        assert_eq!(empty_err.kind, HooksErrorKind::Args);
+        assert_eq!(
+            empty_err.message.as_deref(),
+            Some("No providers are enabled.")
+        );
 
         let codex = ProviderId::new("codex").expect("valid id");
         let mut codex_cfg = ProviderConfig::new(codex.clone());
@@ -1897,7 +1633,9 @@ mod tests {
             None,
         );
         let observer = SequenceWatchObserver::new(vec![obs1, obs2]);
-        let executor = FakeHookCommandExecutor::new();
+        let executor = Arc::new(FakeHookCommandExecutor::new());
+        let executor_trait: Arc<dyn HookCommandExecutor> =
+            Arc::clone(&executor) as Arc<dyn HookCommandExecutor>;
         let stop = Arc::new(HooksWatchStopSignal::new());
         let stop_in_sleep = Arc::clone(&stop);
         let mut poll_sleeps = 0usize;
@@ -1911,7 +1649,7 @@ mod tests {
             },
             &store,
             &observer,
-            &executor,
+            executor_trait,
             &BTreeMap::new(),
             &stop,
             move |_ns| {

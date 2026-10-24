@@ -2107,9 +2107,6 @@ path = "crates/ariadusage-cli/src/hooks.rs"
 sources = [
     "Sources/CodexBarCLI/CLIHooksCommand.swift",
     "Sources/CodexBarCLI/CLIHooksWatchCommand.swift",
-    "Tests/CodexBarTests/CLIHooksTests.swift",
     "Tests/CodexBarTests/CLICommonOptionsTests.swift",
-    "TestsLinux/CLIHooksWatchSleepLinuxTests.swift",
-    "TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

@@ -9,9 +9,14 @@ use std::io::Write;
 
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
+#[cfg(target_os = "linux")]
+use ariadusage_engine::brokers::secret_store::SecretStore;
+#[cfg(target_os = "linux")]
 use ariadusage_engine::brokers::secret_store::file::FileBackend;
+#[cfg(target_os = "linux")]
 use ariadusage_engine::brokers::secret_store::service::ServiceBackend;
-use ariadusage_engine::brokers::secret_store::{SecretId, SecretStore, SecretStoreError};
+use ariadusage_engine::brokers::secret_store::{SecretId, SecretStoreError};
+use ariadusage_engine::build_default_secret_store;
 use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::hardening::harden_process;
 use ariadusage_engine::paths;
@@ -64,6 +69,7 @@ enum Commands {
     },
 
     /// Run external commands on quota/provider events
+    #[command(long_about = hooks::HOOKS_LONG_ABOUT)]
     Hooks(hooks::HooksCommandArgs),
 }
 
@@ -188,12 +194,10 @@ fn run_secret_set(id: &str, allow_file_fallback: bool) -> Result<(), CliError> {
     let consented = config.secret_file_fallback == Some(true);
     let data_dir =
         paths::data_dir().map_err(|_| CliError::new(16, "data directory unavailable"))?;
-    let file_backend =
-        FileBackend::new(data_dir.join("ariadusage").join("secrets.json"), consented);
     let disabled = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    let store =
-        SecretStore::new(ServiceBackend::new(disabled)).with_file_fallback(file_backend, consented);
+    let store = build_default_secret_store(&config, disabled)
+        .map_err(|_| CliError::new(16, "data directory unavailable"))?;
     let call = user_call();
     let runtime = current_thread_runtime()?;
 

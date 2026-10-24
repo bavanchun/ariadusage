@@ -24,6 +24,7 @@ pub use coordinator::{
 pub use daemon::{
     CompositeNotifier, ConfigIpcBackend, DaemonError, DefaultNotifier, IpcNoticeNotifier,
     LinuxDbusNotifier, NoopNotifier, NotificationError, Notifier, RecordingNotifier,
+    build_default_secret_store,
 };
 pub use error::StoreError;
 pub use hooks::{

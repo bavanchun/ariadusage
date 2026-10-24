@@ -261,7 +261,6 @@ pub struct HookRule {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
-    #[serde(alias = "command")]
     pub executable: String,
     #[serde(default)]
     pub arguments: Vec<String>,
@@ -270,7 +269,53 @@ pub struct HookRule {
 }
 
 fn default_rule_id() -> String {
-    "hook-rule".to_string()
+    use sha2::{Digest, Sha256};
+    use std::sync::atomic::AtomicU64;
+
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let now_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let mut hasher = Sha256::new();
+    hasher.update(b"ariadusage:hook-rule-id:v1:");
+    hasher.update(seq.to_le_bytes());
+    hasher.update(now_nanos.to_le_bytes());
+    hasher.update(pid.to_le_bytes());
+    #[cfg(unix)]
+    if let Ok(mut urandom) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let mut entropy = [0u8; 16];
+        if urandom.read_exact(&mut entropy).is_ok() {
+            hasher.update(entropy);
+        }
+    }
+    let digest = hasher.finalize();
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02X}{:02X}{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",
+        bytes[0],
+        bytes[1],
+        bytes[2],
+        bytes[3],
+        bytes[4],
+        bytes[5],
+        bytes[6],
+        bytes[7],
+        bytes[8],
+        bytes[9],
+        bytes[10],
+        bytes[11],
+        bytes[12],
+        bytes[13],
+        bytes[14],
+        bytes[15]
+    )
 }
 
 const fn default_true() -> bool {
@@ -414,7 +459,7 @@ impl HookRule {
 pub struct HooksConfig {
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default, alias = "rules")]
+    #[serde(default)]
     pub events: Vec<HookRule>,
 }
 
@@ -627,8 +672,6 @@ pub fn sample_hook_event(
 pub const HOOKS_WATCH_DEFAULT_INTERVAL: f64 = 300.0;
 /// Minimum allowed `--interval` (in seconds) for `hooks watch`.
 pub const HOOKS_WATCH_MINIMUM_INTERVAL: f64 = 60.0;
-/// Default web timeout (in seconds) for `hooks watch`.
-pub const HOOKS_WATCH_DEFAULT_WEB_TIMEOUT: f64 = 60.0;
 /// Poll-period tick (in nanoseconds) used by [`sleep_interruptibly`].
 pub const HOOKS_WATCH_SLEEP_TICK_NANOSECONDS: u64 = 200_000_000;
 
@@ -718,14 +761,6 @@ pub fn decode_hooks_watch_interval(raw: Option<&str>) -> Result<f64, HooksWatchA
         )));
     }
     Ok(parsed)
-}
-
-/// Decodes `--web-timeout` for `hooks watch`, falling back to [`HOOKS_WATCH_DEFAULT_WEB_TIMEOUT`]
-/// (`60.0` seconds) when omitted, non-numeric, non-finite, or `<= 0.0`.
-pub fn decode_hooks_watch_web_timeout(raw: Option<&str>) -> f64 {
-    raw.and_then(|s| s.parse::<f64>().ok())
-        .filter(|&seconds| seconds.is_finite() && seconds > 0.0)
-        .unwrap_or(HOOKS_WATCH_DEFAULT_WEB_TIMEOUT)
 }
 
 /// Validates explicit `--provider` names (`all`, `both`, or concrete provider names) without
@@ -3392,5 +3427,36 @@ mod tests {
         );
         // Only `retained` had a prior baseline, so only `retained` crosses.
         assert_eq!(dispatches.len(), 1);
+    }
+
+    #[test]
+    fn hook_rules_without_explicit_id_generate_distinct_uuid_v4_ids() {
+        let first = HookRule::new(HookEventType::QuotaReached, "/usr/bin/true");
+        let second = HookRule::new(HookEventType::QuotaReached, "/usr/bin/true");
+        assert_ne!(first.id, second.id);
+        assert_ne!(first.id, "hook-rule");
+
+        let decoded_a: HookRule =
+            serde_json::from_str(r#"{"event":"quota_reached","executable":"/usr/bin/true"}"#)
+                .expect("decode first rule without id");
+        let decoded_b: HookRule =
+            serde_json::from_str(r#"{"event":"quota_reached","executable":"/usr/bin/true"}"#)
+                .expect("decode second rule without id");
+        assert_ne!(decoded_a.id, decoded_b.id);
+        assert_ne!(decoded_a.id, "hook-rule");
+
+        for id in [&first.id, &second.id, &decoded_a.id, &decoded_b.id] {
+            let parts: Vec<&str> = id.split('-').collect();
+            assert_eq!(
+                parts.iter().map(|p| p.len()).collect::<Vec<_>>(),
+                vec![8, 4, 4, 4, 12]
+            );
+            assert!(parts[2].starts_with('4'));
+            assert!(
+                parts
+                    .iter()
+                    .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
+            );
+        }
     }
 }
