@@ -3,6 +3,9 @@
 // Ported from CodexBar Sources/CodexBarCLI/CLICookieCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLIHelp.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+pub mod config;
+pub mod cost;
+pub mod hooks;
 pub mod launch_agent;
 
 use std::collections::BTreeMap;
