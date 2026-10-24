@@ -1,3 +1,5 @@
+// Ported from CodexBar Tests/CodexBarTests/CostUsageScannerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 use std::fs;
 
 use ariadusage_engine::cost::claude::{self, ClaudeLogProviderFilter, ClaudePathRole};
