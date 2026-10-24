@@ -1,73 +1,15 @@
 // Ported from CodexBar Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardParser.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::VecDeque;
-use std::sync::LazyLock;
 
 use ariadusage_core::model::window::RateWindow;
 use jiff::Timestamp;
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
-use regex::Regex;
 use serde_json::Value;
 
 use super::credits::CreditEvent;
 use super::plan::CodexPlanFormatting;
-
-static CODE_REVIEW_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"(?i)Code\s*review[^0-9%]*([0-9]{1,3})%\s*remaining",
-        r"(?i)Core\s*review[^0-9%]*([0-9]{1,3})%\s*remaining",
-    ]
-    .into_iter()
-    .map(|p| Regex::new(p).expect("valid code review regex"))
-    .collect()
-});
-
-static CREDITS_REMAINING_REGEXES: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [
-        r"(?i)credits\s*remaining[^0-9]*([0-9][0-9.,]*)",
-        r"(?i)remaining\s*credits[^0-9]*([0-9][0-9.,]*)",
-        r"(?i)credit\s*balance[^0-9]*([0-9][0-9.,]*)",
-    ]
-    .into_iter()
-    .map(|p| Regex::new(p).expect("valid credits remaining regex"))
-    .collect()
-});
-
-static PERCENT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([0-9]{1,3})\s*%").expect("valid percent regex"));
-
-static FIRST_NUMBER_TOKEN_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([0-9][0-9.,\s\u{00A0}\u{202F}]*)").expect("valid token regex"));
-
-static THOUSANDS_COMMA_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\d{1,3}(,\d{3})+$").expect("valid thousands regex"));
-
-static FIVE_H_WORD_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b5\s*h\b").expect("valid 5h regex"));
-
-static SEVEN_D_WORD_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\b7\s*d\b").expect("valid 7d regex"));
-
-static RESETS_PREFIX_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^resets?:?\s*").expect("valid resets prefix regex"));
-
-static AT_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\s+at\s+").expect("valid at regex"));
-
-static ON_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\s+on\s+").expect("valid on regex"));
-
-static TODAY_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\btoday\b").expect("valid today regex"));
-
-static TOMORROW_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)\btomorrow\b").expect("valid tomorrow regex"));
-
-static WEEKDAY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\b(mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(day)?\b")
-        .expect("valid weekday regex")
-});
 
 const CLIENT_BOOTSTRAP_NEEDLE: &str = "id=\"client-bootstrap\"";
 const NEXT_DATA_NEEDLE: &str = "id=\"__NEXT_DATA__\"";
@@ -148,15 +90,38 @@ impl OpenAIDashboardParser {
 
     pub fn parse_code_review_remaining_percent(body_text: &str) -> Option<f64> {
         let cleaned = body_text.replace('\r', "\n");
-        for regex in CODE_REVIEW_REGEXES.iter() {
-            let Some(caps) = regex.captures(&cleaned) else {
-                continue;
-            };
-            let Some(m) = caps.get(1) else {
-                continue;
-            };
-            if let Ok(val) = m.as_str().parse::<f64>() {
-                return Some(val.clamp(0.0, 100.0));
+        let lower = cleaned.to_ascii_lowercase();
+        for prefix in ["code", "core"] {
+            let mut search_from = 0;
+            while let Some(rel) = lower[search_from..].find(prefix) {
+                let start = search_from + rel + prefix.len();
+                search_from = start;
+                let rest = &lower[start..];
+                let after_ws = rest.trim_start();
+                let Some(after_review) = after_ws.strip_prefix("review") else {
+                    continue;
+                };
+                // Skip non-digit, non-'%' characters
+                let mut idx = 0;
+                let bytes = after_review.as_bytes();
+                while idx < bytes.len() && !bytes[idx].is_ascii_digit() && bytes[idx] != b'%' {
+                    idx += 1;
+                }
+                let digits_start = idx;
+                while idx < bytes.len() && bytes[idx].is_ascii_digit() {
+                    idx += 1;
+                }
+                let digit_len = idx - digits_start;
+                if !(1..=3).contains(&digit_len) || idx >= bytes.len() || bytes[idx] != b'%' {
+                    continue;
+                }
+                let digit_str = &after_review[digits_start..idx];
+                let after_pct = after_review[idx + 1..].trim_start();
+                if after_pct.starts_with("remaining")
+                    && let Ok(val) = digit_str.parse::<f64>()
+                {
+                    return Some(val.clamp(0.0, 100.0));
+                }
             }
         }
         None
@@ -164,12 +129,36 @@ impl OpenAIDashboardParser {
 
     pub fn parse_credits_remaining(body_text: &str) -> Option<f64> {
         let cleaned = body_text.replace('\r', "\n");
-        for regex in CREDITS_REMAINING_REGEXES.iter() {
-            if let Some(caps) = regex.captures(&cleaned)
-                && let Some(m) = caps.get(1)
-                && let Some(val) = Self::parse_first_number_token(m.as_str())
-            {
-                return Some(val);
+        let lower = cleaned.to_ascii_lowercase();
+        for (first, second) in [
+            ("credits", "remaining"),
+            ("remaining", "credits"),
+            ("credit", "balance"),
+        ] {
+            let mut search_from = 0;
+            while let Some(rel) = lower[search_from..].find(first) {
+                let start = search_from + rel + first.len();
+                search_from = start;
+                let after_ws = lower[start..].trim_start();
+                let Some(after_second) = after_ws.strip_prefix(second) else {
+                    continue;
+                };
+                let mut idx = 0;
+                let bytes = after_second.as_bytes();
+                while idx < bytes.len() && !bytes[idx].is_ascii_digit() {
+                    idx += 1;
+                }
+                let num_start = idx;
+                while idx < bytes.len()
+                    && (bytes[idx].is_ascii_digit() || matches!(bytes[idx], b'.' | b','))
+                {
+                    idx += 1;
+                }
+                if idx > num_start
+                    && let Some(val) = Self::parse_first_number_token(&after_second[num_start..idx])
+                {
+                    return Some(val);
+                }
             }
         }
         None
@@ -238,7 +227,7 @@ impl OpenAIDashboardParser {
                 Some(CreditEvent::new(date, service, credits_used))
             })
             .collect();
-        events.sort_by(|a, b| b.date.cmp(&a.date));
+        events.sort_by_key(|a| std::cmp::Reverse(a.date));
         events
     }
 
@@ -299,6 +288,16 @@ impl OpenAIDashboardParser {
         }
     }
 
+    fn is_thousands_comma(token: &str) -> bool {
+        let parts: Vec<&str> = token.split(',').collect();
+        parts.len() >= 2
+            && (1..=3).contains(&parts[0].len())
+            && parts[0].chars().all(|c| c.is_ascii_digit())
+            && parts[1..]
+                .iter()
+                .all(|p| p.len() == 3 && p.chars().all(|c| c.is_ascii_digit()))
+    }
+
     fn parse_credits_used(text: &str) -> f64 {
         let Some(raw) = Self::first_number_token(text) else {
             return 0.0;
@@ -313,7 +312,7 @@ impl OpenAIDashboardParser {
             if Self::uses_localized_decimal_comma_credit_label(text) {
                 return token.replace(',', ".").parse::<f64>().unwrap_or(0.0);
             }
-            if THOUSANDS_COMMA_REGEX.is_match(&token) {
+            if Self::is_thousands_comma(&token) {
                 return token.replace(',', "").parse::<f64>().unwrap_or(0.0);
             }
             return token.replace(',', ".").parse::<f64>().unwrap_or(0.0);
@@ -326,10 +325,26 @@ impl OpenAIDashboardParser {
     }
 
     fn first_number_token(text: &str) -> Option<String> {
-        FIRST_NUMBER_TOKEN_REGEX
-            .captures(text)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_owned())
+        let mut started = false;
+        let mut out = String::new();
+        for ch in text.chars() {
+            if !started {
+                if ch.is_ascii_digit() {
+                    started = true;
+                    out.push(ch);
+                }
+            } else if ch.is_ascii_digit()
+                || matches!(
+                    ch,
+                    '.' | ',' | ' ' | '\t' | '\n' | '\r' | '\u{00A0}' | '\u{202F}'
+                )
+            {
+                out.push(ch);
+            } else {
+                break;
+            }
+        }
+        if out.is_empty() { None } else { Some(out) }
     }
 
     fn parse_first_number_token(raw: &str) -> Option<f64> {
@@ -351,7 +366,7 @@ impl OpenAIDashboardParser {
                 cleaned.replace(',', "")
             }
         } else if has_comma {
-            if THOUSANDS_COMMA_REGEX.is_match(&cleaned) {
+            if Self::is_thousands_comma(&cleaned) {
                 cleaned.replace(',', "")
             } else {
                 cleaned.replace(',', ".")
@@ -376,7 +391,7 @@ impl OpenAIDashboardParser {
         let gt_offset = after_id.find('>')?;
         let content_after_gt = &after_id[gt_offset + 1..];
         let close_offset = content_after_gt.find(SCRIPT_CLOSE_NEEDLE)?;
-        let raw_slice = content_after_gt[..close_offset].as_bytes();
+        let raw_slice = &content_after_gt.as_bytes()[..close_offset];
         let trimmed = Self::trim_ascii_whitespace(raw_slice);
         if trimmed.is_empty() {
             None
@@ -456,8 +471,23 @@ impl OpenAIDashboardParser {
     }
 
     fn parse_percent(line: &str) -> Option<(f64, bool)> {
-        let caps = PERCENT_REGEX.captures(line)?;
-        let val = caps.get(1)?.as_str().parse::<f64>().ok()?;
+        let mut found_val: Option<f64> = None;
+        for (pct_idx, _) in line.match_indices('%') {
+            let before = line[..pct_idx].trim_end();
+            let digits_len = before
+                .bytes()
+                .rev()
+                .take_while(|b| b.is_ascii_digit())
+                .count();
+            if (1..=3).contains(&digits_len) {
+                let num_str = &before[before.len() - digits_len..];
+                if let Ok(v) = num_str.parse::<f64>() {
+                    found_val = Some(v);
+                    break;
+                }
+            }
+        }
+        let val = found_val?;
         let lower = line.to_ascii_lowercase();
         let is_remaining = lower.contains("remaining") || lower.contains("left");
         let is_used =
@@ -471,10 +501,33 @@ impl OpenAIDashboardParser {
         Some((val, true))
     }
 
+    fn has_spaced_unit_word(lower: &str, digit: char, unit: char) -> bool {
+        let chars: Vec<char> = lower.chars().collect();
+        for i in 0..chars.len() {
+            if chars[i] != digit {
+                continue;
+            }
+            if i > 0 && chars[i - 1].is_alphanumeric() {
+                continue;
+            }
+            let mut j = i + 1;
+            while j < chars.len() && chars[j].is_whitespace() {
+                j += 1;
+            }
+            if j < chars.len() && chars[j] == unit {
+                let after = j + 1;
+                if after == chars.len() || !chars[after].is_alphanumeric() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn is_five_hour_limit_line(line: &str) -> bool {
         let lower = line.to_ascii_lowercase();
         lower.contains("5h")
-            || FIVE_H_WORD_REGEX.is_match(&lower)
+            || Self::has_spaced_unit_word(&lower, '5', 'h')
             || lower.contains("5-hour")
             || lower.contains("5 hour")
     }
@@ -485,7 +538,7 @@ impl OpenAIDashboardParser {
             || lower.contains("7-day")
             || lower.contains("7 day")
             || lower.contains("7d")
-            || SEVEN_D_WORD_REGEX.is_match(&lower)
+            || Self::has_spaced_unit_word(&lower, '7', 'd')
     }
 
     fn is_code_review_limit_line(line: &str) -> bool {
@@ -496,57 +549,76 @@ impl OpenAIDashboardParser {
         !lower.contains("github code review")
     }
 
+    fn strip_resets_prefix(text: &str) -> &str {
+        let trimmed = text.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let after_word = if lower.starts_with("resets") {
+            &trimmed[6..]
+        } else if lower.starts_with("reset") {
+            &trimmed[5..]
+        } else {
+            return trimmed;
+        };
+        let after_colon = after_word.strip_prefix(':').unwrap_or(after_word);
+        after_colon.trim_start()
+    }
+
     fn parse_reset_date(line: &str, now: Timestamp) -> Option<Timestamp> {
-        let mut raw = RESETS_PREFIX_REGEX.replace(line.trim(), "").into_owned();
-        raw = AT_REGEX.replace_all(&raw, " ").into_owned();
-        raw = ON_REGEX.replace_all(&raw, " ").into_owned();
-        let raw = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+        let without_prefix = Self::strip_resets_prefix(line);
+        let words: Vec<&str> = without_prefix
+            .split_whitespace()
+            .filter(|w| !w.eq_ignore_ascii_case("at") && !w.eq_ignore_ascii_case("on"))
+            .collect();
 
         let tz = TimeZone::system();
         let now_zoned = now.to_zoned(tz.clone());
         let now_date = now_zoned.date();
 
-        let mut candidate = raw.clone();
-        let lower = candidate.to_ascii_lowercase();
         let mut used_relative_day = false;
+        let mut had_today = false;
+        let mut replaced_words: Vec<String> = Vec::with_capacity(words.len() + 1);
+        let mut replaced_weekday = false;
 
-        if TODAY_REGEX.is_match(&candidate) {
-            used_relative_day = true;
-            let date_text = format!("{} {}", Self::month_abbr(now_date.month()), now_date.day());
-            candidate = TODAY_REGEX
-                .replace_all(&candidate, date_text.as_str())
-                .into_owned();
-        } else if TOMORROW_REGEX.is_match(&candidate) {
-            used_relative_day = true;
-            if let Ok(tomorrow) = now_date.checked_add(jiff::Span::new().days(1)) {
-                let date_text =
-                    format!("{} {}", Self::month_abbr(tomorrow.month()), tomorrow.day());
-                candidate = TOMORROW_REGEX
-                    .replace_all(&candidate, date_text.as_str())
-                    .into_owned();
+        for word in words {
+            let clean_word = word.trim_end_matches(',');
+            if clean_word.eq_ignore_ascii_case("today") {
+                used_relative_day = true;
+                had_today = true;
+                replaced_words.push(Self::month_abbr(now_date.month()).to_owned());
+                replaced_words.push(now_date.day().to_string());
+            } else if clean_word.eq_ignore_ascii_case("tomorrow") {
+                used_relative_day = true;
+                if let Ok(tomorrow) = now_date.checked_add(jiff::Span::new().days(1)) {
+                    replaced_words.push(Self::month_abbr(tomorrow.month()).to_owned());
+                    replaced_words.push(tomorrow.day().to_string());
+                } else {
+                    replaced_words.push(word.to_owned());
+                }
+            } else if !replaced_weekday
+                && let Some(target_weekday_iso) = Self::weekday_iso(clean_word)
+            {
+                replaced_weekday = true;
+                used_relative_day = true;
+                let current_iso = now_date.weekday().to_monday_one_offset();
+                let mut delta = i64::from(target_weekday_iso) - i64::from(current_iso);
+                if delta < 0 {
+                    delta += 7;
+                }
+                if let Ok(target_date) = now_date.checked_add(jiff::Span::new().days(delta)) {
+                    replaced_words.push(Self::month_abbr(target_date.month()).to_owned());
+                    replaced_words.push(target_date.day().to_string());
+                } else {
+                    replaced_words.push(word.to_owned());
+                }
+            } else {
+                replaced_words.push(word.to_owned());
             }
         }
 
-        if let Some((matched, target_weekday_iso)) = Self::weekday_match(&candidate) {
-            used_relative_day = true;
-            let current_iso = now_date.weekday().to_monday_one_offset();
-            let mut delta = i64::from(target_weekday_iso) - i64::from(current_iso);
-            if delta < 0 {
-                delta += 7;
-            }
-            if let Ok(target_date) = now_date.checked_add(jiff::Span::new().days(delta)) {
-                let date_text = format!(
-                    "{} {}",
-                    Self::month_abbr(target_date.month()),
-                    target_date.day()
-                );
-                candidate = candidate.replacen(&matched, &date_text, 1);
-            }
-        }
-
+        let candidate = replaced_words.join(" ");
         let parsed = Self::parse_candidate_datetime(&candidate, now_date.year(), &tz)?;
         if used_relative_day && parsed < now {
-            let days_to_add = if lower.contains("today") { 1 } else { 7 };
+            let days_to_add = if had_today { 1 } else { 7 };
             let bumped = parsed
                 .to_zoned(tz)
                 .checked_add(jiff::Span::new().days(days_to_add))
@@ -556,20 +628,17 @@ impl OpenAIDashboardParser {
         Some(parsed)
     }
 
-    fn weekday_match(text: &str) -> Option<(String, i8)> {
-        let m = WEEKDAY_REGEX.find(text)?;
-        let matched = m.as_str().to_owned();
-        let lower = matched.to_ascii_lowercase();
-        let iso_weekday = match &lower[..3] {
-            "mon" => 1,
-            "tue" => 2,
-            "wed" => 3,
-            "thu" => 4,
-            "fri" => 5,
-            "sat" => 6,
-            _ => 7,
-        };
-        Some((matched, iso_weekday))
+    fn weekday_iso(word: &str) -> Option<i8> {
+        match word.to_ascii_lowercase().as_str() {
+            "mon" | "monday" => Some(1),
+            "tue" | "tues" | "tuesday" => Some(2),
+            "wed" | "wednes" | "wednesday" => Some(3),
+            "thu" | "thur" | "thurs" | "thursday" => Some(4),
+            "fri" | "friday" => Some(5),
+            "sat" | "satur" | "saturday" => Some(6),
+            "sun" | "sunday" => Some(7),
+            _ => None,
+        }
     }
 
     fn parse_candidate_datetime(

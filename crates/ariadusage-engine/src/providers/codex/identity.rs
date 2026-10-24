@@ -1,11 +1,15 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexIdentity.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/UsageFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
-use super::credentials::{CodexOAuthCredentials, parse_jwt_payload};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+use super::credentials::{CodexOAuthCredentials, CodexOAuthCredentialsStore, parse_jwt_payload};
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CodexIdentity {
     ProviderAccount { id: String },
     EmailOnly { normalized_email: String },
@@ -55,6 +59,20 @@ impl CodexIdentityResolver {
             return None;
         }
         Some(trimmed)
+    }
+
+    pub fn load_auth_backed_codex_account(
+        environment: &BTreeMap<String, String>,
+        allow_external_oauth_sources: bool,
+        home_directory: Option<&Path>,
+    ) -> CodexAuthBackedAccount {
+        let creds = CodexOAuthCredentialsStore::load_for_usage(
+            environment,
+            allow_external_oauth_sources,
+            home_directory,
+        )
+        .ok();
+        CodexAuthBackedAccount::from_credentials(creds.as_ref())
     }
 }
 

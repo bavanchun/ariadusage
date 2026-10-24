@@ -5,14 +5,25 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use ariadusage_core::model::snapshot::UsageSnapshot;
+use ariadusage_core::pipeline::FetchInteraction;
+use ariadusage_protocol::secret::SecretString;
+use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderName, HeaderValue, USER_AGENT};
+use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
-use crate::fs_private::write_private;
+use crate::brokers::call::BrokerCall;
+use crate::brokers::net::{DeclaredOrigins, NetBroker, NetRequest};
+use crate::private_file::{WriteHooks, write_private};
 
+use super::credentials::CodexOAuthCredentials;
 use super::identity::{CodexAuthBackedAccount, CodexIdentity, CodexIdentityResolver};
 use super::openai_dashboard_models::OpenAIDashboardSnapshot;
+
+pub const DEFAULT_CHATGPT_ACCOUNTS_URL: &str = "https://chatgpt.com/backend-api/accounts";
 
 pub fn normalize_workspace_account_id(raw: Option<&str>) -> Option<String> {
     let trimmed = raw?.trim();
@@ -41,6 +52,7 @@ pub enum CodexDashboardDisposition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CodexDashboardAllowedEffect {
+    /// Allows subscription dates to attach to the active Codex snapshot.
     SubscriptionMetadataAttachment,
     UsageBackfill,
     CreditsAttachment,
@@ -59,6 +71,20 @@ pub enum CodexDashboardCleanup {
     DashboardCache,
 }
 
+impl CodexDashboardCleanup {
+    pub const ALL: &'static [Self] = &[
+        Self::DashboardSnapshot,
+        Self::DashboardDerivedUsage,
+        Self::DashboardDerivedCredits,
+        Self::DashboardRefreshGuardSeed,
+        Self::DashboardCache,
+    ];
+
+    pub fn all_set() -> BTreeSet<Self> {
+        Self::ALL.iter().copied().collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CodexDashboardKnownOwnerCandidate {
     pub identity: CodexIdentity,
@@ -69,17 +95,13 @@ pub struct CodexDashboardKnownOwnerCandidate {
 impl CodexDashboardKnownOwnerCandidate {
     pub fn new(
         identity: CodexIdentity,
-        email: Option<&str>,
+        normalized_email: Option<&str>,
         source_isolation_identifier: Option<&str>,
     ) -> Self {
-        let normalized_isolation = source_isolation_identifier
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
         Self {
             identity,
-            normalized_email: CodexIdentityResolver::normalize_email(email),
-            source_isolation_identifier: normalized_isolation,
+            normalized_email: normalized_email.map(str::to_owned),
+            source_isolation_identifier: source_isolation_identifier.map(str::to_owned),
         }
     }
 
@@ -94,7 +116,7 @@ impl CodexDashboardKnownOwnerCandidate {
     ) -> Self {
         Self::new(
             CodexIdentityResolver::resolve(account_id, email),
-            email,
+            CodexIdentityResolver::normalize_email(email).as_deref(),
             source_isolation_identifier,
         )
     }
@@ -123,14 +145,10 @@ impl CodexDashboardOwnershipProofContext {
     ) -> Self {
         Self {
             current_identity,
-            expected_scoped_email: CodexIdentityResolver::normalize_email(expected_scoped_email),
-            trusted_current_usage_email: CodexIdentityResolver::normalize_email(
-                trusted_current_usage_email,
-            ),
-            dashboard_signed_in_email: CodexIdentityResolver::normalize_email(
-                dashboard_signed_in_email,
-            ),
-            dashboard_account_id: normalize_workspace_account_id(dashboard_account_id),
+            expected_scoped_email: expected_scoped_email.map(str::to_owned),
+            trusted_current_usage_email: trusted_current_usage_email.map(str::to_owned),
+            dashboard_signed_in_email: dashboard_signed_in_email.map(str::to_owned),
+            dashboard_account_id: dashboard_account_id.map(str::to_owned),
             requires_workspace_balance_scope,
             known_owners,
         }
@@ -149,10 +167,9 @@ impl CodexDashboardRoutingHints {
         last_known_dashboard_routing_email: Option<&str>,
     ) -> Self {
         Self {
-            target_email: CodexIdentityResolver::normalize_email(target_email),
-            last_known_dashboard_routing_email: CodexIdentityResolver::normalize_email(
-                last_known_dashboard_routing_email,
-            ),
+            target_email: target_email.map(str::to_owned),
+            last_known_dashboard_routing_email: last_known_dashboard_routing_email
+                .map(str::to_owned),
         }
     }
 }
@@ -180,16 +197,20 @@ impl CodexDashboardAuthorityInput {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodexDashboardDecisionReason {
-    ExactProviderAccountWithoutCompetingWorkspaces,
-    UniqueEmailBackedOwnerMatched,
+    ExactProviderAccountMatch,
+    TrustedEmailMatchNoCompetingOwner,
+    TrustedContinuityNoCompetingOwner,
+    WrongEmail {
+        expected: Option<String>,
+        actual: Option<String>,
+    },
+    SameEmailAmbiguity {
+        email: String,
+    },
     UnresolvedWithoutTrustedEvidence,
-    SameEmailAmbiguity,
-    MissingDashboardSignedInEmail,
-    DashboardEmailMismatch { expected: String, actual: String },
+    ProviderAccountMissingScopedEmail,
     ProviderAccountLacksExactOwnershipProof,
-    ProviderAccountCollisionWithoutExactMatch,
-    UnresolvedWithKnownOwnersPresent,
-    WrongEmail { expected: String, actual: String },
+    MissingDashboardSignedInEmail,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,7 +239,7 @@ impl CodexDashboardAuthorityDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CodexDashboardPolicyError {
-    #[error("Codex dashboard policy returned display-only")]
+    #[error("Codex dashboard may be displayed, but it cannot be attached to the active account.")]
     DisplayOnly(CodexDashboardAuthorityDecision),
 }
 
@@ -227,325 +248,243 @@ pub struct CodexDashboardAuthority;
 impl CodexDashboardAuthority {
     pub fn evaluate(input: &CodexDashboardAuthorityInput) -> CodexDashboardAuthorityDecision {
         let proof = &input.proof;
-        let expected_email = proof
-            .expected_scoped_email
-            .as_deref()
-            .or(proof.trusted_current_usage_email.as_deref());
-        let Some(dashboard_email) = proof.dashboard_signed_in_email.as_deref() else {
-            return CodexDashboardAuthorityDecision::new(
+        let current_identity = Self::normalize_identity(&proof.current_identity);
+        let expected_scoped_email =
+            CodexIdentityResolver::normalize_email(proof.expected_scoped_email.as_deref());
+        let trusted_current_usage_email =
+            CodexIdentityResolver::normalize_email(proof.trusted_current_usage_email.as_deref());
+        let dashboard_signed_in_email =
+            CodexIdentityResolver::normalize_email(proof.dashboard_signed_in_email.as_deref());
+        let known_owners = Self::normalize_known_owners(&proof.known_owners);
+
+        // Routing hints are intentionally excluded from ownership proof.
+        let Some(dashboard_signed_in_email) = dashboard_signed_in_email else {
+            return Self::make_decision(
                 CodexDashboardDisposition::FailClosed,
                 CodexDashboardDecisionReason::MissingDashboardSignedInEmail,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
+                input.source_kind,
             );
         };
 
-        if let Some(expected_email) = expected_email
-            && expected_email != dashboard_email
+        if let Some(expected_scoped_email) = &expected_scoped_email
+            && &dashboard_signed_in_email != expected_scoped_email
         {
-            let reason = if matches!(input.source_kind, CodexDashboardSourceKind::CachedDashboard)
-                && proof.expected_scoped_email.is_none()
-            {
-                CodexDashboardDecisionReason::DashboardEmailMismatch {
-                    expected: expected_email.to_owned(),
-                    actual: dashboard_email.to_owned(),
-                }
-            } else {
-                CodexDashboardDecisionReason::WrongEmail {
-                    expected: expected_email.to_owned(),
-                    actual: dashboard_email.to_owned(),
-                }
-            };
-            return CodexDashboardAuthorityDecision::new(
+            return Self::make_decision(
                 CodexDashboardDisposition::FailClosed,
-                reason,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
+                CodexDashboardDecisionReason::WrongEmail {
+                    expected: Some(expected_scoped_email.clone()),
+                    actual: Some(dashboard_signed_in_email),
+                },
+                input.source_kind,
             );
         }
 
         if proof.requires_workspace_balance_scope {
-            let CodexIdentity::ProviderAccount { id: account_id } = &proof.current_identity else {
-                return CodexDashboardAuthorityDecision::new(
-                    CodexDashboardDisposition::FailClosed,
-                    CodexDashboardDecisionReason::ProviderAccountLacksExactOwnershipProof,
-                    BTreeSet::new(),
-                    Self::fail_closed_cleanup(input.source_kind),
-                );
+            let matches_workspace_id = match &current_identity {
+                CodexIdentity::ProviderAccount { id } => {
+                    normalize_workspace_account_id(proof.dashboard_account_id.as_deref()).as_deref()
+                        == Some(id.as_str())
+                }
+                CodexIdentity::EmailOnly { .. } | CodexIdentity::Unresolved => false,
             };
-            let normalized_account_id = normalize_workspace_account_id(Some(account_id.as_str()));
-            if proof.dashboard_account_id.is_none()
-                || proof.dashboard_account_id != normalized_account_id
-            {
-                return CodexDashboardAuthorityDecision::new(
+            if !matches_workspace_id {
+                return Self::make_decision(
                     CodexDashboardDisposition::FailClosed,
                     CodexDashboardDecisionReason::ProviderAccountLacksExactOwnershipProof,
-                    BTreeSet::new(),
-                    Self::fail_closed_cleanup(input.source_kind),
+                    input.source_kind,
                 );
             }
         }
 
-        let normalized_owners = Self::normalize_known_owners(&proof.known_owners);
-        let matching_email_owners: Vec<&CodexDashboardKnownOwnerCandidate> = normalized_owners
-            .iter()
-            .filter(|c| c.normalized_email.as_deref() == Some(dashboard_email))
-            .collect();
-
-        match &proof.current_identity {
-            CodexIdentity::ProviderAccount { id: account_id } => Self::evaluate_provider_account(
-                account_id,
-                dashboard_email,
-                &matching_email_owners,
-                input,
-            ),
-            CodexIdentity::EmailOnly { normalized_email } => Self::evaluate_email_only(
-                normalized_email,
-                dashboard_email,
-                &matching_email_owners,
-                input,
-            ),
-            CodexIdentity::Unresolved => Self::evaluate_unresolved(&normalized_owners, input),
+        match current_identity {
+            CodexIdentity::ProviderAccount { id } => {
+                if expected_scoped_email.is_none() {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::FailClosed,
+                        CodexDashboardDecisionReason::ProviderAccountMissingScopedEmail,
+                        input.source_kind,
+                    );
+                }
+                if Self::known_owner_count(&dashboard_signed_in_email, &known_owners) > 1 {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::DisplayOnly,
+                        CodexDashboardDecisionReason::SameEmailAmbiguity {
+                            email: dashboard_signed_in_email,
+                        },
+                        input.source_kind,
+                    );
+                }
+                let exact_match = known_owners.iter().any(|candidate| {
+                    candidate.identity == CodexIdentity::ProviderAccount { id: id.clone() }
+                        && candidate.normalized_email.as_deref()
+                            == Some(dashboard_signed_in_email.as_str())
+                });
+                if exact_match {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::Attach,
+                        CodexDashboardDecisionReason::ExactProviderAccountMatch,
+                        input.source_kind,
+                    );
+                }
+                Self::make_decision(
+                    CodexDashboardDisposition::FailClosed,
+                    CodexDashboardDecisionReason::ProviderAccountLacksExactOwnershipProof,
+                    input.source_kind,
+                )
+            }
+            CodexIdentity::EmailOnly { normalized_email } => {
+                if dashboard_signed_in_email != normalized_email {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::FailClosed,
+                        CodexDashboardDecisionReason::WrongEmail {
+                            expected: Some(normalized_email),
+                            actual: Some(dashboard_signed_in_email),
+                        },
+                        input.source_kind,
+                    );
+                }
+                if Self::known_owner_count(&normalized_email, &known_owners) > 1 {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::DisplayOnly,
+                        CodexDashboardDecisionReason::SameEmailAmbiguity {
+                            email: normalized_email,
+                        },
+                        input.source_kind,
+                    );
+                }
+                Self::make_decision(
+                    CodexDashboardDisposition::Attach,
+                    CodexDashboardDecisionReason::TrustedEmailMatchNoCompetingOwner,
+                    input.source_kind,
+                )
+            }
+            CodexIdentity::Unresolved => {
+                let Some(trusted_current_usage_email) = trusted_current_usage_email else {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::FailClosed,
+                        CodexDashboardDecisionReason::UnresolvedWithoutTrustedEvidence,
+                        input.source_kind,
+                    );
+                };
+                if dashboard_signed_in_email != trusted_current_usage_email {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::FailClosed,
+                        CodexDashboardDecisionReason::WrongEmail {
+                            expected: Some(trusted_current_usage_email),
+                            actual: Some(dashboard_signed_in_email),
+                        },
+                        input.source_kind,
+                    );
+                }
+                if Self::known_owner_count(&trusted_current_usage_email, &known_owners) > 1 {
+                    return Self::make_decision(
+                        CodexDashboardDisposition::DisplayOnly,
+                        CodexDashboardDecisionReason::SameEmailAmbiguity {
+                            email: trusted_current_usage_email,
+                        },
+                        input.source_kind,
+                    );
+                }
+                Self::make_decision(
+                    CodexDashboardDisposition::Attach,
+                    CodexDashboardDecisionReason::TrustedContinuityNoCompetingOwner,
+                    input.source_kind,
+                )
+            }
         }
     }
 
-    fn evaluate_provider_account(
-        account_id: &str,
-        dashboard_email: &str,
-        matching_email_owners: &[&CodexDashboardKnownOwnerCandidate],
-        input: &CodexDashboardAuthorityInput,
-    ) -> CodexDashboardAuthorityDecision {
-        let Some(expected_email) = input
-            .proof
-            .expected_scoped_email
-            .as_deref()
-            .or(input.proof.trusted_current_usage_email.as_deref())
-        else {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::ProviderAccountLacksExactOwnershipProof,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
-        };
-
-        if expected_email != dashboard_email {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::WrongEmail {
-                    expected: expected_email.to_owned(),
-                    actual: dashboard_email.to_owned(),
-                },
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
+    fn normalize_identity(identity: &CodexIdentity) -> CodexIdentity {
+        match identity {
+            CodexIdentity::ProviderAccount { id } => {
+                if let Some(normalized_id) = normalize_workspace_account_id(Some(id.as_str())) {
+                    CodexIdentity::ProviderAccount { id: normalized_id }
+                } else {
+                    CodexIdentity::Unresolved
+                }
+            }
+            CodexIdentity::EmailOnly { normalized_email } => {
+                if let Some(normalized_email) =
+                    CodexIdentityResolver::normalize_email(Some(normalized_email.as_str()))
+                {
+                    CodexIdentity::EmailOnly { normalized_email }
+                } else {
+                    CodexIdentity::Unresolved
+                }
+            }
+            CodexIdentity::Unresolved => CodexIdentity::Unresolved,
         }
-
-        let competing_provider_accounts: BTreeSet<&str> = matching_email_owners
-            .iter()
-            .filter_map(|candidate| match &candidate.identity {
-                CodexIdentity::ProviderAccount { id } => Some(id.as_str()),
-                CodexIdentity::EmailOnly { .. } | CodexIdentity::Unresolved => None,
-            })
-            .collect();
-
-        if competing_provider_accounts.len() > 1 {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::ProviderAccountCollisionWithoutExactMatch,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
-        }
-
-        if let Some(only_account_id) = competing_provider_accounts.iter().next().copied()
-            && only_account_id != account_id
-        {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::ProviderAccountCollisionWithoutExactMatch,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
-        }
-
-        let has_competing_email_only_owner = matching_email_owners
-            .iter()
-            .any(|c| matches!(c.identity, CodexIdentity::EmailOnly { .. }));
-
-        if has_competing_email_only_owner {
-            let disposition = match input.source_kind {
-                CodexDashboardSourceKind::LiveWeb => CodexDashboardDisposition::DisplayOnly,
-                CodexDashboardSourceKind::CachedDashboard => CodexDashboardDisposition::FailClosed,
-            };
-            return CodexDashboardAuthorityDecision::new(
-                disposition,
-                CodexDashboardDecisionReason::SameEmailAmbiguity,
-                BTreeSet::new(),
-                Self::all_cleanup(),
-            );
-        }
-
-        CodexDashboardAuthorityDecision::new(
-            CodexDashboardDisposition::Attach,
-            CodexDashboardDecisionReason::ExactProviderAccountWithoutCompetingWorkspaces,
-            Self::attach_effects(input.source_kind),
-            BTreeSet::new(),
-        )
-    }
-
-    fn evaluate_email_only(
-        current_email: &str,
-        dashboard_email: &str,
-        matching_email_owners: &[&CodexDashboardKnownOwnerCandidate],
-        input: &CodexDashboardAuthorityInput,
-    ) -> CodexDashboardAuthorityDecision {
-        if current_email != dashboard_email {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::WrongEmail {
-                    expected: current_email.to_owned(),
-                    actual: dashboard_email.to_owned(),
-                },
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
-        }
-
-        let has_provider_account_for_same_email = matching_email_owners
-            .iter()
-            .any(|c| matches!(c.identity, CodexIdentity::ProviderAccount { .. }));
-
-        let known_owner_count = matching_email_owners.len();
-        if has_provider_account_for_same_email || known_owner_count > 1 {
-            let disposition = match input.source_kind {
-                CodexDashboardSourceKind::LiveWeb => CodexDashboardDisposition::DisplayOnly,
-                CodexDashboardSourceKind::CachedDashboard => CodexDashboardDisposition::FailClosed,
-            };
-            return CodexDashboardAuthorityDecision::new(
-                disposition,
-                CodexDashboardDecisionReason::SameEmailAmbiguity,
-                BTreeSet::new(),
-                Self::all_cleanup(),
-            );
-        }
-
-        CodexDashboardAuthorityDecision::new(
-            CodexDashboardDisposition::Attach,
-            CodexDashboardDecisionReason::UniqueEmailBackedOwnerMatched,
-            Self::attach_effects(input.source_kind),
-            BTreeSet::new(),
-        )
-    }
-
-    fn evaluate_unresolved(
-        normalized_owners: &[CodexDashboardKnownOwnerCandidate],
-        input: &CodexDashboardAuthorityInput,
-    ) -> CodexDashboardAuthorityDecision {
-        let has_any_known_owner = normalized_owners
-            .iter()
-            .any(|c| c.identity != CodexIdentity::Unresolved || c.normalized_email.is_some());
-
-        if has_any_known_owner {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::FailClosed,
-                CodexDashboardDecisionReason::UnresolvedWithKnownOwnersPresent,
-                BTreeSet::new(),
-                Self::fail_closed_cleanup(input.source_kind),
-            );
-        }
-
-        if input.proof.expected_scoped_email.is_none()
-            && input.proof.trusted_current_usage_email.is_none()
-        {
-            return CodexDashboardAuthorityDecision::new(
-                CodexDashboardDisposition::Attach,
-                CodexDashboardDecisionReason::UnresolvedWithoutTrustedEvidence,
-                Self::attach_effects(input.source_kind),
-                BTreeSet::new(),
-            );
-        }
-
-        CodexDashboardAuthorityDecision::new(
-            CodexDashboardDisposition::Attach,
-            CodexDashboardDecisionReason::UniqueEmailBackedOwnerMatched,
-            Self::attach_effects(input.source_kind),
-            BTreeSet::new(),
-        )
     }
 
     fn normalize_known_owners(
-        owners: &[CodexDashboardKnownOwnerCandidate],
-    ) -> Vec<CodexDashboardKnownOwnerCandidate> {
-        let mut seen = BTreeSet::new();
-        let mut out = Vec::new();
-        for owner in owners {
-            let normalized_identity = match &owner.identity {
-                CodexIdentity::ProviderAccount { id } => {
-                    CodexIdentityResolver::resolve(Some(id.as_str()), None)
+        candidates: &[CodexDashboardKnownOwnerCandidate],
+    ) -> BTreeSet<CodexDashboardKnownOwnerCandidate> {
+        candidates
+            .iter()
+            .map(|candidate| {
+                let identity = Self::normalize_identity(&candidate.identity);
+                let source_isolation_identifier = match &identity {
+                    CodexIdentity::ProviderAccount { .. } => None,
+                    CodexIdentity::EmailOnly { .. } | CodexIdentity::Unresolved => {
+                        candidate.source_isolation_identifier.clone()
+                    }
+                };
+                let normalized_email =
+                    CodexIdentityResolver::normalize_email(candidate.normalized_email.as_deref());
+                CodexDashboardKnownOwnerCandidate {
+                    identity,
+                    normalized_email,
+                    source_isolation_identifier,
                 }
-                CodexIdentity::EmailOnly { normalized_email } => {
-                    CodexIdentityResolver::resolve(None, Some(normalized_email.as_str()))
-                }
-                CodexIdentity::Unresolved => {
-                    CodexIdentityResolver::resolve(None, owner.normalized_email.as_deref())
-                }
-            };
-            let source_isolation_identifier = match &normalized_identity {
-                CodexIdentity::ProviderAccount { .. } => None,
-                CodexIdentity::EmailOnly { .. } | CodexIdentity::Unresolved => {
-                    owner.source_isolation_identifier.as_deref()
-                }
-            };
-            let candidate = CodexDashboardKnownOwnerCandidate::new(
-                normalized_identity,
-                owner.normalized_email.as_deref(),
-                source_isolation_identifier,
-            );
-            if seen.insert(candidate.clone()) {
-                out.push(candidate);
-            }
-        }
-        out
+            })
+            .collect()
     }
 
-    fn attach_effects(
+    fn known_owner_count(
+        email: &str,
+        candidates: &BTreeSet<CodexDashboardKnownOwnerCandidate>,
+    ) -> usize {
+        candidates
+            .iter()
+            .filter(|c| c.normalized_email.as_deref() == Some(email))
+            .count()
+    }
+
+    fn make_decision(
+        disposition: CodexDashboardDisposition,
+        reason: CodexDashboardDecisionReason,
+        source_kind: CodexDashboardSourceKind,
+    ) -> CodexDashboardAuthorityDecision {
+        CodexDashboardAuthorityDecision::new(
+            disposition,
+            reason,
+            Self::allowed_effects(disposition, source_kind),
+            if disposition == CodexDashboardDisposition::Attach {
+                BTreeSet::new()
+            } else {
+                CodexDashboardCleanup::all_set()
+            },
+        )
+    }
+
+    fn allowed_effects(
+        disposition: CodexDashboardDisposition,
         source_kind: CodexDashboardSourceKind,
     ) -> BTreeSet<CodexDashboardAllowedEffect> {
-        let mut effects = BTreeSet::from([
-            CodexDashboardAllowedEffect::SubscriptionMetadataAttachment,
-            CodexDashboardAllowedEffect::UsageBackfill,
-            CodexDashboardAllowedEffect::CreditsAttachment,
-            CodexDashboardAllowedEffect::RefreshGuardSeed,
-            CodexDashboardAllowedEffect::HistoricalBackfill,
-        ]);
-        if source_kind == CodexDashboardSourceKind::CachedDashboard {
-            effects.insert(CodexDashboardAllowedEffect::CachedDashboardReuse);
+        if disposition != CodexDashboardDisposition::Attach {
+            return BTreeSet::new();
         }
-        effects
-    }
-
-    fn all_cleanup() -> BTreeSet<CodexDashboardCleanup> {
-        BTreeSet::from([
-            CodexDashboardCleanup::DashboardSnapshot,
-            CodexDashboardCleanup::DashboardDerivedUsage,
-            CodexDashboardCleanup::DashboardDerivedCredits,
-            CodexDashboardCleanup::DashboardRefreshGuardSeed,
-            CodexDashboardCleanup::DashboardCache,
-        ])
-    }
-
-    fn fail_closed_cleanup(
-        source_kind: CodexDashboardSourceKind,
-    ) -> BTreeSet<CodexDashboardCleanup> {
         match source_kind {
             CodexDashboardSourceKind::LiveWeb => BTreeSet::from([
-                CodexDashboardCleanup::DashboardSnapshot,
-                CodexDashboardCleanup::DashboardDerivedUsage,
-                CodexDashboardCleanup::DashboardDerivedCredits,
-                CodexDashboardCleanup::DashboardRefreshGuardSeed,
+                CodexDashboardAllowedEffect::SubscriptionMetadataAttachment,
+                CodexDashboardAllowedEffect::UsageBackfill,
+                CodexDashboardAllowedEffect::CreditsAttachment,
+                CodexDashboardAllowedEffect::RefreshGuardSeed,
+                CodexDashboardAllowedEffect::HistoricalBackfill,
             ]),
-            CodexDashboardSourceKind::CachedDashboard => Self::all_cleanup(),
+            CodexDashboardSourceKind::CachedDashboard => {
+                BTreeSet::from([CodexDashboardAllowedEffect::CachedDashboardReuse])
+            }
         }
     }
 }
@@ -562,23 +501,20 @@ impl CodexCLIDashboardAuthorityContext {
         let effective_auth = auth
             .cloned()
             .unwrap_or_else(|| CodexAuthBackedAccount::new(CodexIdentity::Unresolved, None, None));
-        let normalized_auth_email = effective_auth.normalized_email();
-        let requires_workspace_balance_scope = dashboard.balance_is_workspace == Some(true)
-            || (dashboard.credits_available == Some(true) && dashboard.credits_remaining.is_none());
 
         CodexDashboardAuthorityInput::new(
             CodexDashboardSourceKind::LiveWeb,
             CodexDashboardOwnershipProofContext::new(
                 effective_auth.identity,
-                normalized_auth_email.as_deref(),
+                effective_auth.email.as_deref(),
                 None,
                 dashboard.signed_in_email.as_deref(),
                 dashboard.account_id.as_deref(),
-                requires_workspace_balance_scope,
+                dashboard.requires_workspace_balance_scope(),
                 known_owners,
             ),
             CodexDashboardRoutingHints::new(
-                routing_target_email.or(normalized_auth_email.as_deref()),
+                CodexIdentityResolver::normalize_email(routing_target_email).as_deref(),
                 None,
             ),
         )
@@ -595,41 +531,25 @@ impl CodexCLIDashboardAuthorityContext {
         let effective_auth = auth
             .cloned()
             .unwrap_or_else(|| CodexAuthBackedAccount::new(CodexIdentity::Unresolved, None, None));
-        let normalized_auth_email = effective_auth.normalized_email();
         let trusted_usage_email = if Self::should_trust_usage_email(source_label) {
-            CodexIdentityResolver::normalize_email(
-                usage.and_then(|u| u.identity.as_ref()?.account_email.as_deref()),
-            )
+            usage.and_then(|u| u.identity.as_ref()?.account_email.clone())
         } else {
             None
         };
-        let current_identity = if effective_auth.identity != CodexIdentity::Unresolved {
-            effective_auth.identity
-        } else {
-            CodexIdentityResolver::resolve(None, trusted_usage_email.as_deref())
-        };
-        let dashboard_email = dashboard
-            .signed_in_email
-            .as_deref()
-            .unwrap_or(cached_account_email);
-        let requires_workspace_balance_scope = dashboard.balance_is_workspace == Some(true)
-            || (dashboard.credits_available == Some(true) && dashboard.credits_remaining.is_none());
 
         CodexDashboardAuthorityInput::new(
             CodexDashboardSourceKind::CachedDashboard,
             CodexDashboardOwnershipProofContext::new(
-                current_identity,
-                normalized_auth_email.as_deref(),
+                effective_auth.identity,
+                effective_auth.email.as_deref(),
                 trusted_usage_email.as_deref(),
-                Some(dashboard_email),
+                dashboard.signed_in_email.as_deref(),
                 dashboard.account_id.as_deref(),
-                requires_workspace_balance_scope,
+                dashboard.requires_workspace_balance_scope(),
                 known_owners,
             ),
             CodexDashboardRoutingHints::new(
-                normalized_auth_email
-                    .as_deref()
-                    .or(trusted_usage_email.as_deref()),
+                effective_auth.email.as_deref(),
                 Some(cached_account_email),
             ),
         )
@@ -657,9 +577,210 @@ impl CodexCLIDashboardAuthorityContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexOpenAIWorkspaceIdentity {
+    pub workspace_account_id: String,
+    pub workspace_label: Option<String>,
+}
+
+impl CodexOpenAIWorkspaceIdentity {
+    pub fn new(workspace_account_id: &str, workspace_label: Option<&str>) -> Self {
+        Self {
+            workspace_account_id: Self::normalize_workspace_account_id(workspace_account_id),
+            workspace_label: Self::normalize_workspace_label(workspace_label),
+        }
+    }
+
+    pub fn normalize_workspace_account_id(value: &str) -> String {
+        value.trim().to_ascii_lowercase()
+    }
+
+    pub fn normalize_workspace_label(value: Option<&str>) -> Option<String> {
+        let trimmed = value?.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_owned())
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CodexOpenAIWorkspaceResolverError {
+    #[error("OpenAI account lookup returned an invalid response.")]
+    InvalidResponse,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountsResponse {
+    items: Vec<AccountItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AccountItem {
+    id: String,
+    name: Option<String>,
+}
+
+pub struct CodexOpenAIWorkspaceResolver;
+
+impl CodexOpenAIWorkspaceResolver {
+    pub const PERSONAL_WORKSPACE_NAME: &'static str = "Personal";
+
+    pub fn normalize_workspace_account_id(value: Option<&str>) -> Option<String> {
+        normalize_workspace_account_id(value)
+    }
+
+    pub fn is_personal_workspace_name(raw: Option<&str>) -> bool {
+        let Some(normalized) = CodexOpenAIWorkspaceIdentity::normalize_workspace_label(raw) else {
+            return false;
+        };
+        normalized.eq_ignore_ascii_case(Self::PERSONAL_WORKSPACE_NAME)
+    }
+
+    pub fn resolve_workspace_account_id(raw: Option<&str>) -> Option<String> {
+        normalize_workspace_account_id(raw)
+    }
+
+    pub async fn resolve(
+        net: &NetBroker,
+        credentials: &CodexOAuthCredentials,
+    ) -> Result<Option<CodexOpenAIWorkspaceIdentity>, CodexOpenAIWorkspaceResolverError> {
+        Self::resolve_with_url_and_call(net, credentials, DEFAULT_CHATGPT_ACCOUNTS_URL, None).await
+    }
+
+    pub async fn resolve_with_url_and_call(
+        net: &NetBroker,
+        credentials: &CodexOAuthCredentials,
+        accounts_url: &str,
+        call: Option<&BrokerCall>,
+    ) -> Result<Option<CodexOpenAIWorkspaceIdentity>, CodexOpenAIWorkspaceResolverError> {
+        let Some(workspace_account_id) =
+            Self::normalize_workspace_account_id(credentials.account_id.as_deref())
+        else {
+            return Ok(None);
+        };
+        let identities =
+            Self::list_workspaces_with_url_and_call(net, credentials, accounts_url, call).await?;
+        if let Some(identity) = identities
+            .into_iter()
+            .find(|item| item.workspace_account_id == workspace_account_id)
+        {
+            return Ok(Some(identity));
+        }
+        Ok(Some(CodexOpenAIWorkspaceIdentity {
+            workspace_account_id,
+            workspace_label: None,
+        }))
+    }
+
+    pub async fn list_workspaces(
+        net: &NetBroker,
+        credentials: &CodexOAuthCredentials,
+    ) -> Result<Vec<CodexOpenAIWorkspaceIdentity>, CodexOpenAIWorkspaceResolverError> {
+        Self::list_workspaces_with_url_and_call(
+            net,
+            credentials,
+            DEFAULT_CHATGPT_ACCOUNTS_URL,
+            None,
+        )
+        .await
+    }
+
+    pub async fn list_workspaces_with_url_and_call(
+        net: &NetBroker,
+        credentials: &CodexOAuthCredentials,
+        accounts_url: &str,
+        call: Option<&BrokerCall>,
+    ) -> Result<Vec<CodexOpenAIWorkspaceIdentity>, CodexOpenAIWorkspaceResolverError> {
+        let url = Url::parse(accounts_url)
+            .map_err(|_| CodexOpenAIWorkspaceResolverError::InvalidResponse)?;
+        let declared = DeclaredOrigins::from_urls([url.clone()])
+            .map_err(|_| CodexOpenAIWorkspaceResolverError::InvalidResponse)?;
+        let token = credentials.access_token_str().trim();
+        if token.is_empty()
+            || !token
+                .bytes()
+                .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b))
+        {
+            return Err(CodexOpenAIWorkspaceResolverError::InvalidResponse);
+        }
+
+        let mut req = NetRequest::new(Method::GET, url);
+        req.timeout = Some(Duration::from_secs(20));
+        req.headers
+            .insert(USER_AGENT, HeaderValue::from_static("codex-cli"));
+        req.headers
+            .insert(ACCEPT, HeaderValue::from_static("application/json"));
+        req.credentials
+            .push((AUTHORIZATION, SecretString::from(format!("Bearer {token}"))));
+        if let Some(workspace_account_id) =
+            Self::normalize_workspace_account_id(credentials.account_id.as_deref())
+            && let Ok(val) = HeaderValue::from_str(&workspace_account_id)
+        {
+            req.headers
+                .insert(HeaderName::from_static("chatgpt-account-id"), val);
+        }
+
+        let default_call;
+        let effective_call = match call {
+            Some(c) => c,
+            None => {
+                default_call = BrokerCall {
+                    interaction: FetchInteraction::Background,
+                    cancel: CancellationToken::new(),
+                    request_id: "codex-workspace-resolver".to_owned(),
+                };
+                &default_call
+            }
+        };
+
+        let response = net
+            .send_response(effective_call, &declared, req)
+            .await
+            .map_err(|_| CodexOpenAIWorkspaceResolverError::InvalidResponse)?;
+
+        if !(200..300).contains(&response.status.as_u16()) {
+            return Err(CodexOpenAIWorkspaceResolverError::InvalidResponse);
+        }
+
+        Self::decode_accounts_response(&response.body)
+    }
+
+    pub fn decode_accounts_response(
+        data: &[u8],
+    ) -> Result<Vec<CodexOpenAIWorkspaceIdentity>, CodexOpenAIWorkspaceResolverError> {
+        let decoded: AccountsResponse = serde_json::from_slice(data)
+            .map_err(|_| CodexOpenAIWorkspaceResolverError::InvalidResponse)?;
+        Ok(decoded
+            .items
+            .into_iter()
+            .filter_map(|account| {
+                let workspace_account_id = Self::normalize_workspace_account_id(Some(&account.id))?;
+                let workspace_label = account
+                    .name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| Some(Self::PERSONAL_WORKSPACE_NAME.to_owned()));
+                Some(CodexOpenAIWorkspaceIdentity {
+                    workspace_account_id,
+                    workspace_label,
+                })
+            })
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodexOpenAIWorkspaceIdentityCachePayload {
     pub version: i32,
-    pub workspace_names_by_account_id: BTreeMap<String, String>,
+    #[serde(
+        rename = "labelsByWorkspaceAccountID",
+        alias = "workspace_names_by_account_id"
+    )]
+    pub labels_by_workspace_account_id: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -675,18 +796,20 @@ impl CodexOpenAIWorkspaceIdentityCache {
     }
 
     pub fn normalize_workspace_label(raw: Option<&str>) -> Option<String> {
-        let trimmed = raw?.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_owned())
-        }
+        CodexOpenAIWorkspaceIdentity::normalize_workspace_label(raw)
     }
 
-    pub fn workspace_label(&self, account_id: Option<&str>) -> Option<String> {
-        let normalized_account_id = normalize_workspace_account_id(account_id)?;
+    pub fn workspace_label(&self, workspace_account_id: Option<&str>) -> Option<String> {
+        let normalized = normalize_workspace_account_id(workspace_account_id)?;
         let entries = self.load_entries();
-        entries.get(&normalized_account_id).cloned()
+        entries.get(&normalized).cloned()
+    }
+
+    pub fn store(&self, identity: &CodexOpenAIWorkspaceIdentity) -> std::io::Result<()> {
+        self.store_workspace_label(
+            Some(&identity.workspace_account_id),
+            identity.workspace_label.as_deref(),
+        )
     }
 
     pub fn store_workspace_label(
@@ -704,17 +827,14 @@ impl CodexOpenAIWorkspaceIdentityCache {
             return Ok(());
         };
         let mut entries = self.load_entries();
-        if entries.get(&normalized_account_id) == Some(&normalized_label) {
-            return Ok(());
-        }
         entries.insert(normalized_account_id, normalized_label);
         let payload = CodexOpenAIWorkspaceIdentityCachePayload {
             version: Self::CURRENT_VERSION,
-            workspace_names_by_account_id: entries,
+            labels_by_workspace_account_id: entries,
         };
         let mut bytes = serde_json::to_vec_pretty(&payload).map_err(std::io::Error::other)?;
         bytes.push(b'\n');
-        write_private(path, &bytes)
+        write_private(path, &bytes, &WriteHooks::default()).map_err(std::io::Error::other)
     }
 
     pub fn clear(&self) {
@@ -734,7 +854,8 @@ impl CodexOpenAIWorkspaceIdentityCache {
         let Ok(bytes) = std::fs::read(path) else {
             return BTreeMap::new();
         };
-        let Ok(payload) = serde_json::from_slice::<CodexOpenAIWorkspaceIdentityCachePayload>(&bytes)
+        let Ok(payload) =
+            serde_json::from_slice::<CodexOpenAIWorkspaceIdentityCachePayload>(&bytes)
         else {
             return BTreeMap::new();
         };
@@ -742,7 +863,7 @@ impl CodexOpenAIWorkspaceIdentityCache {
             return BTreeMap::new();
         }
         let mut normalized = BTreeMap::new();
-        for (raw_id, raw_name) in payload.workspace_names_by_account_id {
+        for (raw_id, raw_name) in payload.labels_by_workspace_account_id {
             if let (Some(id), Some(label)) = (
                 normalize_workspace_account_id(Some(&raw_id)),
                 Self::normalize_workspace_label(Some(&raw_name)),
@@ -751,23 +872,5 @@ impl CodexOpenAIWorkspaceIdentityCache {
             }
         }
         normalized
-    }
-}
-
-pub struct CodexOpenAIWorkspaceResolver;
-
-impl CodexOpenAIWorkspaceResolver {
-    pub const PERSONAL_WORKSPACE_NAME: &'static str = "Personal";
-
-    pub fn is_personal_workspace_name(raw: Option<&str>) -> bool {
-        let Some(normalized) = CodexOpenAIWorkspaceIdentityCache::normalize_workspace_label(raw)
-        else {
-            return false;
-        };
-        normalized.eq_ignore_ascii_case(Self::PERSONAL_WORKSPACE_NAME)
-    }
-
-    pub fn resolve_workspace_account_id(raw: Option<&str>) -> Option<String> {
-        normalize_workspace_account_id(raw)
     }
 }

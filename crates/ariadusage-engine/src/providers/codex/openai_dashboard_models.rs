@@ -17,7 +17,7 @@ use jiff::tz::TimeZone;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use crate::fs_private::write_private;
+use crate::private_file::{WriteHooks, write_private};
 
 use super::credits::{CodexCreditLimitSnapshot, CreditEvent, CreditsSnapshot};
 use super::reconciled::CodexReconciledState;
@@ -66,6 +66,48 @@ impl OpenAISubscriptionMetadata {
         self.subscription_expires_at.is_some() || self.subscription_renews_at.is_some()
     }
 
+    pub fn parse_fields(active_until: Option<&str>, will_renew: Option<bool>) -> Option<Self> {
+        let active_until = active_until?;
+        let will_renew = will_renew?;
+        let (ts, is_date_only) = OpenAISubscriptionMetadataParser::parse_date(active_until)?;
+        if will_renew {
+            Some(Self::with_date_only_flags(
+                None,
+                false,
+                Some(ts),
+                is_date_only,
+            ))
+        } else {
+            Some(Self::with_date_only_flags(
+                Some(ts),
+                is_date_only,
+                None,
+                false,
+            ))
+        }
+    }
+
+    pub fn parse_fields_result(
+        active_until: Option<&str>,
+        will_renew: Option<bool>,
+        fields_present: bool,
+    ) -> OpenAISubscriptionFetchResult {
+        if !fields_present {
+            return OpenAISubscriptionFetchResult::Unavailable;
+        }
+        let Some(active_until) = active_until else {
+            return if will_renew == Some(true) {
+                OpenAISubscriptionFetchResult::Unavailable
+            } else {
+                OpenAISubscriptionFetchResult::ConfirmedAbsent
+            };
+        };
+        match Self::parse_fields(Some(active_until), will_renew) {
+            Some(metadata) => OpenAISubscriptionFetchResult::Resolved(metadata),
+            None => OpenAISubscriptionFetchResult::Unavailable,
+        }
+    }
+
     pub fn applying(&self, snapshot: &UsageSnapshot) -> UsageSnapshot {
         if !self.has_any_date() {
             return snapshot.clone();
@@ -92,6 +134,10 @@ impl OpenAISubscriptionFetchResult {
             Self::Resolved(metadata) => Some(metadata),
             Self::ConfirmedAbsent | Self::Unavailable => None,
         }
+    }
+
+    pub fn succeeded(&self) -> bool {
+        matches!(self, Self::Resolved(_) | Self::ConfirmedAbsent)
     }
 
     pub fn applying(&self, snapshot: &UsageSnapshot) -> UsageSnapshot {
@@ -122,21 +168,6 @@ enum SubscriptionItemParseResult {
     Invalid,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ActiveUntilParseResult {
-    Resolved(Timestamp, bool),
-    ExplicitlyAbsent,
-    Missing,
-    Invalid,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WillRenewParseResult {
-    Value(bool),
-    Absent,
-    Invalid,
-}
-
 impl OpenAISubscriptionMetadataParser {
     pub fn parse(data: &[u8]) -> Option<OpenAISubscriptionMetadata> {
         Self::parse_result(data).metadata().cloned()
@@ -162,9 +193,7 @@ impl OpenAISubscriptionMetadataParser {
         }
     }
 
-    fn parse_collection(
-        items: &[serde_json::Map<String, Value>],
-    ) -> OpenAISubscriptionFetchResult {
+    fn parse_collection(items: &[serde_json::Map<String, Value>]) -> OpenAISubscriptionFetchResult {
         if items.is_empty() {
             return OpenAISubscriptionFetchResult::ConfirmedAbsent;
         }
@@ -221,84 +250,48 @@ impl OpenAISubscriptionMetadataParser {
     }
 
     fn parse_item(item: &serde_json::Map<String, Value>) -> SubscriptionItemParseResult {
-        let active_until = Self::parse_active_until(item);
-        let will_renew = Self::parse_will_renew(item);
-
-        match active_until {
-            ActiveUntilParseResult::Missing => {
-                if will_renew == WillRenewParseResult::Invalid {
-                    SubscriptionItemParseResult::Invalid
-                } else {
-                    SubscriptionItemParseResult::Missing
-                }
-            }
-            ActiveUntilParseResult::Invalid => SubscriptionItemParseResult::Invalid,
-            ActiveUntilParseResult::ExplicitlyAbsent => {
-                if will_renew == WillRenewParseResult::Invalid {
-                    SubscriptionItemParseResult::Invalid
-                } else {
-                    SubscriptionItemParseResult::ConfirmedAbsent
-                }
-            }
-            ActiveUntilParseResult::Resolved(ts, is_date_only) => match will_renew {
-                WillRenewParseResult::Invalid => SubscriptionItemParseResult::Invalid,
-                WillRenewParseResult::Value(true) => SubscriptionItemParseResult::Resolved(
-                    OpenAISubscriptionMetadata::with_date_only_flags(
-                        None,
-                        false,
-                        Some(ts),
-                        is_date_only,
-                    ),
-                ),
-                WillRenewParseResult::Value(false) | WillRenewParseResult::Absent => {
-                    SubscriptionItemParseResult::Resolved(
-                        OpenAISubscriptionMetadata::with_date_only_flags(
-                            Some(ts),
-                            is_date_only,
-                            None,
-                            false,
-                        ),
-                    )
-                }
-            },
-        }
-    }
-
-    fn parse_active_until(item: &serde_json::Map<String, Value>) -> ActiveUntilParseResult {
-        let raw_value = item.get("active_until").or_else(|| item.get("activeUntil"));
-        let Some(raw_value) = raw_value else {
-            return ActiveUntilParseResult::Missing;
+        let Some(active_until_val) = item.get("active_until").or_else(|| item.get("activeUntil"))
+        else {
+            return SubscriptionItemParseResult::Missing;
         };
-        match raw_value {
-            Value::Null => ActiveUntilParseResult::ExplicitlyAbsent,
-            Value::String(raw) => match Self::parse_date(raw) {
-                Some((ts, is_date_only)) => ActiveUntilParseResult::Resolved(ts, is_date_only),
-                None => ActiveUntilParseResult::Invalid,
-            },
-            _ => ActiveUntilParseResult::Invalid,
-        }
-    }
-
-    fn parse_will_renew(item: &serde_json::Map<String, Value>) -> WillRenewParseResult {
-        let raw_value = item.get("will_renew").or_else(|| item.get("willRenew"));
-        let Some(raw_value) = raw_value else {
-            return WillRenewParseResult::Absent;
+        let Some(will_renew_val) = item.get("will_renew").or_else(|| item.get("willRenew")) else {
+            return SubscriptionItemParseResult::Missing;
         };
-        match raw_value {
-            Value::Null => WillRenewParseResult::Absent,
-            Value::Bool(b) => WillRenewParseResult::Value(*b),
-            _ => WillRenewParseResult::Invalid,
+
+        let active_until = match active_until_val {
+            Value::Null => None,
+            Value::String(s) => Some(s.as_str()),
+            _ => return SubscriptionItemParseResult::Invalid,
+        };
+        let will_renew = match will_renew_val {
+            Value::Null => None,
+            Value::Bool(b) => Some(*b),
+            _ => return SubscriptionItemParseResult::Invalid,
+        };
+
+        match OpenAISubscriptionMetadata::parse_fields_result(active_until, will_renew, true) {
+            OpenAISubscriptionFetchResult::Resolved(metadata) => {
+                SubscriptionItemParseResult::Resolved(metadata)
+            }
+            OpenAISubscriptionFetchResult::ConfirmedAbsent => {
+                SubscriptionItemParseResult::ConfirmedAbsent
+            }
+            OpenAISubscriptionFetchResult::Unavailable => SubscriptionItemParseResult::Invalid,
         }
     }
 
-    fn parse_date(raw: &str) -> Option<(Timestamp, bool)> {
+    pub(crate) fn parse_date(raw: &str) -> Option<(Timestamp, bool)> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return None;
         }
         if trimmed.len() == 10 && trimmed.as_bytes()[4] == b'-' && trimmed.as_bytes()[7] == b'-' {
             let date = Date::strptime("%Y-%m-%d", trimmed).ok()?;
-            let ts = date.at(0, 0, 0, 0).to_zoned(TimeZone::UTC).ok()?.timestamp();
+            let ts = date
+                .at(0, 0, 0, 0)
+                .to_zoned(TimeZone::UTC)
+                .ok()?
+                .timestamp();
             return Some((ts, true));
         }
         let ts = trimmed.parse::<Timestamp>().ok()?;
@@ -325,9 +318,10 @@ impl OpenAIDashboardServiceUsage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenAIDashboardUsageBreakdownSummary {
-    pub daily: Vec<OpenAIDashboardDailyBreakdown>,
+    pub history_days: i32,
     pub today_credits: Option<f64>,
     pub total_credits: Option<f64>,
+    pub daily: Vec<OpenAIDashboardDailyBreakdown>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -349,6 +343,17 @@ impl OpenAIDashboardDailyBreakdown {
             services,
             total_credits_used,
         }
+    }
+
+    pub fn is_skill_usage_service(service: &str) -> bool {
+        service
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("skillusage:")
+    }
+
+    pub fn removing_skill_usage_services(breakdown: &[Self]) -> Vec<Self> {
+        OpenAIDashboardSnapshot::removing_skill_usage_services(breakdown)
     }
 
     pub fn recent_usage_summary(
@@ -377,155 +382,72 @@ impl OpenAIDashboardDailyBreakdown {
             start_date.day()
         );
 
-        let mut sanitized_by_day: BTreeMap<String, OpenAIDashboardDailyBreakdown> = BTreeMap::new();
-        for item in breakdown {
-            let day = item.day.trim();
-            if !Self::is_valid_day_key(day) || day < start_key.as_str() || day > today_key.as_str()
-            {
-                continue;
-            }
-            let mut merged_services: BTreeMap<String, f64> = BTreeMap::new();
-            for service in &item.services {
-                let name = service.service.trim();
-                let amount = service.credits_used;
-                if name.is_empty() || !amount.is_finite() || amount <= 0.0 {
-                    continue;
-                }
-                let next = merged_services.get(name).copied().unwrap_or(0.0) + amount;
-                if !next.is_finite() {
-                    return OpenAIDashboardUsageBreakdownSummary {
-                        daily: Vec::new(),
-                        today_credits: None,
-                        total_credits: None,
-                    };
-                }
-                merged_services.insert(name.to_owned(), next);
-            }
-
-            let mut services: Vec<OpenAIDashboardServiceUsage> = merged_services
+        let mut recent: Vec<OpenAIDashboardDailyBreakdown> =
+            Self::removing_skill_usage_services(breakdown)
                 .into_iter()
-                .map(|(service, credits_used)| OpenAIDashboardServiceUsage {
-                    service,
-                    credits_used,
-                })
+                .filter_map(|day| Self::sanitized(day, &start_key, &today_key))
                 .collect();
-            services.sort_by(|lhs, rhs| {
-                if (lhs.credits_used - rhs.credits_used).abs() < f64::EPSILON {
-                    lhs.service.cmp(&rhs.service)
-                } else {
-                    rhs.credits_used
-                        .partial_cmp(&lhs.credits_used)
-                        .unwrap_or(Ordering::Equal)
-                }
-            });
+        recent.sort_by(|a, b| a.day.cmp(&b.day));
 
-            let services_total: f64 = services.iter().map(|s| s.credits_used).sum();
-            let total_credits_used = if item.total_credits_used.is_finite()
-                && item.total_credits_used > 0.0
-            {
-                if services_total.is_finite() && services_total > item.total_credits_used {
-                    services_total
-                } else {
-                    item.total_credits_used
-                }
-            } else {
-                services_total
-            };
-            if !total_credits_used.is_finite() || total_credits_used <= 0.0 {
-                continue;
-            }
-
-            if let Some(existing) = sanitized_by_day.get(day).cloned() {
-                let mut combined_services: BTreeMap<String, f64> = BTreeMap::new();
-                for service in existing.services.iter().chain(services.iter()) {
-                    let next = combined_services
-                        .get(&service.service)
-                        .copied()
-                        .unwrap_or(0.0)
-                        + service.credits_used;
-                    if !next.is_finite() {
-                        return OpenAIDashboardUsageBreakdownSummary {
-                            daily: Vec::new(),
-                            today_credits: None,
-                            total_credits: None,
-                        };
-                    }
-                    combined_services.insert(service.service.clone(), next);
-                }
-                let mut merged_list: Vec<OpenAIDashboardServiceUsage> = combined_services
-                    .into_iter()
-                    .map(|(service, credits_used)| OpenAIDashboardServiceUsage {
-                        service,
-                        credits_used,
-                    })
-                    .collect();
-                merged_list.sort_by(|lhs, rhs| {
-                    if (lhs.credits_used - rhs.credits_used).abs() < f64::EPSILON {
-                        lhs.service.cmp(&rhs.service)
-                    } else {
-                        rhs.credits_used
-                            .partial_cmp(&lhs.credits_used)
-                            .unwrap_or(Ordering::Equal)
-                    }
-                });
-                let combined_total = existing.total_credits_used + total_credits_used;
-                if !combined_total.is_finite() {
-                    return OpenAIDashboardUsageBreakdownSummary {
-                        daily: Vec::new(),
-                        today_credits: None,
-                        total_credits: None,
-                    };
-                }
-                sanitized_by_day.insert(
-                    day.to_owned(),
-                    OpenAIDashboardDailyBreakdown {
-                        day: day.to_owned(),
-                        services: merged_list,
-                        total_credits_used: combined_total,
-                    },
-                );
-            } else {
-                sanitized_by_day.insert(
-                    day.to_owned(),
-                    OpenAIDashboardDailyBreakdown {
-                        day: day.to_owned(),
-                        services,
-                        total_credits_used,
-                    },
-                );
-            }
-        }
-
-        let mut daily: Vec<OpenAIDashboardDailyBreakdown> =
-            sanitized_by_day.into_values().collect();
-        daily.sort_by(|a, b| b.day.cmp(&a.day));
-        if daily.is_empty() {
-            return OpenAIDashboardUsageBreakdownSummary {
-                daily: Vec::new(),
-                today_credits: None,
-                total_credits: None,
-            };
-        }
-
-        let total_credits: f64 = daily.iter().map(|d| d.total_credits_used).sum();
-        if !total_credits.is_finite() {
-            return OpenAIDashboardUsageBreakdownSummary {
-                daily: Vec::new(),
-                today_credits: None,
-                total_credits: None,
-            };
-        }
-        let today_credits = daily
+        let today_credits = recent
             .iter()
             .find(|d| d.day == today_key)
             .map(|d| d.total_credits_used)
-            .filter(|v| v.is_finite());
+            .or_else(|| (!recent.is_empty()).then_some(0.0));
+        let total_credits = Self::finite_sum(recent.iter().map(|d| d.total_credits_used));
 
         OpenAIDashboardUsageBreakdownSummary {
-            daily,
+            history_days: days,
             today_credits,
-            total_credits: Some(total_credits),
+            total_credits,
+            daily: recent,
         }
+    }
+
+    fn sanitized(day: Self, start_key: &str, today_key: &str) -> Option<Self> {
+        if !Self::is_valid_day_key(&day.day)
+            || day.day.as_str() < start_key
+            || day.day.as_str() > today_key
+        {
+            return None;
+        }
+        if day.services.is_empty() {
+            if day.total_credits_used.is_finite() && day.total_credits_used > 0.0 {
+                return Some(day);
+            }
+            return None;
+        }
+        let services: Vec<OpenAIDashboardServiceUsage> = day
+            .services
+            .into_iter()
+            .filter(|s| s.credits_used.is_finite() && s.credits_used > 0.0)
+            .collect();
+        if services.is_empty() {
+            return None;
+        }
+        let total = Self::finite_sum(services.iter().map(|s| s.credits_used))?;
+        if total <= 0.0 {
+            return None;
+        }
+        Some(Self {
+            day: day.day,
+            services,
+            total_credits_used: total,
+        })
+    }
+
+    fn finite_sum(values: impl IntoIterator<Item = f64>) -> Option<f64> {
+        let mut total = 0.0;
+        let mut any = false;
+        for value in values {
+            any = true;
+            let next = total + value;
+            if !next.is_finite() {
+                return None;
+            }
+            total = next;
+        }
+        any.then_some(total)
     }
 
     fn is_valid_day_key(day: &str) -> bool {
@@ -656,6 +578,26 @@ impl Default for OpenAIDashboardSnapshot {
 
 impl OpenAIDashboardSnapshot {
     const EXCLUDED_USAGE_BREAKDOWN_SERVICE_PREFIXES: &'static [&'static str] = &["skillusage:"];
+
+    pub fn requires_workspace_balance_scope(&self) -> bool {
+        self.balance_is_workspace == Some(true)
+            || (self.credits_available == Some(true) && self.credits_remaining.is_none())
+    }
+
+    pub fn with_subscription_metadata(
+        mut self,
+        metadata: Option<OpenAISubscriptionMetadata>,
+    ) -> Self {
+        self.subscription_expires_at = metadata.as_ref().and_then(|m| m.subscription_expires_at);
+        self.subscription_expires_at_is_date_only = metadata
+            .as_ref()
+            .is_some_and(|m| m.subscription_expires_at_is_date_only);
+        self.subscription_renews_at = metadata.as_ref().and_then(|m| m.subscription_renews_at);
+        self.subscription_renews_at_is_date_only = metadata
+            .as_ref()
+            .is_some_and(|m| m.subscription_renews_at_is_date_only);
+        self
+    }
 
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -834,7 +776,8 @@ impl OpenAIDashboardSnapshot {
         } else {
             &self.daily_breakdown
         };
-        let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(source, 30, now, time_zone);
+        let summary =
+            OpenAIDashboardDailyBreakdown::recent_usage_summary(source, 30, now, time_zone);
         if summary.daily.is_empty() {
             None
         } else {
@@ -885,6 +828,10 @@ impl OpenAIDashboardCacheStore {
         }
     }
 
+    pub fn cache_url(&self) -> Option<&Path> {
+        self.file_path.as_deref()
+    }
+
     pub fn load(&self) -> Option<OpenAIDashboardCache> {
         if let Some(path) = &self.file_path {
             return Self::load_from_path(path);
@@ -927,7 +874,7 @@ impl OpenAIDashboardCacheStore {
     pub fn save_to_path(cache: &OpenAIDashboardCache, path: &Path) -> std::io::Result<()> {
         let mut bytes = serde_json::to_vec(cache).map_err(std::io::Error::other)?;
         bytes.push(b'\n');
-        write_private(path, &bytes)
+        write_private(path, &bytes, &WriteHooks::default()).map_err(std::io::Error::other)
     }
 
     pub fn clear_path(path: &Path) {

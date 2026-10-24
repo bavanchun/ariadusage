@@ -176,7 +176,7 @@ impl OpenAIDashboardCookieCandidate {
         cookie_header: impl Into<SecretString>,
     ) -> Option<Self> {
         let secret = cookie_header.into();
-        let normalized = normalize(&secret)?;
+        let normalized = normalize(secret.expose_secret())?;
         let parsed_pairs = pairs(&normalized);
         if parsed_pairs.is_empty() {
             return None;
@@ -187,7 +187,7 @@ impl OpenAIDashboardCookieCandidate {
         let cookie_count = parsed_pairs.len() * OPENAI_COOKIE_DOMAINS.len();
         Some(Self {
             label: label.into(),
-            cookie_header: normalized,
+            cookie_header: SecretString::from(normalized),
             cookie_count,
             has_session_cookie,
         })
@@ -212,13 +212,13 @@ impl OpenAIDashboardCookieCandidate {
             .any(|rec| is_openai_session_cookie_name(&rec.name));
         let raw_header = chatgpt_or_openai
             .iter()
-            .map(|rec| format!("{}={}", rec.name, rec.value_str()))
+            .map(|rec| format!("{}={}", rec.name, rec.value.expose_secret()))
             .collect::<Vec<_>>()
             .join("; ");
-        let normalized = normalize(&SecretString::from(raw_header))?;
+        let normalized = normalize(&raw_header)?;
         Some(Self {
             label: label.into(),
-            cookie_header: normalized,
+            cookie_header: SecretString::from(normalized),
             cookie_count: chatgpt_or_openai.len(),
             has_session_cookie,
         })
@@ -244,13 +244,13 @@ pub fn is_openai_session_cookie_name(name: &str) -> bool {
 }
 
 pub fn has_session_cookies_in_header(cookie_header: &SecretString) -> bool {
-    pairs(cookie_header)
+    pairs(cookie_header.expose_secret())
         .iter()
         .any(|(name, _)| is_openai_session_cookie_name(name))
 }
 
 pub fn cookie_summary_from_header(cookie_header: &SecretString) -> String {
-    let parsed = pairs(cookie_header);
+    let parsed = pairs(cookie_header.expose_secret());
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for (name, _) in &parsed {
         *counts.entry(name.as_str()).or_insert(0) += 1;
@@ -360,14 +360,20 @@ impl OpenAIDashboardBrowserCookieImporter {
                 .unwrap_or(Duration::from_secs(60)));
         };
         let Some(remaining) = deadline.checked_duration_since(now) else {
-            return Err(OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
-                details: "OpenAI web deadline expired before cookie import completed.".to_owned(),
-            });
+            return Err(
+                OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
+                    details: "OpenAI web deadline expired before cookie import completed."
+                        .to_owned(),
+                },
+            );
         };
         if remaining.is_zero() {
-            return Err(OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
-                details: "OpenAI web deadline expired before cookie import completed.".to_owned(),
-            });
+            return Err(
+                OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
+                    details: "OpenAI web deadline expired before cookie import completed."
+                        .to_owned(),
+                },
+            );
         }
         Ok(match capped_at {
             Some(cap) => remaining.min(OpenAIDashboardFetcher::sanitized_timeout(cap)),
@@ -432,6 +438,7 @@ impl OpenAIDashboardBrowserCookieImporter {
     /// - `None` (without manual header) or `Some(CookieSource::Off)` never touches `BrowserBroker`.
     /// - `Some(CookieSource::Manual)` (or `None` with manual header) validates the manual cookie header.
     /// - `Some(CookieSource::Auto)` imports from `CookieCache` / `BrowserBroker`.
+    #[allow(clippy::too_many_arguments)]
     pub async fn import_for_cookie_source(
         &self,
         call: &BrokerCall,
@@ -444,7 +451,7 @@ impl OpenAIDashboardBrowserCookieImporter {
         deadline: Option<Instant>,
     ) -> Result<OpenAIDashboardCookieImportResult, OpenAIDashboardCookieImportError> {
         let manual_present = manual_cookie_header
-            .and_then(normalize)
+            .and_then(|h| normalize(h.expose_secret()))
             .is_some();
         match resolve_cookie_source(cookie_source, false, None, manual_present) {
             CookieResolution::None => Err(OpenAIDashboardCookieImportError::NoCookiesFound),
@@ -486,9 +493,7 @@ impl OpenAIDashboardBrowserCookieImporter {
         cache_scope: Option<&CacheScope>,
         deadline: Option<Instant>,
     ) -> Result<OpenAIDashboardCookieImportResult, OpenAIDashboardCookieImportError> {
-        let normalized_target = target_email
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        let normalized_target = target_email.map(str::trim).filter(|s| !s.is_empty());
         let allow_any = allow_any_account || normalized_target.is_none();
 
         let Some(candidate) =
@@ -576,9 +581,7 @@ impl OpenAIDashboardBrowserCookieImporter {
         cache_scope: Option<&CacheScope>,
         deadline: Option<Instant>,
     ) -> Result<OpenAIDashboardCookieImportResult, OpenAIDashboardCookieImportError> {
-        let normalized_target = target_email
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
+        let normalized_target = target_email.map(str::trim).filter(|s| !s.is_empty());
         if normalized_target.is_none() && !allow_any_account {
             return Err(OpenAIDashboardCookieImportError::NoCookiesFound);
         }
@@ -719,7 +722,10 @@ impl OpenAIDashboardBrowserCookieImporter {
         }
 
         if !access_denied_hints.is_empty() {
-            let details = access_denied_hints.into_iter().collect::<Vec<_>>().join(" ");
+            let details = access_denied_hints
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(" ");
             return Err(OpenAIDashboardCookieImportError::BrowserAccessDenied { details });
         }
 
@@ -806,21 +812,23 @@ impl OpenAIDashboardBrowserCookieImporter {
         allow_any_account: bool,
         deadline: Option<Instant>,
     ) -> Result<CandidateEvaluation, OpenAIDashboardCookieImportError> {
-        let fetcher = OpenAIDashboardFetcher::with_config(
-            Arc::clone(&self.net),
-            self.endpoint_config.clone(),
-        );
-        let api_email = fetcher
-            .fetch_signed_in_email_from_api(call, &candidate.cookie_header, deadline)
-            .await
-            .map_err(|err| match err {
-                OpenAIDashboardFetchError::TimedOut => {
-                    OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
-                        details: "OpenAI web identity probe timed out.".to_owned(),
-                    }
+        let api_email = OpenAIDashboardFetcher::fetch_signed_in_email_from_api(
+            &self.net,
+            &self.endpoint_config,
+            candidate.cookie_header.expose_secret(),
+            deadline,
+            &Instant::now,
+            Some(call),
+        )
+        .await
+        .map_err(|err| match err {
+            OpenAIDashboardFetchError::Timeout => {
+                OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut {
+                    details: "OpenAI web identity probe timed out.".to_owned(),
                 }
-                _ => OpenAIDashboardCookieImportError::NoCookiesFound,
-            })?;
+            }
+            _ => OpenAIDashboardCookieImportError::NoCookiesFound,
+        })?;
 
         if let Some(email) = api_email
             .map(|e| e.trim().to_owned())
@@ -901,6 +909,25 @@ pub struct OpenAIDashboardPageScrapeGate {
     pub history_updated_at: Option<Timestamp>,
     pub now: Timestamp,
     pub refresh_interval_seconds: f64,
+}
+
+pub fn refresh_phase(has_completed_initial_refresh: bool) -> FetchPhase {
+    if has_completed_initial_refresh {
+        FetchPhase::Regular
+    } else {
+        FetchPhase::Startup
+    }
+}
+
+pub fn openai_web_refresh_phase(
+    provider_refresh_phase: FetchPhase,
+    startup_connectivity_retry_attempt: u32,
+) -> FetchPhase {
+    if startup_connectivity_retry_attempt > 0 {
+        FetchPhase::Startup
+    } else {
+        provider_refresh_phase
+    }
 }
 
 pub fn should_run_openai_web_refresh(context: OpenAIWebRefreshPolicyContext) -> bool {
@@ -1046,7 +1073,9 @@ pub fn actionable_openai_dashboard_import_failure(
     target_email: Option<&str>,
     cookie_import_status: Option<&str>,
 ) -> Option<String> {
-    let status = cookie_import_status.map(str::trim).filter(|s| !s.is_empty())?;
+    let status = cookie_import_status
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?;
     let lower = status.to_ascii_lowercase();
     if lower.contains("openai cookies are for") {
         return Some(format!(
@@ -1078,7 +1107,9 @@ pub fn openai_dashboard_friendly_error(
     cookie_import_status: Option<&str>,
 ) -> Option<String> {
     let trimmed = body.trim();
-    let status = cookie_import_status.map(str::trim).filter(|s| !s.is_empty());
+    let status = cookie_import_status
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     if trimmed.is_empty() {
         return Some(
             "OpenAI web dashboard returned an empty page. Sign in to chatgpt.com and update OpenAI cookies in Providers → Codex."
@@ -1159,7 +1190,10 @@ static SERIALIZED_CALLBACK_LOCKS: LazyLock<
 
 impl OpenAIDashboardBrowserCookieImporter {
     pub fn should_trust_verified_session(error: &PersistentCookieSessionError) -> bool {
-        matches!(error, PersistentCookieSessionError::PersistentValidationTimedOut)
+        matches!(
+            error,
+            PersistentCookieSessionError::PersistentValidationTimedOut
+        )
     }
 
     pub fn persistent_validation_failure(
@@ -1167,7 +1201,7 @@ impl OpenAIDashboardBrowserCookieImporter {
     ) -> PersistentCookieSessionError {
         match error {
             PersistentCookieSessionError::TimedOut
-            | PersistentCookieSessionError::Fetch(OpenAIDashboardFetchError::TimedOut) => {
+            | PersistentCookieSessionError::Fetch(OpenAIDashboardFetchError::Timeout) => {
                 PersistentCookieSessionError::PersistentValidationTimedOut
             }
             other => other,
@@ -1240,6 +1274,7 @@ impl OpenAIDashboardBrowserCookieImporter {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn commit_persistent_cookie_session<ClearFn, WriteFn, ProbeFn, ProbeFut, EvictFn>(
         candidate_label: &str,
         candidate_cookie_count: usize,
@@ -1255,7 +1290,8 @@ impl OpenAIDashboardBrowserCookieImporter {
         ClearFn: FnMut(),
         WriteFn: FnMut(),
         ProbeFn: FnOnce() -> ProbeFut,
-        ProbeFut: std::future::Future<Output = Result<Option<String>, PersistentCookieSessionError>>,
+        ProbeFut:
+            std::future::Future<Output = Result<Option<String>, PersistentCookieSessionError>>,
         EvictFn: FnMut(),
     {
         Self::with_persistent_cookie_transaction(store_key, deadline, None, || async move {
