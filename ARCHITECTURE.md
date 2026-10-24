@@ -59,7 +59,7 @@ Five crates, each a real boundary. Providers are modules, never one crate each. 
 | `ariadusage-cli` | The `ariadusage` binary: subcommands, renderers, exit codes, logging setup | Builds everywhere |
 | `ariadusage-macos` | The macOS menu-bar app: status items, menu, menu cards, charts and the Settings window, drawn with AppKit and Core Graphics through objc2. A frontend like any other: it renders snapshots and sends intents over IPC v1 | macOS only |
 
-Dependencies point one way: protocol ← core ← engine ← cli. `ariadusage-macos` depends on `ariadusage-protocol` for the contract; whether it also links the engine in-process is an [open question](#16-open-questions). `protocol` is separate from `core` so contract changes get their own review surface and schema generation, and so a future Rust frontend can link the contract alone. A crate is created only with its first real code, never as an empty placeholder.
+Dependencies point one way: protocol ← core ← engine ← cli. `ariadusage-macos` depends on `ariadusage-protocol` for the contract and never links the engine in-process; it talks to `ariadusage daemon` over the Unix socket like every other frontend. `protocol` is separate from `core` so contract changes get their own review surface and schema generation, and so a future Rust frontend can link the contract alone. A crate is created only with its first real code, never as an empty placeholder.
 
 ### 2.2 Chosen crates
 
@@ -130,7 +130,7 @@ flowchart LR
   sched --- store
 ```
 
-The macOS app and the plugin are clients: they never fetch, never hold a secret and never own data. Any number of bar instances on any number of monitors read from one engine. On Linux the engine ships through the AUR with a systemd user unit and the plugin ships through the Omarchy marketplace; the macOS distribution channel is an [open question](#16-open-questions).
+The macOS app and the plugin are clients: they never fetch, never hold a secret and never own data. Any number of bar instances on any number of monitors read from one engine. On Linux the engine ships through the AUR with a systemd user unit and the plugin ships through the Omarchy marketplace; on macOS the engine runs as a per-user launchd LaunchAgent (`io.github.bavanchun.ariadusage.daemon`) and the distribution channel is an [open question](#16-open-questions).
 
 ---
 
@@ -139,8 +139,8 @@ The macOS app and the plugin are clients: they never fetch, never hold a secret 
 | Surface | Role |
 |---|---|
 | `ariadusage` CLI | `usage`, `cost`, `status`, `config`, `hooks`, `serve`, `daemon`, plus the other CodexBar commands that apply to the three v1 providers. JSON output schemas and exit codes are documented with the CLI. The binary's `--help` is the authority for flags once it exists |
-| `ariadusage daemon` | Long-running engine behind `ariadusage.service`, a systemd user unit installed by the package under `/usr/lib/systemd/user/`. It serves the socket, runs the scheduler and sends notifications |
-| Unix socket | `$XDG_RUNTIME_DIR/ariadusage/engine.sock`, owner-only. The only interface frontends use |
+| `ariadusage daemon` | Long-running engine behind `ariadusage.service`, a systemd user unit installed by the package under `/usr/lib/systemd/user/` on Linux, or `io.github.bavanchun.ariadusage.daemon`, a per-user launchd LaunchAgent on macOS. It serves the socket, runs the scheduler and sends notifications |
+| Unix socket | `$XDG_RUNTIME_DIR/ariadusage/engine.sock` on Linux, or `<DARWIN_USER_TEMP_DIR>/ariadusage/engine.sock` on macOS (resolved from `confstr(_CS_DARWIN_USER_TEMP_DIR)` when `XDG_RUNTIME_DIR` is unset), owner-only. The only interface frontends use |
 | `serve` and dashboard | Opt-in HTTP server with a web dashboard. Loopback by default; anything else needs a token, matching CodexBar's hardening |
 | Omarchy plugin | Bar glyph plus panel; renders snapshots and descriptor-driven settings |
 | macOS app | Menu-bar status items, the dropdown menu and the Settings window; renders snapshots and descriptor-driven settings |
@@ -222,7 +222,7 @@ These come from CodexBar and are pinned by ported tests:
 
 - One config file holds every setting: `$XDG_CONFIG_HOME/ariadusage/config.json`. State lives in `$XDG_STATE_HOME/ariadusage/`, caches in `$XDG_CACHE_HOME/ariadusage/`, the socket in `$XDG_RUNTIME_DIR/ariadusage/`. Nothing is ever written inside the plugin directory.
 - Environment variables use the `ARIADUSAGE_` prefix.
-- On macOS the same XDG-style layout applies under the user's home. `XDG_RUNTIME_DIR` is normally unset there, so the socket needs a per-user private directory instead of the shared `/tmp` fallback; the location is decided together with engine hosting on macOS.
+- On macOS the same XDG-style layout applies under the user's home. Because `XDG_RUNTIME_DIR` is normally unset on macOS, the runtime directory falls back to `confstr(_CS_DARWIN_USER_TEMP_DIR)` (the per-user `/var/folders/.../T/` directory, canonicalized through `/private/var` and verified mode 0700 and owned by the current EUID), with the socket at `<runtime_dir>/ariadusage/engine.sock` (checked against the 104-byte `sun_path` limit).
 - AriadUsage never reads or writes CodexBar's config, cache or state, and has no import command.
 
 ---
@@ -430,6 +430,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | regex for the cookie normalizer | regex crate in ariadusage-core with `LazyLock` static compilation for the 9 normalizer patterns | Manual string parsing or hand-rolled pattern matching | CodexBar parity for 9 curl/header patterns with case-insensitivity; input length capped at 64 KiB to prevent ReDoS; deny-checked and audited |
 | Claude OAuth env override | `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` and `_SCOPES` only | Reading `CODEXBAR_*` as a migration fallback | No shared install base; AGENTS.md forbids CodexBar identifiers. |
 | Darwin process inspection | `proc_pidinfo` (`ProcBSDInfo`, `ProcBSDShortInfo`, `ProcFDInfo`, `PipeFdInfo`, `VnodeFdInfo`), `sysinfo` (`system` feature only, `KERN_PROCARGS2` argv/environment and PID enumeration) and `listeners` (per-PID `PROC_PIDFDSOCKETINFO` TCP `LISTEN` port discovery) | `darwin-libproc` (pins `memchr ~2.3`, conflicting with `regex`), `libproc` `SocketFDInfo` (exposes raw C unions requiring `unsafe` field access), `netstat2` (requires `bindgen` at build time), or raw `libc` `unsafe` calls in `ariadusage-engine` | Keeps `ariadusage-engine` under `unsafe_code = "deny"` while providing microsecond start-time identity, zombie state fallback, pipe/vnode descriptor handles for holder teardown, `KERN_PROCARGS2` argv/marker reads, and per-PID listening TCP port discovery on macOS |
+| Engine hosting and socket path on macOS | Separate per-user `ariadusage daemon` managed by launchd as a LaunchAgent (`io.github.bavanchun.ariadusage.daemon`; `SMAppService` registration planned for app-bundle packaging), serving `<DARWIN_USER_TEMP_DIR>/ariadusage/engine.sock` resolved from `confstr(_CS_DARWIN_USER_TEMP_DIR)` (canonicalized, mode 0700, EUID-owned, under the 104-byte `sun_path` limit) | Linking `ariadusage-engine` in-process inside `ariadusage-macos`; a shared `/tmp` socket path | Keeps Principle 1 ("one engine, many frontends"), the one-binary rule, and "the app never holds a secret" intact while reusing the app's existing IPC v1 client |
 
 ---
 
@@ -459,7 +460,7 @@ Logos and icons are generated as code under `brand/`, following the same process
 16. **Child process environment allowlist completeness.** Does the exact-name allowlist cover every variable needed by `claude`, `codex` and `agy` in user environments? Validated through M3–M5 owner-run live smoke tests; adding variables is a one-line change with a test.
 17. **Codex account promotion foreign write.** §6.3 specifies read-only access for CredentialFile; M4 requires adding a user-initiated foreign-write API to support Codex account promotion (`auth.json` update). Amend §6.3 in M4.
 18. **Refresh-failure gate decision.** Antigravity self-owned token refresh has no failure gate in CodexBar. Decided in M5 whether to introduce a gate or follow CodexBar.
-19. **Engine hosting on macOS.** Does the engine run as a separate daemon under a launchd user agent, talking to the app over the Unix socket like every other frontend, or inside the app process? The answer also fixes the socket directory on macOS (§6.5). Decided before M8.
+19. **Engine hosting on macOS — resolved in M8.** The engine runs as a separate per-user `ariadusage daemon` managed by launchd as a LaunchAgent (`io.github.bavanchun.ariadusage.daemon`), talking to the macOS app over IPC v1 on `<DARWIN_USER_TEMP_DIR>/ariadusage/engine.sock` (resolved via `confstr(_CS_DARWIN_USER_TEMP_DIR)` and canonicalized through `/private/var`, mode 0700, EUID-owned). In-bundle `SMAppService` registration arrives with app-bundle packaging.
 20. **Minimum macOS version.** CodexBar v0.79.0 requires macOS 14. Match it, or raise the floor to drop pre-macOS 26 Settings chrome branches?
 21. **macOS distribution and signing.** Direct download, Homebrew cask, or both; Developer ID signing and notarization; update mechanism.
 22. **Omarchy plugin during the macOS work.** Does the plugin keep pace with contract changes in M2.3, or pause until M9?

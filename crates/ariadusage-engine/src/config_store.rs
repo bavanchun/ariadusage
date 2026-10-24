@@ -18,7 +18,7 @@ pub enum UpdateResult {
 /// atomic private writes, and codec normalization.
 pub struct ConfigStore {
     path: PathBuf,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
     hooks: WriteHooks,
 }
 
@@ -45,7 +45,7 @@ impl ConfigStore {
     /// Loads and decodes configuration if present and non-blank.
     /// Returns `Ok(None)` if absent or blank. Fails closed without rewriting on decode error.
     pub fn load(&self) -> Result<Option<Config>, StoreError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             if let Some(parent) = self.path.parent()
                 && parent.exists()
@@ -69,7 +69,7 @@ impl ConfigStore {
             }
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             if !self.path.exists() {
                 return Ok(None);
@@ -94,14 +94,14 @@ impl ConfigStore {
 
     /// Loads the configuration, or writes and returns the default configuration if absent or blank.
     pub fn load_or_default(&self) -> Result<Config, StoreError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(StoreError::Unsupported(
                 "configuration write is unsupported on this platform",
             ))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(true, || {
                 if let Some(cfg) = self.load()? {
@@ -117,7 +117,7 @@ impl ConfigStore {
 
     /// Normalizes and saves `config` to disk under the write lock.
     pub fn save(&self, config: &Config) -> Result<(), StoreError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = config;
             Err(StoreError::Unsupported(
@@ -125,7 +125,7 @@ impl ConfigStore {
             ))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(true, || self.save_under_lock(config))
         }
@@ -133,7 +133,7 @@ impl ConfigStore {
 
     /// Acquires the write lock, loads current effective config, executes `f`, and saves the result.
     pub fn update(&self, f: impl FnOnce(&mut Config)) -> Result<(), StoreError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = f;
             Err(StoreError::Unsupported(
@@ -141,7 +141,7 @@ impl ConfigStore {
             ))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(true, || {
                 let mut cfg = self.load_effective()?;
@@ -157,7 +157,7 @@ impl ConfigStore {
         &self,
         f: impl FnOnce(&mut Config) -> bool,
     ) -> Result<UpdateResult, StoreError> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             let _ = f;
             Err(StoreError::Unsupported(
@@ -165,7 +165,7 @@ impl ConfigStore {
             ))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let res = self.with_write_lock(false, || {
                 if let Some(mut cfg) = self.load()?
@@ -192,14 +192,14 @@ impl ConfigStore {
             return Ok(());
         }
 
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
             Err(StoreError::Unsupported(
                 "configuration delete is unsupported on this platform",
             ))
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.with_write_lock(true, || {
                 if self.path.exists() {
@@ -214,7 +214,7 @@ impl ConfigStore {
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn save_under_lock(&self, config: &Config) -> Result<(), StoreError> {
         if self.path.exists() {
             let _ = crate::trust::check_file_trust(&self.path, crate::trust::TrustPolicy::CONFIG)?;
@@ -225,7 +225,7 @@ impl ConfigStore {
         crate::private_file::write_private(&self.path, &bytes, &self.hooks)
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn with_write_lock<R>(
         &self,
         wait: bool,

@@ -54,12 +54,12 @@ impl std::fmt::Debug for PrivateTempDir {
 /// Creates a new private temporary directory under the trusted runtime directory.
 /// Returns `Err(TempDirError::Unsupported)` if the runtime directory is unset or untrusted.
 pub fn create(_call: &BrokerCall) -> Result<PrivateTempDir, TempDirError> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let runtime_dir = crate::paths::trusted_runtime_dir().ok_or(TempDirError::Unsupported)?;
         create_in(&runtime_dir)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err(TempDirError::Unsupported)
     }
@@ -89,7 +89,7 @@ pub fn create_in(parent: &Path) -> Result<PrivateTempDir, TempDirError> {
 
 /// Sweeps any leftover `ariadusage-tmp-*` directories from previous crashed runs under the trusted runtime directory.
 pub fn sweep_stale() {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Some(runtime_dir) = crate::paths::trusted_runtime_dir() {
         sweep_stale_in(&runtime_dir);
     }

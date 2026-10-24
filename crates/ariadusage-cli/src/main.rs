@@ -1,4 +1,7 @@
+pub mod launch_agent;
+
 use std::io::{self, IsTerminal, Read};
+use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 use std::io::Write;
@@ -37,6 +40,59 @@ enum Commands {
         #[command(subcommand)]
         command: SecretCommands,
     },
+
+    /// Run the foreground engine daemon or manage its per-user LaunchAgent on macOS
+    Daemon {
+        /// Optional socket path override when running the daemon
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        #[command(subcommand)]
+        action: Option<DaemonCommands>,
+    },
+
+    /// Query the running engine daemon over IPC v1 for its current snapshot
+    Status {
+        /// Optional socket path override
+        #[arg(long)]
+        socket: Option<PathBuf>,
+
+        /// Output the full Snapshot v1 JSON document
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DaemonCommands {
+    /// Run the engine daemon in the foreground
+    Run {
+        /// Optional socket path override
+        #[arg(long)]
+        socket: Option<PathBuf>,
+    },
+
+    /// Write the per-user LaunchAgent plist to ~/Library/LaunchAgents/ on macOS
+    Write {
+        /// Override the absolute path to the ariadusage binary written into ProgramArguments
+        #[arg(long)]
+        binary: Option<PathBuf>,
+    },
+
+    /// Write (if missing) and load the per-user LaunchAgent via /bin/launchctl bootstrap
+    #[command(visible_alias = "install")]
+    Load {
+        /// Override the absolute path to the ariadusage binary written into ProgramArguments
+        #[arg(long)]
+        binary: Option<PathBuf>,
+    },
+
+    /// Unload the per-user LaunchAgent via /bin/launchctl bootout
+    Unload,
+
+    /// Unload and remove the per-user LaunchAgent plist from ~/Library/LaunchAgents/
+    #[command(visible_alias = "uninstall")]
+    Remove,
 }
 
 #[derive(Subcommand, Debug)]
@@ -80,6 +136,16 @@ fn main() {
                 },
         }) => {
             if let Err(error) = run_secret_set(&id, allow_file_fallback) {
+                report(error);
+            }
+        }
+        Some(Commands::Daemon { socket, action }) => {
+            if let Err(error) = run_daemon_command(socket, action) {
+                report(error);
+            }
+        }
+        Some(Commands::Status { socket, json }) => {
+            if let Err(error) = run_status_command(socket, json) {
                 report(error);
             }
         }
@@ -252,5 +318,234 @@ fn map_store_error(error: SecretStoreError) -> CliError {
             CliError::new(17, "secret operation is unsupported on this platform")
         }
         SecretStoreError::Storage => CliError::new(16, "secret storage failed"),
+    }
+}
+
+fn run_daemon_command(
+    socket: Option<PathBuf>,
+    action: Option<DaemonCommands>,
+) -> Result<(), CliError> {
+    match action {
+        None => run_foreground_daemon(socket),
+        Some(DaemonCommands::Run { socket: sub_socket }) => {
+            run_foreground_daemon(sub_socket.or(socket))
+        }
+        Some(DaemonCommands::Write { binary }) => {
+            #[cfg(target_os = "macos")]
+            {
+                let paths = current_launch_agent_paths()?;
+                let bin = resolve_binary_path(binary)?;
+                launch_agent::write_launch_agent_plist(&bin, &paths)
+                    .map_err(|_| CliError::new(16, "could not write LaunchAgent plist"))?;
+                println!("{}", paths.plist_path.display());
+                Ok(())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = binary;
+                Err(CliError::new(
+                    17,
+                    "LaunchAgent management is supported only on macOS",
+                ))
+            }
+        }
+        Some(DaemonCommands::Load { binary }) => {
+            #[cfg(target_os = "macos")]
+            {
+                let paths = current_launch_agent_paths()?;
+                if binary.is_some() || !paths.plist_path.exists() {
+                    let bin = resolve_binary_path(binary)?;
+                    launch_agent::write_launch_agent_plist(&bin, &paths)
+                        .map_err(|_| CliError::new(16, "could not write LaunchAgent plist"))?;
+                }
+                let uid = rustix::process::geteuid().as_raw();
+                launch_agent::load_launch_agent(uid, &paths, &launch_agent::SystemLaunchctlRunner)
+                    .map_err(|_| CliError::new(16, "launchctl bootstrap failed"))?;
+                println!("loaded {}", launch_agent::LAUNCH_AGENT_LABEL);
+                Ok(())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let _ = binary;
+                Err(CliError::new(
+                    17,
+                    "LaunchAgent management is supported only on macOS",
+                ))
+            }
+        }
+        Some(DaemonCommands::Unload) => {
+            #[cfg(target_os = "macos")]
+            {
+                let paths = current_launch_agent_paths()?;
+                let uid = rustix::process::geteuid().as_raw();
+                launch_agent::unload_launch_agent(
+                    uid,
+                    &paths,
+                    &launch_agent::SystemLaunchctlRunner,
+                )
+                .map_err(|_| CliError::new(16, "launchctl bootout failed"))?;
+                println!("unloaded {}", launch_agent::LAUNCH_AGENT_LABEL);
+                Ok(())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(CliError::new(
+                    17,
+                    "LaunchAgent management is supported only on macOS",
+                ))
+            }
+        }
+        Some(DaemonCommands::Remove) => {
+            #[cfg(target_os = "macos")]
+            {
+                let paths = current_launch_agent_paths()?;
+                let uid = rustix::process::geteuid().as_raw();
+                launch_agent::remove_launch_agent(
+                    uid,
+                    &paths,
+                    &launch_agent::SystemLaunchctlRunner,
+                )
+                .map_err(|_| CliError::new(16, "could not remove LaunchAgent plist"))?;
+                println!("removed {}", launch_agent::LAUNCH_AGENT_LABEL);
+                Ok(())
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                Err(CliError::new(
+                    17,
+                    "LaunchAgent management is supported only on macOS",
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn current_launch_agent_paths() -> Result<launch_agent::LaunchAgentPaths, CliError> {
+    launch_agent::resolve_launch_agent_paths(
+        |var| std::env::var_os(var),
+        etcetera::home_dir().as_deref().ok(),
+    )
+    .map_err(|_| CliError::new(16, "could not resolve LaunchAgent paths"))
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_binary_path(override_path: Option<PathBuf>) -> Result<PathBuf, CliError> {
+    let path = match override_path {
+        Some(p) => p,
+        None => std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .map_err(|_| CliError::new(16, "could not resolve ariadusage binary path"))?,
+    };
+    if !path.is_absolute() {
+        return Err(CliError::new(2, "binary path must be absolute"));
+    }
+    Ok(path)
+}
+
+fn run_foreground_daemon(socket: Option<PathBuf>) -> Result<(), CliError> {
+    #[cfg(unix)]
+    {
+        let runtime = current_thread_runtime()?;
+        runtime
+            .block_on(ariadusage_engine::daemon::run_daemon(socket))
+            .map_err(|_| CliError::new(16, "engine daemon failed"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = socket;
+        Err(CliError::new(
+            17,
+            "engine daemon is unsupported on this platform",
+        ))
+    }
+}
+
+fn run_status_command(socket: Option<PathBuf>, json: bool) -> Result<(), CliError> {
+    #[cfg(unix)]
+    {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        use ariadusage_protocol::ipc::{
+            ClientInfo, ClientMessage, PROTOCOL_V1, ServerMessage, parse_server_message,
+        };
+
+        let sock = match socket {
+            Some(p) => {
+                paths::validate_socket_path_len(&p)
+                    .map_err(|_| CliError::new(2, "socket path exceeds sun_path limit"))?;
+                p
+            }
+            None => paths::socket_path()
+                .map_err(|_| CliError::new(16, "trusted runtime socket unavailable"))?,
+        };
+
+        let mut stream = UnixStream::connect(&sock)
+            .map_err(|_| CliError::new(16, "could not connect to engine daemon socket"))?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| CliError::new(16, "could not configure socket timeout"))?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| CliError::new(16, "could not configure socket timeout"))?;
+
+        let hello = ClientMessage::Hello {
+            protocols: vec![PROTOCOL_V1.to_string()],
+            client: ClientInfo::new("ariadusage-cli", env!("CARGO_PKG_VERSION")),
+            id: None,
+        };
+        let get_snap = ClientMessage::GetSnapshot { id: None };
+        for msg in [&hello, &get_snap] {
+            let mut line =
+                serde_json::to_vec(msg).map_err(|_| CliError::new(16, "ipc encode failed"))?;
+            line.push(b'\n');
+            stream
+                .write_all(&line)
+                .map_err(|_| CliError::new(16, "ipc write failed"))?;
+        }
+        stream
+            .flush()
+            .map_err(|_| CliError::new(16, "ipc flush failed"))?;
+
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        while reader
+            .read_line(&mut line)
+            .map_err(|_| CliError::new(16, "ipc read failed"))?
+            > 0
+        {
+            let trimmed = line.trim_end_matches(['\r', '\n']);
+            if let Ok(ServerMessage::Snapshot { snapshot }) = parse_server_message(trimmed) {
+                if json {
+                    let text = serde_json::to_string_pretty(&snapshot)
+                        .map_err(|_| CliError::new(16, "snapshot format failed"))?;
+                    println!("{text}");
+                } else {
+                    println!("engine {}", snapshot.engine.version);
+                    for p in &snapshot.providers {
+                        println!(
+                            "{}: enabled={} source={}",
+                            p.id.as_str(),
+                            p.enabled,
+                            p.source_mode
+                        );
+                    }
+                }
+                return Ok(());
+            }
+            line.clear();
+        }
+
+        Err(CliError::new(16, "did not receive snapshot from daemon"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (socket, json);
+        Err(CliError::new(
+            17,
+            "engine status is unsupported on this platform",
+        ))
     }
 }

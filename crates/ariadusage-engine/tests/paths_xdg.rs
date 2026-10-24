@@ -167,3 +167,152 @@ fn test_trusted_runtime_dir_rejections() {
         "0700 directory on tmpfs owned by current EUID must be accepted"
     );
 }
+
+#[test]
+fn test_macos_runtime_dir_resolution_and_var_canonicalization() {
+    use ariadusage_engine::paths::{canonicalize_macos_var_prefix, resolve_macos_runtime_dir_with};
+
+    assert_eq!(
+        canonicalize_macos_var_prefix(Path::new("/var/folders/ab/cd/T")),
+        PathBuf::from("/private/var/folders/ab/cd/T")
+    );
+    assert_eq!(
+        canonicalize_macos_var_prefix(Path::new("/private/var/folders/ab/cd/T")),
+        PathBuf::from("/private/var/folders/ab/cd/T")
+    );
+
+    // 1. XDG_RUNTIME_DIR takes precedence over Darwin temp dir when set and absolute.
+    let env_xdg = make_env(&[("XDG_RUNTIME_DIR", "/custom/xdg/run")]);
+    assert_eq!(
+        resolve_macos_runtime_dir_with(&env_xdg, Some(Path::new("/Users/alice")), || {
+            Some(PathBuf::from("/var/folders/ab/cd/T/"))
+        }),
+        Some(PathBuf::from("/custom/xdg/run"))
+    );
+
+    // 2. Falls back to Darwin temp dir when XDG_RUNTIME_DIR is unset or relative, stripping trailing slash.
+    let empty_env = make_env(&[]);
+    assert_eq!(
+        resolve_macos_runtime_dir_with(&empty_env, Some(Path::new("/Users/alice")), || {
+            Some(PathBuf::from("/var/folders/ab/cd/T/"))
+        }),
+        Some(PathBuf::from("/var/folders/ab/cd/T"))
+    );
+    let rel_env = make_env(&[("XDG_RUNTIME_DIR", "rel/run")]);
+    assert_eq!(
+        resolve_macos_runtime_dir_with(&rel_env, Some(Path::new("/Users/alice")), || {
+            Some(PathBuf::from("/var/folders/ab/cd/T"))
+        }),
+        Some(PathBuf::from("/var/folders/ab/cd/T"))
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn test_macos_trusted_runtime_dir_enforces_mode_uid_and_rejects_symlinks() {
+    use ariadusage_engine::paths::{
+        canonicalize_macos_var_prefix, resolve_macos_trusted_runtime_dir_with,
+    };
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp_parent = tempfile::tempdir().expect("tempdir");
+    // Canonicalize the temp parent through /private/var on macOS so ancestor lstat checks
+    // start from a symlink-free root.
+    let canon_parent = canonicalize_macos_var_prefix(temp_parent.path());
+    let run_dir = canon_parent.join("darwin_run");
+    std::fs::create_dir(&run_dir).expect("create run_dir");
+    let euid = rustix::process::geteuid().as_raw();
+    let empty_env = make_env(&[]);
+
+    // 1. Mode 0755 -> rejected
+    std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o755)).expect("set 0755");
+    assert_eq!(
+        resolve_macos_trusted_runtime_dir_with(&empty_env, None, || Some(run_dir.clone()), euid),
+        None,
+        "0755 runtime directory must be rejected"
+    );
+
+    // 2. Mode 0700 -> accepted for matching EUID, rejected for mismatched EUID
+    std::fs::set_permissions(&run_dir, std::fs::Permissions::from_mode(0o700)).expect("set 0700");
+    assert_eq!(
+        resolve_macos_trusted_runtime_dir_with(
+            &empty_env,
+            None,
+            || Some(run_dir.clone()),
+            euid.wrapping_add(1)
+        ),
+        None,
+        "runtime directory owned by different UID must be rejected"
+    );
+    assert_eq!(
+        resolve_macos_trusted_runtime_dir_with(&empty_env, None, || Some(run_dir.clone()), euid),
+        Some(run_dir.clone()),
+        "0700 directory owned by EUID with no symlink ancestors must be accepted"
+    );
+
+    // 3. Leaf symlink escape -> rejected
+    let leaf_link = canon_parent.join("symlink_leaf");
+    std::os::unix::fs::symlink(&run_dir, &leaf_link).expect("create leaf symlink");
+    assert_eq!(
+        resolve_macos_trusted_runtime_dir_with(&empty_env, None, || Some(leaf_link.clone()), euid),
+        None,
+        "symlink leaf runtime directory must be rejected"
+    );
+
+    // 4. Intermediate symlink escape -> rejected
+    let nested_dir = run_dir.join("nested");
+    std::fs::create_dir(&nested_dir).expect("create nested_dir");
+    std::fs::set_permissions(&nested_dir, std::fs::Permissions::from_mode(0o700))
+        .expect("set nested 0700");
+    let via_symlink = leaf_link.join("nested");
+    assert_eq!(
+        resolve_macos_trusted_runtime_dir_with(&empty_env, None, || Some(via_symlink), euid),
+        None,
+        "runtime directory traversed through an intermediate symlink must be rejected"
+    );
+}
+
+#[test]
+fn test_socket_path_enforces_sun_path_104_byte_limit() {
+    use ariadusage_engine::paths::{
+        ENGINE_SOCKET_REL_PATH, PathError, SUN_PATH_MAX_BYTES,
+        resolve_socket_path_from_runtime_dir, validate_socket_path_len,
+    };
+
+    let short_dir = Path::new("/private/var/folders/ab/cd/T");
+    let sock = resolve_socket_path_from_runtime_dir(short_dir).expect("short socket path valid");
+    assert_eq!(
+        sock,
+        PathBuf::from("/private/var/folders/ab/cd/T/ariadusage/engine.sock")
+    );
+
+    // Exactly 103 bytes (< 104) is accepted.
+    let suffix_len = 1 + ENGINE_SOCKET_REL_PATH.len(); // "/ariadusage/engine.sock" = 23 bytes
+    let dir_103 = format!("/{}", "a".repeat(SUN_PATH_MAX_BYTES - 1 - 1 - suffix_len));
+    let sock_103 =
+        resolve_socket_path_from_runtime_dir(Path::new(&dir_103)).expect("103-byte socket valid");
+    assert_eq!(sock_103.as_os_str().len(), 103);
+
+    // 104 bytes (>= SUN_PATH_MAX_BYTES) fails closed with SocketPathTooLong.
+    let dir_104 = format!("/{}", "a".repeat(SUN_PATH_MAX_BYTES - 1 - suffix_len));
+    let err = resolve_socket_path_from_runtime_dir(Path::new(&dir_104))
+        .expect_err("104-byte socket path must fail closed");
+    assert!(matches!(
+        err,
+        PathError::SocketPathTooLong {
+            len: 104,
+            max: 104,
+            ..
+        }
+    ));
+
+    let over_path = PathBuf::from(format!("/{}", "x".repeat(120)));
+    assert!(matches!(
+        validate_socket_path_len(&over_path),
+        Err(PathError::SocketPathTooLong {
+            len: 121,
+            max: 104,
+            ..
+        })
+    ));
+}
