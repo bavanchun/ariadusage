@@ -373,3 +373,29 @@ fn antigravity_diagnose_finds_credentials_file_under_temporary_home() {
         Some("parse")
     );
 }
+
+// Rust-added: verifies CLI home resolution fails closed instead of falling back to working_dir
+#[test]
+fn cli_home_resolution_fails_closed_when_home_and_fallback_are_missing() {
+    use ariadusage_cli::resolve_cli_home_dir;
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+
+    assert_eq!(resolve_cli_home_dir(None, None), None);
+    assert_eq!(resolve_cli_home_dir(Some(OsStr::new("")), None), None);
+    assert_eq!(
+        resolve_cli_home_dir(Some(OsStr::new("")), Some(PathBuf::new())),
+        None
+    );
+    assert_eq!(
+        resolve_cli_home_dir(
+            Some(OsStr::new("/tmp/env-home")),
+            Some(PathBuf::from("/tmp/fallback"))
+        ),
+        Some(PathBuf::from("/tmp/env-home"))
+    );
+    assert_eq!(
+        resolve_cli_home_dir(Some(OsStr::new("")), Some(PathBuf::from("/tmp/fallback"))),
+        Some(PathBuf::from("/tmp/fallback"))
+    );
+}
