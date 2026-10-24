@@ -227,8 +227,8 @@ fn new_database_uses_wal() {
 fn new_database_configures_busy_timeout() {
     let tmp = TempDir::new().expect("tempdir");
     let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _ = store.load_metadata();
-    assert!(store.database_path().exists());
+    let configuration = store.configuration().unwrap();
+    assert_eq!(configuration.busy_timeout_milliseconds, 5000);
 }
 
 // upstream: CostUsageStoreTests.swift:72 new database accepts a fixture busy timeout
@@ -244,8 +244,8 @@ fn new_database_accepts_a_fixture_busy_timeout() {
         ariadusage_engine::cost::store::DEFAULT_PARSER_HASH,
         25,
     );
-    let _ = store.load_metadata();
-    assert!(store.database_path().exists());
+    let configuration = store.configuration().unwrap();
+    assert_eq!(configuration.busy_timeout_milliseconds, 25);
 }
 
 // upstream: CostUsageStoreTests.swift:83 new database enables foreign keys
@@ -253,18 +253,8 @@ fn new_database_accepts_a_fixture_busy_timeout() {
 fn new_database_enables_foreign_keys() {
     let tmp = TempDir::new().expect("tempdir");
     let mut store = CostUsageStore::new(Some(tmp.path()));
-    let _ = store.load_metadata();
-    // foreign_keys is a per-connection pragma enabled inside CostUsageStore::open_validated;
-    // verify the foreign-key constraint on `files` -> `usage_rows` exists in sqlite_master.
-    let conn = rusqlite::Connection::open(store.database_path()).unwrap();
-    let fk_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM pragma_foreign_key_list('usage_rows')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(fk_count, 1);
+    let configuration = store.configuration().unwrap();
+    assert!(configuration.foreign_keys_enabled);
 }
 
 // upstream: CostUsageStoreTests.swift:92 new database uses incremental auto vacuum
