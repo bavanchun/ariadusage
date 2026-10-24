@@ -304,7 +304,6 @@ pub enum FormControlLayout {
         currency_rect: Rect,
         coverage_rect: Rect,
         metric_boxes: Vec<(Rect, String, String)>,
-        token_items: Vec<(Rect, String, String)>,
         footer_rect: Rect,
         currency_label: String,
         coverage_label: String,
@@ -710,7 +709,7 @@ fn measure_row_height(content_w: f64, row: &FormRowModel) -> f64 {
             }
         }
         FormControl::EmptyStateCard { .. } => 148.0,
-        FormControl::SpendSummaryGrid { .. } => 176.0,
+        FormControl::SpendSummaryGrid { .. } => 128.0,
         FormControl::Checkbox { .. } if row.subtitle.is_none() => 32.0,
         FormControl::Segmented { .. } => 36.0,
         FormControl::ColorHex { .. } => 42.0,
@@ -1277,8 +1276,8 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
             enable_setting_id,
         } => {
             let icon_rect = Rect::new(inner_x, row_rect.y + 16.0, 28.0, 28.0);
-            let toggle_rect = Rect::new(inner_right - 38.0, row_rect.y + 19.0, 38.0, 22.0);
-            let refresh_rect = Rect::new(toggle_rect.x - 32.0, row_rect.y + 18.0, 24.0, 24.0);
+            let toggle_rect = Rect::new(inner_right - 22.0, row_rect.y + 19.0, 22.0, 22.0);
+            let refresh_rect = Rect::new(toggle_rect.x - 30.0, row_rect.y + 18.0, 24.0, 24.0);
             let text_left = icon_rect.max_x() + 12.0;
             let text_avail = (refresh_rect.x - 10.0 - text_left).max(100.0);
             let title_rect = Rect::new(text_left, row_rect.y + 11.0, text_avail, 20.0);
@@ -1367,11 +1366,6 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
             estimated_spend,
             tracked_tokens,
             subscriptions,
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            reasoning_tokens,
             provenance_text,
         } => {
             let currency_rect = Rect::new(inner_x, row_rect.y + 10.0, 64.0, 18.0);
@@ -1395,42 +1389,12 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
                     subscriptions.clone(),
                 ),
             ];
-            let tok_w = ((inner_w - 32.0) / 5.0).max(60.0);
-            let tok_y = row_rect.y + 96.0;
-            let token_items = vec![
-                (
-                    Rect::new(inner_x, tok_y, tok_w, 38.0),
-                    "Input".to_string(),
-                    input_tokens.clone(),
-                ),
-                (
-                    Rect::new(inner_x + (tok_w + 8.0), tok_y, tok_w, 38.0),
-                    "Output".to_string(),
-                    output_tokens.clone(),
-                ),
-                (
-                    Rect::new(inner_x + 2.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
-                    "Cache read".to_string(),
-                    cache_read_tokens.clone(),
-                ),
-                (
-                    Rect::new(inner_x + 3.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
-                    "Cache write".to_string(),
-                    cache_write_tokens.clone(),
-                ),
-                (
-                    Rect::new(inner_x + 4.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
-                    "Reasoning".to_string(),
-                    reasoning_tokens.clone(),
-                ),
-            ];
-            let footer_rect = Rect::new(inner_x, row_rect.y + 144.0, inner_w, 22.0);
+            let footer_rect = Rect::new(inner_x, row_rect.y + 96.0, inner_w, 22.0);
             (
                 FormControlLayout::SpendSummaryGrid {
                     currency_rect,
                     coverage_rect,
                     metric_boxes,
-                    token_items,
                     footer_rect,
                     currency_label: currency_code.clone(),
                     coverage_label: coverage_text.clone(),

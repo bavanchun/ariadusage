@@ -1130,11 +1130,6 @@ pub enum FormControl {
         estimated_spend: String,
         tracked_tokens: String,
         subscriptions: String,
-        input_tokens: String,
-        output_tokens: String,
-        cache_read_tokens: String,
-        cache_write_tokens: String,
-        reasoning_tokens: String,
         provenance_text: String,
     },
     Buttons {
@@ -1304,6 +1299,42 @@ pub fn pane_model(
     settings: &SettingsState,
     snapshot: Option<&EngineSnapshot>,
 ) -> PaneModel {
+    #[cfg(target_os = "macos")]
+    {
+        let dates = crate::appkit::FoundationDateTexts::new();
+        pane_model_with_dates(pane, settings, snapshot, &dates)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        struct UtcFallbackDates;
+        impl crate::format::DateTexts for UtcFallbackDates {
+            fn time_zone(&self) -> jiff::tz::TimeZone {
+                jiff::tz::TimeZone::UTC
+            }
+            fn hour_minute(&self, date: jiff::Timestamp) -> String {
+                let z = date.to_zoned(jiff::tz::TimeZone::UTC);
+                z.strftime("%-I:%M %p").to_string()
+            }
+            fn month_day_hour_minute(&self, date: jiff::Timestamp) -> String {
+                let z = date.to_zoned(jiff::tz::TimeZone::UTC);
+                z.strftime("%b %-d at %-I:%M %p").to_string()
+            }
+            fn relative_abbreviated(&self, date: jiff::Timestamp, now: jiff::Timestamp) -> String {
+                let secs = now.duration_since(date).as_secs();
+                format!("{} min ago", secs / 60)
+            }
+        }
+        pane_model_with_dates(pane, settings, snapshot, &UtcFallbackDates)
+    }
+}
+
+/// Builds the [`PaneModel`] for `pane` using explicit [`crate::format::DateTexts`].
+pub fn pane_model_with_dates(
+    pane: &SettingsPane,
+    settings: &SettingsState,
+    snapshot: Option<&EngineSnapshot>,
+    dates: &dyn crate::format::DateTexts,
+) -> PaneModel {
     match pane {
         SettingsPane::General => general_pane_model(settings),
         SettingsPane::ICloudSync => icloud_sync_pane_model(),
@@ -1315,7 +1346,7 @@ pub fn pane_model(
         SettingsPane::Hooks => hooks_pane_model(),
         SettingsPane::Plugins => plugins_pane_model(),
         SettingsPane::About => about_pane_model(),
-        SettingsPane::Provider(id) => provider_pane_model(id, settings, snapshot),
+        SettingsPane::Provider(id) => provider_pane_model(id, settings, snapshot, dates),
         other => PaneModel {
             pane: other.clone(),
             title: other.title(),
@@ -2709,11 +2740,6 @@ fn usage_spend_pane_model(
                 estimated_spend: estimated_spend.clone(),
                 tracked_tokens,
                 subscriptions,
-                input_tokens: "—".to_string(),
-                output_tokens: "—".to_string(),
-                cache_read_tokens: "—".to_string(),
-                cache_write_tokens: "—".to_string(),
-                reasoning_tokens: "—".to_string(),
                 provenance_text,
             },
         }],
@@ -3453,25 +3479,6 @@ fn source_mode_options() -> Vec<ChoiceItem> {
     ]
 }
 
-fn format_provider_updated(updated_at: jiff::Timestamp, now: jiff::Timestamp) -> (String, String) {
-    let elapsed = crate::format::seconds_between(updated_at, now).trunc();
-    if elapsed > -60.0 && elapsed < 60.0 {
-        ("Updated just now".to_string(), "just now".to_string())
-    } else if (60.0..3600.0).contains(&elapsed) {
-        let mins = (elapsed / 60.0).trunc() as i64;
-        let rel = format!("{mins}m ago");
-        (format!("Updated {rel}"), rel)
-    } else if (3600.0..86_400.0).contains(&elapsed) {
-        let hours = (elapsed / 3600.0).trunc() as i64;
-        let rel = format!("{hours}h ago");
-        (format!("Updated {rel}"), rel)
-    } else {
-        let zdt = updated_at.to_zoned(jiff::tz::TimeZone::UTC);
-        let rel = zdt.strftime("%b %-d").to_string();
-        (format!("Updated {rel}"), rel)
-    }
-}
-
 fn build_usage_window_row(
     title: String,
     window: &ariadusage_protocol::usage::RateWindow,
@@ -3517,6 +3524,7 @@ fn provider_pane_model(
     provider_id: &str,
     settings: &SettingsState,
     snapshot: Option<&EngineSnapshot>,
+    dates: &dyn crate::format::DateTexts,
 ) -> PaneModel {
     let snap_provider =
         snapshot.and_then(|s| s.providers.iter().find(|p| p.id.as_str() == provider_id));
@@ -3563,7 +3571,9 @@ fn provider_pane_model(
 
     let updated_pair = snap_provider.and_then(|p| p.updated_at).map(|updated| {
         let now = snapshot.map(|s| s.generated_at).unwrap_or(updated);
-        format_provider_updated(updated, now)
+        let full = crate::format::updated_string(updated, now, dates);
+        let rel = full.strip_prefix("Updated ").unwrap_or(&full).to_string();
+        (full, rel)
     });
     let updated_text = updated_pair
         .as_ref()
@@ -3736,23 +3746,21 @@ fn provider_pane_model(
 
         if let Some(sub) = p.subscription.as_ref().and_then(displayable_metric) {
             if let Some(renews) = &sub.renews {
-                let zdt = renews.at.to_zoned(jiff::tz::TimeZone::UTC);
                 usage_rows.push(FormRowModel {
                     title: "Plan renews".to_string(),
                     subtitle: None,
                     row_enabled: true,
                     control: FormControl::ReadOnlyValue {
-                        value: zdt.strftime("%b %-d").to_string(),
+                        value: dates.month_day_year(renews.at, renews.date_only),
                     },
                 });
             } else if let Some(expires) = &sub.expires {
-                let zdt = expires.at.to_zoned(jiff::tz::TimeZone::UTC);
                 usage_rows.push(FormRowModel {
                     title: "Plan expires".to_string(),
                     subtitle: None,
                     row_enabled: true,
                     control: FormControl::ReadOnlyValue {
-                        value: zdt.strftime("%b %-d").to_string(),
+                        value: dates.month_day_year(expires.at, expires.date_only),
                     },
                 });
             }
