@@ -642,7 +642,7 @@ fn test_builder_creates_generic_safe_diagnostic_with_error_on_failure() {
     );
 }
 
-// partial-upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:679 builder creates generic safe diagnostic with MiniMax details on success
+// partial-upstream: Tests/CodexBarTests/ProviderDiagnosticExportTests.swift:679 builder creates generic safe diagnostic with MiniMax details on success — missing: MiniMax details (non-v1 provider)
 #[test]
 fn test_builder_creates_generic_safe_diagnostic_on_success() {
     let now = Timestamp::from_second(1_700_000_000).unwrap();
@@ -713,6 +713,7 @@ fn test_builder_creates_generic_safe_diagnostic_on_success() {
     );
 }
 
+// Rust-added: verifies diagnostic export and redaction filter strip token, cookie, email, and account id
 #[test]
 fn test_diagnostic_export_never_contains_token_cookie_email_or_account_id() {
     let now = Timestamp::from_second(1_700_000_000).unwrap();

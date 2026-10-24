@@ -53,9 +53,10 @@ fn cache_help_documents_provider_as_cookie_scoped() {
     let help = cache_help("0.0.0");
 
     assert!(help.contains("--provider with --cookies"));
-    assert!(help.contains("codexbar cache clear --cookies --provider claude"));
+    assert!(help.contains("ariadusage cache clear --cookies --provider claude"));
 }
 
+// Rust-added: verifies IPC clearCostCache and CLI cache clear --cost against CostUsageStore
 #[test]
 fn cache_clear_removes_cookie_entries_and_cost_cache_files() {
     let cache = CookieCache::new();

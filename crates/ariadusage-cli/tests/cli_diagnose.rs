@@ -25,8 +25,8 @@ use jiff::Timestamp;
 fn diagnose_help_describes_generic_json_export() {
     let help = diagnose_help("0.0.0");
 
-    assert!(help.contains("codexbar diagnose --provider <name|all> --format json"));
-    assert!(help.contains("codexbar diagnose --provider all --format json"));
+    assert!(help.contains("ariadusage diagnose --provider <name|all> --format json"));
+    assert!(help.contains("ariadusage diagnose --provider all --format json"));
     assert!(help.contains("--redact"));
     assert!(help.contains("--output <path>"));
     assert!(help.contains("safe JSON export"));
@@ -147,6 +147,7 @@ fn antigravity_diagnose_serializes_terminal_failure_and_logs_safe_category() {
     assert!(!failure_log.contains("Google auth not found"));
 }
 
+// Rust-added: verifies CLI diagnose and redaction filter strip token, cookie, email, and account id
 #[test]
 fn diagnose_output_never_contains_secret_token_cookie_email_or_account_id() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -306,4 +307,69 @@ fn diagnose_output_never_contains_secret_token_cookie_email_or_account_id() {
     assert!(!stdout.contains(fake_cookie));
     assert!(!stdout.contains(fake_email));
     assert!(!stdout.contains(fake_account));
+}
+
+// Rust-added: verifies Antigravity CLI diagnose resolves OAuth credentials under user HOME rather than config directory
+#[test]
+fn antigravity_diagnose_finds_credentials_file_under_temporary_home() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+
+    let default_config_path = root.join(".config").join("ariadusage").join("config.json");
+    let mut antigravity_cfg =
+        ProviderConfig::new(ProviderId::new("antigravity").expect("antigravity id"));
+    antigravity_cfg.enabled = Some(true);
+    antigravity_cfg.source = Some(SourceMode::Oauth);
+    ConfigStore::new(default_config_path)
+        .save(&Config::new(
+            Config::CURRENT_VERSION,
+            vec![ProviderEntry::Typed(antigravity_cfg)],
+        ))
+        .expect("save config under default HOME/.config/ariadusage/config.json");
+
+    let creds_dir = root.join(".ariadusage").join("antigravity");
+    std::fs::create_dir_all(&creds_dir).expect("create .ariadusage/antigravity");
+    std::fs::write(creds_dir.join("oauth_creds.json"), b"{not-json}")
+        .expect("write oauth_creds.json");
+
+    let runtime_dir = root.join("runtime");
+    std::fs::create_dir_all(&runtime_dir).expect("create runtime dir");
+
+    let mut cmd = Command::new(cargo_bin("ariadusage"));
+    cmd.args([
+        "diagnose",
+        "--provider",
+        "antigravity",
+        "--format",
+        "json",
+        "--pretty",
+    ])
+    .env_clear()
+    .env("HOME", root)
+    .env("CFFIXED_USER_HOME", root)
+    .env("XDG_RUNTIME_DIR", &runtime_dir)
+    .env("ARIADUSAGE_DISABLE_KEYRING", "1");
+    #[cfg(windows)]
+    cmd.env("USERPROFILE", root);
+
+    let result = cmd.output().expect("run diagnose with temporary HOME");
+    assert_eq!(
+        result.status.code(),
+        Some(0),
+        "diagnose stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let diagnostic: DiagnosticExport =
+        serde_json::from_slice(&result.stdout).expect("decode DiagnosticExport");
+    assert_eq!(diagnostic.source_mode, "oauth");
+    assert_eq!(diagnostic.fetch_attempts.len(), 1);
+    assert_eq!(
+        diagnostic.fetch_attempts[0].strategy_id.as_deref(),
+        Some("antigravity.oauth")
+    );
+    assert_eq!(diagnostic.fetch_attempts[0].outcome, "failed");
+    assert_eq!(
+        diagnostic.fetch_attempts[0].error_category.as_deref(),
+        Some("parse")
+    );
 }

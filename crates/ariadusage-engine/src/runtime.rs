@@ -2599,7 +2599,7 @@ impl EngineRuntime {
                     "error": error,
                 })))
             }
-            "diagnose" | "diagnose.all" => {
+            "diagnose" => {
                 let batch = self.diagnose_all_providers(true).await;
                 let payload = serde_json::to_value(batch)
                     .map_err(|_| IpcError::new(ErrorCode::InternalError))?;
@@ -2699,26 +2699,9 @@ impl EngineRuntime {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
         let request_state = self.coordinator.begin_replacing_request(id.clone()).state;
-        let mut inputs = self
+        let inputs = self
             .resolve_plan_inputs(id, &config, &prefs, interaction, &request_state)
             .await;
-        for key in [
-            "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
-            "ANTHROPIC_ADMIN_API_KEY",
-            "ANTHROPIC_ADMIN_KEY",
-            "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
-            "OPENAI_API_KEY",
-            "CODEX_HOME",
-            "GEMINI_CLI_HOME",
-        ] {
-            if !inputs.base_environment.contains_key(key)
-                && let Ok(val) = std::env::var(key)
-            {
-                inputs
-                    .base_environment
-                    .insert(key.to_owned(), SecretString::new(val));
-            }
-        }
         let spec = self
             .registry
             .read()

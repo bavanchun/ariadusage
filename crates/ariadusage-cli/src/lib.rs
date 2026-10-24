@@ -26,6 +26,7 @@ use ariadusage_engine::daemon::build_default_runtime_with_options;
 use ariadusage_engine::paths;
 use ariadusage_engine::runtime::EngineRuntime;
 use ariadusage_protocol::ids::ProviderId;
+use ariadusage_protocol::secret::SecretString;
 use ariadusage_protocol::usage::ProviderErrorKind;
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
@@ -53,22 +54,47 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
     let cfg_path = paths::config_path().map_err(|e| e.to_string())?;
     let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    let runtime =
-        build_default_runtime_with_options(ConfigStore::new(cfg_path.clone()), disable_keyring)
-            .map_err(|e| e.to_string())?;
+    let working_dir = std::env::current_dir()
+        .or_else(|_| etcetera::home_dir())
+        .or_else(|_| cfg_path.parent().map(Path::to_path_buf).ok_or(()))
+        .map_err(|()| "working directory unavailable".to_owned())?;
+    let home_dir = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| etcetera::home_dir().ok())
+        .unwrap_or_else(|| working_dir.clone());
+
+    let mut base_env = BTreeMap::new();
+    if let Some(home_str) = home_dir.to_str() {
+        base_env.insert("HOME".to_owned(), SecretString::new(home_str.to_owned()));
+    }
+    for key in [
+        "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
+        "ANTHROPIC_ADMIN_API_KEY",
+        "ANTHROPIC_ADMIN_KEY",
+        "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+        "GEMINI_CLI_HOME",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            base_env.insert(key.to_owned(), SecretString::new(val));
+        }
+    }
+
+    let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)
+        .map_err(|e| e.to_string())?;
+    let runtime = Arc::new(
+        Arc::into_inner(runtime)
+            .expect("freshly constructed CLI runtime has a single owner")
+            .with_base_environment(base_env),
+    );
     if let (Ok(agy_id), Ok(net)) = (
         ProviderId::new("antigravity"),
         ariadusage_engine::brokers::net::NetBroker::new(
             ariadusage_engine::brokers::net::NetConfig::default(),
         ),
     ) {
-        let working_dir = std::env::current_dir()
-            .or_else(|_| cfg_path.parent().map(Path::to_path_buf).ok_or(()))
-            .map_err(|()| "working directory unavailable".to_owned())?;
-        let home_dir = cfg_path
-            .parent()
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| working_dir.clone());
         let agy_cfg = ariadusage_engine::providers::antigravity::AntigravityStrategyConfig::new(
             Arc::new(net),
             working_dir,
@@ -249,9 +275,9 @@ pub struct CacheClearResult {
 /// Ported from `CLIHelp.cacheHelp(version:)` (`CLIHelp.swift:345-371`).
 pub fn cache_help(version: &str) -> String {
     format!(
-        "CodexBar {version}\n\n\
+        "AriadUsage {version}\n\n\
          Usage:\n  \
-         codexbar cache clear <--cookies|--cost|--all>\n                      \
+         ariadusage cache clear <--cookies|--cost|--all>\n                      \
          [--provider <name>]\n                      \
          [--format text|json]\n                      \
          [--json]\n                      \
@@ -264,11 +290,11 @@ pub fn cache_help(version: &str) -> String {
          --cost to clear cost usage scan caches, or --all for both.\n  \
          Optionally specify --provider with --cookies to clear cookies for a single provider only.\n\n\
          Examples:\n  \
-         codexbar cache clear --cookies\n  \
-         codexbar cache clear --cookies --provider claude\n  \
-         codexbar cache clear --cost\n  \
-         codexbar cache clear --all\n  \
-         codexbar cache clear --all --format json --pretty"
+         ariadusage cache clear --cookies\n  \
+         ariadusage cache clear --cookies --provider claude\n  \
+         ariadusage cache clear --cost\n  \
+         ariadusage cache clear --all\n  \
+         ariadusage cache clear --all --format json --pretty"
     )
 }
 
@@ -443,9 +469,9 @@ pub fn execute_cache_clear(
 /// Ported from `CLIHelp.diagnoseHelp(version:)` (`CLIHelp.swift:409-431`).
 pub fn diagnose_help(version: &str) -> String {
     format!(
-        "CodexBar {version}\n\n\
+        "AriadUsage {version}\n\n\
          Usage:\n  \
-         codexbar diagnose --provider <name|all> --format json\n                   \
+         ariadusage diagnose --provider <name|all> --format json\n                   \
          [--json-output] [--log-level <trace|verbose|debug|info|warning|error|critical>]\n                   \
          [-v|--verbose]\n                   \
          [--redact] [--output <path>]\n                   \
@@ -455,10 +481,10 @@ pub fn diagnose_help(version: &str) -> String {
          The export is redacted and omits raw API tokens, cookies, auth headers, emails,\n  \
          account IDs, org IDs, raw responses, and billing-history records.\n\n\
          Examples:\n  \
-         codexbar diagnose --provider minimax --format json --redact --output diagnostic.json\n  \
-         codexbar diagnose --provider minimax --format json --pretty\n  \
-         codexbar diagnose --provider claude --format json --pretty\n  \
-         codexbar diagnose --provider all --format json"
+         ariadusage diagnose --provider codex --format json --redact --output diagnostic.json\n  \
+         ariadusage diagnose --provider codex --format json --pretty\n  \
+         ariadusage diagnose --provider claude --format json --pretty\n  \
+         ariadusage diagnose --provider all --format json"
     )
 }
 
@@ -719,9 +745,9 @@ pub fn execute_usage(
 /// Ported from `CLIHelp.cookieHelp(version:)` (`CLIHelp.swift:433-457`).
 pub fn cookie_help(version: &str) -> String {
     format!(
-        "CodexBar {version}\n\n\
+        "AriadUsage {version}\n\n\
          Usage:\n  \
-         codexbar cookie refresh <--provider <name>|--all>\n                         \
+         ariadusage cookie refresh <--provider <name>|--all>\n                         \
          [--allow-keychain-prompt]\n                         \
          [--format text|json]\n                         \
          [--json]\n                         \
@@ -734,9 +760,9 @@ pub fn cookie_help(version: &str) -> String {
          Keychain prompt. A prior denial keeps its six-hour cooldown unless that\n  \
          explicit interactive retry flag is supplied. Cookie values are never shown.\n\n\
          Examples:\n  \
-         codexbar cookie refresh --provider opencodego --allow-keychain-prompt\n  \
-         codexbar cookie refresh --all --allow-keychain-prompt\n  \
-         codexbar cookie refresh --provider opencodego --allow-keychain-prompt --format json --pretty"
+         ariadusage cookie refresh --provider claude --allow-keychain-prompt\n  \
+         ariadusage cookie refresh --all --allow-keychain-prompt\n  \
+         ariadusage cookie refresh --provider claude --allow-keychain-prompt --format json --pretty"
     )
 }
 

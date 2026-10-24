@@ -747,7 +747,7 @@ fn wrapped_profile_failures_use_only_the_selected_browser_access_hints() {
     }
 }
 
-// partial-upstream: CLICookieRefreshTests.swift:446 plugin HTTP rejection reaches cookie refresh output
+// partial-upstream: CLICookieRefreshTests.swift:446 plugin HTTP rejection reaches cookie refresh output — missing: PluginManifest and MockURLProtocol runtime dispatch (plugin milestone)
 #[test]
 fn plugin_http_rejection_reaches_cookie_refresh_output() {
     let descriptor = make_descriptor("raycast", true, None);
