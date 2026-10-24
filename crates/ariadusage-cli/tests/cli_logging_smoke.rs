@@ -1,7 +1,7 @@
-// Ported from CodexBar Sources/CodexBarCLI/CLIEntry.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Logging/CodexBarLog.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Logging/JSONStderrLogHandler.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Logging/LogRedactor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Rust-added tests
+// Minimal smoke tests for CLI logging (`-v`/`--verbose`, `--log-level`, `--json-output`),
+// `LogRedactor`, and `ProviderLogging`.
+
 
 use std::collections::BTreeMap;
 
