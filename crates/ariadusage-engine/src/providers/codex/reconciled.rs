@@ -17,6 +17,7 @@ use super::identity::CodexNativeCredentialOwnerIdentity;
 use super::normalizer::{
     CodexAdditionalRateLimitMapper, CodexRateWindowNormalizer, WindowSnapshot,
 };
+use super::openai_dashboard_models::OpenAIDashboardSnapshot;
 use super::usage_fetcher::CodexUsageResponse;
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +54,9 @@ pub struct CodexReconciledState {
     pub weekly: Option<RateWindow>,
     pub extra_rate_windows: Vec<NamedRateWindow>,
     pub subscription_expires_at: Option<Timestamp>,
+    pub subscription_expires_at_is_date_only: bool,
     pub subscription_renews_at: Option<Timestamp>,
+    pub subscription_renews_at_is_date_only: bool,
     pub identity: Option<ProviderIdentitySnapshot>,
     pub updated_at: Timestamp,
 }
@@ -70,7 +73,9 @@ impl CodexReconciledState {
             secondary,
             Vec::new(),
             None,
+            false,
             None,
+            false,
             identity,
             updated_at,
         )
@@ -101,7 +106,9 @@ impl CodexReconciledState {
             secondary,
             extra_rate_windows,
             None,
+            false,
             None,
+            false,
             identity,
             updated_at,
         )
@@ -132,10 +139,48 @@ impl CodexReconciledState {
             secondary,
             extra_rate_windows,
             None,
+            false,
             None,
+            false,
             identity,
             updated_at,
         )
+    }
+
+    pub fn from_attached_dashboard(
+        snapshot: &OpenAIDashboardSnapshot,
+        provider: ProviderId,
+        account_email: Option<&str>,
+        account_plan: Option<&str>,
+    ) -> Option<Self> {
+        let identity =
+            Some(Self::attached_dashboard_identity(snapshot, provider, account_email, account_plan));
+        Self::make(
+            snapshot.primary_limit.clone(),
+            snapshot.secondary_limit.clone(),
+            snapshot.extra_rate_windows.clone().unwrap_or_default(),
+            snapshot.subscription_expires_at,
+            snapshot.subscription_expires_at_is_date_only,
+            snapshot.subscription_renews_at,
+            snapshot.subscription_renews_at_is_date_only,
+            identity,
+            snapshot.updated_at,
+        )
+    }
+
+    pub fn attached_dashboard_identity(
+        snapshot: &OpenAIDashboardSnapshot,
+        provider: ProviderId,
+        account_email: Option<&str>,
+        account_plan: Option<&str>,
+    ) -> ProviderIdentitySnapshot {
+        let resolved_email = account_email
+            .map(str::to_owned)
+            .or_else(|| snapshot.signed_in_email.clone());
+        let resolved_plan = account_plan
+            .map(str::to_owned)
+            .or_else(|| snapshot.account_plan.clone());
+        ProviderIdentitySnapshot::new(Some(provider), resolved_email, None, resolved_plan, None)
     }
 
     pub fn to_usage_snapshot(&self, confidence: Confidence) -> UsageSnapshot {
@@ -153,6 +198,12 @@ impl CodexReconciledState {
             confidence,
         )
         .expect("empty details cannot exceed max sections")
+        .with_subscription_metadata(
+            self.subscription_expires_at,
+            self.subscription_renews_at,
+            self.subscription_expires_at_is_date_only,
+            self.subscription_renews_at_is_date_only,
+        )
     }
 
     pub fn oauth_identity(
@@ -181,12 +232,15 @@ impl CodexReconciledState {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make(
         primary: Option<RateWindow>,
         secondary: Option<RateWindow>,
         extra_rate_windows: Vec<NamedRateWindow>,
         subscription_expires_at: Option<Timestamp>,
+        subscription_expires_at_is_date_only: bool,
         subscription_renews_at: Option<Timestamp>,
+        subscription_renews_at_is_date_only: bool,
         identity: Option<ProviderIdentitySnapshot>,
         updated_at: Timestamp,
     ) -> Option<Self> {
@@ -199,7 +253,9 @@ impl CodexReconciledState {
             weekly,
             extra_rate_windows,
             subscription_expires_at,
+            subscription_expires_at_is_date_only,
             subscription_renews_at,
+            subscription_renews_at_is_date_only,
             identity,
             updated_at,
         })
