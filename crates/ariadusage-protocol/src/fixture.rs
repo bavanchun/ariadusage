@@ -1078,24 +1078,47 @@ fn fixture_cost_history(id_str: &str) -> CostHistory {
 }
 
 fn fixture_utilization(id_str: &str) -> Vec<PlanUtilizationSeries> {
-    let session_reset = "2026-10-06T18:00:00Z".parse::<jiff::Timestamp>().ok();
+    let session_reset: jiff::Timestamp = "2026-10-06T13:00:00Z".parse().unwrap();
     let weekly_reset = "2026-10-10T09:00:00Z".parse::<jiff::Timestamp>().ok();
 
-    let session_entries: Vec<PlanUtilizationEntry> = [
+    let mut session_entries: Vec<PlanUtilizationEntry> = Vec::new();
+    // Historical 5-hour session windows across the preceding 6 days (30 periods total),
+    // with some idle windows omitted so the chart exercises gap-filling.
+    for period_back in (1..30_i64).rev() {
+        if period_back % 4 == 2 || period_back % 7 == 5 {
+            continue;
+        }
+        let period_reset =
+            jiff::Timestamp::from_second(session_reset.as_second() - period_back * 5 * 3600)
+                .unwrap();
+        let captured = jiff::Timestamp::from_second(period_reset.as_second() - 1800).unwrap();
+        let used = match period_back {
+            4 => 100.0,
+            3 => 28.0,
+            1 => 14.0,
+            p => ((p * 7) % 18 + 4) as f64,
+        };
+        session_entries.push(PlanUtilizationEntry {
+            captured_at: captured,
+            used_percent: used,
+            resets_at: Some(period_reset),
+        });
+    }
+    // Intra-window burndown samples inside the current [08:00, 13:00] session window.
+    for (ts, used) in [
         ("2026-10-06T08:00:00Z", 5.0),
         ("2026-10-06T09:00:00Z", 14.0),
         ("2026-10-06T10:00:00Z", 23.0),
         ("2026-10-06T11:00:00Z", 31.0),
         ("2026-10-06T12:00:00Z", 38.0),
         ("2026-10-06T12:48:00Z", 42.0),
-    ]
-    .into_iter()
-    .map(|(ts, used)| PlanUtilizationEntry {
-        captured_at: ts.parse().unwrap(),
-        used_percent: used,
-        resets_at: session_reset,
-    })
-    .collect();
+    ] {
+        session_entries.push(PlanUtilizationEntry {
+            captured_at: ts.parse().unwrap(),
+            used_percent: used,
+            resets_at: Some(session_reset),
+        });
+    }
 
     let weekly_peak = if id_str == "claude" { 64.0 } else { 51.0 };
     let weekly_entries: Vec<PlanUtilizationEntry> = [

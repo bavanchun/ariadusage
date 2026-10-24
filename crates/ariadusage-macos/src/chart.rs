@@ -870,60 +870,75 @@ fn build_burndown_series(
     let mut entries = u.entries.clone();
     entries.sort_by_key(|e| e.captured_at);
     let latest = entries.last()?;
+    if latest.captured_at > ref_now {
+        return None;
+    }
 
     let duration_mins = if u.window_minutes > 0 {
         Some(u.window_minutes)
     } else {
         rate_window.and_then(|w| w.window_minutes)
     }
-    .unwrap_or(fallback_mins)
-    .max(1);
+    .unwrap_or(fallback_mins);
+    if duration_mins == 0 {
+        return None;
+    }
     let duration_secs = i64::from(duration_mins) * 60;
 
-    let reset_ts = rate_window
-        .and_then(|w| w.resets_at)
-        .or(latest.resets_at)
-        .unwrap_or_else(|| {
-            Timestamp::from_second(latest.captured_at.as_second() + duration_secs / 2)
-                .unwrap_or(latest.captured_at)
-        });
-    let start_ts = Timestamp::from_second(reset_ts.as_second() - duration_secs).unwrap_or(reset_ts);
+    let reset_ts = latest
+        .resets_at
+        .or_else(|| rate_window.and_then(|w| w.resets_at))?;
+    if reset_ts <= ref_now {
+        return None;
+    }
+    let start_ts = Timestamp::from_second(reset_ts.as_second() - duration_secs).ok()?;
+    if latest.captured_at < start_ts || latest.captured_at >= reset_ts {
+        return None;
+    }
     let span_secs = (reset_ts.as_second() - start_ts.as_second()).max(1) as f64;
 
-    let mut points = Vec::new();
-    // Anchor at window start (100% remaining) when no entry precedes `start_ts`.
-    points.push(QuotaBurndownPoint {
-        x_ratio: 0.0,
-        remaining_percent: 100.0,
-    });
+    let mut current_segment = Vec::new();
     for entry in &entries {
-        if entry.captured_at < start_ts || entry.captured_at > reset_ts {
+        if entry.captured_at < start_ts || entry.captured_at > latest.captured_at {
             continue;
         }
-        let x_ratio = ((entry.captured_at.as_second() - start_ts.as_second()) as f64 / span_secs)
-            .clamp(0.0, 1.0);
-        let remaining = (100.0 - entry.used_percent).clamp(0.0, 100.0);
-        points.push(QuotaBurndownPoint {
-            x_ratio,
-            remaining_percent: remaining,
-        });
+        if let Some(r) = entry.resets_at
+            && (r.as_second() - reset_ts.as_second()).abs() > 120
+        {
+            continue;
+        }
+        let used = entry.used_percent.clamp(0.0, 100.0);
+        if let Some(prev_used) = current_segment.last().map(|&(_, u): &(Timestamp, f64)| u)
+            && used + 0.001 < prev_used
+        {
+            current_segment.clear();
+        }
+        current_segment.push((entry.captured_at, used));
     }
-    if points.len() == 1 {
-        // Fallback if all entries were outside `[start_ts, reset_ts]`: map the latest entry into the window.
-        let remaining = (100.0 - latest.used_percent).clamp(0.0, 100.0);
-        points.push(QuotaBurndownPoint {
-            x_ratio: 0.65,
-            remaining_percent: remaining,
-        });
+    if current_segment.is_empty() {
+        return None;
     }
+
+    let points: Vec<QuotaBurndownPoint> = current_segment
+        .into_iter()
+        .map(|(captured_at, used)| {
+            let x_ratio = ((captured_at.as_second() - start_ts.as_second()) as f64 / span_secs)
+                .clamp(0.0, 1.0);
+            let remaining = (100.0 - used).clamp(0.0, 100.0);
+            QuotaBurndownPoint {
+                x_ratio,
+                remaining_percent: remaining,
+            }
+        })
+        .collect();
 
     let latest_remaining = points
         .last()
         .map_or(0, |p| p.remaining_percent.round() as i64);
     let remaining_line = format!("{latest_remaining}% Usage remaining");
 
-    let start_label = format_range_edge(start_ts, ref_now, dates);
-    let reset_label = format_range_edge(reset_ts, ref_now, dates);
+    let start_label = format_range_edge(start_ts, ref_now, duration_secs, dates);
+    let reset_label = format_range_edge(reset_ts, ref_now, duration_secs, dates);
     let elapsed_since_capture = (ref_now.as_second() - latest.captured_at.as_second()).abs();
     let rel = if elapsed_since_capture < 5 {
         "just now".to_string()
@@ -943,7 +958,15 @@ fn build_burndown_series(
     })
 }
 
-fn format_range_edge(date: Timestamp, reference: Timestamp, dates: &dyn DateTexts) -> String {
+fn format_range_edge(
+    date: Timestamp,
+    reference: Timestamp,
+    duration_secs: i64,
+    dates: &dyn DateTexts,
+) -> String {
+    if duration_secs < 86_400 {
+        return dates.hour_minute(date);
+    }
     let tz = dates.time_zone();
     if date.to_zoned(tz.clone()).date() == reference.to_zoned(tz).date() {
         dates.hour_minute(date)
@@ -962,6 +985,7 @@ pub struct PlanUtilizationBarPoint {
     pub date_label: String,
     pub detail_timestamp_label: String,
     pub used_percent: f64,
+    pub is_observed: bool,
 }
 
 /// One window series in `PlanUtilizationChartModel`.
@@ -1038,24 +1062,10 @@ impl PlanUtilizationChartModel {
                 .as_deref()
                 .filter(|t| !t.trim().is_empty())
                 .unwrap_or(default_title);
-            let mut entries = u.entries.clone();
-            entries.sort_by_key(|e| e.captured_at);
-            if entries.len() > 30 {
-                entries = entries.split_off(entries.len() - 30);
+            let bars = build_utilization_bars(u, dates);
+            if bars.is_empty() {
+                continue;
             }
-
-            let bars: Vec<PlanUtilizationBarPoint> = entries
-                .iter()
-                .map(|e| {
-                    let date_label = dates.month_day_short(e.captured_at);
-                    let detail_timestamp_label = dates.detail_month_day_time(e.captured_at);
-                    PlanUtilizationBarPoint {
-                        date_label,
-                        detail_timestamp_label,
-                        used_percent: e.used_percent.clamp(0.0, 100.0),
-                    }
-                })
-                .collect();
 
             let x_axis_labels = proportional_axis_labels(&bars);
             series.push(PlanUtilizationSeries {
@@ -1078,17 +1088,20 @@ impl PlanUtilizationChartModel {
         })
     }
 
-    /// Detail text below the chart (`"<Date>: <N>% used"`).
+    /// Detail text below the chart (`"<Date>: <N>% used"` or `"<Date>: -"` for unobserved slots).
     pub fn detail_text(&self, series_index: usize, selected_bar_index: Option<usize>) -> String {
         let Some(series) = self.series.get(series_index) else {
-            return "—".to_string();
+            return "-".to_string();
         };
         let bar = selected_bar_index
             .and_then(|i| series.bars.get(i))
             .or_else(|| series.bars.last());
         let Some(bar) = bar else {
-            return "—".to_string();
+            return "-".to_string();
         };
+        if !bar.is_observed {
+            return format!("{}: -", bar.detail_timestamp_label);
+        }
         format!(
             "{}: {}% used",
             bar.detail_timestamp_label,
@@ -1109,7 +1122,8 @@ impl PlanUtilizationChartModel {
     }
 
     /// Computes fixed 6 pt bars, axis ticks, and hover rule inside `canvas_rect` (`278 x 130`).
-    /// Note: `PlanUtilizationHistoryChartMenuView.swift:128` sets `.chartYAxis(.hidden)`.
+    /// Note: `PlanUtilizationHistoryChartMenuView.swift:128, 593` sets `.chartYAxis(.hidden)`
+    /// and `xDomain = -0.5...29.5` (30 fixed slots).
     pub fn geometry(
         &self,
         canvas_rect: Rect,
@@ -1130,16 +1144,18 @@ impl PlanUtilizationChartModel {
         if let Some(series) = self.series.get(series_index) {
             let count = series.bars.len();
             if count > 0 {
+                // `xDomain` is `-0.5...29.5` (30 slots), matching `PlanUtilizationHistoryChartMenuView.swift:593`.
+                let max_slots = 30usize;
                 let stride = 8.0_f64;
-                let total_bars_w = count as f64 * PLAN_UTILIZATION_BAR_WIDTH
-                    + (count.saturating_sub(1)) as f64 * 2.0;
-                let use_fixed_stride = total_bars_w <= plot_rect.w;
+                let total_slots_w = max_slots as f64 * PLAN_UTILIZATION_BAR_WIDTH
+                    + (max_slots.saturating_sub(1)) as f64 * 2.0;
+                let use_fixed_stride = total_slots_w <= plot_rect.w;
                 let start_x = if use_fixed_stride {
-                    plot_rect.x + (plot_rect.w - total_bars_w) * 0.5
+                    plot_rect.x + (plot_rect.w - total_slots_w) * 0.5
                 } else {
                     plot_rect.x
                 };
-                let slot_w = plot_rect.w / count as f64;
+                let slot_w = plot_rect.w / max_slots as f64;
                 for (idx, pt) in series.bars.iter().enumerate() {
                     let center_x = if use_fixed_stride {
                         start_x + idx as f64 * stride + PLAN_UTILIZATION_BAR_HALF_WIDTH
@@ -1188,6 +1204,122 @@ impl PlanUtilizationChartModel {
             x_labels,
         }
     }
+}
+
+fn build_utilization_bars(
+    u: &ProtocolUtilizationSeries,
+    dates: &dyn DateTexts,
+) -> Vec<PlanUtilizationBarPoint> {
+    let mut entries = u.entries.clone();
+    entries.sort_by_key(|e| e.captured_at);
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    // Antigravity observation series (`window_minutes == 0` or `antigravity*` names) do not bucket into reset periods.
+    if u.window_minutes == 0 || u.name.starts_with("antigravity") {
+        let mut by_capture: Vec<(Timestamp, f64)> = Vec::new();
+        for e in &entries {
+            let used = e.used_percent.clamp(0.0, 100.0);
+            if let Some(last) = by_capture.last_mut()
+                && last.0 == e.captured_at
+            {
+                last.1 = used;
+            } else {
+                by_capture.push((e.captured_at, used));
+            }
+        }
+        if by_capture.len() > 30 {
+            by_capture = by_capture.split_off(by_capture.len() - 30);
+        }
+        return by_capture
+            .into_iter()
+            .map(|(ts, used_percent)| PlanUtilizationBarPoint {
+                date_label: dates.month_day_short(ts),
+                detail_timestamp_label: dates.detail_month_day_time(ts),
+                used_percent,
+                is_observed: true,
+            })
+            .collect();
+    }
+
+    let window_secs = i64::from(u.window_minutes) * 60;
+    let ref_boundary = entries.iter().filter_map(|e| e.resets_at).max();
+
+    // Bucket entries by period boundary (`PlanUtilizationHistoryChartMenuView.swift:344-394`).
+    let mut buckets: std::collections::BTreeMap<i64, (Timestamp, f64, bool, Timestamp)> =
+        std::collections::BTreeMap::new();
+    for e in &entries {
+        let raw_reset = e.resets_at;
+        let effective_sec = match (raw_reset, ref_boundary) {
+            (Some(raw), Some(ref_b)) => {
+                let offset = (raw.as_second() - ref_b.as_second()) as f64;
+                let period_offset = (offset / window_secs as f64).round() as i64;
+                ref_b.as_second() + period_offset * window_secs
+            }
+            (Some(raw), None) => raw.as_second(),
+            (None, Some(ref_b)) => {
+                let offset = (e.captured_at.as_second() - ref_b.as_second()) as f64;
+                let period_offset = (offset / window_secs as f64).ceil() as i64;
+                ref_b.as_second() + period_offset * window_secs
+            }
+            (None, None) => {
+                ((e.captured_at.as_second() + window_secs - 1) / window_secs) * window_secs
+            }
+        };
+        let effective_ts = Timestamp::from_second(effective_sec).unwrap_or(e.captured_at);
+        let display_ts = raw_reset.unwrap_or(effective_ts);
+        let used = e.used_percent.clamp(0.0, 100.0);
+        let has_reset = raw_reset.is_some();
+
+        let replace = match buckets.get(&effective_sec) {
+            None => true,
+            Some(&(existing_display, existing_used, existing_has_reset, existing_obs)) => {
+                if (used - existing_used).abs() > f64::EPSILON {
+                    used > existing_used
+                } else if has_reset != existing_has_reset {
+                    has_reset
+                } else if display_ts != existing_display {
+                    display_ts > existing_display
+                } else {
+                    e.captured_at >= existing_obs
+                }
+            }
+        };
+        if replace {
+            buckets.insert(effective_sec, (display_ts, used, has_reset, e.captured_at));
+        }
+    }
+
+    let mut points: Vec<(Timestamp, f64, bool)> = Vec::new();
+    let mut prev_sec: Option<i64> = None;
+    for (&period_sec, &(display_ts, used, _, _)) in &buckets {
+        if let Some(prev) = prev_sec {
+            let mut cursor = prev + window_secs;
+            while cursor < period_sec {
+                if let Ok(ts) = Timestamp::from_second(cursor) {
+                    points.push((ts, 0.0, false));
+                }
+                cursor += window_secs;
+            }
+        }
+        points.push((display_ts, used, true));
+        prev_sec = Some(period_sec);
+    }
+
+    if points.len() > 30 {
+        points = points.split_off(points.len() - 30);
+    }
+
+    points
+        .into_iter()
+        .map(|(ts, used_percent, is_observed)| PlanUtilizationBarPoint {
+            date_label: dates.month_day_short(ts),
+            detail_timestamp_label: dates.detail_month_day_time(ts),
+            used_percent,
+            is_observed,
+        })
+        .collect()
 }
 
 impl PlanUtilizationChartGeometry {
