@@ -90,10 +90,14 @@ fn default_sqlite_copy_parent(
     environment: &BTreeMap<String, String>,
     home: &Path,
 ) -> Option<PathBuf> {
-    let valid_home = (home.is_absolute() && home != Path::new("/")).then_some(home);
-    let cache_root = crate::cost::store::resolve_cache_root(environment, valid_home);
-    (!cache_root.as_os_str().is_empty())
-        .then(|| crate::cost::store::default_sqlite_copy_parent(Some(&cache_root)))
+    if home.is_absolute() && home != Path::new("/") {
+        let cache_root = crate::cost::store::resolve_cache_root(environment, Some(home));
+        return (!cache_root.as_os_str().is_empty())
+            .then(|| crate::cost::store::default_sqlite_copy_parent(Some(&cache_root)));
+    }
+    let xdg = Path::new(environment.get("XDG_CACHE_HOME")?.trim());
+    xdg.is_absolute()
+        .then(|| crate::cost::store::default_sqlite_copy_parent(Some(&xdg.join("ariadusage"))))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

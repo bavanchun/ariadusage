@@ -1824,7 +1824,6 @@ path = "crates/ariadusage-engine/src/providers/antigravity/descriptor.rs"
 sources = [
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift",
-    "Sources/CodexBarCore/Providers/Antigravity/AntigravityOfflineFetchStrategy.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 

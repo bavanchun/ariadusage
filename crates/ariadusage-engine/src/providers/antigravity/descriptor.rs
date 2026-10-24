@@ -1,6 +1,5 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityOfflineFetchStrategy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

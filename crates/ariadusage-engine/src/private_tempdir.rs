@@ -65,6 +65,66 @@ pub fn create(_call: &BrokerCall) -> Result<PrivateTempDir, TempDirError> {
     }
 }
 
+/// Ensures `dir` exists as a non-symlink directory owned by the current effective UID with mode `0700`,
+/// returning its canonical path.
+pub fn ensure_private_0700_dir(dir: &Path) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        use rustix::fs::{FileType, Mode, OFlags, chmod, fchmod, fstat, lstat, open};
+        use rustix::process::geteuid;
+        use std::os::unix::fs::DirBuilderExt;
+
+        if !dir.is_absolute() {
+            return None;
+        }
+
+        if let Some(parent) = dir.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            let mut parent_builder = std::fs::DirBuilder::new();
+            parent_builder.recursive(true).mode(0o700);
+            let _ = parent_builder.create(parent);
+        }
+
+        if let Ok(existing_stat) = lstat(dir)
+            && FileType::from_raw_mode(existing_stat.st_mode) != FileType::Directory
+        {
+            return None;
+        }
+
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
+        builder.create(dir).ok()?;
+
+        let dir_fd = open(
+            dir,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .ok()?;
+        let dir_stat = fstat(&dir_fd).ok()?;
+        if FileType::from_raw_mode(dir_stat.st_mode) != FileType::Directory
+            || dir_stat.st_uid != geteuid().as_raw()
+        {
+            return None;
+        }
+        if (dir_stat.st_mode & 0o777) != 0o700 {
+            let _ = fchmod(&dir_fd, Mode::from_raw_mode(0o700));
+            let _ = chmod(dir, Mode::from_raw_mode(0o700));
+            let recheck = fstat(&dir_fd).ok()?;
+            if (recheck.st_mode & 0o777) != 0o700 {
+                return None;
+            }
+        }
+        Some(std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+        None
+    }
+}
+
 /// Creates a new private temporary directory under the specified parent directory with mode 0700.
 pub fn create_in(parent: &Path) -> Result<PrivateTempDir, TempDirError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]

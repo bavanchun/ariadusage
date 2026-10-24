@@ -9,7 +9,7 @@
 // Ported from CodexBar Tests/CodexBarTests/AntigravityLocalReaderTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 #![cfg(any(target_os = "linux", target_os = "macos"))]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -387,7 +387,9 @@ impl Fixture {
 }
 
 fn read_single_db(url: &Path) -> SourceResult {
-    let budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let copy_dir = tempfile::TempDir::new().unwrap();
+    let budget = Budget::with_cancellation(Limits::default(), || Ok(()))
+        .with_copy_parent(Some(copy_dir.path().to_path_buf()));
     AntigravityLocalReader::read_databases(&[url.to_path_buf()], &budget).unwrap()
 }
 
@@ -1835,7 +1837,8 @@ fn schema_validation_and_payload_selection_retain_one_snapshot_during_a_writer_s
             );
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *holder.lock().unwrap() = Some(budget.clone());
     let source = AntigravityLocalReader::read_databases(&[url], &budget).unwrap();
     *holder.lock().unwrap() = None;
@@ -1911,7 +1914,8 @@ fn single_sql_snapshot_excludes_coordinated_later_writes_and_releases_handles_on
             Fixture::insert(&w, 1, &Fixture::blob_response("later"));
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *holder.lock().unwrap() = Some(budget.clone());
     let source =
         AntigravityLocalReader::read_databases(std::slice::from_ref(&url), &budget).unwrap();
@@ -1944,7 +1948,8 @@ fn single_sql_snapshot_excludes_coordinated_later_writes_and_releases_handles_on
             return Err(ScanFailure::Cancelled("cancelled".to_owned()));
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *cancel_holder.lock().unwrap() = Some(cancel_budget.clone());
     let res = AntigravityLocalReader::read_databases(std::slice::from_ref(&url), &cancel_budget);
     assert_eq!(
@@ -2005,7 +2010,8 @@ fn steps_fallback_remains_on_the_generation_snapshot_after_a_writer_update() {
             Fixture::execute(&w, "COMMIT");
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *holder.lock().unwrap() = Some(budget.clone());
     let source = AntigravityLocalReader::read_databases(&[url], &budget).unwrap();
     *holder.lock().unwrap() = None;
@@ -2090,7 +2096,8 @@ fn initially_absent_wal_sidecars_and_failed_opens_leave_no_reader_handles() {
 
     let missing = fixture.root.join("missing/absent.db");
     for _ in 0..20 {
-        let budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+        let budget = Budget::with_cancellation(Limits::default(), || Ok(()))
+            .with_copy_parent(fixture.context().copy_parent);
         let result =
             AntigravityLocalReader::read_databases(std::slice::from_ref(&missing), &budget)
                 .unwrap();
@@ -2252,7 +2259,8 @@ fn a_writer_that_checkpoints_during_the_immutable_fallback_keeps_the_result_inco
             let _ = wal_checkpoint(&writer);
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *holder.lock().unwrap() = Some(budget.clone());
     let source = AntigravityLocalReader::read_databases(&[url], &budget).unwrap();
     let statistics = budget.statistics();
@@ -2288,7 +2296,8 @@ fn an_unchanged_database_keeps_the_immutable_fallback_result_complete() {
     let url = fixture.database(&[Fixture::blob(), Fixture::blob_response("second")]);
     wal_prepare(&url);
     let before = fs::read(&url).unwrap();
-    let budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let budget = Budget::with_cancellation(Limits::default(), || Ok(()))
+        .with_copy_parent(fixture.context().copy_parent);
     let source =
         AntigravityLocalReader::read_databases(std::slice::from_ref(&url), &budget).unwrap();
     assert!(source.is_complete);
@@ -2837,7 +2846,8 @@ fn schema_inspection_honors_cancellation_and_a_pinned_deadline_before_payload_se
                 }
                 Ok(())
             },
-        );
+        )
+        .with_copy_parent(fixture.context().copy_parent);
         *holder.lock().unwrap() = Some(budget.clone());
         let res = AntigravityLocalReader::read_databases(&[url], &budget);
         *holder.lock().unwrap() = None;
@@ -3613,7 +3623,8 @@ fn cancellation_reaches_discovery_sql_protobuf_and_jsonl_loops() {
             }
         }
         Ok(())
-    });
+    })
+    .with_copy_parent(fixture.context().copy_parent);
     *holder.lock().unwrap() = Some(budget.clone());
     assert_eq!(
         AntigravityLocalReader::read_databases(std::slice::from_ref(&url), &budget).unwrap_err(),
@@ -3664,6 +3675,7 @@ fn executor_cancellation_drains_a_running_single_database_reader() {
     let gate_worker = gate.clone();
     let cancelled_worker = cancelled.clone();
     let url_worker = url.clone();
+    let copy_parent_worker = fixture.context().copy_parent;
 
     let handle = std::thread::spawn(move || {
         let holder: Arc<Mutex<Option<Budget>>> = Arc::new(Mutex::new(None));
@@ -3681,7 +3693,8 @@ fn executor_cancellation_drains_a_running_single_database_reader() {
                 return Err(ScanFailure::Cancelled("cancelled".to_owned()));
             }
             Ok(())
-        });
+        })
+        .with_copy_parent(copy_parent_worker);
         *holder.lock().unwrap() = Some(budget.clone());
         let res =
             AntigravityLocalReader::read_databases(&[url_worker], &budget).map(|s| s.is_complete);
@@ -5740,6 +5753,7 @@ fn safety_routed_gemini_flash_turns_price_from_the_base_flash_model() {
     );
 }
 
+// Rust-added: discovery, SQLite copy, and JSONL reader reject entry symlinks pointing outside roots
 #[test]
 fn entry_symlinks_pointing_outside_roots_are_rejected_in_discovery_and_jsonl_reader() {
     let fixture = Fixture::new();
@@ -5763,7 +5777,8 @@ fn entry_symlinks_pointing_outside_roots_are_rejected_in_discovery_and_jsonl_rea
     assert!(discovery.paths.is_empty());
     assert!(!discovery.is_complete);
 
-    let db_budget = Budget::with_cancellation(Limits::default(), || Ok(()));
+    let db_budget = Budget::with_cancellation(Limits::default(), || Ok(()))
+        .with_copy_parent(fixture.context().copy_parent);
     let db_source =
         AntigravityLocalReader::read_databases(std::slice::from_ref(&symlink_db), &db_budget)
             .unwrap();
@@ -5795,6 +5810,7 @@ fn entry_symlinks_pointing_outside_roots_are_rejected_in_discovery_and_jsonl_rea
     assert!(jsonl_source.events.is_empty());
 }
 
+// Rust-added: SQLite reader stages copies under the 0700 cache-root parent or an injected override
 #[test]
 fn sqlite_copy_parent_uses_injected_directory_and_creates_0700_parent() {
     let fixture = Fixture::new();
@@ -5861,4 +5877,61 @@ fn sqlite_copy_parent_uses_injected_directory_and_creates_0700_parent() {
     )
     .unwrap();
     assert_eq!(blocked_report.coverage, Coverage::Partial);
+}
+
+// Rust-added: missing SQLite copy parent fails closed without creating files in Antigravity's directory
+#[test]
+fn sqlite_missing_copy_parent_fails_closed_without_writing_into_antigravity_directory() {
+    let fixture = Fixture::new();
+    let db_url = fixture.database(&[Fixture::blob()]);
+    let conversations_dir = db_url.parent().unwrap().to_path_buf();
+    let entries_before: BTreeSet<PathBuf> = fs::read_dir(&conversations_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries_before, BTreeSet::from([db_url.clone()]));
+
+    let budget_without_copy_parent = Budget::with_cancellation(Limits::default(), || Ok(()));
+    assert!(budget_without_copy_parent.copy_parent().is_none());
+    let source = AntigravityLocalReader::read_databases(
+        std::slice::from_ref(&db_url),
+        &budget_without_copy_parent,
+    )
+    .unwrap();
+    assert!(!source.is_complete);
+    assert!(source.events.is_empty());
+    assert_eq!(
+        budget_without_copy_parent
+            .statistics()
+            .sqlite_handles_opened,
+        0
+    );
+
+    let blocked_copy_parent = fixture.root.join("blocked-copy-parent");
+    fs::write(&blocked_copy_parent, b"file").unwrap();
+    let blocked_report = AntigravityLocalReader::make_daily_report_with_status(
+        &fixture.context().with_copy_parent(blocked_copy_parent),
+        0,
+        false,
+        None,
+        Limits::default(),
+        || 0.0,
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(blocked_report.coverage, Coverage::Partial);
+
+    let entries_after: BTreeSet<PathBuf> = fs::read_dir(&conversations_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(entries_after, entries_before);
+
+    let root_home_ctx = Context::new(
+        BTreeMap::from([("HOME".to_owned(), "/".to_owned())]),
+        vec![],
+    );
+    assert!(root_home_ctx.copy_parent.is_none());
+    let empty_home_ctx = Context::new(BTreeMap::new(), vec![]);
+    assert!(empty_home_ctx.copy_parent.is_none());
 }
