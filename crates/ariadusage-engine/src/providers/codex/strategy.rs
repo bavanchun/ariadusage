@@ -1939,23 +1939,8 @@ impl std::fmt::Display for OpenAIWebCodexError {
                 )
             }
             Self::PolicyRejected(decision) => match &decision.reason {
-                CodexDashboardDecisionReason::WrongEmail { expected, actual } => {
-                    let mut details = Vec::new();
-                    if let Some(expected) = expected {
-                        details.push(format!("expected {expected}"));
-                    }
-                    if let Some(actual) = actual {
-                        details.push(format!("got {actual}"));
-                    }
-                    if details.is_empty() {
-                        write!(f, "OpenAI web dashboard belonged to the wrong account.")
-                    } else {
-                        write!(
-                            f,
-                            "OpenAI web dashboard belonged to the wrong account ({}).",
-                            details.join(", ")
-                        )
-                    }
+                CodexDashboardDecisionReason::WrongEmail { .. } => {
+                    write!(f, "OpenAI web dashboard belonged to the wrong account.")
                 }
                 CodexDashboardDecisionReason::UnresolvedWithoutTrustedEvidence => write!(
                     f,
@@ -1972,9 +1957,9 @@ impl std::fmt::Display for OpenAIWebCodexError {
                 CodexDashboardDecisionReason::MissingDashboardSignedInEmail => {
                     write!(f, "OpenAI web dashboard did not expose a signed-in email.")
                 }
-                CodexDashboardDecisionReason::SameEmailAmbiguity { email } => write!(
+                CodexDashboardDecisionReason::SameEmailAmbiguity { .. } => write!(
                     f,
-                    "OpenAI web dashboard email {email} is ambiguous across multiple known owners."
+                    "OpenAI web dashboard account is ambiguous across multiple known owners."
                 ),
                 _ => write!(
                     f,
@@ -2595,5 +2580,181 @@ impl ProviderPlan for CodexProviderPlan {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::codex::dashboard_authority::{
+        CodexDashboardAuthorityDecision, CodexDashboardCleanup, CodexDashboardDecisionReason,
+        CodexDashboardDisposition,
+    };
+    use crate::providers::codex::openai_dashboard_cookie_importer::{
+        FoundAccount, OpenAIDashboardCookieCandidate, OpenAIDashboardCookieImportError,
+        PersistentCookieSessionError, actionable_openai_dashboard_import_failure,
+        concise_openai_cookie_mismatch_status, openai_dashboard_friendly_error,
+    };
+    use ariadusage_core::cookie::CookieRecord;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn account_emails_never_appear_in_error_display_debug_or_classified_error() {
+        const EXPECTED_EMAIL: &str = "invented-expected-owner@example.invalid";
+        const ACTUAL_EMAIL: &str = "invented-actual-browser@example.invalid";
+        const OTHER_PROFILE_EMAIL: &str = "invented-other-profile@example.invalid";
+
+        let assert_no_emails = |text: &str| {
+            assert!(
+                !text.contains(EXPECTED_EMAIL),
+                "leaked expected email in: {text}"
+            );
+            assert!(
+                !text.contains(ACTUAL_EMAIL),
+                "leaked actual email in: {text}"
+            );
+            assert!(
+                !text.contains(OTHER_PROFILE_EMAIL),
+                "leaked other profile email in: {text}"
+            );
+        };
+
+        let wrong_email_decision = CodexDashboardAuthorityDecision::new(
+            CodexDashboardDisposition::FailClosed,
+            CodexDashboardDecisionReason::WrongEmail {
+                expected: Some(EXPECTED_EMAIL.to_owned()),
+                actual: Some(ACTUAL_EMAIL.to_owned()),
+            },
+            BTreeSet::new(),
+            CodexDashboardCleanup::all_set(),
+        );
+        let wrong_email_err = CodexWebDashboardError::Web(OpenAIWebCodexError::PolicyRejected(
+            wrong_email_decision.clone(),
+        ));
+        assert_no_emails(&wrong_email_err.to_string());
+        assert_no_emails(&format!("{wrong_email_err:?}"));
+        let wrong_email_fetch_err = wrong_email_err.into_fetch_error();
+        assert_no_emails(&wrong_email_fetch_err.to_string());
+        assert_no_emails(&format!("{wrong_email_fetch_err:?}"));
+
+        let ambiguity_decision = CodexDashboardAuthorityDecision::new(
+            CodexDashboardDisposition::DisplayOnly,
+            CodexDashboardDecisionReason::SameEmailAmbiguity {
+                email: EXPECTED_EMAIL.to_owned(),
+            },
+            BTreeSet::new(),
+            CodexDashboardCleanup::all_set(),
+        );
+        let ambiguity_web_err = CodexWebDashboardError::Web(OpenAIWebCodexError::PolicyRejected(
+            ambiguity_decision.clone(),
+        ));
+        assert_no_emails(&ambiguity_web_err.to_string());
+        assert_no_emails(&format!("{ambiguity_web_err:?}"));
+        let ambiguity_fetch_err = ambiguity_web_err.into_fetch_error();
+        assert_no_emails(&ambiguity_fetch_err.to_string());
+        assert_no_emails(&format!("{ambiguity_fetch_err:?}"));
+
+        let display_only_err = CodexWebDashboardError::Policy(
+            CodexDashboardPolicyError::DisplayOnly(ambiguity_decision),
+        );
+        assert_no_emails(&display_only_err.to_string());
+        assert_no_emails(&format!("{display_only_err:?}"));
+        let display_only_fetch_err = display_only_err.into_fetch_error();
+        assert_no_emails(&display_only_fetch_err.to_string());
+        assert_no_emails(&format!("{display_only_fetch_err:?}"));
+
+        let import_err = OpenAIDashboardCookieImportError::NoMatchingAccount {
+            found: vec![
+                FoundAccount::new("Chrome Default", ACTUAL_EMAIL),
+                FoundAccount::new("Safari", OTHER_PROFILE_EMAIL),
+            ],
+        };
+        assert_no_emails(&import_err.to_string());
+        assert_no_emails(&format!("{import_err:?}"));
+        assert!(import_err.to_string().contains("Chrome Default"));
+        assert!(import_err.to_string().contains("Safari"));
+
+        let persistent_err = PersistentCookieSessionError::Import(import_err.clone());
+        assert_no_emails(&persistent_err.to_string());
+        assert_no_emails(&format!("{persistent_err:?}"));
+
+        let cookie_web_err = CodexWebDashboardError::CookieImport(import_err.to_string());
+        assert_no_emails(&cookie_web_err.to_string());
+        assert_no_emails(&format!("{cookie_web_err:?}"));
+        let cookie_fetch_err = cookie_web_err.into_fetch_error();
+        assert_no_emails(&cookie_fetch_err.to_string());
+        assert_no_emails(&format!("{cookie_fetch_err:?}"));
+
+        let mismatch_status = concise_openai_cookie_mismatch_status(
+            &[ACTUAL_EMAIL.to_owned(), OTHER_PROFILE_EMAIL.to_owned()],
+            Some(EXPECTED_EMAIL),
+        );
+        assert_no_emails(&mismatch_status);
+
+        if let Some(actionable) =
+            actionable_openai_dashboard_import_failure(Some(EXPECTED_EMAIL), Some(&mismatch_status))
+        {
+            assert_no_emails(&actionable);
+        }
+        if let Some(actionable_empty) = actionable_openai_dashboard_import_failure(
+            Some(EXPECTED_EMAIL),
+            Some("No matching OpenAI web session found."),
+        ) {
+            assert_no_emails(&actionable_empty);
+        }
+        if let Some(friendly) = openai_dashboard_friendly_error(
+            "Sign in to ChatGPT",
+            Some(EXPECTED_EMAIL),
+            Some(&mismatch_status),
+        ) {
+            assert_no_emails(&friendly);
+        }
+    }
+
+    #[test]
+    fn cookie_candidate_from_records_matches_exact_host_or_dot_suffix_only() {
+        let make_rec = |domain: &str, name: &str| CookieRecord {
+            domain: domain.to_owned(),
+            host_only: !domain.starts_with('.'),
+            name: name.to_owned(),
+            path: "/".to_owned(),
+            value: SecretString::from("v"),
+            expires: None,
+            secure: true,
+            http_only: true,
+        };
+
+        for bad_domain in [
+            "evilchatgpt.com",
+            "notopenai.com",
+            "chatgpt.com.evil.example",
+            "openai.com.evil.example",
+        ] {
+            assert!(
+                OpenAIDashboardCookieCandidate::from_records(
+                    "Browser",
+                    &[make_rec(bad_domain, "__Secure-next-auth.session-token")]
+                )
+                .is_none(),
+                "expected {bad_domain} to be rejected"
+            );
+        }
+
+        for good_domain in [
+            "chatgpt.com",
+            ".chatgpt.com",
+            "ab.chatgpt.com",
+            "openai.com",
+            ".openai.com",
+            "auth.openai.com",
+        ] {
+            let candidate = OpenAIDashboardCookieCandidate::from_records(
+                "Browser",
+                &[make_rec(good_domain, "__Secure-next-auth.session-token")],
+            )
+            .expect("expected valid domain to match");
+            assert!(candidate.has_session_cookie);
+            assert_eq!(candidate.cookie_count, 1);
+        }
     }
 }

@@ -22,6 +22,7 @@ use crate::private_file::{WriteHooks, write_private};
 use super::credentials::CodexOAuthCredentials;
 use super::identity::{CodexAuthBackedAccount, CodexIdentity, CodexIdentityResolver};
 use super::openai_dashboard_models::OpenAIDashboardSnapshot;
+use super::reconciled::is_valid_header_value_str;
 
 pub const DEFAULT_CHATGPT_ACCOUNTS_URL: &str = "https://chatgpt.com/backend-api/accounts";
 
@@ -85,11 +86,27 @@ impl CodexDashboardCleanup {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CodexDashboardKnownOwnerCandidate {
     pub identity: CodexIdentity,
     pub normalized_email: Option<String>,
     pub source_isolation_identifier: Option<String>,
+}
+
+impl std::fmt::Debug for CodexDashboardKnownOwnerCandidate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CodexDashboardKnownOwnerCandidate")
+            .field("identity", &self.identity)
+            .field(
+                "normalized_email",
+                &self.normalized_email.as_ref().map(|_| "[redacted]"),
+            )
+            .field(
+                "source_isolation_identifier",
+                &self.source_isolation_identifier,
+            )
+            .finish()
+    }
 }
 
 impl CodexDashboardKnownOwnerCandidate {
@@ -195,7 +212,7 @@ impl CodexDashboardAuthorityInput {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CodexDashboardDecisionReason {
     ExactProviderAccountMatch,
     TrustedEmailMatchNoCompetingOwner,
@@ -211,6 +228,39 @@ pub enum CodexDashboardDecisionReason {
     ProviderAccountMissingScopedEmail,
     ProviderAccountLacksExactOwnershipProof,
     MissingDashboardSignedInEmail,
+}
+
+impl std::fmt::Debug for CodexDashboardDecisionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExactProviderAccountMatch => f.write_str("ExactProviderAccountMatch"),
+            Self::TrustedEmailMatchNoCompetingOwner => {
+                f.write_str("TrustedEmailMatchNoCompetingOwner")
+            }
+            Self::TrustedContinuityNoCompetingOwner => {
+                f.write_str("TrustedContinuityNoCompetingOwner")
+            }
+            Self::WrongEmail { expected, actual } => f
+                .debug_struct("WrongEmail")
+                .field("expected", &expected.as_ref().map(|_| "[redacted]"))
+                .field("actual", &actual.as_ref().map(|_| "[redacted]"))
+                .finish(),
+            Self::SameEmailAmbiguity { .. } => f
+                .debug_struct("SameEmailAmbiguity")
+                .field("email", &"[redacted]")
+                .finish(),
+            Self::UnresolvedWithoutTrustedEvidence => {
+                f.write_str("UnresolvedWithoutTrustedEvidence")
+            }
+            Self::ProviderAccountMissingScopedEmail => {
+                f.write_str("ProviderAccountMissingScopedEmail")
+            }
+            Self::ProviderAccountLacksExactOwnershipProof => {
+                f.write_str("ProviderAccountLacksExactOwnershipProof")
+            }
+            Self::MissingDashboardSignedInEmail => f.write_str("MissingDashboardSignedInEmail"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -697,11 +747,7 @@ impl CodexOpenAIWorkspaceResolver {
         let declared = DeclaredOrigins::from_urls([url.clone()])
             .map_err(|_| CodexOpenAIWorkspaceResolverError::InvalidResponse)?;
         let token = credentials.access_token_str().trim();
-        if token.is_empty()
-            || !token
-                .bytes()
-                .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b))
-        {
+        if !is_valid_header_value_str(token) {
             return Err(CodexOpenAIWorkspaceResolverError::InvalidResponse);
         }
 

@@ -14,7 +14,7 @@ use crate::brokers::call::BrokerCall;
 use crate::brokers::net::{DeclaredOrigins, NetBroker, NetRequest, is_loopback_host};
 
 use super::credentials::CodexPATCredentials;
-use super::reconciled::CodexPATWhoami;
+use super::reconciled::{CodexPATWhoami, is_valid_header_value_str};
 use super::usage_fetcher::{
     CHATGPT_USAGE_PATH, CODEX_USAGE_PATH, CodexOAuthFetchError, CodexOAuthUsageFetcher,
     CodexUsageResponse,
@@ -160,13 +160,6 @@ fn non_empty(value: Option<String>) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed)
 }
 
-fn is_valid_header_token(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
-}
-
 pub struct CodexPATUsageFetcher;
 
 impl CodexPATUsageFetcher {
@@ -190,7 +183,7 @@ impl CodexPATUsageFetcher {
         user_agent: &str,
         account_id: Option<&str>,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
-        if !is_valid_header_token(token) {
+        if !is_valid_header_value_str(token) {
             return Err(CodexOAuthFetchError::InvalidResponse);
         }
         let bearer = SecretString::new(format!("Bearer {token}"));

@@ -119,14 +119,18 @@ impl fmt::Display for OpenAIDashboardCookieImportError {
                 }
                 let mut sorted = found.clone();
                 sorted.sort();
-                let display = sorted
-                    .iter()
-                    .map(|item| format!("{}={}", item.source_label, item.email))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let mut labels = Vec::new();
+                for item in &sorted {
+                    if !labels.contains(&item.source_label.as_str()) {
+                        labels.push(item.source_label.as_str());
+                    }
+                }
+                let count = sorted.len();
+                let noun = if count == 1 { "account" } else { "accounts" };
+                let display = labels.join(", ");
                 write!(
                     f,
-                    "OpenAI web session does not match Codex account. Found: {display}."
+                    "OpenAI web session does not match Codex account (found {count} other {noun}: {display})."
                 )
             }
             Self::ManualCookieHeaderInvalid => {
@@ -199,10 +203,7 @@ impl OpenAIDashboardCookieCandidate {
         }
         let chatgpt_or_openai: Vec<&CookieRecord> = records
             .iter()
-            .filter(|rec| {
-                let d = rec.domain.to_ascii_lowercase();
-                d.contains("chatgpt.com") || d.contains("openai.com")
-            })
+            .filter(|rec| matches_openai_cookie_domain(&rec.domain))
             .collect();
         if chatgpt_or_openai.is_empty() {
             return None;
@@ -223,6 +224,19 @@ impl OpenAIDashboardCookieCandidate {
             has_session_cookie,
         })
     }
+}
+
+fn matches_openai_cookie_domain(raw_domain: &str) -> bool {
+    let trimmed = raw_domain
+        .trim()
+        .trim_start_matches('.')
+        .to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return false;
+    }
+    OPENAI_COOKIE_DOMAINS
+        .iter()
+        .any(|&allowed| trimmed == allowed || trimmed.ends_with(&format!(".{allowed}")))
 }
 
 impl fmt::Debug for OpenAIDashboardCookieCandidate {
@@ -1041,43 +1055,47 @@ pub fn concise_openai_cookie_mismatch_status(
     found: &[String],
     target_email: Option<&str>,
 ) -> String {
-    let normalized_found: Vec<String> = found
+    let normalized_found: BTreeSet<String> = found
         .iter()
         .map(|s| s.trim().to_ascii_lowercase())
         .filter(|s| !s.is_empty())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
         .collect();
+    let has_target = target_email.is_some_and(|s| !s.trim().is_empty());
 
-    let found_label = match normalized_found.len() {
-        0 => String::new(),
-        1 => normalized_found[0].clone(),
-        2 => format!("{} or {}", normalized_found[0], normalized_found[1]),
-        n => format!("{} or {} other accounts", normalized_found[0], n - 1),
-    };
-
-    let target_label = target_email.map(str::trim).filter(|s| !s.is_empty());
-    if normalized_found.is_empty() {
-        let Some(target_label) = target_label else {
-            return "No matching OpenAI web session found.".to_owned();
-        };
-        return format!("No matching OpenAI web session found for {target_label}.");
+    match normalized_found.len() {
+        0 => {
+            if has_target {
+                "No matching OpenAI web session found for active Codex account.".to_owned()
+            } else {
+                "No matching OpenAI web session found.".to_owned()
+            }
+        }
+        1 => {
+            if has_target {
+                "OpenAI cookies belong to another account (found 1 other account).".to_owned()
+            } else {
+                "OpenAI cookies belong to 1 signed-in account.".to_owned()
+            }
+        }
+        n => {
+            if has_target {
+                format!("OpenAI cookies belong to another account (found {n} other accounts).")
+            } else {
+                format!("OpenAI cookies belong to {n} signed-in accounts.")
+            }
+        }
     }
-    let Some(target_label) = target_label else {
-        return format!("OpenAI cookies are for {found_label}.");
-    };
-    format!("OpenAI cookies are for {found_label}, not {target_label}.")
 }
 
 pub fn actionable_openai_dashboard_import_failure(
-    target_email: Option<&str>,
+    _target_email: Option<&str>,
     cookie_import_status: Option<&str>,
 ) -> Option<String> {
     let status = cookie_import_status
         .map(str::trim)
         .filter(|s| !s.is_empty())?;
     let lower = status.to_ascii_lowercase();
-    if lower.contains("openai cookies are for") {
+    if lower.contains("openai cookies are for") || lower.contains("openai cookies belong to") {
         return Some(format!(
             "{status} Switch chatgpt.com account, then refresh OpenAI cookies."
         ));
@@ -1085,12 +1103,8 @@ pub fn actionable_openai_dashboard_import_failure(
     if lower.contains("no signed-in openai web session found")
         || lower.contains("no matching openai web session found")
     {
-        let account_label = target_email
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .unwrap_or("your OpenAI account");
         return Some(format!(
-            "{status} Sign in to chatgpt.com as {account_label}, then refresh OpenAI cookies."
+            "{status} Sign in to chatgpt.com as your OpenAI account, then refresh OpenAI cookies."
         ));
     }
     if lower.contains("openai cookie import failed")
@@ -1103,7 +1117,7 @@ pub fn actionable_openai_dashboard_import_failure(
 
 pub fn openai_dashboard_friendly_error(
     body: &str,
-    target_email: Option<&str>,
+    _target_email: Option<&str>,
     cookie_import_status: Option<&str>,
 ) -> Option<String> {
     let trimmed = body.trim();
@@ -1131,14 +1145,11 @@ pub fn openai_dashboard_friendly_error(
         return None;
     }
 
-    let target_label = target_email
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("your OpenAI account");
     if let Some(status) = status {
         let lower_status = status.to_ascii_lowercase();
         if status.contains("cookies do not match Codex account")
             || lower_status.contains("openai cookies are for")
+            || lower_status.contains("openai cookies belong to")
             || lower_status.contains("cookie import failed")
         {
             return Some(format!(
@@ -1147,9 +1158,10 @@ pub fn openai_dashboard_friendly_error(
         }
     }
 
-    Some(format!(
-        "OpenAI web dashboard returned a public page (not signed in). Sign in to chatgpt.com as {target_label}, then update OpenAI cookies in Providers → Codex."
-    ))
+    Some(
+        "OpenAI web dashboard returned a public page (not signed in). Sign in to chatgpt.com as your OpenAI account, then update OpenAI cookies in Providers → Codex."
+            .to_owned(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
