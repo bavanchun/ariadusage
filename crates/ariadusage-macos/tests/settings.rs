@@ -19,8 +19,9 @@ use ariadusage_macos::settings::{
     WINDOW_IDENTIFIER, WINDOW_WIDTH, agent_sessions_dependents_available, clamp_sidebar_width,
     combined_icon_dependents_available, icon_and_percent_dependents_available,
     inactive_display_contrast_available, pane_model, provider_accessibility_label,
-    refresh_interval_label, should_promote_for_presented_window,
-    should_use_regular_activation_policy, surprise_me_available, workday_tick_appearance_available,
+    refresh_interval_label, secret_set_command_args, secret_set_terminal_command,
+    should_promote_for_presented_window, should_use_regular_activation_policy,
+    surprise_me_available, workday_tick_appearance_available,
 };
 use ariadusage_macos::settings_layout::{SettingsHitTarget, hit_test, layout_settings_window};
 #[cfg(unix)]
@@ -433,8 +434,14 @@ fn pane_models_expose_ariadusage_identity_and_keep_unbacked_controls_disabled() 
     let menu_unmerged = pane_model(&SettingsPane::Menu, &icon_pct_state, None);
     assert!(!menu_unmerged.sections[1].rows[3].row_enabled); // Overview layout dimmed when !merge_icons
 
-    // Staged panes render their header title and an empty sections list.
-    for staged in [
+    // Only Debug remains staged as empty; all 10 standard app panes and Provider detail panes are populated.
+    assert!(SettingsPane::Debug.is_staged_empty_pane());
+    assert!(
+        pane_model(&SettingsPane::Debug, &state, None)
+            .sections
+            .is_empty()
+    );
+    for populated in [
         SettingsPane::ICloudSync,
         SettingsPane::UsageSpend,
         SettingsPane::Notifications,
@@ -442,10 +449,179 @@ fn pane_models_expose_ariadusage_identity_and_keep_unbacked_controls_disabled() 
         SettingsPane::Hooks,
         SettingsPane::Plugins,
         SettingsPane::Provider("codex".to_string()),
+        SettingsPane::Provider("claude".to_string()),
+        SettingsPane::Provider("cursor".to_string()),
+        SettingsPane::Provider("antigravity".to_string()),
     ] {
-        assert!(staged.is_staged_empty_pane());
-        let model = pane_model(&staged, &state, None);
-        assert!(model.sections.is_empty());
+        assert!(!populated.is_staged_empty_pane());
+        let model = pane_model(&populated, &state, None);
+        assert!(
+            !model.sections.is_empty(),
+            "expected populated sections for {populated:?}"
+        );
+    }
+}
+
+#[test]
+fn remaining_app_panes_and_provider_detail_respect_secret_and_header_contracts() {
+    let page = sample_app_settings();
+    let mut state = SettingsState::default();
+    state.apply_page(&page);
+
+    // Also apply a provider settings page for Codex with enabled, sourceMode, and apiKey secret.
+    let codex_page = SettingsPage::new(
+        SettingsScope::Provider(ariadusage_protocol::ids::ProviderId::new("codex").unwrap()),
+        vec![SettingsSection::new(
+            "codex",
+            "Codex",
+            vec![
+                SettingDescriptor::new(
+                    SettingId::new("providers.codex.enabled").unwrap(),
+                    "Enabled",
+                    DescriptorKind::Toggle { value: true },
+                ),
+                SettingDescriptor::new(
+                    SettingId::new("providers.codex.sourceMode").unwrap(),
+                    "Source mode",
+                    DescriptorKind::Choice {
+                        selected: "auto".to_string(),
+                        options: vec![
+                            ChoiceOption::new("auto", "Auto"),
+                            ChoiceOption::new("web", "Web"),
+                            ChoiceOption::new("cli", "CLI"),
+                            ChoiceOption::new("oauth", "OAuth"),
+                            ChoiceOption::new("api", "API"),
+                        ],
+                    },
+                ),
+                SettingDescriptor::new(
+                    SettingId::new("providers.codex.apiKey").unwrap(),
+                    "API key",
+                    DescriptorKind::Secret {
+                        is_set: false,
+                        source: None,
+                    },
+                ),
+            ],
+        )],
+    );
+    state.apply_page(&codex_page);
+
+    // Header title contract: UsageSpend and Provider(_) hide the detail header title.
+    assert!(!SettingsPane::UsageSpend.shows_detail_header_title());
+    assert!(!SettingsPane::Provider("codex".to_string()).shows_detail_header_title());
+    assert!(SettingsPane::ICloudSync.shows_detail_header_title());
+    assert!(SettingsPane::Notifications.shows_detail_header_title());
+    assert!(SettingsPane::Advanced.shows_detail_header_title());
+    assert!(SettingsPane::Hooks.shows_detail_header_title());
+    assert!(SettingsPane::Plugins.shows_detail_header_title());
+
+    // Secret terminal command helper contract:
+    let claude_api_key_id = SettingId::new("providers.claude.apiKey").unwrap();
+    assert_eq!(
+        secret_set_command_args(&claude_api_key_id),
+        [
+            "secret".to_string(),
+            "set".to_string(),
+            "providers.claude.apiKey".to_string(),
+        ]
+    );
+    assert_eq!(
+        secret_set_terminal_command(&claude_api_key_id),
+        "ariadusage secret set providers.claude.apiKey"
+    );
+
+    // Claude provider detail shows "Set (keychain)" for `providers.claude.apiKey` (never the secret value)
+    // and offers "Set in Terminal" button action.
+    let claude = pane_model(&SettingsPane::Provider("claude".to_string()), &state, None);
+    assert!(!claude.shows_header_title);
+    let claude_creds = claude
+        .sections
+        .iter()
+        .find(|s| s.title.as_deref() == Some("Credentials & Accounts"))
+        .expect("Claude Credentials & Accounts section");
+    match &claude_creds.rows[0].control {
+        FormControl::SecretStatus {
+            is_set,
+            source,
+            setting_id,
+        } => {
+            assert!(*is_set);
+            assert_eq!(source.as_deref(), Some("keychain"));
+            assert_eq!(setting_id.as_str(), "providers.claude.apiKey");
+        }
+        other => panic!("expected SecretStatus on Claude API key row, got {other:?}"),
+    }
+
+    // Codex provider detail has enabled ProviderHeader, sourceMode BorderedChoice, and HitTest support.
+    let codex_pane = SettingsPane::Provider("codex".to_string());
+    let codex_model = pane_model(&codex_pane, &state, None);
+    let selection = SettingsSelection::new(codex_pane);
+    let filter = SidebarFilterState::default();
+    let sidebar_model = SidebarModel::from_snapshot(&filter, None, true);
+    // Sidebar includes Cursor as disabled alongside Codex, Claude, Antigravity.
+    assert_eq!(sidebar_model.providers.len(), 4);
+    assert_eq!(sidebar_model.enabled_provider_count, 3);
+    assert_eq!(
+        sidebar_model
+            .providers
+            .iter()
+            .find(|p| p.id == "cursor")
+            .unwrap()
+            .accessibility_label,
+        "Cursor — Disabled"
+    );
+
+    let codex_layout = layout_settings_window(
+        Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+        SIDEBAR_DEFAULT_WIDTH,
+        0.0,
+        &selection,
+        &filter,
+        &sidebar_model,
+        &codex_model,
+    );
+    let header_row = &codex_layout.sections[0].rows[0];
+    match &header_row.control {
+        ariadusage_macos::settings_layout::FormControlLayout::ProviderHeader {
+            refresh_button,
+            toggle_rect,
+            ..
+        } => {
+            assert_eq!(
+                hit_test(
+                    &codex_layout,
+                    (refresh_button.rect.mid_x(), refresh_button.rect.mid_y())
+                ),
+                Some(SettingsHitTarget::ButtonAction(
+                    FormButtonAction::RefreshProvider(Some("codex".to_string()))
+                ))
+            );
+            assert_eq!(
+                hit_test(&codex_layout, (toggle_rect.mid_x(), toggle_rect.mid_y())),
+                Some(SettingsHitTarget::ToggleSetting {
+                    setting_id: SettingId::new("providers.codex.enabled").unwrap(),
+                    new_value: false,
+                })
+            );
+        }
+        other => panic!("expected ProviderHeader on row 0, got {other:?}"),
+    }
+
+    // Unsupported Cursor provider detail has disabled controls.
+    let cursor_model = pane_model(&SettingsPane::Provider("cursor".to_string()), &state, None);
+    match &cursor_model.sections[0].rows[0].control {
+        FormControl::ProviderHeader {
+            enabled,
+            enable_toggle_supported,
+            enable_setting_id,
+            ..
+        } => {
+            assert!(!*enabled);
+            assert!(!*enable_toggle_supported);
+            assert!(enable_setting_id.is_none());
+        }
+        other => panic!("expected ProviderHeader on Cursor row 0, got {other:?}"),
     }
 }
 

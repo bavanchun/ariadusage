@@ -1,13 +1,15 @@
 // Ported from CodexBar Tests/CodexBarTests/SettingsWindowBehaviorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-//! Renders the Settings window panes (`General`, `Menu Bar`, `Menu`, `About`)
-//! on the main thread in both Light and Dark appearances, verifies native
-//! AppKit control subviews (`NSSearchField`, `NSOutlineView`, `NSScrollView`,
-//! `NSSwitch`, `NSPopUpButton`, `NSButton`, `NSSlider`, `NSStepper`), and
-//! checks window chrome, dimensions, and pixels.
+//! Renders all 14 Settings window panes (`General`, `iCloud Sync`, `Usage & Spend`,
+//! `Notifications`, `Menu Bar`, `Menu`, `Advanced`, `Hooks`, `Plugins`, `About`,
+//! and provider detail pages `Codex`, `Claude`, `Cursor`, `Antigravity`) on the
+//! main thread in both Light and Dark appearances, verifies native AppKit control
+//! subviews (`NSSearchField`, `NSOutlineView`, `NSScrollView`, `NSSwitch`,
+//! `NSPopUpButton`, `NSButton`, `NSSegmentedControl`, `NSColorWell`, `NSSlider`,
+//! `NSStepper`, `NSTextField`), and checks window chrome, dimensions, and pixels.
 //!
-//! Set `ARIADUSAGE_SETTINGS_CAPTURE_DIR` to write `general.png`, `menu-bar.png`,
-//! `menu.png`, and `about.png` under `{dir}/dark/` and `{dir}/light/` (and `{dir}/`).
+//! Set `ARIADUSAGE_SETTINGS_CAPTURE_DIR` to write `{stem}.png` under `{dir}/dark/`
+//! and `{dir}/light/` (and `{dir}/`).
 //! If `ARIADUSAGE_CBCAP_BIN` is also set to the `cbcap` binary path, dumps the
 //! live Accessibility tree of each pane to `{stem}-ax.txt` next to the PNG files.
 
@@ -49,7 +51,9 @@ mod macos {
         SettingsSection,
     };
     use ariadusage_protocol::snapshot::{EngineInfo, EngineSnapshot, ProviderSnapshot};
-    use ariadusage_protocol::usage::{CostHistory, ProviderStatus, StatusIndicator};
+    use ariadusage_protocol::usage::{
+        CostHistory, Credits, Identity, ProviderStatus, RateWindow, StatusIndicator,
+    };
     use jiff::Timestamp;
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSApplication};
@@ -101,9 +105,89 @@ mod macos {
         )
     }
 
+    fn sample_provider_settings(id: &str, source_mode: &str, secret_set: bool) -> SettingsPage {
+        SettingsPage::new(
+            SettingsScope::Provider(ProviderId::new(id).unwrap()),
+            vec![SettingsSection::new(
+                id,
+                id,
+                vec![
+                    SettingDescriptor::new(
+                        SettingId::new(format!("providers.{id}.enabled")).unwrap(),
+                        "Enabled",
+                        DescriptorKind::Toggle { value: true },
+                    ),
+                    SettingDescriptor::new(
+                        SettingId::new(format!("providers.{id}.sourceMode")).unwrap(),
+                        "Source mode",
+                        DescriptorKind::Choice {
+                            selected: source_mode.to_string(),
+                            options: vec![
+                                ChoiceOption::new("auto", "Auto"),
+                                ChoiceOption::new("web", "Web"),
+                                ChoiceOption::new("cli", "CLI"),
+                                ChoiceOption::new("oauth", "OAuth"),
+                                ChoiceOption::new("api", "API"),
+                            ],
+                        },
+                    ),
+                    SettingDescriptor::new(
+                        SettingId::new(format!("providers.{id}.apiKey")).unwrap(),
+                        "API key",
+                        DescriptorKind::Secret {
+                            is_set: secret_set,
+                            source: secret_set.then(|| "keychain".to_string()),
+                        },
+                    ),
+                ],
+            )],
+        )
+    }
+
     fn sample_snapshot() -> EngineSnapshot {
         let mut codex =
-            ProviderSnapshot::new(ProviderId::new("codex").unwrap(), "Codex", true, "cli");
+            ProviderSnapshot::new(ProviderId::new("codex").unwrap(), "Codex", true, "oauth");
+        codex.windows.primary = Some(Metric::value(
+            RateWindow {
+                used_percent: 15.0,
+                window_minutes: Some(300),
+                reset_description: Some("Resets in 4h 57m".to_string()),
+                ..RateWindow::new(15.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        codex.windows.secondary = Some(Metric::value(
+            RateWindow {
+                used_percent: 34.0,
+                window_minutes: Some(10080),
+                reset_description: Some("Resets in 6d 2h".to_string()),
+                ..RateWindow::new(34.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        codex.credits = Some(Metric::value(
+            Credits::new(60493.99),
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        codex.identity = Some(Metric::value(
+            Identity {
+                provider_id: ProviderId::new("codex").unwrap(),
+                account_email: Some("alex@example.com".to_string()),
+                account_organization: None,
+                login_method: None,
+                account_id: None,
+                plan: Some("Plus".to_string()),
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
         codex.status = Some(Metric::value(
             ProviderStatus {
                 indicator: StatusIndicator::None,
@@ -118,8 +202,8 @@ mod macos {
         ));
         codex.cost_history = Some(Metric::value(
             CostHistory {
-                session_cost_usd: Some(0.18),
-                session_tokens: Some(460_000),
+                session_cost_usd: Some(14.62),
+                session_tokens: Some(78_000_000),
                 last_30_days_cost_usd: Some(285.81),
                 last_30_days_tokens: Some(72_000_000),
                 history_days: Some(30),
@@ -132,7 +216,42 @@ mod macos {
         ));
 
         let mut claude =
-            ProviderSnapshot::new(ProviderId::new("claude").unwrap(), "Claude", true, "cli");
+            ProviderSnapshot::new(ProviderId::new("claude").unwrap(), "Claude", true, "oauth");
+        claude.windows.primary = Some(Metric::value(
+            RateWindow {
+                used_percent: 22.0,
+                window_minutes: Some(300),
+                reset_description: Some("Resets in 3h 14m".to_string()),
+                ..RateWindow::new(22.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        claude.windows.secondary = Some(Metric::value(
+            RateWindow {
+                used_percent: 41.0,
+                window_minutes: Some(10080),
+                reset_description: Some("Resets in 4d 8h".to_string()),
+                ..RateWindow::new(41.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        claude.identity = Some(Metric::value(
+            Identity {
+                provider_id: ProviderId::new("claude").unwrap(),
+                account_email: Some("alex@example.com".to_string()),
+                account_organization: None,
+                login_method: None,
+                account_id: None,
+                plan: Some("Max".to_string()),
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
         claude.status = codex.status.clone();
         claude.cost_history = Some(Metric::value(
             CostHistory {
@@ -155,6 +274,41 @@ mod macos {
             true,
             "local",
         );
+        antigravity.windows.primary = Some(Metric::value(
+            RateWindow {
+                used_percent: 12.0,
+                window_minutes: Some(300),
+                reset_description: Some("Resets in 2h 40m".to_string()),
+                ..RateWindow::new(12.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        antigravity.windows.secondary = Some(Metric::value(
+            RateWindow {
+                used_percent: 18.0,
+                window_minutes: Some(10080),
+                reset_description: Some("Resets in 5d 11h".to_string()),
+                ..RateWindow::new(18.0)
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
+        antigravity.identity = Some(Metric::value(
+            Identity {
+                provider_id: ProviderId::new("antigravity").unwrap(),
+                account_email: Some("alex@example.com".to_string()),
+                account_organization: None,
+                login_method: None,
+                account_id: None,
+                plan: Some("Pro".to_string()),
+            },
+            None,
+            None,
+            Confidence::Exact,
+        ));
         antigravity.status = codex.status.clone();
 
         EngineSnapshot {
@@ -204,6 +358,7 @@ mod macos {
         let win = controller.window();
         assert!(!win.isReleasedWhenClosed());
         assert!(win.titlebarAppearsTransparent());
+        assert!(win.autorecalculatesKeyViewLoop());
         assert_eq!(win.frameAutosaveName().to_string(), WINDOW_AUTOSAVE_NAME);
         let min_size = win.contentMinSize();
         assert_eq!(min_size.width, WINDOW_MIN_WIDTH);
@@ -211,6 +366,9 @@ mod macos {
 
         let view = controller.view();
         view.apply_settings_page(&sample_app_settings());
+        view.apply_settings_page(&sample_provider_settings("codex", "auto", false));
+        view.apply_settings_page(&sample_provider_settings("claude", "auto", true));
+        view.apply_settings_page(&sample_provider_settings("antigravity", "auto", false));
         view.apply_snapshot(sample_snapshot());
 
         let bounds = view.bounds();
@@ -219,8 +377,8 @@ mod macos {
 
         // Verify live search field filtering and NSOutlineView row counts.
         let outline = view.sidebar_outline_view().expect("sidebar NSOutlineView");
-        // 10 app panes + 1 Providers header + 3 providers = 14 rows
-        assert_eq!(outline.numberOfRows(), 14);
+        // 10 app panes + 1 Providers header + 4 providers (Codex, Claude, Antigravity, Cursor) = 15 rows
+        assert_eq!(outline.numberOfRows(), 15);
         view.set_search_text("claude");
         // 10 app panes + 1 Providers header + 1 matching provider = 12 rows
         assert_eq!(outline.numberOfRows(), 12);
@@ -228,11 +386,11 @@ mod macos {
         // 10 app panes + 1 Providers header + 1 empty filter state row = 12 rows
         assert_eq!(outline.numberOfRows(), 12);
         view.set_search_text("");
-        assert_eq!(outline.numberOfRows(), 14);
+        assert_eq!(outline.numberOfRows(), 15);
 
-        // Verify native AppKit controls across panes.
+        // Verify native AppKit controls across Menu and Provider panes.
         view.select_pane(SettingsPane::Menu);
-        let classes = view.descendant_class_names();
+        let menu_classes = view.descendant_class_names();
         for required in [
             "NSSearchField",
             "NSOutlineView",
@@ -245,8 +403,24 @@ mod macos {
             "NSTextField",
         ] {
             assert!(
-                classes.iter().any(|c| c.contains(required)),
-                "expected native AppKit control `{required}` in view hierarchy, found {classes:?}"
+                menu_classes.iter().any(|c| c.contains(required)),
+                "expected native AppKit control `{required}` in Menu pane, found {menu_classes:?}"
+            );
+        }
+
+        view.select_pane(SettingsPane::Provider("codex".to_string()));
+        let provider_classes = view.descendant_class_names();
+        for required in [
+            "NSSwitch",
+            "NSPopUpButton",
+            "NSButton",
+            "NSSegmentedControl",
+            "NSColorWell",
+            "NSTextField",
+        ] {
+            assert!(
+                provider_classes.iter().any(|c| c.contains(required)),
+                "expected native AppKit control `{required}` in Provider pane, found {provider_classes:?}"
             );
         }
 
@@ -259,9 +433,22 @@ mod macos {
 
         let panes = [
             (SettingsPane::General, "general"),
+            (SettingsPane::ICloudSync, "icloud-sync"),
+            (SettingsPane::UsageSpend, "usage-spend"),
+            (SettingsPane::Notifications, "notifications"),
             (SettingsPane::MenuBar, "menu-bar"),
             (SettingsPane::Menu, "menu"),
+            (SettingsPane::Advanced, "advanced"),
+            (SettingsPane::Hooks, "hooks"),
+            (SettingsPane::Plugins, "plugins"),
             (SettingsPane::About, "about"),
+            (SettingsPane::Provider("codex".to_string()), "codex"),
+            (SettingsPane::Provider("claude".to_string()), "claude"),
+            (SettingsPane::Provider("cursor".to_string()), "cursor"),
+            (
+                SettingsPane::Provider("antigravity".to_string()),
+                "antigravity",
+            ),
         ];
 
         for (dark, mode_name, appearance_name) in [

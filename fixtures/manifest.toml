@@ -1267,9 +1267,22 @@ sources = [
     "Sources/CodexBar/PreferencesSelection.swift",
     "Sources/CodexBar/PreferencesComponents.swift",
     "Sources/CodexBar/PreferencesGeneralPane.swift",
+    "Sources/CodexBar/PreferencesICloudSyncPane.swift",
+    "Sources/CodexBar/PreferencesSpendDashboardPane.swift",
+    "Sources/CodexBar/PreferencesNotificationsPane.swift",
     "Sources/CodexBar/PreferencesMenuBarPane.swift",
     "Sources/CodexBar/PreferencesMenuPane.swift",
+    "Sources/CodexBar/PreferencesAdvancedPane.swift",
+    "Sources/CodexBar/PreferencesHTTPServerSection.swift",
+    "Sources/CodexBar/PreferencesHooksPane.swift",
+    "Sources/CodexBar/PreferencesPluginsPane.swift",
     "Sources/CodexBar/PreferencesAboutPane.swift",
+    "Sources/CodexBar/PreferencesProvidersPane.swift",
+    "Sources/CodexBar/PreferencesProviderDetailView.swift",
+    "Sources/CodexBar/PreferencesProviderSettingsRows.swift",
+    "Sources/CodexBar/PreferencesProviderErrorView.swift",
+    "Sources/CodexBar/PreferencesCodexAccountsSection.swift",
+    "Sources/CodexBar/PreferencesProviderDirectoryList.swift",
     "Sources/CodexBar/PreferencesTransferSection.swift",
     "Sources/CodexBar/MenuBarLayoutEditor.swift",
     "Sources/CodexBar/SettingsWindowController.swift",
@@ -1284,6 +1297,8 @@ sources = [
     "Sources/CodexBar/PreferencesSidebar.swift",
     "Sources/CodexBar/PreferencesComponents.swift",
     "Sources/CodexBar/MenuBarLayoutEditor.swift",
+    "Sources/CodexBar/PreferencesProviderDetailView.swift",
+    "Sources/CodexBar/PreferencesSpendDashboardPane.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1298,6 +1313,14 @@ sources = [
     "Sources/CodexBar/PreferencesMenuPane.swift",
     "Sources/CodexBar/PreferencesAboutPane.swift",
     "Sources/CodexBar/MenuBarLayoutEditor.swift",
+    "Sources/CodexBar/PreferencesICloudSyncPane.swift",
+    "Sources/CodexBar/PreferencesSpendDashboardPane.swift",
+    "Sources/CodexBar/PreferencesNotificationsPane.swift",
+    "Sources/CodexBar/PreferencesAdvancedPane.swift",
+    "Sources/CodexBar/PreferencesHooksPane.swift",
+    "Sources/CodexBar/PreferencesPluginsPane.swift",
+    "Sources/CodexBar/PreferencesProviderDetailView.swift",
+    "Sources/CodexBar/PreferencesProviderSettingsRows.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 

@@ -2,6 +2,8 @@
 // Ported from CodexBar Sources/CodexBar/PreferencesSidebar.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesComponents.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarLayoutEditor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderDetailView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesSpendDashboardPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Pure layout geometry and hit-testing for the Settings window.
 //!
@@ -13,8 +15,8 @@ use ariadusage_protocol::ids::SettingId;
 use crate::geometry::{Point, Rect, Size};
 use crate::settings::{
     ChoiceItem, DETAIL_MAX_WIDTH, FormButtonAction, FormControl, FormRowModel, FormSectionModel,
-    PaneModel, ProviderStatusDotColor, SHORTCUT_RECORDER_WIDTH, SettingsPane, SettingsSelection,
-    SidebarChipStyle, SidebarFilterState, SidebarModel, clamp_sidebar_width,
+    PaneModel, ProviderStatusDotColor, Rgb, SHORTCUT_RECORDER_WIDTH, SettingsPane,
+    SettingsSelection, SidebarChipStyle, SidebarFilterState, SidebarModel, clamp_sidebar_width,
 };
 
 /// Height of the transparent titlebar area above sidebar/detail headers.
@@ -225,6 +227,88 @@ pub enum FormControlLayout {
         command_rect: Option<Rect>,
         copy_button_rect: Option<Rect>,
         command: Option<String>,
+    },
+    Checkbox {
+        rect: Rect,
+        value: bool,
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    },
+    BorderedChoice {
+        rect: Rect,
+        selected_label: String,
+        options: Vec<ChoiceItem>,
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    },
+    Segmented {
+        segmented_rect: Rect,
+        trailing_note_rect: Option<Rect>,
+        labels: Vec<String>,
+        selected_index: usize,
+        trailing_note: Option<String>,
+        enabled: bool,
+    },
+    ReadOnlyValue {
+        value_rect: Rect,
+        value: String,
+        monospaced: bool,
+    },
+    SecretStatus {
+        status_rect: Rect,
+        button: FormButtonLayout,
+        is_set: bool,
+        status_text: String,
+    },
+    ColorHex {
+        field_rect: Rect,
+        swatch_rect: Rect,
+        hex_value: String,
+        placeholder: String,
+        swatch_rgb: Rgb,
+        enabled: bool,
+    },
+    ProviderHeader {
+        icon_rect: Rect,
+        title_rect: Rect,
+        subtitle_rect: Rect,
+        refresh_button: FormButtonLayout,
+        toggle_rect: Rect,
+        provider_id: String,
+        display_name: String,
+        subtitle: String,
+        enabled: bool,
+        toggle_setting_id: Option<SettingId>,
+    },
+    UsageWindowBar {
+        title_rect: Rect,
+        reset_rect: Rect,
+        bar_rect: Rect,
+        pace_rect: Option<Rect>,
+        title: String,
+        percent_used: f64,
+        percent_label: String,
+        reset_label: String,
+        pace_label: Option<String>,
+        accent_rgb: Rgb,
+    },
+    EmptyStateCard {
+        icon_rect: Rect,
+        title_rect: Rect,
+        subtitle_rect: Rect,
+        symbol: &'static str,
+        title: String,
+        subtitle: String,
+    },
+    SpendSummaryGrid {
+        currency_rect: Rect,
+        coverage_rect: Rect,
+        metric_boxes: Vec<(Rect, String, String)>,
+        token_items: Vec<(Rect, String, String)>,
+        footer_rect: Rect,
+        currency_label: String,
+        coverage_label: String,
+        footer_note: String,
     },
 }
 
@@ -617,6 +701,19 @@ fn measure_row_height(content_w: f64, row: &FormRowModel) -> f64 {
     match &row.control {
         FormControl::MenuBarLayoutPreview { .. } => 418.0,
         FormControl::Slider { .. } => 70.0,
+        FormControl::ProviderHeader { .. } => 60.0,
+        FormControl::UsageWindowBar { pace_text, .. } => {
+            if pace_text.is_some() {
+                62.0
+            } else {
+                46.0
+            }
+        }
+        FormControl::EmptyStateCard { .. } => 148.0,
+        FormControl::SpendSummaryGrid { .. } => 176.0,
+        FormControl::Checkbox { .. } => 32.0,
+        FormControl::Segmented { .. } => 36.0,
+        FormControl::ColorHex { .. } => 42.0,
         FormControl::StatusNote { command, .. } => {
             if command.is_some() {
                 78.0
@@ -974,18 +1071,389 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
             );
             (FormControlLayout::MenuBarLayoutPreview(Box::new(geom)), 0.0)
         }
+        FormControl::Checkbox {
+            checked,
+            indent,
+            enabled,
+            setting_id,
+        } => {
+            let rect = Rect::new(
+                inner_x + *indent,
+                row_rect.y + (row_rect.h - 20.0) / 2.0,
+                (inner_w - 8.0 - *indent).max(160.0),
+                20.0,
+            );
+            (
+                FormControlLayout::Checkbox {
+                    rect,
+                    value: *checked,
+                    enabled: *enabled,
+                    setting_id: setting_id.clone(),
+                },
+                0.0,
+            )
+        }
+        FormControl::BorderedChoice {
+            selected_label,
+            options,
+            enabled,
+            setting_id,
+        } => {
+            let cw = if selected_label.chars().count() > 14 {
+                160.0
+            } else {
+                118.0
+            };
+            let ch = 24.0;
+            let rect = Rect::new(
+                inner_right - cw,
+                row_rect.y + (row_rect.h - ch) / 2.0,
+                cw,
+                ch,
+            );
+            (
+                FormControlLayout::BorderedChoice {
+                    rect,
+                    selected_label: selected_label.clone(),
+                    options: options.clone(),
+                    enabled: *enabled,
+                    setting_id: setting_id.clone(),
+                },
+                cw + 12.0,
+            )
+        }
+        FormControl::Segmented {
+            segments,
+            selected_index,
+            trailing_note,
+            enabled,
+        } => {
+            let title_col_w = if trailing_note.is_some() { 64.0 } else { 96.0 };
+            let natural_w: f64 = segments
+                .iter()
+                .map(|s| (s.chars().count() as f64 * 6.8 + 20.0).max(46.0))
+                .sum();
+            let seg_w = natural_w.clamp(120.0, (inner_w - title_col_w - 8.0).max(160.0));
+            let seg_h = 22.0;
+            let seg_x = (inner_x + title_col_w).min(inner_right - seg_w);
+            let seg_y = row_rect.y + (row_rect.h - seg_h) / 2.0;
+            let segmented_rect = Rect::new(seg_x, seg_y, seg_w, seg_h);
+            let trailing_note_rect = trailing_note.as_ref().map(|_| {
+                let nx = segmented_rect.max_x() + 12.0;
+                let nw = (inner_right - nx).max(80.0);
+                Rect::new(nx, row_rect.y + (row_rect.h - 16.0) / 2.0, nw, 16.0)
+            });
+            (
+                FormControlLayout::Segmented {
+                    segmented_rect,
+                    trailing_note_rect,
+                    labels: segments.clone(),
+                    selected_index: *selected_index,
+                    trailing_note: trailing_note.clone(),
+                    enabled: *enabled,
+                },
+                (inner_right - seg_x) + 4.0,
+            )
+        }
+        FormControl::ReadOnlyValue { value } => {
+            if row.title.is_empty() {
+                let value_rect = Rect::new(inner_x, row_rect.y + 9.0, inner_w, row_rect.h - 16.0);
+                (
+                    FormControlLayout::ReadOnlyValue {
+                        value_rect,
+                        value: value.clone(),
+                        monospaced: false,
+                    },
+                    0.0,
+                )
+            } else {
+                let vw = (value.chars().count() as f64 * 6.8 + 12.0).clamp(80.0, 260.0);
+                let value_rect = Rect::new(
+                    inner_right - vw,
+                    row_rect.y + (row_rect.h - 17.0) / 2.0,
+                    vw,
+                    17.0,
+                );
+                let reserved = if value.is_empty() { 0.0 } else { vw + 12.0 };
+                (
+                    FormControlLayout::ReadOnlyValue {
+                        value_rect,
+                        value: value.clone(),
+                        monospaced: false,
+                    },
+                    reserved,
+                )
+            }
+        }
+        FormControl::SecretStatus {
+            is_set,
+            source,
+            setting_id,
+        } => {
+            let status_text = if *is_set {
+                match source.as_deref() {
+                    Some(src) if !src.is_empty() => format!("Set ({src})"),
+                    _ => "Set".to_string(),
+                }
+            } else {
+                "Not set".to_string()
+            };
+            let button_title = "Set in Terminal".to_string();
+            let bw = (button_title.chars().count() as f64 * 6.8 + 24.0).max(116.0);
+            let bh = 24.0;
+            let button_rect = Rect::new(
+                inner_right - bw,
+                row_rect.y + (row_rect.h - bh) / 2.0,
+                bw,
+                bh,
+            );
+            let sw = (status_text.chars().count() as f64 * 6.6 + 12.0).clamp(64.0, 140.0);
+            let status_rect = Rect::new(
+                button_rect.x - 10.0 - sw,
+                row_rect.y + (row_rect.h - 17.0) / 2.0,
+                sw,
+                17.0,
+            );
+            let reserved = (inner_right - status_rect.x) + 12.0;
+            (
+                FormControlLayout::SecretStatus {
+                    status_rect,
+                    button: FormButtonLayout {
+                        rect: button_rect,
+                        title: button_title,
+                        enabled: row.row_enabled,
+                        prominent: false,
+                        action: FormButtonAction::LaunchSecretSetInTerminal {
+                            setting_id: setting_id.clone(),
+                        },
+                    },
+                    is_set: *is_set,
+                    status_text,
+                },
+                reserved,
+            )
+        }
+        FormControl::ColorHex {
+            hex_value,
+            swatch_rgb,
+            enabled,
+            setting_id: _,
+        } => {
+            let cy = row_rect.y + (row_rect.h - 24.0) / 2.0;
+            let (field_rect, swatch_rect, reserved) = if row.title.is_empty() {
+                (
+                    Rect::new(inner_x, cy, 96.0, 24.0),
+                    Rect::new(inner_x + 106.0, cy, 48.0, 24.0),
+                    0.0,
+                )
+            } else {
+                let sw_rect = Rect::new(inner_right - 48.0, cy, 48.0, 24.0);
+                let fld_rect = Rect::new(sw_rect.x - 10.0 - 96.0, cy, 96.0, 24.0);
+                (fld_rect, sw_rect, 166.0)
+            };
+            (
+                FormControlLayout::ColorHex {
+                    field_rect,
+                    swatch_rect,
+                    hex_value: hex_value.clone(),
+                    placeholder: hex_value.clone(),
+                    swatch_rgb: *swatch_rgb,
+                    enabled: *enabled,
+                },
+                reserved,
+            )
+        }
+        FormControl::ProviderHeader {
+            provider_id,
+            display_name,
+            subtitle,
+            enabled,
+            enable_toggle_supported,
+            enable_setting_id,
+        } => {
+            let icon_rect = Rect::new(inner_x, row_rect.y + 16.0, 28.0, 28.0);
+            let toggle_rect = Rect::new(inner_right - 38.0, row_rect.y + 19.0, 38.0, 22.0);
+            let refresh_rect = Rect::new(toggle_rect.x - 32.0, row_rect.y + 18.0, 24.0, 24.0);
+            let text_left = icon_rect.max_x() + 12.0;
+            let text_avail = (refresh_rect.x - 10.0 - text_left).max(100.0);
+            let title_rect = Rect::new(text_left, row_rect.y + 11.0, text_avail, 20.0);
+            let subtitle_rect = Rect::new(text_left, row_rect.y + 32.0, text_avail, 16.0);
+            (
+                FormControlLayout::ProviderHeader {
+                    icon_rect,
+                    title_rect,
+                    subtitle_rect,
+                    refresh_button: FormButtonLayout {
+                        rect: refresh_rect,
+                        title: "Refresh".to_string(),
+                        enabled: *enable_toggle_supported && *enabled,
+                        prominent: false,
+                        action: FormButtonAction::RefreshProvider(Some(provider_id.clone())),
+                    },
+                    toggle_rect,
+                    provider_id: provider_id.clone(),
+                    display_name: display_name.clone(),
+                    subtitle: subtitle.clone(),
+                    enabled: *enabled,
+                    toggle_setting_id: enable_setting_id.clone(),
+                },
+                0.0,
+            )
+        }
+        FormControl::UsageWindowBar {
+            title,
+            percent_text,
+            fill_fraction,
+            accent_rgb,
+            reset_text,
+            pace_text,
+        } => {
+            let title_rect =
+                Rect::new(inner_x, row_rect.y + 8.0, (inner_w - 140.0).max(80.0), 16.0);
+            let reset_rect = Rect::new(inner_right - 136.0, row_rect.y + 8.0, 136.0, 16.0);
+            let bar_rect = Rect::new(inner_x, row_rect.y + 28.0, inner_w, 7.0);
+            let pace_rect = pace_text
+                .as_ref()
+                .map(|_| Rect::new(inner_x, row_rect.y + 39.0, inner_w, 16.0));
+            (
+                FormControlLayout::UsageWindowBar {
+                    title_rect,
+                    reset_rect,
+                    bar_rect,
+                    pace_rect,
+                    title: title.clone(),
+                    percent_used: (*fill_fraction * 100.0).clamp(0.0, 100.0),
+                    percent_label: percent_text.clone(),
+                    reset_label: reset_text.clone(),
+                    pace_label: pace_text.clone(),
+                    accent_rgb: *accent_rgb,
+                },
+                0.0,
+            )
+        }
+        FormControl::EmptyStateCard {
+            symbol,
+            title,
+            subtitle,
+        } => {
+            let icon_rect = Rect::new(
+                inner_x + (inner_w - 36.0) / 2.0,
+                row_rect.y + 22.0,
+                36.0,
+                36.0,
+            );
+            let title_rect = Rect::new(inner_x + 20.0, row_rect.y + 68.0, inner_w - 40.0, 22.0);
+            let subtitle_rect = Rect::new(inner_x + 24.0, row_rect.y + 94.0, inner_w - 48.0, 36.0);
+            (
+                FormControlLayout::EmptyStateCard {
+                    icon_rect,
+                    title_rect,
+                    subtitle_rect,
+                    symbol,
+                    title: title.clone(),
+                    subtitle: subtitle.clone(),
+                },
+                0.0,
+            )
+        }
+        FormControl::SpendSummaryGrid {
+            currency_code,
+            coverage_text,
+            estimated_spend,
+            tracked_tokens,
+            subscriptions,
+            input_tokens,
+            output_tokens,
+            cache_read_tokens,
+            cache_write_tokens,
+            reasoning_tokens,
+            provenance_text,
+        } => {
+            let currency_rect = Rect::new(inner_x, row_rect.y + 10.0, 64.0, 18.0);
+            let coverage_rect = Rect::new(inner_x + 70.0, row_rect.y + 10.0, inner_w - 70.0, 18.0);
+            let box_w = ((inner_w - 20.0) / 3.0).max(90.0);
+            let box_y = row_rect.y + 34.0;
+            let metric_boxes = vec![
+                (
+                    Rect::new(inner_x, box_y, box_w, 52.0),
+                    "Estimated spend".to_string(),
+                    estimated_spend.clone(),
+                ),
+                (
+                    Rect::new(inner_x + box_w + 10.0, box_y, box_w, 52.0),
+                    "Tracked tokens".to_string(),
+                    tracked_tokens.clone(),
+                ),
+                (
+                    Rect::new(inner_x + 2.0 * (box_w + 10.0), box_y, box_w, 52.0),
+                    "Subscriptions".to_string(),
+                    subscriptions.clone(),
+                ),
+            ];
+            let tok_w = ((inner_w - 32.0) / 5.0).max(60.0);
+            let tok_y = row_rect.y + 96.0;
+            let token_items = vec![
+                (
+                    Rect::new(inner_x, tok_y, tok_w, 38.0),
+                    "Input".to_string(),
+                    input_tokens.clone(),
+                ),
+                (
+                    Rect::new(inner_x + (tok_w + 8.0), tok_y, tok_w, 38.0),
+                    "Output".to_string(),
+                    output_tokens.clone(),
+                ),
+                (
+                    Rect::new(inner_x + 2.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
+                    "Cache read".to_string(),
+                    cache_read_tokens.clone(),
+                ),
+                (
+                    Rect::new(inner_x + 3.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
+                    "Cache write".to_string(),
+                    cache_write_tokens.clone(),
+                ),
+                (
+                    Rect::new(inner_x + 4.0 * (tok_w + 8.0), tok_y, tok_w, 38.0),
+                    "Reasoning".to_string(),
+                    reasoning_tokens.clone(),
+                ),
+            ];
+            let footer_rect = Rect::new(inner_x, row_rect.y + 144.0, inner_w, 22.0);
+            (
+                FormControlLayout::SpendSummaryGrid {
+                    currency_rect,
+                    coverage_rect,
+                    metric_boxes,
+                    token_items,
+                    footer_rect,
+                    currency_label: currency_code.clone(),
+                    coverage_label: coverage_text.clone(),
+                    footer_note: provenance_text.clone(),
+                },
+                0.0,
+            )
+        }
     };
 
     let is_external_link = matches!(row.control, FormControl::ExternalLink { .. });
     let is_slider = matches!(row.control, FormControl::Slider { .. });
+    let owns_own_title = matches!(
+        row.control,
+        FormControl::Checkbox { .. }
+            | FormControl::ProviderHeader { .. }
+            | FormControl::UsageWindowBar { .. }
+            | FormControl::EmptyStateCard { .. }
+            | FormControl::SpendSummaryGrid { .. }
+    );
     let text_x = if is_external_link {
         inner_x + 24.0
     } else {
         inner_x
     };
-    let text_w = (inner_w - right_reserved_w - if is_external_link { 24.0 } else { 0.0 }).max(80.0);
+    let text_w = (inner_w - right_reserved_w - if is_external_link { 24.0 } else { 0.0 }).max(60.0);
 
-    let (title_rect, subtitle_rect) = if row.title.is_empty() {
+    let (title_rect, subtitle_rect) = if row.title.is_empty() || owns_own_title {
         (None, None)
     } else if is_slider {
         let tr = Rect::new(text_x, row_rect.y + 8.0, text_w, 17.0);
@@ -1225,6 +1693,12 @@ pub fn hit_test(layout: &SettingsWindowLayout, point: (f64, f64)) -> Option<Sett
                     value,
                     enabled: true,
                     setting_id: Some(id),
+                }
+                | FormControlLayout::Checkbox {
+                    rect,
+                    value,
+                    enabled: true,
+                    setting_id: Some(id),
                 } if rect.contains(pt) => {
                     return Some(SettingsHitTarget::ToggleSetting {
                         setting_id: id.clone(),
@@ -1232,6 +1706,13 @@ pub fn hit_test(layout: &SettingsWindowLayout, point: (f64, f64)) -> Option<Sett
                     });
                 }
                 FormControlLayout::Choice {
+                    rect,
+                    selected_label,
+                    options,
+                    enabled: true,
+                    setting_id: Some(id),
+                }
+                | FormControlLayout::BorderedChoice {
                     rect,
                     selected_label,
                     options,
@@ -1250,6 +1731,32 @@ pub fn hit_test(layout: &SettingsWindowLayout, point: (f64, f64)) -> Option<Sett
                         if btn.enabled && btn.rect.contains(pt) {
                             return Some(SettingsHitTarget::ButtonAction(btn.action.clone()));
                         }
+                    }
+                }
+                FormControlLayout::SecretStatus { button, .. } => {
+                    if button.enabled && button.rect.contains(pt) {
+                        return Some(SettingsHitTarget::ButtonAction(button.action.clone()));
+                    }
+                }
+                FormControlLayout::ProviderHeader {
+                    refresh_button,
+                    toggle_rect,
+                    enabled,
+                    toggle_setting_id,
+                    ..
+                } => {
+                    if refresh_button.enabled && refresh_button.rect.contains(pt) {
+                        return Some(SettingsHitTarget::ButtonAction(
+                            refresh_button.action.clone(),
+                        ));
+                    }
+                    if toggle_rect.contains(pt)
+                        && let Some(id) = toggle_setting_id
+                    {
+                        return Some(SettingsHitTarget::ToggleSetting {
+                            setting_id: id.clone(),
+                            new_value: !*enabled,
+                        });
                     }
                 }
                 FormControlLayout::ExternalLink { url, .. } => {

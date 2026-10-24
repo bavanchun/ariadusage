@@ -148,6 +148,10 @@ impl SettingsWindowController {
         window.setTitlebarSeparatorStyle(NSTitlebarSeparatorStyle::None);
         window.setContentMinSize(NSSize::new(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT));
         window.setContentView(Some(&view));
+        window.setAutorecalculatesKeyViewLoop(true);
+        if let Some(sf) = view.search_field() {
+            window.setInitialFirstResponder(Some(&sf));
+        }
 
         // SAFETY: `setIdentifier:` accepts an `NSString` (`NSUserInterfaceItemIdentifier`) on `NSWindow`.
         let ident = NSString::from_str(WINDOW_IDENTIFIER);
@@ -201,8 +205,13 @@ impl SettingsWindowController {
             self.window.deminiaturize(None);
         }
 
+        self.window.recalculateKeyViewLoop();
         self.window.makeKeyAndOrderFront(None);
-        let _ = self.window.makeFirstResponder(Some(&self.view));
+        if let Some(sf) = self.view.search_field() {
+            let _ = self.window.makeFirstResponder(Some(&sf));
+        } else {
+            let _ = self.window.makeFirstResponder(Some(&self.view));
+        }
         #[allow(deprecated)]
         app.activateIgnoringOtherApps(true);
     }
