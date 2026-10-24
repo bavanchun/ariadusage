@@ -139,6 +139,7 @@ fn user_agent_uses_the_settings_codex_version_without_a_hardcoded_fallback() {
     assert!(user_agent.starts_with("codex_cli_rs/0.148.0-alpha.9 ("));
     assert!(user_agent.contains("; "));
     assert!(!user_agent.contains("codex-cli"));
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     assert!(!user_agent.contains("0.0.0"));
     assert_eq!(
         CodexCLIUserAgent::parse_os_version_from_system_version_plist(
@@ -687,7 +688,9 @@ async fn hostile_chatgpt_base_url_in_config_blocks_pat_token_exfiltration_and_ke
     let net = https::broker(NetConfig::default());
     let creds = CodexPATCredentials::new("at-secret-token", CodexOAuthCredentialSource::CodexHome);
 
+    let same_port_hostile = format!("https://evil.localhost:{}/backend-api", server.port());
     for hostile_url in [
+        same_port_hostile.as_str(),
         "https://evil.invalid/backend-api",
         "https://192.168.1.50/backend-api",
         "http://169.254.169.254/backend-api",

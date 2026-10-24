@@ -1,12 +1,15 @@
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexWebDashboardStrategy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCLI/CLIHelpers.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
+use ariadusage_core::config::CookieSource;
 use ariadusage_core::model::identity::ProviderIdentitySnapshot;
 use ariadusage_core::model::snapshot::UsageSnapshot;
 use ariadusage_core::pipeline::{
@@ -15,6 +18,7 @@ use ariadusage_core::pipeline::{
 };
 use ariadusage_core::providers::SourceMode;
 use ariadusage_protocol::metric::{Metric, MetricSource, SourceKind};
+use ariadusage_protocol::secret::SecretString;
 use ariadusage_protocol::snapshot::{ProviderPresentation, ProviderSnapshot, ProviderWindows};
 use ariadusage_protocol::usage::{
     BillingDate, Cost, Credits, Identity, NamedWindow, ProviderErrorKind,
@@ -25,7 +29,8 @@ use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
 use crate::brokers::call::BrokerCall;
-use crate::brokers::net::{NetBroker, NetConfig};
+use crate::brokers::cookie_cache::CacheScope;
+use crate::brokers::net::NetBroker;
 
 use super::cli_rpc::{CodexCLIFetchError, CodexCLIUsageFetcher, UsageError};
 use super::credentials::{
@@ -33,6 +38,20 @@ use super::credentials::{
     CodexOAuthCredentialsStore, CodexRefreshError, CredentialReadFn,
 };
 use super::credits::{CodexExtraUsageCost, CodexRateLimitResetCreditsSnapshot, CreditsSnapshot};
+use super::dashboard_authority::{
+    CodexCLIDashboardAuthorityContext, CodexDashboardAllowedEffect, CodexDashboardAuthority,
+    CodexDashboardAuthorityDecision, CodexDashboardCleanup, CodexDashboardDecisionReason,
+    CodexDashboardDisposition, CodexDashboardKnownOwnerCandidate, CodexDashboardPolicyError,
+};
+use super::identity::CodexIdentityResolver;
+use super::openai_dashboard_cookie_importer::OpenAIDashboardBrowserCookieImporter;
+use super::openai_dashboard_fetcher::{
+    OpenAIDashboardEndpointConfig, OpenAIDashboardFetchError, OpenAIDashboardFetcher,
+};
+use super::openai_dashboard_models::{
+    OpenAIDashboardCache, OpenAIDashboardCacheStore, OpenAIDashboardSnapshot,
+    OpenAISubscriptionFetchResult,
+};
 use super::pat::CodexPATUsageFetcher;
 use super::plan::CodexPlanFormatting;
 use super::reconciled::{CodexPATWhoami, CodexReconciledState};
@@ -365,6 +384,17 @@ pub struct CodexStrategyConfig {
     pub resolved_cli_version: Option<String>,
     pub clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     pub cli_fetcher: CodexCLIUsageFetcher,
+    pub cookie_source: Option<CookieSource>,
+    pub manual_cookie_header: Option<SecretString>,
+    pub dashboard_authority_known_owners: Vec<CodexDashboardKnownOwnerCandidate>,
+    pub managed_account_store_unreadable: bool,
+    pub managed_account_target_unavailable: bool,
+    pub profile_account_target_unavailable: bool,
+    pub openai_web_cache_scope: Option<String>,
+    pub dashboard_cache_store: OpenAIDashboardCacheStore,
+    pub dashboard_endpoint_config: OpenAIDashboardEndpointConfig,
+    pub cookie_importer: Option<Arc<OpenAIDashboardBrowserCookieImporter>>,
+    pub web_timeout: Duration,
 }
 
 impl CodexStrategyConfig {
@@ -391,11 +421,86 @@ impl CodexStrategyConfig {
             resolved_cli_version: None,
             clock: Arc::new(Timestamp::now),
             cli_fetcher,
+            cookie_source: None,
+            manual_cookie_header: None,
+            dashboard_authority_known_owners: Vec::new(),
+            managed_account_store_unreadable: false,
+            managed_account_target_unavailable: false,
+            profile_account_target_unavailable: false,
+            openai_web_cache_scope: None,
+            dashboard_cache_store: OpenAIDashboardCacheStore::new(),
+            dashboard_endpoint_config: OpenAIDashboardEndpointConfig::default(),
+            cookie_importer: None,
+            web_timeout: Duration::from_secs(60),
         }
     }
 
     pub fn with_resolved_cli_version(mut self, version: Option<String>) -> Self {
         self.resolved_cli_version = version;
+        self
+    }
+
+    pub fn with_cookie_source(mut self, cookie_source: Option<CookieSource>) -> Self {
+        self.cookie_source = cookie_source;
+        self
+    }
+
+    pub fn with_manual_cookie_header(mut self, header: Option<SecretString>) -> Self {
+        self.manual_cookie_header = header;
+        self
+    }
+
+    pub fn with_dashboard_authority_known_owners(
+        mut self,
+        owners: Vec<CodexDashboardKnownOwnerCandidate>,
+    ) -> Self {
+        self.dashboard_authority_known_owners = owners;
+        self
+    }
+
+    pub fn with_managed_account_store_unreadable(mut self, unreadable: bool) -> Self {
+        self.managed_account_store_unreadable = unreadable;
+        self
+    }
+
+    pub fn with_managed_account_target_unavailable(mut self, unavailable: bool) -> Self {
+        self.managed_account_target_unavailable = unavailable;
+        self
+    }
+
+    pub fn with_profile_account_target_unavailable(mut self, unavailable: bool) -> Self {
+        self.profile_account_target_unavailable = unavailable;
+        self
+    }
+
+    pub fn with_openai_web_cache_scope(mut self, scope: Option<String>) -> Self {
+        self.openai_web_cache_scope = scope;
+        self
+    }
+
+    pub fn with_dashboard_cache_store(mut self, store: OpenAIDashboardCacheStore) -> Self {
+        self.dashboard_cache_store = store;
+        self
+    }
+
+    pub fn with_dashboard_endpoint_config(
+        mut self,
+        endpoint_config: OpenAIDashboardEndpointConfig,
+    ) -> Self {
+        self.dashboard_endpoint_config = endpoint_config;
+        self
+    }
+
+    pub fn with_cookie_importer(
+        mut self,
+        importer: Arc<OpenAIDashboardBrowserCookieImporter>,
+    ) -> Self {
+        self.cookie_importer = Some(importer);
+        self
+    }
+
+    pub fn with_web_timeout(mut self, timeout: Duration) -> Self {
+        self.web_timeout = timeout;
         self
     }
 }
@@ -1680,6 +1785,11 @@ impl CodexPATFetchStrategy {
         &self,
         ctx: &FetchContext,
     ) -> Result<CodexFetchOutcome, CodexOAuthError> {
+        let Some(config) = &self.config else {
+            return Err(CodexOAuthError::Credentials(
+                CodexOAuthCredentialsError::NotFound,
+            ));
+        };
         let call = BrokerCall {
             interaction: ctx.interaction,
             cancel: ctx.cancel.clone(),
@@ -1688,7 +1798,7 @@ impl CodexPATFetchStrategy {
         let base_env = self.base_environment();
         let credential_env =
             Self::credential_environment_with_reader_and_call(&base_env, None, Some(&call));
-        let home_dir = self.config.as_ref().map(|c| c.home_directory.as_path());
+        let home_dir = Some(config.home_directory.as_path());
         let credentials = CodexOAuthCredentialsStore::load_pat_with_reader_and_call(
             &credential_env,
             home_dir,
@@ -1696,17 +1806,8 @@ impl CodexPATFetchStrategy {
             Some(&call),
         )?;
         let cli_version = self.resolve_cli_version_with_call(Some(&call)).await;
-        let fallback_net;
-        let net: &NetBroker = if let Some(config) = &self.config {
-            &config.net
-        } else {
-            fallback_net = NetBroker::new(NetConfig::default()).map_err(|_| {
-                CodexOAuthError::Fetch(CodexOAuthFetchError::NetworkError("transport".to_owned()))
-            })?;
-            &fallback_net
-        };
         let fetched = CodexPATUsageFetcher::fetch_usage_with_call(
-            net,
+            &config.net,
             &credentials,
             cli_version.as_deref(),
             &credential_env,
@@ -1714,10 +1815,7 @@ impl CodexPATFetchStrategy {
             Some(&call),
         )
         .await?;
-        let now = self
-            .config
-            .as_ref()
-            .map_or_else(Timestamp::now, |c| (c.clock)());
+        let now = (config.clock)();
         Self::make_result(&fetched.usage, fetched.whoami.as_ref(), now)
     }
 
@@ -1814,12 +1912,557 @@ impl FetchStrategy for CodexPATFetchStrategy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenAIWebCodexResult {
+    pub usage: UsageSnapshot,
+    pub credits: Option<CreditsSnapshot>,
+    pub dashboard: OpenAIDashboardSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenAIWebCodexError {
+    MissingUsage,
+    PolicyRejected(CodexDashboardAuthorityDecision),
+    TimedOut { seconds: u64 },
+}
+
+impl std::fmt::Display for OpenAIWebCodexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingUsage => {
+                write!(f, "OpenAI web dashboard did not include usage limits.")
+            }
+            Self::TimedOut { seconds } => {
+                write!(
+                    f,
+                    "OpenAI web dashboard fetch timed out after {seconds} seconds."
+                )
+            }
+            Self::PolicyRejected(decision) => match &decision.reason {
+                CodexDashboardDecisionReason::WrongEmail { .. } => {
+                    write!(f, "OpenAI web dashboard belonged to the wrong account.")
+                }
+                CodexDashboardDecisionReason::UnresolvedWithoutTrustedEvidence => write!(
+                    f,
+                    "Active Codex identity is unresolved and no trusted auth-backed continuity exists."
+                ),
+                CodexDashboardDecisionReason::ProviderAccountMissingScopedEmail => write!(
+                    f,
+                    "Active Codex provider account is missing its scoped email, so dashboard ownership cannot be proven."
+                ),
+                CodexDashboardDecisionReason::ProviderAccountLacksExactOwnershipProof => write!(
+                    f,
+                    "OpenAI web dashboard could not be proven to belong to the active provider account."
+                ),
+                CodexDashboardDecisionReason::MissingDashboardSignedInEmail => {
+                    write!(f, "OpenAI web dashboard did not expose a signed-in email.")
+                }
+                CodexDashboardDecisionReason::SameEmailAmbiguity { .. } => write!(
+                    f,
+                    "OpenAI web dashboard account is ambiguous across multiple known owners."
+                ),
+                _ => write!(
+                    f,
+                    "OpenAI web dashboard was rejected by Codex dashboard authority."
+                ),
+            },
+        }
+    }
+}
+
+impl std::error::Error for OpenAIWebCodexError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodexWebDashboardError {
+    Fetch(OpenAIDashboardFetchError),
+    Web(OpenAIWebCodexError),
+    Policy(CodexDashboardPolicyError),
+    CookieImport(String),
+}
+
+impl std::fmt::Display for CodexWebDashboardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fetch(e) => write!(f, "{e}"),
+            Self::Web(e) => write!(f, "{e}"),
+            Self::Policy(e) => write!(f, "{e}"),
+            Self::CookieImport(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for CodexWebDashboardError {}
+
+impl From<OpenAIDashboardFetchError> for CodexWebDashboardError {
+    fn from(value: OpenAIDashboardFetchError) -> Self {
+        Self::Fetch(value)
+    }
+}
+
+impl From<OpenAIWebCodexError> for CodexWebDashboardError {
+    fn from(value: OpenAIWebCodexError) -> Self {
+        Self::Web(value)
+    }
+}
+
+impl From<CodexDashboardPolicyError> for CodexWebDashboardError {
+    fn from(value: CodexDashboardPolicyError) -> Self {
+        Self::Policy(value)
+    }
+}
+
+impl CodexWebDashboardError {
+    pub fn into_fetch_error(self) -> FetchError {
+        match self {
+            Self::Fetch(e) => e.into_fetch_error(),
+            Self::Web(e) => {
+                let kind = match e {
+                    OpenAIWebCodexError::MissingUsage => ProviderErrorKind::ParseFailure,
+                    OpenAIWebCodexError::TimedOut { .. } => ProviderErrorKind::NetworkFailure,
+                    OpenAIWebCodexError::PolicyRejected(_) => ProviderErrorKind::PermissionDenied,
+                };
+                FetchError::Classified(ClassifiedError::new(kind, e.to_string()))
+            }
+            Self::Policy(e) => FetchError::Classified(ClassifiedError::new(
+                ProviderErrorKind::PermissionDenied,
+                e.to_string(),
+            )),
+            Self::CookieImport(msg) => FetchError::Classified(ClassifiedError::new(
+                ProviderErrorKind::MissingCredential,
+                msg,
+            )),
+        }
+    }
+}
+
 #[derive(Clone, Default)]
-pub struct CodexWebDashboardStrategy;
+pub struct CodexWebDashboardStrategy {
+    pub config: Option<CodexStrategyConfig>,
+    pub dashboard: Arc<Mutex<Option<OpenAIDashboardSnapshot>>>,
+}
 
 impl CodexWebDashboardStrategy {
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    pub fn with_config(config: CodexStrategyConfig) -> Self {
+        Self {
+            config: Some(config),
+            dashboard: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub fn is_available_sync(&self, source_mode: SourceMode) -> bool {
+        if !matches!(source_mode, SourceMode::Auto | SourceMode::Web) {
+            return false;
+        }
+        let Some(config) = &self.config else {
+            return false;
+        };
+        if !matches!(
+            config.cookie_source,
+            Some(CookieSource::Auto | CookieSource::Manual)
+        ) {
+            return false;
+        }
+        !config.managed_account_store_unreadable
+            && !config.managed_account_target_unavailable
+            && (!config.profile_account_target_unavailable || source_mode == SourceMode::Web)
+    }
+
+    pub fn should_retry_with_fresh_browser_import(error: &CodexWebDashboardError) -> bool {
+        matches!(
+            error,
+            CodexWebDashboardError::Web(OpenAIWebCodexError::MissingUsage)
+                | CodexWebDashboardError::Fetch(OpenAIDashboardFetchError::NoDashboardData)
+        )
+    }
+
+    pub fn dashboard_by_merging_subscription_metadata(
+        dashboard: OpenAIDashboardSnapshot,
+        result: &OpenAISubscriptionFetchResult,
+    ) -> OpenAIDashboardSnapshot {
+        if !result.succeeded() {
+            return dashboard;
+        }
+        dashboard.with_subscription_metadata(result.metadata().cloned())
+    }
+
+    pub fn make_authorized_dashboard_result_for_testing(
+        dashboard: OpenAIDashboardSnapshot,
+        config: &CodexStrategyConfig,
+        routing_target_email: Option<&str>,
+    ) -> Result<OpenAIWebCodexResult, CodexWebDashboardError> {
+        Self::make_authorized_dashboard_result(dashboard, config, routing_target_email)
+    }
+
+    pub fn make_authorized_dashboard_result(
+        dashboard: OpenAIDashboardSnapshot,
+        config: &CodexStrategyConfig,
+        routing_target_email: Option<&str>,
+    ) -> Result<OpenAIWebCodexResult, CodexWebDashboardError> {
+        let auth = CodexIdentityResolver::load_auth_backed_codex_account(
+            &config.environment,
+            config.allow_external_oauth_sources,
+            Some(&config.home_directory),
+        );
+        let input = CodexCLIDashboardAuthorityContext::make_live_web_input(
+            &dashboard,
+            Some(&auth),
+            config.dashboard_authority_known_owners.clone(),
+            routing_target_email,
+        );
+        let decision = CodexDashboardAuthority::evaluate(&input);
+
+        match decision.disposition {
+            CodexDashboardDisposition::Attach => {
+                let attached_account_email =
+                    CodexCLIDashboardAuthorityContext::attachment_email(&input);
+                let credits = dashboard.to_credits_snapshot();
+                let codex_id = ProviderId::new("codex").expect("valid provider id");
+                let usage = dashboard
+                    .to_usage_snapshot(codex_id, attached_account_email.as_deref(), None)
+                    .or_else(|| {
+                        Self::make_credits_only_usage_snapshot(
+                            &dashboard,
+                            attached_account_email.as_deref(),
+                            credits.as_ref(),
+                        )
+                    });
+                let Some(usage) = usage else {
+                    return Err(CodexWebDashboardError::Web(
+                        OpenAIWebCodexError::MissingUsage,
+                    ));
+                };
+                if let Some(email) = &attached_account_email {
+                    config
+                        .dashboard_cache_store
+                        .save(&OpenAIDashboardCache::new(email.clone(), dashboard.clone()));
+                }
+                Ok(OpenAIWebCodexResult {
+                    usage: CodexExtraUsageCost::attaching(usage, credits.as_ref()),
+                    credits,
+                    dashboard,
+                })
+            }
+            CodexDashboardDisposition::DisplayOnly => {
+                if decision
+                    .cleanup
+                    .contains(&CodexDashboardCleanup::DashboardCache)
+                {
+                    config.dashboard_cache_store.clear();
+                }
+                Err(CodexWebDashboardError::Policy(
+                    CodexDashboardPolicyError::DisplayOnly(decision),
+                ))
+            }
+            CodexDashboardDisposition::FailClosed => {
+                if decision
+                    .cleanup
+                    .contains(&CodexDashboardCleanup::DashboardCache)
+                {
+                    config.dashboard_cache_store.clear();
+                }
+                Err(CodexWebDashboardError::Web(
+                    OpenAIWebCodexError::PolicyRejected(decision),
+                ))
+            }
+        }
+    }
+
+    fn make_credits_only_usage_snapshot(
+        dashboard: &OpenAIDashboardSnapshot,
+        attached_account_email: Option<&str>,
+        credits: Option<&CreditsSnapshot>,
+    ) -> Option<UsageSnapshot> {
+        credits?;
+        let codex_id = ProviderId::new("codex").expect("valid provider id");
+        let email = attached_account_email
+            .map(str::to_owned)
+            .or_else(|| dashboard.signed_in_email.clone());
+        let identity = ProviderIdentitySnapshot {
+            provider_id: Some(codex_id),
+            account_email: email,
+            account_organization: None,
+            login_method: dashboard.account_plan.clone(),
+            account_id: dashboard.account_id.clone(),
+        };
+        UsageSnapshot::new(
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            dashboard.updated_at,
+            Some(identity),
+            Confidence::Unknown,
+        )
+        .ok()
+    }
+
+    pub fn load_openai_dashboard_if_available(
+        usage: &UsageSnapshot,
+        source_label: &str,
+        config: &CodexStrategyConfig,
+    ) -> Option<OpenAIDashboardSnapshot> {
+        let cache = config.dashboard_cache_store.load()?;
+        let snapshot = if cache.snapshot.daily_breakdown.is_empty()
+            && !cache.snapshot.credit_events.is_empty()
+        {
+            let mut rebuilt = cache.snapshot.clone();
+            rebuilt.daily_breakdown =
+                OpenAIDashboardSnapshot::make_daily_breakdown(&cache.snapshot.credit_events, 30);
+            rebuilt
+        } else {
+            cache.snapshot
+        };
+        let auth = CodexIdentityResolver::load_auth_backed_codex_account(
+            &config.environment,
+            config.allow_external_oauth_sources,
+            Some(&config.home_directory),
+        );
+        let input = CodexCLIDashboardAuthorityContext::make_cached_dashboard_input(
+            &snapshot,
+            &cache.account_email,
+            Some(usage),
+            Some(source_label),
+            Some(&auth),
+            config.dashboard_authority_known_owners.clone(),
+        );
+        let decision = CodexDashboardAuthority::evaluate(&input);
+        if decision
+            .allowed_effects
+            .contains(&CodexDashboardAllowedEffect::CachedDashboardReuse)
+        {
+            return Some(snapshot);
+        }
+        if decision
+            .cleanup
+            .contains(&CodexDashboardCleanup::DashboardCache)
+        {
+            config.dashboard_cache_store.clear();
+        }
+        None
+    }
+
+    async fn fetch_openai_web_dashboard(
+        config: &CodexStrategyConfig,
+        deadline: Instant,
+        prefer_cached_cookie_header: bool,
+        call: &BrokerCall,
+    ) -> Result<(OpenAIDashboardSnapshot, Option<String>), CodexWebDashboardError> {
+        let auth = CodexIdentityResolver::load_auth_backed_codex_account(
+            &config.environment,
+            config.allow_external_oauth_sources,
+            Some(&config.home_directory),
+        );
+        let routing_target_email = auth
+            .email
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let allow_any_account = routing_target_email.is_none();
+        let cache_scope = config
+            .openai_web_cache_scope
+            .as_deref()
+            .map(CacheScope::provider_variant);
+
+        let cookie_header = match config.cookie_source {
+            Some(CookieSource::Manual) => {
+                let Some(manual) = config
+                    .manual_cookie_header
+                    .as_ref()
+                    .filter(|h| !h.expose_secret().trim().is_empty())
+                else {
+                    return Err(CodexWebDashboardError::Fetch(
+                        OpenAIDashboardFetchError::LoginRequired,
+                    ));
+                };
+                if let Some(importer) = &config.cookie_importer {
+                    let res = importer
+                        .import_manual_cookies(
+                            call,
+                            manual,
+                            routing_target_email.as_deref(),
+                            allow_any_account,
+                            cache_scope.as_ref(),
+                            Some(deadline),
+                        )
+                        .await
+                        .map_err(|e| CodexWebDashboardError::CookieImport(e.to_string()))?;
+                    res.cookie_header
+                } else {
+                    manual.clone()
+                }
+            }
+            Some(CookieSource::Auto) => {
+                let Some(importer) = &config.cookie_importer else {
+                    return Err(CodexWebDashboardError::Fetch(
+                        OpenAIDashboardFetchError::LoginRequired,
+                    ));
+                };
+                let res = importer
+                    .import_best_cookies(
+                        call,
+                        routing_target_email.as_deref(),
+                        allow_any_account,
+                        prefer_cached_cookie_header,
+                        cache_scope.as_ref(),
+                        Some(deadline),
+                    )
+                    .await
+                    .map_err(|e| CodexWebDashboardError::CookieImport(e.to_string()))?;
+                res.cookie_header
+            }
+            None | Some(CookieSource::Off) => {
+                return Err(CodexWebDashboardError::Fetch(
+                    OpenAIDashboardFetchError::LoginRequired,
+                ));
+            }
+        };
+
+        let timeout = OpenAIDashboardBrowserCookieImporter::remaining_timeout(
+            Some(deadline),
+            None,
+            Instant::now(),
+        )
+        .map_err(|_| CodexWebDashboardError::Fetch(OpenAIDashboardFetchError::Timeout))?;
+        let now = (config.clock)();
+        let dashboard = OpenAIDashboardFetcher::load_latest_dashboard(
+            &config.net,
+            &config.dashboard_endpoint_config,
+            cookie_header.expose_secret(),
+            None,
+            timeout,
+            now,
+            &Instant::now,
+            Some(call),
+        )
+        .await?;
+        if call.cancel.is_cancelled() {
+            return Err(CodexWebDashboardError::Fetch(
+                OpenAIDashboardFetchError::Cancelled,
+            ));
+        }
+        Ok((dashboard, routing_target_email))
+    }
+
+    pub async fn fetch_outcome(
+        &self,
+        ctx: &FetchContext,
+    ) -> Result<CodexFetchOutcome, CodexWebDashboardError> {
+        let Some(config) = &self.config else {
+            return Err(CodexWebDashboardError::Fetch(
+                OpenAIDashboardFetchError::LoginRequired,
+            ));
+        };
+        if !matches!(
+            config.cookie_source,
+            Some(CookieSource::Auto | CookieSource::Manual)
+        ) {
+            return Err(CodexWebDashboardError::Fetch(
+                OpenAIDashboardFetchError::LoginRequired,
+            ));
+        }
+        if config.managed_account_store_unreadable
+            || config.managed_account_target_unavailable
+            || config.profile_account_target_unavailable
+        {
+            return Err(CodexWebDashboardError::Fetch(
+                OpenAIDashboardFetchError::LoginRequired,
+            ));
+        }
+        let call = BrokerCall {
+            interaction: ctx.interaction,
+            cancel: ctx.cancel.clone(),
+            request_id: ctx.request_id.clone(),
+        };
+        if call.cancel.is_cancelled() {
+            return Err(CodexWebDashboardError::Fetch(
+                OpenAIDashboardFetchError::Cancelled,
+            ));
+        }
+        let deadline = OpenAIDashboardFetcher::deadline_from(
+            Instant::now(),
+            OpenAIDashboardFetcher::sanitized_timeout(config.web_timeout),
+        );
+        let first_attempt = async {
+            let (dashboard, routing_target_email) =
+                Self::fetch_openai_web_dashboard(config, deadline, true, &call).await?;
+            Self::make_authorized_dashboard_result(
+                dashboard,
+                config,
+                routing_target_email.as_deref(),
+            )
+        }
+        .await;
+
+        let result = match first_attempt {
+            Ok(res) => res,
+            Err(err) => {
+                if !Self::should_retry_with_fresh_browser_import(&err) {
+                    if matches!(
+                        err,
+                        CodexWebDashboardError::Fetch(OpenAIDashboardFetchError::Timeout)
+                    ) {
+                        return Err(CodexWebDashboardError::Web(OpenAIWebCodexError::TimedOut {
+                            seconds: config.web_timeout.as_secs(),
+                        }));
+                    }
+                    return Err(err);
+                }
+                OpenAIDashboardBrowserCookieImporter::remaining_timeout(
+                    Some(deadline),
+                    None,
+                    Instant::now(),
+                )
+                .map_err(|_| {
+                    CodexWebDashboardError::Web(OpenAIWebCodexError::TimedOut {
+                        seconds: config.web_timeout.as_secs(),
+                    })
+                })?;
+                let (dashboard, routing_target_email) =
+                    Self::fetch_openai_web_dashboard(config, deadline, false, &call)
+                        .await
+                        .map_err(|e| {
+                            if matches!(
+                                e,
+                                CodexWebDashboardError::Fetch(OpenAIDashboardFetchError::Timeout)
+                            ) {
+                                CodexWebDashboardError::Web(OpenAIWebCodexError::TimedOut {
+                                    seconds: config.web_timeout.as_secs(),
+                                })
+                            } else {
+                                e
+                            }
+                        })?;
+                Self::make_authorized_dashboard_result(
+                    dashboard,
+                    config,
+                    routing_target_email.as_deref(),
+                )?
+            }
+        };
+
+        if let Ok(mut guard) = self.dashboard.lock() {
+            *guard = Some(result.dashboard.clone());
+        }
+
+        Ok(CodexFetchOutcome {
+            usage: result.usage,
+            credits: result.credits,
+            codex_reset_credits: None,
+            source_label: "openai-web".to_owned(),
+            strategy_id: CODEX_WEB_DASHBOARD_STRATEGY_ID,
+            strategy_kind: SourceKind::Web,
+            codex_reset_credits_attempted: false,
+            codex_monthly_limit_enrichment_failed: false,
+        })
     }
 }
 
@@ -1832,24 +2475,25 @@ impl FetchStrategy for CodexWebDashboardStrategy {
         SourceKind::Web
     }
 
-    fn is_available<'a>(&'a self, _ctx: &'a FetchContext) -> BoxFuture<'a, bool> {
-        Box::pin(async move { false })
+    fn is_available<'a>(&'a self, ctx: &'a FetchContext) -> BoxFuture<'a, bool> {
+        let available = self.is_available_sync(ctx.source_mode);
+        Box::pin(async move { available })
     }
 
     fn fetch<'a>(
         &'a self,
-        _ctx: &'a FetchContext,
+        ctx: &'a FetchContext,
     ) -> BoxFuture<'a, Result<FetchResult, FetchError>> {
         Box::pin(async move {
-            Err(FetchError::Classified(ClassifiedError::new(
-                ProviderErrorKind::ProviderUnavailable,
-                "Codex web dashboard source is not yet implemented.",
-            )))
+            self.fetch_outcome(ctx)
+                .await
+                .map(CodexFetchOutcome::into_fetch_result)
+                .map_err(CodexWebDashboardError::into_fetch_error)
         })
     }
 
-    fn should_fallback(&self, _err: &FetchError, _ctx: &FetchContext) -> bool {
-        false
+    fn should_fallback(&self, _err: &FetchError, ctx: &FetchContext) -> bool {
+        ctx.source_mode == SourceMode::Auto
     }
 }
 
@@ -1915,7 +2559,8 @@ impl ProviderPlan for CodexProviderPlan {
                 Box::new(CodexOAuthFetchStrategy::new(self.config.clone()));
             let cli: Box<dyn FetchStrategy> =
                 Box::new(CodexCLIUsageStrategy::new(self.config.clone()));
-            let web: Box<dyn FetchStrategy> = Box::new(CodexWebDashboardStrategy::new());
+            let web: Box<dyn FetchStrategy> =
+                Box::new(CodexWebDashboardStrategy::with_config(self.config.clone()));
 
             match ctx.source_mode {
                 SourceMode::Oauth => {
@@ -1935,5 +2580,181 @@ impl ProviderPlan for CodexProviderPlan {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::codex::dashboard_authority::{
+        CodexDashboardAuthorityDecision, CodexDashboardCleanup, CodexDashboardDecisionReason,
+        CodexDashboardDisposition,
+    };
+    use crate::providers::codex::openai_dashboard_cookie_importer::{
+        FoundAccount, OpenAIDashboardCookieCandidate, OpenAIDashboardCookieImportError,
+        PersistentCookieSessionError, actionable_openai_dashboard_import_failure,
+        concise_openai_cookie_mismatch_status, openai_dashboard_friendly_error,
+    };
+    use ariadusage_core::cookie::CookieRecord;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn account_emails_never_appear_in_error_display_debug_or_classified_error() {
+        const EXPECTED_EMAIL: &str = "invented-expected-owner@example.invalid";
+        const ACTUAL_EMAIL: &str = "invented-actual-browser@example.invalid";
+        const OTHER_PROFILE_EMAIL: &str = "invented-other-profile@example.invalid";
+
+        let assert_no_emails = |text: &str| {
+            assert!(
+                !text.contains(EXPECTED_EMAIL),
+                "leaked expected email in: {text}"
+            );
+            assert!(
+                !text.contains(ACTUAL_EMAIL),
+                "leaked actual email in: {text}"
+            );
+            assert!(
+                !text.contains(OTHER_PROFILE_EMAIL),
+                "leaked other profile email in: {text}"
+            );
+        };
+
+        let wrong_email_decision = CodexDashboardAuthorityDecision::new(
+            CodexDashboardDisposition::FailClosed,
+            CodexDashboardDecisionReason::WrongEmail {
+                expected: Some(EXPECTED_EMAIL.to_owned()),
+                actual: Some(ACTUAL_EMAIL.to_owned()),
+            },
+            BTreeSet::new(),
+            CodexDashboardCleanup::all_set(),
+        );
+        let wrong_email_err = CodexWebDashboardError::Web(OpenAIWebCodexError::PolicyRejected(
+            wrong_email_decision.clone(),
+        ));
+        assert_no_emails(&wrong_email_err.to_string());
+        assert_no_emails(&format!("{wrong_email_err:?}"));
+        let wrong_email_fetch_err = wrong_email_err.into_fetch_error();
+        assert_no_emails(&wrong_email_fetch_err.to_string());
+        assert_no_emails(&format!("{wrong_email_fetch_err:?}"));
+
+        let ambiguity_decision = CodexDashboardAuthorityDecision::new(
+            CodexDashboardDisposition::DisplayOnly,
+            CodexDashboardDecisionReason::SameEmailAmbiguity {
+                email: EXPECTED_EMAIL.to_owned(),
+            },
+            BTreeSet::new(),
+            CodexDashboardCleanup::all_set(),
+        );
+        let ambiguity_web_err = CodexWebDashboardError::Web(OpenAIWebCodexError::PolicyRejected(
+            ambiguity_decision.clone(),
+        ));
+        assert_no_emails(&ambiguity_web_err.to_string());
+        assert_no_emails(&format!("{ambiguity_web_err:?}"));
+        let ambiguity_fetch_err = ambiguity_web_err.into_fetch_error();
+        assert_no_emails(&ambiguity_fetch_err.to_string());
+        assert_no_emails(&format!("{ambiguity_fetch_err:?}"));
+
+        let display_only_err = CodexWebDashboardError::Policy(
+            CodexDashboardPolicyError::DisplayOnly(ambiguity_decision),
+        );
+        assert_no_emails(&display_only_err.to_string());
+        assert_no_emails(&format!("{display_only_err:?}"));
+        let display_only_fetch_err = display_only_err.into_fetch_error();
+        assert_no_emails(&display_only_fetch_err.to_string());
+        assert_no_emails(&format!("{display_only_fetch_err:?}"));
+
+        let import_err = OpenAIDashboardCookieImportError::NoMatchingAccount {
+            found: vec![
+                FoundAccount::new("Chrome Default", ACTUAL_EMAIL),
+                FoundAccount::new("Safari", OTHER_PROFILE_EMAIL),
+            ],
+        };
+        assert_no_emails(&import_err.to_string());
+        assert_no_emails(&format!("{import_err:?}"));
+        assert!(import_err.to_string().contains("Chrome Default"));
+        assert!(import_err.to_string().contains("Safari"));
+
+        let persistent_err = PersistentCookieSessionError::Import(import_err.clone());
+        assert_no_emails(&persistent_err.to_string());
+        assert_no_emails(&format!("{persistent_err:?}"));
+
+        let cookie_web_err = CodexWebDashboardError::CookieImport(import_err.to_string());
+        assert_no_emails(&cookie_web_err.to_string());
+        assert_no_emails(&format!("{cookie_web_err:?}"));
+        let cookie_fetch_err = cookie_web_err.into_fetch_error();
+        assert_no_emails(&cookie_fetch_err.to_string());
+        assert_no_emails(&format!("{cookie_fetch_err:?}"));
+
+        let mismatch_status = concise_openai_cookie_mismatch_status(
+            &[ACTUAL_EMAIL.to_owned(), OTHER_PROFILE_EMAIL.to_owned()],
+            Some(EXPECTED_EMAIL),
+        );
+        assert_no_emails(&mismatch_status);
+
+        if let Some(actionable) =
+            actionable_openai_dashboard_import_failure(Some(EXPECTED_EMAIL), Some(&mismatch_status))
+        {
+            assert_no_emails(&actionable);
+        }
+        if let Some(actionable_empty) = actionable_openai_dashboard_import_failure(
+            Some(EXPECTED_EMAIL),
+            Some("No matching OpenAI web session found."),
+        ) {
+            assert_no_emails(&actionable_empty);
+        }
+        if let Some(friendly) = openai_dashboard_friendly_error(
+            "Sign in to ChatGPT",
+            Some(EXPECTED_EMAIL),
+            Some(&mismatch_status),
+        ) {
+            assert_no_emails(&friendly);
+        }
+    }
+
+    #[test]
+    fn cookie_candidate_from_records_matches_exact_host_or_dot_suffix_only() {
+        let make_rec = |domain: &str, name: &str| CookieRecord {
+            domain: domain.to_owned(),
+            host_only: !domain.starts_with('.'),
+            name: name.to_owned(),
+            path: "/".to_owned(),
+            value: SecretString::from("v"),
+            expires: None,
+            secure: true,
+            http_only: true,
+        };
+
+        for bad_domain in [
+            "evilchatgpt.com",
+            "notopenai.com",
+            "chatgpt.com.evil.example",
+            "openai.com.evil.example",
+        ] {
+            assert!(
+                OpenAIDashboardCookieCandidate::from_records(
+                    "Browser",
+                    &[make_rec(bad_domain, "__Secure-next-auth.session-token")]
+                )
+                .is_none(),
+                "expected {bad_domain} to be rejected"
+            );
+        }
+
+        for good_domain in [
+            "chatgpt.com",
+            ".chatgpt.com",
+            "ab.chatgpt.com",
+            "openai.com",
+            ".openai.com",
+            "auth.openai.com",
+        ] {
+            let candidate = OpenAIDashboardCookieCandidate::from_records(
+                "Browser",
+                &[make_rec(good_domain, "__Secure-next-auth.session-token")],
+            )
+            .expect("expected valid domain to match");
+            assert!(candidate.has_session_cookie);
+            assert_eq!(candidate.cookie_count, 1);
+        }
     }
 }
