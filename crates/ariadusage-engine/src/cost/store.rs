@@ -371,6 +371,13 @@ pub fn default_sqlite_copy_parent(cache_root: Option<&Path>) -> PathBuf {
     root.join("codex-sqlite-copies")
 }
 
+/// Live SQLite connection configuration snapshot (`CostUsageStore.Configuration` in CodexBar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreConfiguration {
+    pub busy_timeout_milliseconds: i64,
+    pub foreign_keys_enabled: bool,
+}
+
 /// SQLite persistence store for local cost scanning (`CostUsageStore` in CodexBar).
 #[derive(Debug, Clone)]
 pub struct CostUsageStore {
@@ -420,6 +427,44 @@ impl CostUsageStore {
     #[must_use]
     pub const fn rebuild_count(&self) -> usize {
         self.rebuild_count
+    }
+
+    /// Reads `PRAGMA busy_timeout` and `PRAGMA foreign_keys` from the store's live SQLite connection.
+    pub fn configuration(&mut self) -> rusqlite::Result<StoreConfiguration> {
+        let (open_path, existed) = match self.ensure_private_store_ready() {
+            Ok(pair) => pair,
+            Err(StoreReadyError::Untrusted) => {
+                return Err(rusqlite::Error::InvalidPath(self.database_path.clone()));
+            }
+            Err(StoreReadyError::NeedsRebuild) => {
+                self.rebuild_database();
+                self.ensure_private_store_ready()
+                    .map_err(|_| rusqlite::Error::InvalidPath(self.database_path.clone()))?
+            }
+        };
+        let conn = match self.open_and_validate(&open_path, existed) {
+            Ok(c) => c,
+            Err(err) => {
+                if !should_rebuild_rusqlite_error(&err) {
+                    return Err(err);
+                }
+                self.rebuild_database();
+                let (open_path2, existed2) = self
+                    .ensure_private_store_ready()
+                    .map_err(|_| rusqlite::Error::InvalidPath(self.database_path.clone()))?;
+                self.open_and_validate(&open_path2, existed2)?
+            }
+        };
+        let busy_timeout_milliseconds: i64 =
+            conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+        let foreign_keys_raw: i64 =
+            conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+        drop(conn);
+        self.repair_store_permissions(&open_path);
+        Ok(StoreConfiguration {
+            busy_timeout_milliseconds,
+            foreign_keys_enabled: foreign_keys_raw != 0,
+        })
     }
 
     /// Removes legacy `codex-v11.json` and any temporary siblings (`codex-v11.json*`, `.codex-v11.json*`)
