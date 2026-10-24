@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/OpenAIDashboardModels.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/OpenAISubscriptionMetadataModels.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/OpenAIWeb/OpenAISubscriptionMetadata.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+OpenAISubscriptionMetadata.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
