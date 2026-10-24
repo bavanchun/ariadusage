@@ -22,7 +22,7 @@ pub const SUFFIX_LEFT: &str = "left";
 /// Suffix for used percentages (`usage_percent_suffix_used`).
 pub const SUFFIX_USED: &str = "used";
 
-/// Date strings CodexBar takes from Foundation in the user's locale.
+/// Date and number strings CodexBar takes from Foundation.
 pub trait DateTexts {
     /// The time zone of `Calendar.current`, used to compare calendar days.
     fn time_zone(&self) -> TimeZone;
@@ -34,6 +34,37 @@ pub trait DateTexts {
     /// `RelativeDateTimeFormatter` with `.abbreviated` units, such as
     /// `5 min ago`.
     fn relative_abbreviated(&self, date: Timestamp, now: Timestamp) -> String;
+    /// `DateFormatter` with `Locale.current` and template `"MMM d, yyyy"`
+    /// (`MenuCardView+ModelHelpers.swift:741-751`), using UTC when `date_only`
+    /// is true and `self.time_zone()` otherwise.
+    fn month_day_year(&self, date: Timestamp, date_only: bool) -> String {
+        let tz = if date_only {
+            TimeZone::UTC
+        } else {
+            self.time_zone()
+        };
+        month_day_year(date, tz)
+    }
+    /// `DateFormatter` with `Locale.current` and template `"MMMd"`, such as
+    /// `Oct 6` or `6 Oct`.
+    fn month_day_short(&self, date: Timestamp) -> String {
+        month_day_short(date, self.time_zone())
+    }
+    /// `DateFormatter` with `Locale.current`, template `"MMM d, h:mm a"`, and
+    /// lowercased AM/PM symbols (`PlanUtilizationHistoryChartMenuView.swift:856-871`).
+    fn detail_month_day_time(&self, date: Timestamp) -> String {
+        month_day_detail_time(date, self.time_zone())
+    }
+    /// `InlineUsageDashboardContent.formatDateRange` (`InlineUsageDashboardContent.swift:442-470`),
+    /// pinned to the `en_US` resource locale (`MMMdjmm` / `jmm` / `yMMMdjmm` joined by `" – "`).
+    fn quota_window_range(&self, start: Timestamp, end: Timestamp) -> String {
+        quota_window_range_en_us(start, end, self.time_zone())
+    }
+    /// `NumberFormatter` with `Locale.current`, `.decimal` style, 0–1 fraction
+    /// digits, and grouping separator (`UsagePaceText.swift:48-65`).
+    fn format_one_decimal(&self, value: f64) -> String {
+        format_one_decimal_en_us(value)
+    }
 }
 
 /// How reset times are shown (`ResetTimeDisplayStyle`).
@@ -561,7 +592,9 @@ const MONTH_ABBR: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// Formats a timestamp as `MMM d, yyyy` in `en_US_POSIX` (`MenuCardView+ModelHelpers.swift:753`).
+/// Deterministic `en_US` fallback for [`DateTexts::month_day_year`] (`MMM d, yyyy`).
+/// Production code calls [`DateTexts::month_day_year`], which uses `Locale.current`
+/// (`MenuCardView+ModelHelpers.swift:741-751`).
 pub fn month_day_year(date: Timestamp, tz: TimeZone) -> String {
     let zoned = date.to_zoned(tz);
     let month_idx = (zoned.month() - 1).clamp(0, 11) as usize;
@@ -573,11 +606,93 @@ pub fn month_day_year(date: Timestamp, tz: TimeZone) -> String {
     )
 }
 
-/// Formats a timestamp as `MMM d` in `en_US_POSIX` (e.g. `Oct 6`).
+/// Deterministic `en_US` fallback for [`DateTexts::month_day_short`] (`MMM d`, e.g. `Oct 6`).
 pub fn month_day_short(date: Timestamp, tz: TimeZone) -> String {
     let zoned = date.to_zoned(tz);
     let month_idx = (zoned.month() - 1).clamp(0, 11) as usize;
     format!("{} {}", MONTH_ABBR[month_idx], zoned.day())
+}
+
+/// Deterministic `en_US` fallback for [`DateTexts::detail_month_day_time`]
+/// (`MMM d, h:mm am/pm`, `PlanUtilizationHistoryChartMenuView.swift:856-871`).
+pub fn month_day_detail_time(date: Timestamp, tz: TimeZone) -> String {
+    let zoned = date.to_zoned(tz);
+    let month_idx = (zoned.month() - 1).clamp(0, 11) as usize;
+    let hour24 = zoned.hour();
+    let (hour12, am_pm) = match hour24 {
+        0 => (12, "am"),
+        1..=11 => (hour24, "am"),
+        12 => (12, "pm"),
+        _ => (hour24 - 12, "pm"),
+    };
+    format!(
+        "{} {}, {}:{:02} {}",
+        MONTH_ABBR[month_idx],
+        zoned.day(),
+        hour12,
+        zoned.minute(),
+        am_pm
+    )
+}
+
+/// Formats a recent-window range in CodexBar's `en_US` resource locale
+/// (`InlineUsageDashboardContent.formatDateRange`, `InlineUsageDashboardContent.swift:442-470`).
+pub fn quota_window_range_en_us(start: Timestamp, end: Timestamp, tz: TimeZone) -> String {
+    let s = start.to_zoned(tz.clone());
+    let e = end.to_zoned(tz);
+    let same_day = s.date() == e.date();
+    let same_year = s.year() == e.year();
+
+    let fmt_time = |z: &jiff::Zoned| -> String {
+        let hour24 = z.hour();
+        let (hour12, am_pm) = match hour24 {
+            0 => (12, "AM"),
+            1..=11 => (hour24, "AM"),
+            12 => (12, "PM"),
+            _ => (hour24 - 12, "PM"),
+        };
+        format!("{hour12}:{:02} {am_pm}", z.minute())
+    };
+    let fmt_mmmd_time = |z: &jiff::Zoned| -> String {
+        let month_idx = (z.month() - 1).clamp(0, 11) as usize;
+        format!("{} {} at {}", MONTH_ABBR[month_idx], z.day(), fmt_time(z))
+    };
+    let fmt_ymmmd_time = |z: &jiff::Zoned| -> String {
+        let month_idx = (z.month() - 1).clamp(0, 11) as usize;
+        format!(
+            "{} {}, {} at {}",
+            MONTH_ABBR[month_idx],
+            z.day(),
+            z.year(),
+            fmt_time(z)
+        )
+    };
+
+    let start_str = if same_year {
+        fmt_mmmd_time(&s)
+    } else {
+        fmt_ymmmd_time(&s)
+    };
+    let end_str = if same_day {
+        fmt_time(&e)
+    } else if same_year {
+        fmt_mmmd_time(&e)
+    } else {
+        fmt_ymmmd_time(&e)
+    };
+    format!("{start_str} – {end_str}")
+}
+
+/// Deterministic `en_US` fallback for [`DateTexts::format_one_decimal`].
+pub fn format_one_decimal_en_us(value: f64) -> String {
+    let rounded = (value * 10.0).round() / 10.0;
+    if (rounded.fract()).abs() < 1e-9 {
+        grouped_u64(rounded as u64)
+    } else {
+        let whole = grouped_u64(rounded.trunc() as u64);
+        let tenths = ((rounded.fract().abs() * 10.0).round() as u64).min(9);
+        format!("{whole}.{tenths}")
+    }
 }
 
 /// Formats a `yyyy-MM-dd` day key as `MMM d` (`Oct 6`), falling back to `day_key` if invalid.
@@ -595,6 +710,15 @@ pub fn short_day_key_label(day_key: &str) -> String {
         return format!("{} {day}", MONTH_ABBR[month - 1]);
     }
     day_key.to_string()
+}
+
+/// Formats a `yyyy-MM-dd` day key via `dates.month_day_short` (`CostHistoryChartMenuView.swift:580-600`).
+pub fn short_day_key_label_localized(day_key: &str, dates: &dyn DateTexts) -> String {
+    let trimmed = day_key.trim();
+    if let Ok(ts) = format!("{trimmed}T12:00:00Z").parse::<Timestamp>() {
+        return dates.month_day_short(ts);
+    }
+    short_day_key_label(day_key)
 }
 
 /// Formats a start and end `yyyy-MM-dd` day key pair (`Sep 30 - Oct 6` or `Oct 6`).

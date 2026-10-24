@@ -4,8 +4,11 @@
 //! here the engine owns that computation, so each case states the pace the
 //! window yields.
 
-use ariadusage_macos::pace_text::{PaceContext, PaceFacts, detail};
-use ariadusage_protocol::usage::PaceStage;
+mod common;
+
+use ariadusage_macos::pace_text::{PaceContext, PaceFacts, detail, session_equivalent_detail};
+use ariadusage_protocol::usage::{PaceStage, SessionEquivalentForecast};
+use common::{FixedDates, FrenchDates};
 
 const DAY: f64 = 24.0 * 3600.0;
 
@@ -238,4 +241,33 @@ fn summary_without_right_half() {
     );
     assert_eq!(d.right, None);
     assert_eq!(d.summary(), "Pace: 5% in deficit");
+}
+
+#[test]
+fn session_equivalent_detail_respects_locale_and_upstream_pluralization() {
+    let forecast = SessionEquivalentForecast::new(2.84, 16, None);
+    let en = session_equivalent_detail(&forecast, &FixedDates::utc());
+    assert_eq!(en.left, "Est. 2.8 session quotas left");
+    assert_eq!(en.right, "16 windows until reset");
+
+    let fr = session_equivalent_detail(&forecast, &FrenchDates::utc());
+    assert_eq!(fr.left, "Est. 2,8 session quotas left");
+    assert_eq!(fr.right, "16 windows until reset");
+
+    let singular = SessionEquivalentForecast::new(1.0, 1, None);
+    let s = session_equivalent_detail(&singular, &FixedDates::utc());
+    assert_eq!(s.left, "Est. 1 session quota left");
+    assert_eq!(s.right, "1 windows until reset");
+
+    let sub_one = SessionEquivalentForecast::new(0.6, 2, None);
+    assert_eq!(
+        session_equivalent_detail(&sub_one, &FixedDates::utc()).left,
+        "Est. 0.6 session quota left"
+    );
+
+    let zero = SessionEquivalentForecast::new(0.0, 3, None);
+    assert_eq!(
+        session_equivalent_detail(&zero, &FixedDates::utc()).left,
+        "Est. 0 session quotas left"
+    );
 }

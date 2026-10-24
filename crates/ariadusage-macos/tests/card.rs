@@ -9,10 +9,10 @@ use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::metric::{Confidence, Metric, MetricError};
 use ariadusage_protocol::snapshot::{ProviderPresentation, ProviderSnapshot};
 use ariadusage_protocol::usage::{
-    Credits, Identity, NamedWindow, Pace, PaceStage, ProviderError, ProviderErrorCategory,
-    ProviderErrorKind, RateWindow,
+    BillingDate, Credits, Identity, NamedWindow, Pace, PaceStage, ProviderError,
+    ProviderErrorCategory, ProviderErrorKind, RateWindow, ResetCredits, SubscriptionDates,
 };
-use common::{FixedDates, ts};
+use common::{FixedDates, FrenchDates, ts};
 use jiff::Timestamp;
 
 const NOW: &str = "2026-10-23T03:00:00Z";
@@ -618,4 +618,122 @@ fn fixture_cards_populate_session_equivalent_renewal_reset_credits_dashboard_and
     assert_eq!(reset_credits.expiry_text.as_deref(), Some("13d 11h"));
     assert!(codex_card.inline_usage_dashboard.is_some());
     assert!(codex_card.credits.is_some());
+}
+
+#[test]
+fn session_and_weekly_pace_respect_upstream_minimum_progress_and_provider_gates() {
+    let mut claude = provider("claude", "Claude");
+    let mut primary_early = window(10.0, 300, 4 * 3600);
+    primary_early.pace = Some(Pace {
+        stage: PaceStage::Ahead,
+        delta_percent: 8.0,
+        expected_used_percent: 2.0,
+        will_last_to_reset: false,
+        eta_seconds: Some(3600),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
+        summary: String::new(),
+    });
+    let mut weekly_early = window(5.0, 10080, 6 * 24 * 3600);
+    weekly_early.pace = Some(Pace {
+        stage: PaceStage::Ahead,
+        delta_percent: 3.0,
+        expected_used_percent: 2.0,
+        will_last_to_reset: false,
+        eta_seconds: Some(2 * 24 * 3600),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
+        summary: String::new(),
+    });
+    claude.windows.primary = Some(value(primary_early));
+    claude.windows.secondary = Some(value(weekly_early));
+
+    let early_card = build(&claude, &CardPreferences::default());
+    assert_eq!(early_card.metrics[0].meta_text(), None);
+    assert_eq!(early_card.metrics[0].pace_percent, None);
+    assert_eq!(early_card.metrics[1].meta_text(), None);
+    assert_eq!(early_card.metrics[1].pace_percent, None);
+
+    // Weekly pace with eta_seconds == Some(0) renders even when expected < 3%.
+    let mut weekly_eta_zero = window(50.0, 10080, 6 * 24 * 3600);
+    weekly_eta_zero.pace = Some(Pace {
+        stage: PaceStage::FarAhead,
+        delta_percent: 48.0,
+        expected_used_percent: 2.0,
+        will_last_to_reset: false,
+        eta_seconds: Some(0),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
+        summary: String::new(),
+    });
+    claude.windows.secondary = Some(value(weekly_eta_zero));
+    let eta_zero_card = build(&claude, &CardPreferences::default());
+    assert_eq!(
+        eta_zero_card.metrics[1].meta_text().as_deref(),
+        Some("48% in deficit · Runs out now")
+    );
+
+    // Non-Codex/Claude provider does not show session pace even when expected >= 3%.
+    let mut anti = provider("antigravity", "Antigravity");
+    let mut anti_primary = window(40.0, 300, 2 * 3600);
+    anti_primary.pace = Some(Pace {
+        stage: PaceStage::Ahead,
+        delta_percent: 10.0,
+        expected_used_percent: 30.0,
+        will_last_to_reset: false,
+        eta_seconds: Some(3600),
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
+        summary: String::new(),
+    });
+    anti.windows.primary = Some(value(anti_primary));
+    let anti_card = build(&anti, &CardPreferences::default());
+    assert_eq!(anti_card.metrics[0].meta_text(), None);
+}
+
+#[test]
+fn limit_reset_credits_hide_zero_count_and_respect_reset_style_and_subscription_notes_accept_any_provider()
+ {
+    let mut codex = provider("codex", "Codex");
+    codex.credits = Some(value(Credits {
+        reset_credits: Some(ResetCredits {
+            available_count: 0,
+            next_expires_at: Some(now() + jiff::SignedDuration::from_hours(48)),
+        }),
+        ..Credits::new(42.5)
+    }));
+    let zero_card = build(&codex, &CardPreferences::default());
+    assert!(zero_card.limit_reset_credits.is_none());
+
+    codex.credits = Some(value(Credits {
+        reset_credits: Some(ResetCredits {
+            available_count: 1,
+            next_expires_at: Some(ts("2026-10-25T15:05:00Z")),
+        }),
+        ..Credits::new(42.5)
+    }));
+    let abs_prefs = CardPreferences {
+        reset_times_show_absolute: true,
+        ..CardPreferences::default()
+    };
+    let abs_card = build(&codex, &abs_prefs);
+    let rc = abs_card.limit_reset_credits.expect("reset credits");
+    assert_eq!(rc.count_text, "1 available");
+    assert_eq!(rc.expiry_text.as_deref(), Some("Oct 25 at 3:05 PM"));
+
+    let mut anti = provider("antigravity", "Antigravity");
+    anti.subscription = Some(value(SubscriptionDates {
+        renews: Some(BillingDate {
+            at: ts("2026-11-01T00:00:00Z"),
+            date_only: true,
+        }),
+        expires: None,
+    }));
+    let fr_card = provider_card(
+        &anti,
+        &CardPreferences::default(),
+        now(),
+        &FrenchDates::utc(),
+    );
+    assert_eq!(fr_card.usage_notes, ["Plan renews: 1 nov. 2026"]);
 }

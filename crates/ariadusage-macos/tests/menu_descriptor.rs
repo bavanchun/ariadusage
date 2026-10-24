@@ -132,6 +132,16 @@ fn overview_tab_lists_share_action_and_enabled_provider_cards() {
     );
     let ids: Vec<&str> = cards.iter().map(|c| c.provider_id.as_str()).collect();
     assert_eq!(ids, ["claude", "codex", "antigravity"]);
+    assert_eq!(cards[0].submenu_title.as_deref(), Some("Cost"));
+    assert!(cards[0].model.shows_submenu_indicator);
+    assert!(matches!(
+        cards[0].submenu.as_slice(),
+        [SubmenuEntry::CostHistoryChart(_)]
+    ));
+    assert_eq!(cards[1].submenu_title.as_deref(), Some("Cost"));
+    assert!(cards[1].model.shows_submenu_indicator);
+    assert_eq!(cards[2].submenu_title, None);
+    assert!(!cards[2].model.shows_submenu_indicator);
 }
 
 #[test]
@@ -446,4 +456,104 @@ fn non_operational_provider_status_adds_status_line_and_submenu_description() {
             },
         ],
     }));
+}
+
+#[test]
+fn antigravity_with_utilization_attaches_plan_usage_without_burndown_and_codex_without_history_still_splits_credits()
+ {
+    use ariadusage_protocol::usage::{PlanUtilizationEntry, PlanUtilizationSeries};
+
+    let mut snap = generate_scenario_snapshot(0);
+    let now = snap.generated_at;
+    snap.providers[2].utilization = Some(Metric::value(
+        vec![
+            PlanUtilizationSeries {
+                name: "antigravityGemini".to_string(),
+                title: Some("Gemini Models".to_string()),
+                window_minutes: 1440,
+                entries: vec![PlanUtilizationEntry {
+                    captured_at: now - SignedDuration::from_hours(2),
+                    used_percent: 25.0,
+                    resets_at: Some(now + SignedDuration::from_hours(22)),
+                }],
+            },
+            PlanUtilizationSeries {
+                name: "antigravityClaudeGpt".to_string(),
+                title: Some("Claude and GPT".to_string()),
+                window_minutes: 1440,
+                entries: vec![PlanUtilizationEntry {
+                    captured_at: now - SignedDuration::from_hours(2),
+                    used_percent: 40.0,
+                    resets_at: Some(now + SignedDuration::from_hours(22)),
+                }],
+            },
+        ],
+        Some(now),
+        None,
+        Confidence::Exact,
+    ));
+
+    // Overview row for Antigravity falls back to "Plan Usage" chart submenu without burndown.
+    let ov_structure = menu_descriptor::build(
+        Some(&snap),
+        true,
+        Some(&SwitcherSelection::Overview),
+        &CardPreferences::default(),
+        now,
+        &FixedDates::utc(),
+    );
+    let PrimaryContent::Overview { cards, .. } = &ov_structure.primary else {
+        panic!("expected Overview");
+    };
+    assert_eq!(cards[2].submenu_title.as_deref(), Some("Plan Usage"));
+    assert!(cards[2].model.shows_submenu_indicator);
+    assert!(matches!(
+        cards[2].submenu.as_slice(),
+        [SubmenuEntry::PlanUtilizationChart(_)]
+    ));
+
+    // Antigravity tab builds Plan Usage history submenu with only PlanUtilizationChart.
+    let anti_structure = menu_descriptor::build(
+        Some(&snap),
+        true,
+        Some(&SwitcherSelection::Provider("antigravity".to_string())),
+        &CardPreferences::default(),
+        now,
+        &FixedDates::utc(),
+    );
+    assert_eq!(anti_structure.history.len(), 1);
+    let MenuEntry::Submenu { title, items, .. } = &anti_structure.history[0] else {
+        panic!("expected Plan Usage submenu");
+    };
+    assert_eq!(title, "Plan Usage");
+    assert!(matches!(
+        items.as_slice(),
+        [SubmenuEntry::PlanUtilizationChart(_)]
+    ));
+
+    // Codex with credits and extra usage but no cost history still splits into
+    // HeaderAndUsage + CreditsOnly + ExtraUsageOnly, without attaching a Cost
+    // submenu to HeaderAndUsage.
+    snap.providers[1].cost_history = None;
+    let codex_structure = menu_descriptor::build(
+        Some(&snap),
+        true,
+        Some(&SwitcherSelection::Provider("codex".to_string())),
+        &CardPreferences::default(),
+        now,
+        &FixedDates::utc(),
+    );
+    let PrimaryContent::Provider {
+        card,
+        sections,
+        cost_submenu,
+        ..
+    } = &codex_structure.primary
+    else {
+        panic!("expected Provider");
+    };
+    assert!(!card.shows_submenu_indicator);
+    assert_eq!(sections.len(), 3);
+    assert!(!sections[0].has_cost_submenu);
+    assert!(cost_submenu.is_empty());
 }

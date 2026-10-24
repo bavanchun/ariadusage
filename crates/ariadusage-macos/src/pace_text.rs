@@ -4,7 +4,7 @@
 
 use ariadusage_protocol::usage::{PaceStage, SessionEquivalentForecast};
 
-use crate::format;
+use crate::format::{self, DateTexts};
 
 /// The pace facts the labels are built from (`UsagePace`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -140,17 +140,16 @@ impl SessionEquivalentDetail {
 
 /// Builds the session-equivalent forecast labels
 /// (`UsagePaceText.sessionEquivalentDetail`, `UsagePaceText.swift:39-74`).
-pub fn session_equivalent_detail(forecast: &SessionEquivalentForecast) -> SessionEquivalentDetail {
+pub fn session_equivalent_detail(
+    forecast: &SessionEquivalentForecast,
+    dates: &dyn DateTexts,
+) -> SessionEquivalentDetail {
     let (displayed, unit) =
         if forecast.estimated_sessions.is_finite() && forecast.estimated_sessions > 0.0 {
             let bounded = forecast.estimated_sessions.min(1_000_000.0);
             let rounded = (bounded * 10.0).round() / 10.0;
-            let text = if (rounded.fract()).abs() < 1e-9 {
-                format::grouped_u64(rounded as u64)
-            } else {
-                format!("{rounded:.1}")
-            };
-            let unit = if rounded <= 1.0 {
+            let text = dates.format_one_decimal(rounded);
+            let unit = if rounded > 0.0 && rounded <= 1.0 {
                 "session quota"
             } else {
                 "session quotas"
@@ -160,9 +159,6 @@ pub fn session_equivalent_detail(forecast: &SessionEquivalentForecast) -> Sessio
             ("0".to_string(), "session quotas")
         };
     let left = format!("Est. {displayed} {unit} left");
-    let right = match forecast.windows_until_reset {
-        1 => "1 window until reset".to_string(),
-        n => format!("{n} windows until reset"),
-    };
+    let right = format!("{} windows until reset", forecast.windows_until_reset);
     SessionEquivalentDetail { left, right }
 }

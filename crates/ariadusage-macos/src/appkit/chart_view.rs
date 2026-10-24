@@ -18,6 +18,7 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
+    NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
     NSBezierPath, NSBitmapImageRep, NSColor, NSEvent, NSFont, NSFontAttributeName,
     NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSForegroundColorAttributeName,
     NSResponder, NSStringDrawing, NSTrackingArea, NSTrackingAreaOptions, NSView,
@@ -70,6 +71,17 @@ fn measure_text(text: &str, size: f64, weight: f64) -> NSSize {
     unsafe { ns_str.sizeWithAttributes(Some(&attrs)) }
 }
 
+/// Computes the compact width for a leading segmented picker (`Session | Weekly`, etc.).
+fn compact_picker_width(titles: &[&str], max_width: f64) -> f64 {
+    // SAFETY: `NSFontWeightSemibold` is an immutable AppKit global.
+    let w_semi = unsafe { NSFontWeightSemibold };
+    let total: f64 = titles
+        .iter()
+        .map(|t| (measure_text(t, 11.0, w_semi).width + 26.0).max(58.0))
+        .sum();
+    total.min(max_width)
+}
+
 /// Draws a horizontal segmented control in `rect` and returns the segment rects.
 fn draw_segmented_picker(rect: Rect, titles: &[&str], selected: usize) -> Vec<Rect> {
     if titles.is_empty() {
@@ -92,8 +104,8 @@ fn draw_segmented_picker(rect: Rect, titles: &[&str], selected: usize) -> Vec<Re
                 (seg_rect.w - 3.0).max(1.0),
                 (seg_rect.h - 3.0).max(1.0),
             );
-            NSColor::controlAccentColor()
-                .colorWithAlphaComponent(0.24)
+            NSColor::secondaryLabelColor()
+                .colorWithAlphaComponent(0.28)
                 .setFill();
             NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns_rect(pill), 5.0, 5.0).fill();
         }
@@ -118,12 +130,34 @@ fn draw_segmented_picker(rect: Rect, titles: &[&str], selected: usize) -> Vec<Re
     seg_rects
 }
 
-fn draw_dashed_hline(x1: f64, x2: f64, y: f64) {
+#[allow(deprecated)]
+fn fill_menu_backdrop(bounds: NSRect, dark: bool) {
+    // SAFETY: `NSAppearanceNameDarkAqua` and `NSAppearanceNameAqua` are valid AppKit globals.
+    let name = unsafe {
+        if dark {
+            NSAppearanceNameDarkAqua
+        } else {
+            NSAppearanceNameAqua
+        }
+    };
+    if let Some(app) = NSAppearance::appearanceNamed(name) {
+        // SAFETY: `app` is a valid `NSAppearance` and we are on the main thread inside `drawRect:`.
+        unsafe {
+            NSAppearance::setCurrentAppearance(Some(&app));
+        }
+    }
+    let (r, g, b) = if dark {
+        (36.0 / 255.0, 36.0 / 255.0, 39.0 / 255.0)
+    } else {
+        (216.0 / 255.0, 216.0 / 255.0, 218.0 / 255.0)
+    };
+    NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0).setFill();
+    NSBezierPath::fillRect(bounds);
+}
+
+fn draw_solid_hline(x1: f64, x2: f64, y: f64) {
     let path = NSBezierPath::bezierPath();
     path.setLineWidth(1.0);
-    let pattern = [2.0f64, 2.0f64];
-    // SAFETY: `pattern` has 2 elements and outlives `setLineDash:count:phase:`.
-    unsafe { path.setLineDash_count_phase(pattern.as_ptr(), pattern.len() as isize, 0.0) };
     path.moveToPoint(NSPoint::new(x1, y));
     path.lineToPoint(NSPoint::new(x2, y));
     path.stroke();
@@ -139,6 +173,7 @@ pub struct CostChartState {
     hovered_index: Option<usize>,
     segment_rects: Vec<(Rect, ChartMetric)>,
     tracking_area: Option<Retained<NSTrackingArea>>,
+    backdrop_dark: Option<bool>,
 }
 
 define_class!(
@@ -191,7 +226,7 @@ define_class!(
                 let mut state = self.ivars().borrow_mut();
                 let canvas_rect = Rect::new(
                     SUBMENU_CHART_H_PADDING,
-                    SUBMENU_CHART_V_PADDING,
+                    SUBMENU_CHART_V_PADDING + 22.0 + 10.0,
                     SUBMENU_CHART_WIDTH - 2.0 * SUBMENU_CHART_H_PADDING,
                     SUBMENU_CHART_CANVAS_HEIGHT,
                 );
@@ -254,6 +289,7 @@ impl CostHistoryChartView {
             hovered_index: None,
             segment_rects: Vec::new(),
             tracking_area: None,
+            backdrop_dark: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let frame = NSRect::new(
@@ -271,6 +307,30 @@ impl CostHistoryChartView {
         let rep = self.bitmapImageRepForCachingDisplayInRect(bounds)?;
         self.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
         Some(rep)
+    }
+
+    /// Renders the view into a bitmap under an explicit dark or light `NSAppearance`
+    /// with a menu backdrop so dynamic colors resolve and are legible offscreen.
+    #[allow(deprecated)]
+    pub fn render_bitmap_with_appearance(&self, dark: bool) -> Option<Retained<NSBitmapImageRep>> {
+        // SAFETY: `NSAppearanceNameDarkAqua` and `NSAppearanceNameAqua` are valid AppKit globals.
+        let name = unsafe {
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
+        };
+        let appearance = NSAppearance::appearanceNamed(name)?;
+        self.setAppearance(Some(&appearance));
+        // SAFETY: `appearance` is a valid `NSAppearance` and we are on the main thread.
+        unsafe {
+            NSAppearance::setCurrentAppearance(Some(&appearance));
+        }
+        self.ivars().borrow_mut().backdrop_dark = Some(dark);
+        let rep = self.render_bitmap();
+        self.ivars().borrow_mut().backdrop_dark = None;
+        rep
     }
 
     fn sync_tracking_area(&self) {
@@ -298,11 +358,15 @@ impl CostHistoryChartView {
 
     fn draw(&self) {
         let mut state = self.ivars().borrow_mut();
+        if let Some(dark) = state.backdrop_dark {
+            fill_menu_backdrop(self.bounds(), dark);
+        }
         let selected = state.hovered_index.or(state.model.default_selected_index);
         let inner_w = SUBMENU_CHART_WIDTH - 2.0 * SUBMENU_CHART_H_PADDING;
+        // Top clear gutter (22 + 10 pt) above the chart (`CostHistoryChartMenuView.swift:139-142`).
         let canvas_rect = Rect::new(
             SUBMENU_CHART_H_PADDING,
-            SUBMENU_CHART_V_PADDING,
+            SUBMENU_CHART_V_PADDING + 22.0 + 10.0,
             inner_w,
             SUBMENU_CHART_CANVAS_HEIGHT,
         );
@@ -311,17 +375,15 @@ impl CostHistoryChartView {
         // SAFETY: font weight globals are immutable AppKit constants.
         let (w_reg, w_semi) = unsafe { (NSFontWeightRegular, NSFontWeightSemibold) };
         let sec_color = NSColor::secondaryLabelColor();
+        let tert_color = NSColor::tertiaryLabelColor();
         let pri_color = NSColor::labelColor();
 
-        // Grid lines + Y-axis labels
-        let grid_color = sec_color.colorWithAlphaComponent(0.22);
+        // Leading Y-axis labels without grid lines (`CostHistoryChartMenuView.swift:177-191`).
         for (y, label) in &geom.y_ticks {
-            grid_color.setStroke();
-            draw_dashed_hline(geom.plot_rect.x, geom.plot_rect.max_x(), *y);
             let sz = measure_text(label, 10.0, w_reg);
-            let lx = canvas_rect.max_x() - sz.width;
+            let lx = (geom.plot_rect.x - 6.0 - sz.width).max(canvas_rect.x);
             let ly = y - sz.height * 0.5;
-            draw_text(label, NSPoint::new(lx, ly), 10.0, w_reg, &sec_color);
+            draw_text(label, NSPoint::new(lx, ly), 10.0, w_reg, &tert_color);
         }
 
         // Selection band
@@ -330,16 +392,14 @@ impl CostHistoryChartView {
             NSBezierPath::fillRect(ns_rect(band));
         }
 
-        // Bars + peak caps
+        // Bars + opaque systemYellow peak caps (`CostHistoryChartMenuView.swift:173`).
         for bar in &geom.bars {
             let is_sel = selected == Some(bar.index);
             let alpha = if is_sel { 1.0 } else { 0.85 };
             rgb_color(state.model.bar_color, alpha).setFill();
             NSBezierPath::fillRect(ns_rect(bar.base_rect));
             if let Some(cap) = bar.peak_cap_rect {
-                NSColor::systemYellowColor()
-                    .colorWithAlphaComponent(0.85)
-                    .setFill();
+                NSColor::systemYellowColor().setFill();
                 NSBezierPath::fillRect(ns_rect(cap));
             }
         }
@@ -357,7 +417,7 @@ impl CostHistoryChartView {
                 NSPoint::new(lx, geom.plot_rect.max_y() + 3.0),
                 10.0,
                 w_reg,
-                &sec_color,
+                &tert_color,
             );
         }
 
@@ -376,13 +436,15 @@ impl CostHistoryChartView {
                 .iter()
                 .position(|m| *m == state.metric)
                 .unwrap_or(0);
-            let picker_rect = Rect::new(SUBMENU_CHART_H_PADDING, y, inner_w, 20.0);
+            let picker_w = 120.0;
+            let picker_x = SUBMENU_CHART_WIDTH - SUBMENU_CHART_H_PADDING - picker_w;
+            let picker_rect = Rect::new(picker_x, y, picker_w, 22.0);
             let rects = draw_segmented_picker(picker_rect, &titles, sel_idx);
             let metrics = state.model.available_metrics.clone();
             for (r, m) in rects.into_iter().zip(metrics) {
                 state.segment_rects.push((r, m));
             }
-            y += 20.0 + 10.0;
+            y += 22.0 + 10.0;
         }
 
         // Selected day primary line
@@ -390,16 +452,23 @@ impl CostHistoryChartView {
         draw_text(
             &detail,
             NSPoint::new(SUBMENU_CHART_H_PADDING, y),
-            12.0,
-            w_semi,
-            &pri_color,
+            11.0,
+            w_reg,
+            &sec_color,
         );
         y += 16.0;
 
         // Model breakdown rows
         if state.model.detail_viewport_row_count > 0 {
             y += 6.0;
-            let viewport_h = state.model.detail_viewport_row_count as f64 * 34.0;
+            let row_h = if state.model.detail_viewport_row_count > 1 {
+                50.0
+            } else {
+                36.0
+            };
+            let row_gap = 6.0;
+            let viewport_h = state.model.detail_viewport_row_count as f64 * row_h
+                + (state.model.detail_viewport_row_count.saturating_sub(1)) as f64 * row_gap;
             let rows = selected
                 .and_then(|idx| state.model.points.get(idx))
                 .map(|p| p.models.as_slice())
@@ -409,16 +478,16 @@ impl CostHistoryChartView {
                 .take(state.model.detail_viewport_row_count)
                 .enumerate()
             {
-                let ry = y + row_idx as f64 * 34.0;
-                let bar_rect = Rect::new(SUBMENU_CHART_H_PADDING, ry + 3.0, 3.0, 26.0);
+                let ry = y + row_idx as f64 * (row_h + row_gap);
+                let bar_rect = Rect::new(SUBMENU_CHART_H_PADDING, ry + 2.0, 2.0, 28.0);
                 rgb_color(state.model.bar_color, row.accent_opacity).setFill();
                 NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
                     ns_rect(bar_rect),
-                    1.5,
-                    1.5,
+                    1.0,
+                    1.0,
                 )
                 .fill();
-                let tx = SUBMENU_CHART_H_PADDING + 9.0;
+                let tx = SUBMENU_CHART_H_PADDING + 8.0;
                 draw_text(
                     &row.title,
                     NSPoint::new(tx, ry + 1.0),
@@ -434,7 +503,7 @@ impl CostHistoryChartView {
         }
 
         if let Some(total) = &state.model.total_line {
-            y += 8.0;
+            y += 10.0;
             draw_text(
                 total,
                 NSPoint::new(SUBMENU_CHART_H_PADDING, y),
@@ -446,13 +515,13 @@ impl CostHistoryChartView {
         }
 
         if let Some(disclaimer) = &state.model.disclaimer_line {
-            y += 4.0;
+            y += 2.0;
             draw_text(
                 disclaimer,
                 NSPoint::new(SUBMENU_CHART_H_PADDING, y),
                 10.0,
                 w_reg,
-                &sec_color,
+                &tert_color,
             );
         }
     }
@@ -466,6 +535,7 @@ pub struct BurndownChartState {
     model: QuotaBurndownChartModel,
     series_index: usize,
     segment_rects: Vec<Rect>,
+    backdrop_dark: Option<bool>,
 }
 
 define_class!(
@@ -539,6 +609,7 @@ impl QuotaBurndownChartView {
             model,
             series_index,
             segment_rects: Vec::new(),
+            backdrop_dark: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let frame = NSRect::new(
@@ -556,8 +627,35 @@ impl QuotaBurndownChartView {
         Some(rep)
     }
 
+    /// Renders the view into a bitmap under an explicit dark or light `NSAppearance`
+    /// with a menu backdrop so dynamic colors resolve and are legible offscreen.
+    #[allow(deprecated)]
+    pub fn render_bitmap_with_appearance(&self, dark: bool) -> Option<Retained<NSBitmapImageRep>> {
+        // SAFETY: `NSAppearanceNameDarkAqua` and `NSAppearanceNameAqua` are valid AppKit globals.
+        let name = unsafe {
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
+        };
+        let appearance = NSAppearance::appearanceNamed(name)?;
+        self.setAppearance(Some(&appearance));
+        // SAFETY: `appearance` is a valid `NSAppearance` and we are on the main thread.
+        unsafe {
+            NSAppearance::setCurrentAppearance(Some(&appearance));
+        }
+        self.ivars().borrow_mut().backdrop_dark = Some(dark);
+        let rep = self.render_bitmap();
+        self.ivars().borrow_mut().backdrop_dark = None;
+        rep
+    }
+
     fn draw(&self) {
         let mut state = self.ivars().borrow_mut();
+        if let Some(dark) = state.backdrop_dark {
+            fill_menu_backdrop(self.bounds(), dark);
+        }
         let inner_w = SUBMENU_CHART_WIDTH - 2.0 * SUBMENU_CHART_H_PADDING;
         let mut y = SUBMENU_CHART_V_PADDING;
 
@@ -569,9 +667,10 @@ impl QuotaBurndownChartView {
                 .iter()
                 .map(|s| s.title.as_str())
                 .collect();
-            let picker_rect = Rect::new(SUBMENU_CHART_H_PADDING, y, inner_w, 22.0);
+            let picker_w = compact_picker_width(&titles, inner_w);
+            let picker_rect = Rect::new(SUBMENU_CHART_H_PADDING, y, picker_w, 24.0);
             state.segment_rects = draw_segmented_picker(picker_rect, &titles, state.series_index);
-            y += 22.0 + 10.0;
+            y += 24.0 + 10.0;
         }
 
         let canvas_rect = Rect::new(
@@ -583,18 +682,18 @@ impl QuotaBurndownChartView {
         let geom = state.model.geometry(canvas_rect, state.series_index);
 
         // SAFETY: font weight globals are immutable AppKit constants.
-        let (w_reg, w_semi) = unsafe { (NSFontWeightRegular, NSFontWeightSemibold) };
+        let w_reg = unsafe { NSFontWeightRegular };
         let sec_color = NSColor::secondaryLabelColor();
-        let pri_color = NSColor::labelColor();
-        let grid_color = sec_color.colorWithAlphaComponent(0.22);
+        let tert_color = NSColor::tertiaryLabelColor();
+        let grid_color = sec_color.colorWithAlphaComponent(0.18);
 
         for (ty, label) in geom.y_ticks {
             grid_color.setStroke();
-            draw_dashed_hline(geom.plot_rect.x, geom.plot_rect.max_x(), ty);
+            draw_solid_hline(geom.plot_rect.x, geom.plot_rect.max_x(), ty);
             let sz = measure_text(label, 10.0, w_reg);
             let lx = canvas_rect.max_x() - sz.width;
             let ly = ty - sz.height * 0.5;
-            draw_text(label, NSPoint::new(lx, ly), 10.0, w_reg, &sec_color);
+            draw_text(label, NSPoint::new(lx, ly), 10.0, w_reg, &tert_color);
         }
 
         // Ideal diagonal dashed line
@@ -608,20 +707,9 @@ impl QuotaBurndownChartView {
         ideal.lineToPoint(NSPoint::new(geom.ideal_end.x, geom.ideal_end.y));
         ideal.stroke();
 
-        // Observed area + line + endpoint dot
+        // Observed line + endpoint dot (`QuotaBurndownChartMenuView.swift` has no area fill).
         if geom.observed_points.len() >= 2 {
-            let area = NSBezierPath::bezierPath();
             let first = geom.observed_points[0];
-            let last = *geom.observed_points.last().unwrap();
-            area.moveToPoint(NSPoint::new(first.x, geom.plot_rect.max_y()));
-            for pt in &geom.observed_points {
-                area.lineToPoint(NSPoint::new(pt.x, pt.y));
-            }
-            area.lineToPoint(NSPoint::new(last.x, geom.plot_rect.max_y()));
-            area.closePath();
-            rgb_color(state.model.accent_color, 0.14).setFill();
-            area.fill();
-
             let line = NSBezierPath::bezierPath();
             line.setLineWidth(2.0);
             line.moveToPoint(NSPoint::new(first.x, first.y));
@@ -641,7 +729,7 @@ impl QuotaBurndownChartView {
             NSBezierPath::bezierPathWithOvalInRect(dot).fill();
         }
 
-        y = canvas_rect.max_y() + 6.0;
+        y = canvas_rect.max_y() + 10.0;
         if let Some(series) = state.model.series.get(state.series_index) {
             draw_text(
                 &series.start_label,
@@ -653,31 +741,28 @@ impl QuotaBurndownChartView {
             let r_sz = measure_text(&series.reset_label, 10.0, w_reg);
             draw_text(
                 &series.reset_label,
-                NSPoint::new(
-                    (geom.plot_rect.max_x() - r_sz.width).max(geom.plot_rect.x),
-                    y,
-                ),
+                NSPoint::new((canvas_rect.max_x() - r_sz.width).max(geom.plot_rect.x), y),
                 10.0,
                 w_reg,
                 &sec_color,
             );
-            y += 14.0 + 8.0;
+            y += 15.0 + 10.0;
             draw_text(
                 &series.remaining_line,
                 NSPoint::new(SUBMENU_CHART_H_PADDING, y),
-                12.0,
-                w_semi,
-                &pri_color,
+                11.0,
+                w_reg,
+                &sec_color,
             );
-            y += 16.0;
+            y += 15.0;
             if let Some(note) = &series.last_known_note {
-                y += 2.0;
+                y += 10.0;
                 draw_text(
                     note,
                     NSPoint::new(SUBMENU_CHART_H_PADDING, y),
                     10.0,
                     w_reg,
-                    &sec_color,
+                    &tert_color,
                 );
             }
         }
@@ -694,6 +779,7 @@ pub struct UtilizationChartState {
     hovered_bar_index: Option<usize>,
     segment_rects: Vec<Rect>,
     tracking_area: Option<Retained<NSTrackingArea>>,
+    backdrop_dark: Option<bool>,
 }
 
 define_class!(
@@ -745,7 +831,7 @@ define_class!(
             {
                 let mut state = self.ivars().borrow_mut();
                 let top_offset = if state.model.series.len() > 1 {
-                    SUBMENU_CHART_V_PADDING + 22.0 + 10.0
+                    SUBMENU_CHART_V_PADDING + 24.0 + 10.0
                 } else {
                     SUBMENU_CHART_V_PADDING
                 };
@@ -819,6 +905,7 @@ impl PlanUtilizationChartView {
             hovered_bar_index: None,
             segment_rects: Vec::new(),
             tracking_area: None,
+            backdrop_dark: None,
         };
         let this = Self::alloc(mtm).set_ivars(RefCell::new(state));
         let frame = NSRect::new(
@@ -836,6 +923,30 @@ impl PlanUtilizationChartView {
         let rep = self.bitmapImageRepForCachingDisplayInRect(bounds)?;
         self.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
         Some(rep)
+    }
+
+    /// Renders the view into a bitmap under an explicit dark or light `NSAppearance`
+    /// with a menu backdrop so dynamic colors resolve and are legible offscreen.
+    #[allow(deprecated)]
+    pub fn render_bitmap_with_appearance(&self, dark: bool) -> Option<Retained<NSBitmapImageRep>> {
+        // SAFETY: `NSAppearanceNameDarkAqua` and `NSAppearanceNameAqua` are valid AppKit globals.
+        let name = unsafe {
+            if dark {
+                NSAppearanceNameDarkAqua
+            } else {
+                NSAppearanceNameAqua
+            }
+        };
+        let appearance = NSAppearance::appearanceNamed(name)?;
+        self.setAppearance(Some(&appearance));
+        // SAFETY: `appearance` is a valid `NSAppearance` and we are on the main thread.
+        unsafe {
+            NSAppearance::setCurrentAppearance(Some(&appearance));
+        }
+        self.ivars().borrow_mut().backdrop_dark = Some(dark);
+        let rep = self.render_bitmap();
+        self.ivars().borrow_mut().backdrop_dark = None;
+        rep
     }
 
     fn sync_tracking_area(&self) {
@@ -863,6 +974,9 @@ impl PlanUtilizationChartView {
 
     fn draw(&self) {
         let mut state = self.ivars().borrow_mut();
+        if let Some(dark) = state.backdrop_dark {
+            fill_menu_backdrop(self.bounds(), dark);
+        }
         let inner_w = SUBMENU_CHART_WIDTH - 2.0 * SUBMENU_CHART_H_PADDING;
         let mut y = SUBMENU_CHART_V_PADDING;
 
@@ -874,9 +988,10 @@ impl PlanUtilizationChartView {
                 .iter()
                 .map(|s| s.title.as_str())
                 .collect();
-            let picker_rect = Rect::new(SUBMENU_CHART_H_PADDING, y, inner_w, 22.0);
+            let picker_w = compact_picker_width(&titles, inner_w);
+            let picker_rect = Rect::new(SUBMENU_CHART_H_PADDING, y, picker_w, 24.0);
             state.segment_rects = draw_segmented_picker(picker_rect, &titles, state.series_index);
-            y += 22.0 + 10.0;
+            y += 24.0 + 10.0;
         }
 
         let canvas_rect = Rect::new(
@@ -892,17 +1007,9 @@ impl PlanUtilizationChartView {
         // SAFETY: font weight globals are immutable AppKit constants.
         let w_reg = unsafe { NSFontWeightRegular };
         let sec_color = NSColor::secondaryLabelColor();
-        let grid_color = sec_color.colorWithAlphaComponent(0.22);
+        let tert_color = NSColor::tertiaryLabelColor();
 
-        for (ty, label) in geom.y_ticks {
-            grid_color.setStroke();
-            draw_dashed_hline(geom.plot_rect.x, geom.plot_rect.max_x(), ty);
-            let sz = measure_text(label, 10.0, w_reg);
-            let lx = canvas_rect.max_x() - sz.width;
-            let ly = ty - sz.height * 0.5;
-            draw_text(label, NSPoint::new(lx, ly), 10.0, w_reg, &sec_color);
-        }
-
+        // Note: `PlanUtilizationHistoryChartMenuView.swift:128` sets `.chartYAxis(.hidden)`.
         // Capacity track + fill bars
         let track_color = sec_color.colorWithAlphaComponent(0.16);
         for bar in &geom.bars {
@@ -941,19 +1048,24 @@ impl PlanUtilizationChartView {
             rule.stroke();
         }
 
+        let mut last_label_max_x: Option<f64> = None;
         for (cx, label) in &geom.x_labels {
             let sz = measure_text(label, 10.0, w_reg);
             let lx = (cx - sz.width * 0.5).clamp(
                 geom.plot_rect.x,
                 (geom.plot_rect.max_x() - sz.width).max(geom.plot_rect.x),
             );
+            if last_label_max_x.is_some_and(|prev_max| lx < prev_max + 4.0) {
+                continue;
+            }
             draw_text(
                 label,
                 NSPoint::new(lx, geom.plot_rect.max_y() + 3.0),
                 10.0,
                 w_reg,
-                &sec_color,
+                &tert_color,
             );
+            last_label_max_x = Some(lx + sz.width);
         }
 
         y = canvas_rect.max_y() + 10.0;
@@ -968,7 +1080,7 @@ impl PlanUtilizationChartView {
         draw_text(
             &detail,
             NSPoint::new(SUBMENU_CHART_H_PADDING, y),
-            12.0,
+            11.0,
             w_reg,
             &sec_color,
         );

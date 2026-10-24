@@ -596,13 +596,10 @@ impl MenuController {
                     card_item.setView(Some(&card_view));
                     card_item.setEnabled(true);
                     card_item.setTag(index as isize);
-                    if !ov.cost_submenu.is_empty() {
-                        let sub = self.make_submenu_from_items(
-                            mtm,
-                            "Cost",
-                            &ov.cost_submenu,
-                            &mut url_actions,
-                        );
+                    if !ov.submenu.is_empty() {
+                        let title = ov.submenu_title.as_deref().unwrap_or("Cost");
+                        let sub =
+                            self.make_submenu_from_items(mtm, title, &ov.submenu, &mut url_actions);
                         card_item.setSubmenu(Some(&sub));
                     }
                     // SAFETY: `self.target` lives as long as `MenuController`, which owns `self.menu`.

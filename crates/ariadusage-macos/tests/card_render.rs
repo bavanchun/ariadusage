@@ -246,6 +246,7 @@ mod macos {
         assert!(summary_rep.pixelsWide() >= 310);
 
         // Verify fixture Claude and Codex cards render all detail sections and submenu charts.
+        let fixture_now: Timestamp = "2026-10-06T12:52:00Z".parse().unwrap();
         let claude = fixture
             .providers
             .iter()
@@ -256,13 +257,24 @@ mod macos {
             .iter()
             .find(|p| p.id.as_str() == "codex")
             .unwrap();
-        let claude_card = provider_card(claude, &CardPreferences::default(), now, &dates);
-        let codex_card = provider_card(codex, &CardPreferences::default(), now, &dates);
+        let claude_card = provider_card(claude, &CardPreferences::default(), fixture_now, &dates);
+        let codex_card = provider_card(codex, &CardPreferences::default(), fixture_now, &dates);
 
         let claude_view = CardView::new(mtm);
         assert!(claude_view.update(&claude_card, 310.0));
         assert!(claude_view.bounds().size.height > 400.0);
-        assert!(claude_view.render_bitmap().is_some());
+        let claude_dark = claude_view
+            .render_bitmap_with_appearance(true)
+            .and_then(|r| png_bytes(&r))
+            .expect("claude dark PNG");
+        let claude_light = claude_view
+            .render_bitmap_with_appearance(false)
+            .and_then(|r| png_bytes(&r))
+            .expect("claude light PNG");
+        assert_ne!(
+            claude_dark, claude_light,
+            "dark and light card bitmaps must resolve different appearance colors"
+        );
 
         let codex_view = CardView::new(mtm);
         assert!(codex_view.update_section(
@@ -275,31 +287,44 @@ mod macos {
         assert!(codex_view.bounds().size.height > 300.0);
         assert!(codex_view.render_bitmap().is_some());
 
+        let mut cost_chart_3_models = CostHistoryChartModel::from_provider(claude, "USD").unwrap();
+        cost_chart_3_models.detail_viewport_row_count = 3;
+        assert_eq!(cost_chart_3_models.preferred_height(), 434.0);
+
         let cost_chart = CostHistoryChartModel::from_provider(claude, "USD").unwrap();
         let cost_chart_view = CostHistoryChartView::new(mtm, cost_chart);
-        assert!(cost_chart_view.render_bitmap().is_some());
+        assert_eq!(cost_chart_view.bounds().size.width, 310.0);
+        assert_eq!(cost_chart_view.bounds().size.height, 378.0);
+        let cost_dark = cost_chart_view
+            .render_bitmap_with_appearance(true)
+            .and_then(|r| png_bytes(&r))
+            .expect("cost chart dark PNG");
+        let cost_light = cost_chart_view
+            .render_bitmap_with_appearance(false)
+            .and_then(|r| png_bytes(&r))
+            .expect("cost chart light PNG");
+        assert_ne!(cost_dark, cost_light);
 
-        let burndown_chart = QuotaBurndownChartModel::from_provider(claude, now, &dates).unwrap();
+        let burndown_chart =
+            QuotaBurndownChartModel::from_provider(claude, fixture_now, &dates).unwrap();
         let burndown_view = QuotaBurndownChartView::new(mtm, burndown_chart);
+        assert_eq!(burndown_view.bounds().size.width, 310.0);
+        assert_eq!(burndown_view.bounds().size.height, 259.0);
         assert!(burndown_view.render_bitmap().is_some());
 
         let util_chart = PlanUtilizationChartModel::from_provider(claude, &dates).unwrap();
         let util_view = PlanUtilizationChartView::new(mtm, util_chart);
+        assert_eq!(util_view.bounds().size.width, 310.0);
+        assert_eq!(util_view.bounds().size.height, 210.0);
         assert!(util_view.render_bitmap().is_some());
 
         if let Some(dir) = std::env::var_os("ARIADUSAGE_CAPTURE_DIR") {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir).expect("create capture dir");
-            for (suffix, app_name) in [
-                ("dark", "NSAppearanceNameDarkAqua"),
-                ("light", "NSAppearanceNameAqua"),
-            ] {
-                let appearance = NSAppearance::appearanceNamed(&NSString::from_str(app_name));
-                app.setAppearance(appearance.as_deref());
-
+            for (suffix, is_dark) in [("dark", true), ("light", false)] {
                 let claude_v = CardView::new(mtm);
                 claude_v.update(&claude_card, 310.0);
-                if let Some(rep) = claude_v.render_bitmap()
+                if let Some(rep) = claude_v.render_bitmap_with_appearance(is_dark)
                     && let Some(png) = png_bytes(&rep)
                 {
                     std::fs::write(dir.join(format!("card-claude-{suffix}.png")), png).unwrap();
@@ -307,7 +332,7 @@ mod macos {
 
                 let codex_v = CardView::new(mtm);
                 codex_v.update(&codex_card, 310.0);
-                if let Some(rep) = codex_v.render_bitmap()
+                if let Some(rep) = codex_v.render_bitmap_with_appearance(is_dark)
                     && let Some(png) = png_bytes(&rep)
                 {
                     std::fs::write(dir.join(format!("card-codex-{suffix}.png")), png).unwrap();
@@ -316,7 +341,7 @@ mod macos {
                 for (pid, p_snap) in [("claude", claude), ("codex", codex)] {
                     if let Some(cc) = CostHistoryChartModel::from_provider(p_snap, "USD") {
                         let cv = CostHistoryChartView::new(mtm, cc);
-                        if let Some(rep) = cv.render_bitmap()
+                        if let Some(rep) = cv.render_bitmap_with_appearance(is_dark)
                             && let Some(png) = png_bytes(&rep)
                         {
                             std::fs::write(
@@ -326,9 +351,11 @@ mod macos {
                             .unwrap();
                         }
                     }
-                    if let Some(bc) = QuotaBurndownChartModel::from_provider(p_snap, now, &dates) {
+                    if let Some(bc) =
+                        QuotaBurndownChartModel::from_provider(p_snap, fixture_now, &dates)
+                    {
                         let bv = QuotaBurndownChartView::new(mtm, bc);
-                        if let Some(rep) = bv.render_bitmap()
+                        if let Some(rep) = bv.render_bitmap_with_appearance(is_dark)
                             && let Some(png) = png_bytes(&rep)
                         {
                             std::fs::write(
@@ -340,7 +367,7 @@ mod macos {
                     }
                     if let Some(uc) = PlanUtilizationChartModel::from_provider(p_snap, &dates) {
                         let uv = PlanUtilizationChartView::new(mtm, uc);
-                        if let Some(rep) = uv.render_bitmap()
+                        if let Some(rep) = uv.render_bitmap_with_appearance(is_dark)
                             && let Some(png) = png_bytes(&rep)
                         {
                             std::fs::write(
