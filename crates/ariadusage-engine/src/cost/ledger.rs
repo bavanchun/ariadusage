@@ -34,6 +34,10 @@ pub struct CostUsageDailyEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmetered_request_count: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpriced_request_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priced_request_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models_used: Vec<String>,
@@ -73,6 +77,8 @@ pub struct CostUsageDailySummary {
 pub struct CostUsageDailyReport {
     pub data: Vec<CostUsageDailyEntry>,
     pub summary: Option<CostUsageDailySummary>,
+    #[serde(default)]
+    pub priority_data_is_partial: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -280,6 +286,11 @@ pub fn build_claude_daily_report(
         };
 
         let request_count = day_rows.iter().filter(|r| !r.is_incomplete).count() as u64;
+        let priced_count = day_rows
+            .iter()
+            .filter(|r| !r.is_incomplete && r.cost_priced)
+            .count() as u64;
+        let unpriced_count = request_count.saturating_sub(priced_count);
 
         data.push(CostUsageDailyEntry {
             date: day,
@@ -290,6 +301,8 @@ pub fn build_claude_daily_report(
             total_tokens: Some(total_tokens),
             request_count: Some(request_count),
             unmetered_request_count: None,
+            unpriced_request_count: (unpriced_count > 0).then_some(unpriced_count),
+            priced_request_count: Some(priced_count),
             cost_usd,
             models_used,
             model_breakdowns,
@@ -297,7 +310,11 @@ pub fn build_claude_daily_report(
     }
 
     let summary = compute_daily_summary(&data);
-    CostUsageDailyReport { data, summary }
+    CostUsageDailyReport {
+        data,
+        summary,
+        priority_data_is_partial: false,
+    }
 }
 
 /// Builds a `CostUsageDailyReport` from a `CodexScanReport` within `range`.
@@ -314,6 +331,11 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             all_days.insert(day.clone());
         }
     }
+    for (day, &unpriced) in &scan.unpriced_requests_by_day {
+        if unpriced > 0 && range.contains_day_str(day) {
+            all_days.insert(day.clone());
+        }
+    }
 
     let mut data = Vec::with_capacity(all_days.len());
     for day in all_days {
@@ -323,6 +345,11 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             .get(&day)
             .copied()
             .filter(|&c| c > 0);
+        let unpriced_from_map = scan
+            .unpriced_requests_by_day
+            .get(&day)
+            .copied()
+            .unwrap_or(0);
 
         if day_rows.is_empty() {
             data.push(CostUsageDailyEntry {
@@ -334,6 +361,8 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
                 total_tokens: Some(0),
                 request_count: None,
                 unmetered_request_count: unmetered,
+                unpriced_request_count: (unpriced_from_map > 0).then_some(unpriced_from_map),
+                priced_request_count: None,
                 cost_usd: None,
                 models_used: Vec::new(),
                 model_breakdowns: Vec::new(),
@@ -344,6 +373,8 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
         let mut input: u64 = 0;
         let mut cached: u64 = 0;
         let mut output: u64 = 0;
+        let mut priced_rows: u64 = 0;
+        let mut unpriced_rows: u64 = 0;
         let mut models: BTreeMap<String, ModelAccumulator> = BTreeMap::new();
 
         for row in &day_rows {
@@ -355,6 +386,11 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             input = input.saturating_add(row_in);
             cached = cached.saturating_add(row_cached);
             output = output.saturating_add(row_out);
+            if row.known_cost_nanos.is_some() {
+                priced_rows = priced_rows.saturating_add(1);
+            } else {
+                unpriced_rows = unpriced_rows.saturating_add(1);
+            }
             models.entry(row.model.clone()).or_default().add_codex(
                 row_tok,
                 row.known_cost_nanos,
@@ -375,9 +411,15 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             .collect();
         models_used.sort();
 
+        let total_unpriced = unpriced_rows
+            .max(unpriced_from_map)
+            .max(u64::from(scan.priority_data_is_partial && !day_rows.is_empty()));
+        let unpriced_request_count = (total_unpriced > 0).then_some(total_unpriced);
         let all_priced = !model_breakdowns.is_empty()
             && model_breakdowns.iter().all(|b| b.cost_usd.is_some())
-            && unmetered.is_none();
+            && unmetered.is_none()
+            && unpriced_request_count.is_none()
+            && !scan.priority_data_is_partial;
         let cost_usd = if all_priced {
             Some(
                 model_breakdowns
@@ -398,6 +440,8 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
             total_tokens: Some(total_tokens),
             request_count: Some(day_rows.len() as u64),
             unmetered_request_count: unmetered,
+            unpriced_request_count,
+            priced_request_count: Some(priced_rows),
             cost_usd,
             models_used,
             model_breakdowns,
@@ -405,7 +449,11 @@ pub fn build_codex_daily_report(scan: &CodexScanReport, range: &DayRange) -> Cos
     }
 
     let summary = compute_daily_summary(&data);
-    CostUsageDailyReport { data, summary }
+    CostUsageDailyReport {
+        data,
+        summary,
+        priority_data_is_partial: scan.priority_data_is_partial,
+    }
 }
 
 fn compute_daily_summary(entries: &[CostUsageDailyEntry]) -> Option<CostUsageDailySummary> {
@@ -634,7 +682,7 @@ pub fn build_cost_history(
         history_days: Some(clamped_days),
         history_label: None,
         history_coverage_is_established: history_coverage_established,
-        history_scan_is_partial: false,
+        history_scan_is_partial: report.priority_data_is_partial,
         metered_cost_usd: None,
         currency_code: Some("USD".to_owned()),
         cost_provenance: Some(cost_provenance),

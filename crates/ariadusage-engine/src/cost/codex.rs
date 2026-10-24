@@ -786,6 +786,8 @@ pub struct CodexSessionMetadata {
     pub is_subagent_thread: bool,
     pub subagent_history_start_ordinal: Option<i64>,
     pub history_base_thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_session_id: Option<String>,
     pub cwd: Option<String>,
     pub title: Option<String>,
     pub started_at_unix_ms: Option<i64>,
@@ -804,6 +806,7 @@ impl std::fmt::Debug for CodexSessionMetadata {
                 &self.subagent_history_start_ordinal,
             )
             .field("history_base_thread_id", &self.history_base_thread_id)
+            .field("request_session_id", &self.request_session_id)
             .field("cwd", &self.cwd.as_ref().map(|_| "[redacted]"))
             .field("title", &self.title.as_ref().map(|_| "[redacted]"))
             .field("started_at_unix_ms", &self.started_at_unix_ms)
@@ -944,6 +947,201 @@ fn reconciled_codex_pricing_rows(
     None
 }
 
+/// Buffered line for deferred subagent classification or unresolved fork baseline replay
+/// (`CostUsageScanner.CodexBufferedFastLine`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexBufferedLine {
+    pub line_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinal: Option<i64>,
+    pub end_offset: u64,
+    pub raw: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger_mirror: Option<CodexNearMirror>,
+}
+
+/// Counter advance classification for delayed mirror pairing (`CostUsageScanner.CodexNearMirror.CounterAdvance`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CodexCounterAdvance {
+    Exact,
+    Bounded,
+    Intervening,
+    Unknown,
+}
+
+/// Near-window mirror evidence for `token_usage_record` / `token_count` pairing (`CostUsageScanner.CodexNearMirror`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexNearMirror {
+    pub key: Option<String>,
+    pub timestamp_ms: i64,
+    pub counter_advance: CodexCounterAdvance,
+}
+
+impl CodexNearMirror {
+    #[must_use]
+    pub fn matches(&self, other: Option<&Self>, allow_delayed: bool) -> bool {
+        let Some(other) = other else {
+            return false;
+        };
+        let Some(ref key) = self.key else {
+            return false;
+        };
+        if other.key.as_ref() != Some(key)
+            || self.counter_advance == CodexCounterAdvance::Intervening
+        {
+            return false;
+        }
+        if (other.timestamp_ms - self.timestamp_ms).abs() <= NEAR_MIRROR_MAX_DELAY_MS {
+            return true;
+        }
+        allow_delayed
+            && self.timestamp_ms >= other.timestamp_ms
+            && self.counter_advance == CodexCounterAdvance::Exact
+            && other.counter_advance == CodexCounterAdvance::Exact
+    }
+}
+
+/// Persisted request-ledger and mirror-window state (`CostUsageScanner.CodexRequestLedgerState`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodexRequestLedgerState {
+    pub session_id: Option<String>,
+    pub active_turn_id: Option<String>,
+    pub turn_models: BTreeMap<String, String>,
+    pub thread_priority: Option<bool>,
+    pub priority_turn_ids: BTreeSet<String>,
+    pub counted_usage: Option<CodexTotals>,
+    pub response_ids: BTreeSet<String>,
+    pub mirrored_responses: BTreeMap<String, String>,
+    pub legacy_row_indices: BTreeMap<String, usize>,
+    pub pending_ledger_mirrors: Option<BTreeSet<String>>,
+    pub pending_ledger_response_id: Option<String>,
+    pub pending_ledger_near_mirror: Option<CodexNearMirror>,
+    pub pending_ledger_pricing_response_id: Option<String>,
+    pub pending_legacy_mirrors: Option<BTreeSet<String>>,
+    pub pending_legacy_row_index: Option<usize>,
+    pub pending_legacy_near_mirror: Option<CodexNearMirror>,
+    pub last_ledger_total: Option<CodexTotals>,
+    pub last_legacy_total: Option<CodexTotals>,
+}
+
+impl CodexRequestLedgerState {
+    pub fn clear_pending_mirrors(&mut self) {
+        self.pending_ledger_mirrors = None;
+        self.pending_ledger_response_id = None;
+        self.pending_ledger_near_mirror = None;
+        self.pending_ledger_pricing_response_id = None;
+        self.pending_legacy_mirrors = None;
+        self.pending_legacy_row_index = None;
+        self.pending_legacy_near_mirror = None;
+    }
+
+    pub fn remember_mirrors<I, S>(&mut self, keys: I, response_id: &str)
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        for key in keys {
+            let k = key.as_ref();
+            if !k.is_empty() {
+                self.mirrored_responses
+                    .insert(k.to_owned(), response_id.to_owned());
+            }
+        }
+    }
+
+    pub fn remember_legacy_counter(&mut self, total: Option<CodexTotals>, when: bool) {
+        if when && let Some(total) = total {
+            self.last_legacy_total = Some(total);
+        }
+    }
+
+    pub fn begin_legacy_observation(
+        &mut self,
+        keys: &BTreeSet<String>,
+        snapshot: &str,
+        near: Option<&CodexNearMirror>,
+    ) -> Option<String> {
+        if let Some(existing) = self.mirrored_responses.get(snapshot).cloned() {
+            if self.pending_ledger_response_id.as_deref() == Some(existing.as_str()) {
+                let pricing_owner = self.pending_ledger_pricing_response_id.clone();
+                self.clear_pending_mirrors();
+                return pricing_owner;
+            }
+            return None;
+        }
+        let matches_pending = self
+            .pending_ledger_mirrors
+            .as_ref()
+            .is_some_and(|p| !p.is_disjoint(keys))
+            || near.is_some_and(|n| n.matches(self.pending_ledger_near_mirror.as_ref(), true));
+        let Some(response_id) = (if matches_pending {
+            self.pending_ledger_response_id.clone()
+        } else {
+            None
+        }) else {
+            self.clear_pending_mirrors();
+            return None;
+        };
+        let pricing_owner = self.pending_ledger_pricing_response_id.clone();
+        self.clear_pending_mirrors();
+        self.remember_mirrors(std::iter::once(snapshot), &response_id);
+        self.remember_mirrors(keys.iter(), &response_id);
+        pricing_owner
+    }
+}
+
+/// Source pricing identity key for retaining row-level pricing across re-scans (`CostUsageScanner.CodexSourcePricingKey`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CodexSourcePricingKey {
+    pub day: String,
+    pub model: String,
+    pub turn_id: Option<String>,
+    pub input: i64,
+    pub cached: i64,
+    pub output: i64,
+    pub response_id: Option<String>,
+}
+
+impl CodexSourcePricingKey {
+    #[must_use]
+    pub fn from_row(row: &CodexUsageRow) -> Option<Self> {
+        if row.input <= 0 && row.cached <= 0 && row.output <= 0 {
+            return None;
+        }
+        Some(Self {
+            day: row.day.clone(),
+            model: row.model.clone(),
+            turn_id: row.turn_id.clone(),
+            input: row.input,
+            cached: row.cached,
+            output: row.output,
+            response_id: row.response_id.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn match_keys(row: &CodexUsageRow) -> Vec<Self> {
+        let Some(exact) = Self::from_row(row) else {
+            return Vec::new();
+        };
+        let mut keys = vec![exact.clone()];
+        if exact.response_id.is_some() {
+            keys.push(Self {
+                response_id: None,
+                ..exact.clone()
+            });
+        }
+        if exact.turn_id.is_some() {
+            keys.push(Self {
+                turn_id: None,
+                response_id: None,
+                ..exact
+            });
+        }
+        keys
+    }
+}
+
 /// Per-file parse result for Codex JSONL session logs.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodexParseResult {
@@ -954,12 +1152,42 @@ pub struct CodexParseResult {
     pub parsed_bytes: u64,
     pub last_model: Option<String>,
     pub last_totals: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_counted_totals: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_raw_totals_baseline: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_raw_totals_watermark: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen_raw_totals: Vec<CodexTotals>,
+    #[serde(default)]
+    pub has_divergent_totals: bool,
+    #[serde(default)]
+    pub has_interleaved_totals: bool,
     pub last_codex_turn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_service_tier: Option<CodexServiceTier>,
+    #[serde(default)]
+    pub next_usage_row_index: usize,
     pub session_id: Option<String>,
     pub forked_from_id: Option<String>,
     pub fork_timestamp: Option<String>,
     pub depends_on_parent_totals: bool,
     pub has_unresolved_fork_baseline: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_inherited_totals: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remaining_inherited_totals: Option<CodexTotals>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffered_subagent_lines: Vec<CodexBufferedLine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buffered_unresolved_fork_lines: Vec<CodexBufferedLine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_ledger_state: Option<CodexRequestLedgerState>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub replaced_legacy_row_indices: BTreeSet<usize>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub ledger_legacy_pricing_keys: BTreeMap<usize, CodexSourcePricingKey>,
     pub codex_session: Option<CodexSessionMetadata>,
 }
 
@@ -970,70 +1198,34 @@ pub enum CodexForkBaseline {
     Unresolved,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NearMirror {
-    turn_id: Option<String>,
-    timestamp_unix_ms: Option<i64>,
-    usage: CodexTotals,
-    counter_advanced_strictly_more_than_usage: bool,
+/// Optional resume and bounded-read state for incremental `parse_codex_file_with_state` calls.
+#[derive(Debug, Clone, Default)]
+pub struct CodexParseResumeOptions<'a> {
+    pub start_offset: u64,
+    pub max_bytes_to_read: Option<u64>,
+    pub initial_model: Option<&'a str>,
+    pub initial_session_id: Option<&'a str>,
+    pub initial_totals: Option<CodexTotals>,
+    pub initial_raw_totals_baseline: Option<CodexTotals>,
+    pub initial_raw_totals_watermark: Option<CodexTotals>,
+    pub initial_seen_raw_totals: &'a [CodexTotals],
+    pub initial_has_divergent_totals: bool,
+    pub initial_has_interleaved_totals: bool,
+    pub initial_turn_id: Option<&'a str>,
+    pub initial_service_tier: Option<CodexServiceTier>,
+    pub initial_next_usage_row_index: usize,
+    pub initial_forked_from_id: Option<&'a str>,
+    pub initial_fork_timestamp: Option<&'a str>,
+    pub initial_resolved_inherited_totals: Option<Option<CodexTotals>>,
+    pub initial_remaining_inherited_totals: Option<Option<CodexTotals>>,
+    pub initial_buffered_subagent_lines: Option<&'a [CodexBufferedLine]>,
+    pub initial_buffered_unresolved_fork_lines: Option<&'a [CodexBufferedLine]>,
+    pub initial_request_ledger_state: Option<&'a CodexRequestLedgerState>,
+    pub initial_request_ledger_rows: &'a [CodexUsageRow],
 }
 
-impl NearMirror {
-    fn matches(&self, other: &Self, allow_delayed: bool) -> bool {
-        if self.usage.input != other.usage.input
-            || self.usage.cached != other.usage.cached
-            || self.usage.output != other.usage.output
-        {
-            return false;
-        }
-        if self.counter_advanced_strictly_more_than_usage
-            || other.counter_advanced_strictly_more_than_usage
-        {
-            return false;
-        }
-        if let (Some(t1), Some(t2)) = (&self.turn_id, &other.turn_id)
-            && t1 != t2
-        {
-            return false;
-        }
-        if allow_delayed {
-            match (self.timestamp_unix_ms, other.timestamp_unix_ms) {
-                (Some(ms1), Some(ms2)) => (ms1 - ms2).abs() <= NEAR_MIRROR_MAX_DELAY_MS,
-                _ => true,
-            }
-        } else {
-            true
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct CodexRequestLedgerState {
-    response_ids: BTreeSet<String>,
-    mirrored_snapshots: BTreeMap<String, String>,
-    pending_ledger_mirrors: Option<BTreeSet<String>>,
-    pending_ledger_response_id: Option<String>,
-    pending_ledger_near: Option<NearMirror>,
-    pending_legacy_mirrors: Option<BTreeSet<String>>,
-    pending_legacy_row_index: Option<usize>,
-    pending_legacy_near: Option<NearMirror>,
-    last_ledger_total: Option<CodexTotals>,
-    last_legacy_total: Option<CodexTotals>,
-}
-
-impl CodexRequestLedgerState {
-    fn clear_pending(&mut self) {
-        self.pending_ledger_mirrors = None;
-        self.pending_ledger_response_id = None;
-        self.pending_ledger_near = None;
-        self.pending_legacy_mirrors = None;
-        self.pending_legacy_row_index = None;
-        self.pending_legacy_near = None;
-    }
-}
-
-/// Maximum line bytes for normal JSONL line scanning in `parse_codex_file` (`256 KiB`).
-pub const CODEX_DEFAULT_MAX_LINE_BYTES: usize = 256 * 1024;
+/// Maximum line bytes for normal JSONL line scanning in `parse_codex_file` (`512 KiB`).
+pub const CODEX_DEFAULT_MAX_LINE_BYTES: usize = 512 * 1024;
 
 /// Parses the leaf `session_meta` identifier from a Codex JSONL file, skipping lines larger than
 /// `CODEX_SESSION_METADATA_MAX_LINE_BYTES` (`8 MiB`).
@@ -1183,12 +1375,133 @@ pub fn parse_codex_file<F>(
     priority_turns: &BTreeMap<String, CodexPriorityTurnMetadata>,
     session_tiers: &BTreeMap<String, CodexServiceTier>,
     catalog: Option<&ModelsDevCatalog>,
+    inherited_totals_resolver: F,
+) -> CodexParseResult
+where
+    F: FnMut(&str, Option<&str>) -> CodexForkBaseline,
+{
+    let resume = CodexParseResumeOptions {
+        start_offset,
+        initial_model,
+        initial_totals,
+        initial_turn_id,
+        ..Default::default()
+    };
+    parse_codex_file_with_state(
+        file_path,
+        range,
+        &resume,
+        priority_turns,
+        session_tiers,
+        catalog,
+        inherited_totals_resolver,
+    )
+}
+
+/// Resumes parsing a Codex JSONL session file from a previous `CodexParseResult`.
+#[allow(clippy::too_many_arguments)]
+pub fn resume_codex_file<F>(
+    file_path: &Path,
+    range: &DayRange,
+    previous: &CodexParseResult,
+    max_bytes_to_read: Option<u64>,
+    retained_rows: Option<&[CodexUsageRow]>,
+    priority_turns: &BTreeMap<String, CodexPriorityTurnMetadata>,
+    session_tiers: &BTreeMap<String, CodexServiceTier>,
+    catalog: Option<&ModelsDevCatalog>,
+    inherited_totals_resolver: F,
+) -> CodexParseResult
+where
+    F: FnMut(&str, Option<&str>) -> CodexForkBaseline,
+{
+    let resume = CodexParseResumeOptions {
+        start_offset: previous.parsed_bytes,
+        max_bytes_to_read,
+        initial_model: previous.last_model.as_deref(),
+        initial_session_id: previous.session_id.as_deref(),
+        initial_totals: previous.last_counted_totals.or(previous.last_totals),
+        initial_raw_totals_baseline: previous.last_raw_totals_baseline.or(previous.last_totals),
+        initial_raw_totals_watermark: previous.last_raw_totals_watermark.or(previous.last_totals),
+        initial_seen_raw_totals: &previous.seen_raw_totals,
+        initial_has_divergent_totals: previous.has_divergent_totals,
+        initial_has_interleaved_totals: previous.has_interleaved_totals,
+        initial_turn_id: previous.last_codex_turn_id.as_deref(),
+        initial_service_tier: previous.last_service_tier,
+        initial_next_usage_row_index: previous.next_usage_row_index,
+        initial_forked_from_id: previous.forked_from_id.as_deref(),
+        initial_fork_timestamp: previous.fork_timestamp.as_deref(),
+        initial_resolved_inherited_totals: if previous.forked_from_id.is_some()
+            && !previous.has_unresolved_fork_baseline
+            && previous
+                .codex_session
+                .as_ref()
+                .is_none_or(|m| !m.is_subagent_thread)
+        {
+            Some(previous.resolved_inherited_totals)
+        } else {
+            None
+        },
+        initial_remaining_inherited_totals: if previous.forked_from_id.is_some()
+            && !previous.has_unresolved_fork_baseline
+            && previous
+                .codex_session
+                .as_ref()
+                .is_none_or(|m| !m.is_subagent_thread)
+        {
+            Some(previous.remaining_inherited_totals)
+        } else {
+            None
+        },
+        initial_buffered_subagent_lines: if previous.buffered_subagent_lines.is_empty() {
+            None
+        } else {
+            Some(&previous.buffered_subagent_lines)
+        },
+        initial_buffered_unresolved_fork_lines: if previous
+            .buffered_unresolved_fork_lines
+            .is_empty()
+        {
+            None
+        } else {
+            Some(&previous.buffered_unresolved_fork_lines)
+        },
+        initial_request_ledger_state: previous.request_ledger_state.as_ref(),
+        initial_request_ledger_rows: retained_rows.unwrap_or(&previous.rows),
+    };
+    parse_codex_file_with_state(
+        file_path,
+        range,
+        &resume,
+        priority_turns,
+        session_tiers,
+        catalog,
+        inherited_totals_resolver,
+    )
+}
+
+const MIRROR_BOUNDARY_TYPE: &str = "__mirror_boundary__";
+const MIRROR_BOUNDARY_JSON: &str = r#"{"type":"__mirror_boundary__"}"#;
+
+/// Parses a single Codex JSONL session file with optional bounded byte budget and resume state.
+///
+/// Mirrors `CostUsageScanner.parseCodexFileCancellable`.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn parse_codex_file_with_state<F>(
+    file_path: &Path,
+    range: &DayRange,
+    resume: &CodexParseResumeOptions<'_>,
+    priority_turns: &BTreeMap<String, CodexPriorityTurnMetadata>,
+    session_tiers: &BTreeMap<String, CodexServiceTier>,
+    catalog: Option<&ModelsDevCatalog>,
     mut inherited_totals_resolver: F,
 ) -> CodexParseResult
 where
     F: FnMut(&str, Option<&str>) -> CodexForkBaseline,
 {
-    let file_identity = codex_file_metadata(file_path)
+    let start_offset = resume.start_offset;
+    let file_meta = codex_file_metadata(file_path);
+    let current_file_size = file_meta.size;
+    let file_identity = file_meta
         .file_id
         .unwrap_or_else(|| file_path.to_string_lossy().into_owned());
     let Ok(mut file) = crate::cost::claude::open_regular_file_nofollow(file_path) else {
@@ -1198,12 +1511,32 @@ where
         return CodexParseResult::default();
     }
 
+    let bytes_to_target = current_file_size.saturating_sub(start_offset);
+    let bounded_bytes_to_read = resume
+        .max_bytes_to_read
+        .map_or(bytes_to_target, |b| b.min(bytes_to_target));
+
     let mut reader = BufReader::new(file);
     let mut offset = start_offset;
-    let mut raw_lines: Vec<(u64, String, bool)> = Vec::new();
+    let mut raw_lines: Vec<(u64, String, bool, Option<CodexNearMirror>, bool)> = Vec::new();
     let mut byte_buf: Vec<u8> = Vec::with_capacity(4096);
+    let mut bytes_consumed = 0u64;
 
-    loop {
+    if start_offset > 0
+        && let Some(sub_lines) = resume.initial_buffered_subagent_lines
+    {
+        for bl in sub_lines {
+            raw_lines.push((
+                bl.end_offset,
+                bl.raw.clone(),
+                false,
+                bl.ledger_mirror.clone(),
+                true,
+            ));
+        }
+    }
+
+    while bytes_consumed < bounded_bytes_to_read {
         byte_buf.clear();
         let Ok((bytes_read, was_truncated)) =
             read_bounded_line_with_prefix(&mut reader, &mut byte_buf, CODEX_DEFAULT_MAX_LINE_BYTES)
@@ -1214,20 +1547,68 @@ where
             break;
         }
         offset += bytes_read as u64;
+        bytes_consumed += bytes_read as u64;
         let trimmed_bytes = byte_buf.strip_suffix(b"\r").unwrap_or(byte_buf.as_slice());
         if trimmed_bytes.is_empty() && !was_truncated {
             continue;
         }
         let text = String::from_utf8_lossy(trimmed_bytes).into_owned();
-        raw_lines.push((offset, text, was_truncated));
+        raw_lines.push((offset, text, was_truncated, None, false));
     }
 
-    // First pass: inspect leaf `session_meta` (and enrich from same-leaf `session_meta` lines)
-    let mut session_meta: Option<CodexSessionMetadata> = None;
-    let mut did_capture_leaf_metadata = false;
-    let mut parsed_lines: Vec<PredecodedCodexLine> = Vec::with_capacity(raw_lines.len());
+    let has_unconsumed_physical_tail = offset < current_file_size;
 
-    for (idx, (end_offset, raw, was_truncated)) in raw_lines.into_iter().enumerate() {
+    // Seed session_meta from resume state if starting past offset 0
+    let mut session_meta: Option<CodexSessionMetadata> = resume
+        .initial_session_id
+        .filter(|s| !s.is_empty())
+        .map(|sid| CodexSessionMetadata {
+            session_id: sid.to_owned(),
+            forked_from_id: resume.initial_forked_from_id.map(String::from),
+            fork_timestamp: resume.initial_fork_timestamp.map(String::from),
+            is_subagent_thread: resume.initial_buffered_subagent_lines.is_some(),
+            subagent_history_start_ordinal: None,
+            history_base_thread_id: None,
+            request_session_id: resume
+                .initial_request_ledger_state
+                .and_then(|l| l.session_id.clone()),
+            cwd: None,
+            title: None,
+            started_at_unix_ms: None,
+            latest_activity_unix_ms: None,
+        });
+    let mut did_capture_leaf_metadata = session_meta.is_some();
+
+    // Also inspect any buffered unresolved fork lines for leaf session_meta when resuming at start_offset > 0
+    if start_offset > 0
+        && let Some(fork_lines) = resume.initial_buffered_unresolved_fork_lines
+    {
+        for bl in fork_lines {
+            if let Some(v) = parse_codex_line_json(&bl.raw)
+                && v.get("type").and_then(Value::as_str) == Some("session_meta")
+                && let Some(meta) = extract_session_metadata(&v).filter(|m| !m.session_id.is_empty())
+            {
+                if did_capture_leaf_metadata {
+                    if let Some(ref mut leaf) = session_meta
+                        && CodexSubagentRolloutShape::same_concrete_session_id(
+                            Some(&leaf.session_id),
+                            Some(&meta.session_id),
+                        )
+                    {
+                        enrich_same_leaf_metadata(leaf, &meta);
+                    }
+                } else {
+                    did_capture_leaf_metadata = true;
+                    session_meta = Some(meta);
+                }
+            }
+        }
+    }
+
+    let mut parsed_lines: Vec<PredecodedCodexLine> = Vec::with_capacity(raw_lines.len());
+    for (idx, (end_offset, raw, was_truncated, deferred_mirror, is_replayed_buffer)) in
+        raw_lines.into_iter().enumerate()
+    {
         let val = if was_truncated {
             None
         } else {
@@ -1241,7 +1622,7 @@ where
 
         if let Some(ref v) = val
             && v.get("type").and_then(Value::as_str) == Some("session_meta")
-            && let Some(meta) = extract_session_metadata(v)
+            && let Some(meta) = extract_session_metadata(v).filter(|m| !m.session_id.is_empty())
         {
             if did_capture_leaf_metadata {
                 if let Some(ref mut leaf) = session_meta
@@ -1257,8 +1638,20 @@ where
                 session_meta = Some(meta);
             }
         }
-        parsed_lines.push((idx, end_offset, ordinal, was_truncated, raw, val));
+        parsed_lines.push((
+            idx,
+            end_offset,
+            ordinal,
+            was_truncated,
+            raw,
+            val,
+            deferred_mirror,
+            is_replayed_buffer,
+        ));
     }
+
+    let is_subagent_session = session_meta.as_ref().is_some_and(|m| m.is_subagent_thread);
+    let defer_subagent_until_eof = is_subagent_session && has_unconsumed_physical_tail;
 
     let mut subagent_counter_semantics: Option<CodexSubagentCounterSemantics> = None;
     let mut owned_suffix: Option<CodexSubagentOwnedSuffix> = None;
@@ -1269,6 +1662,7 @@ where
 
     if let Some(ref mut meta) = session_meta
         && meta.is_subagent_thread
+        && !defer_subagent_until_eof
     {
         let observations = build_subagent_observations(&parsed_lines);
         let leaf_id_opt = Some(meta.session_id.as_str()).filter(|s| !s.is_empty());
@@ -1332,7 +1726,11 @@ where
     let mut inherited_totals: Option<CodexTotals> = None;
     let mut has_unresolved_fork_baseline = false;
 
-    if let Some(ref meta) = session_meta
+    if let Some(pre_resolved) = resume.initial_resolved_inherited_totals {
+        inherited_totals = pre_resolved;
+        has_unresolved_fork_baseline = false;
+    } else if !defer_subagent_until_eof
+        && let Some(ref meta) = session_meta
         && let Some(ref parent_id) = meta.forked_from_id
         && subagent_counter_semantics != Some(CodexSubagentCounterSemantics::Independent)
         && !uses_local_subagent_boundary
@@ -1351,70 +1749,193 @@ where
         }
     }
 
-    let depends_on_parent_totals = session_meta
-        .as_ref()
-        .and_then(|m| m.forked_from_id.as_ref())
-        .is_some()
+    let buffer_subagent_lines = defer_subagent_until_eof
+        || (is_subagent_session
+            && subagent_counter_semantics == Some(CodexSubagentCounterSemantics::CopiedPrefix)
+            && owned_suffix.is_none()
+            && has_unresolved_fork_baseline);
+
+    let has_fork_parent = resume.initial_resolved_inherited_totals.is_some()
+        || session_meta
+            .as_ref()
+            .and_then(|m| m.forked_from_id.as_ref())
+            .is_some();
+    let depends_on_parent_totals = has_fork_parent
         && (candidate_boundary_depends_on_parent_totals
             || (subagent_counter_semantics != Some(CodexSubagentCounterSemantics::Independent)
                 && !uses_local_subagent_boundary));
 
-    let is_forked_session = session_meta
-        .as_ref()
-        .and_then(|m| m.forked_from_id.as_ref())
-        .is_some();
+    let is_forked_session = has_fork_parent;
+
+    // If we had buffered unresolved fork lines from an earlier pass and the parent is now resolved,
+    // prepend them before the newly read lines so they replay in order.
+    let mut buffered_unresolved_fork_lines: Vec<CodexBufferedLine> = Vec::new();
+    if start_offset > 0
+        && let Some(prev_fork_lines) = resume.initial_buffered_unresolved_fork_lines
+    {
+        if has_unresolved_fork_baseline {
+            buffered_unresolved_fork_lines.extend(prev_fork_lines.iter().cloned());
+        } else {
+            let mut replayed_prefix = Vec::with_capacity(prev_fork_lines.len() + parsed_lines.len());
+            for (idx, bl) in prev_fork_lines.iter().enumerate() {
+                let val = parse_codex_line_json(&bl.raw);
+                let ordinal = val
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|o| o.get("ordinal"))
+                    .and_then(Value::as_i64);
+                replayed_prefix.push((
+                    idx,
+                    bl.end_offset,
+                    ordinal,
+                    false,
+                    bl.raw.clone(),
+                    val,
+                    bl.ledger_mirror.clone(),
+                    true,
+                ));
+            }
+            let base_idx = replayed_prefix.len();
+            for (_, end_offset, ordinal, was_truncated, raw, val, deferred_mirror, is_replayed) in
+                parsed_lines
+            {
+                let next_idx = base_idx + replayed_prefix.len() - base_idx;
+                replayed_prefix.push((
+                    next_idx,
+                    end_offset,
+                    ordinal,
+                    was_truncated,
+                    raw,
+                    val,
+                    deferred_mirror,
+                    is_replayed,
+                ));
+            }
+            parsed_lines = replayed_prefix;
+        }
+    }
 
     let mut current_model: Option<String> = if owned_suffix.is_some() {
         None
     } else {
-        initial_model.map(String::from)
+        resume.initial_model.map(String::from)
     };
     let mut current_turn_id: Option<String> = if owned_suffix.is_some() {
         None
     } else {
-        initial_turn_id.map(String::from)
+        resume.initial_turn_id.map(String::from)
     };
-    let mut current_service_tier: Option<CodexServiceTier> = session_meta
-        .as_ref()
-        .and_then(|m| session_tiers.get(&m.session_id).copied());
-    let mut thread_priority: Option<bool> = None;
-    let mut priority_turn_ids: BTreeSet<String> = BTreeSet::new();
-    let mut last_accepted_day_key: Option<DayKey> = None;
-    let mut last_accepted_ts_ms: Option<i64> = None;
-
-    let initial_raw_baseline = subagent_raw_baseline.or(initial_totals);
-    let mut accumulator = CodexSnapshotAccumulator {
-        counted_totals: if owned_suffix.is_some() {
-            None
-        } else {
-            initial_totals
-        },
-        raw_totals_baseline: initial_raw_baseline,
-        saw_divergent_totals: false,
-        tracker: CodexTotalsTracker {
-            watermark: initial_raw_baseline,
-            seen_raw_totals: Vec::new(),
-            saw_interleaved_totals: false,
-        },
-    };
-    let mut raised_continued_counter = false;
-    let mut remaining_inherited_totals: Option<CodexTotals> = inherited_totals;
-    let mut fork_raw_baseline: Option<CodexTotals> = initial_raw_baseline;
-    let mut fork_counted_totals: Option<CodexTotals> = if owned_suffix.is_some() {
+    let mut current_service_tier: Option<CodexServiceTier> = if owned_suffix.is_some() {
         None
     } else {
-        initial_totals
+        resume.initial_service_tier
+    }
+    .or_else(|| {
+        session_meta
+            .as_ref()
+            .and_then(|m| session_tiers.get(&m.session_id).copied())
+    });
+    let mut last_accepted_day_key: Option<DayKey> = None;
+    let mut last_accepted_ts_ms: Option<i64> = None;
+    let mut last_accepted_ts_str: Option<String> = None;
+
+    let initial_counted = if owned_suffix.is_some() {
+        None
+    } else {
+        resume.initial_totals
     };
-    let mut fork_saw_divergent = false;
+    let initial_raw_baseline = subagent_raw_baseline.or(
+        if owned_suffix.is_some() {
+            None
+        } else {
+            resume.initial_raw_totals_baseline.or(resume.initial_totals)
+        },
+    );
+    let initial_watermark = subagent_raw_baseline.or(
+        if owned_suffix.is_some() {
+            None
+        } else {
+            resume
+                .initial_raw_totals_watermark
+                .or(resume.initial_raw_totals_baseline)
+                .or(resume.initial_totals)
+        },
+    );
+    let mut accumulator = CodexSnapshotAccumulator {
+        counted_totals: initial_counted,
+        raw_totals_baseline: initial_raw_baseline,
+        saw_divergent_totals: if owned_suffix.is_some() {
+            false
+        } else {
+            resume.initial_has_divergent_totals
+        },
+        tracker: CodexTotalsTracker {
+            watermark: initial_watermark,
+            seen_raw_totals: if owned_suffix.is_some() {
+                Vec::new()
+            } else {
+                resume.initial_seen_raw_totals.to_vec()
+            },
+            saw_interleaved_totals: if owned_suffix.is_some() {
+                false
+            } else {
+                resume.initial_has_interleaved_totals
+            },
+        },
+    };
+    let mut raised_continued_counter = initial_counted.is_some();
+    let mut remaining_inherited_totals: Option<CodexTotals> =
+        if let Some(rem) = resume.initial_remaining_inherited_totals {
+            rem
+        } else if initial_counted.is_some() {
+            None
+        } else {
+            inherited_totals
+        };
+    let mut fork_raw_baseline: Option<CodexTotals> = initial_raw_baseline;
+    let mut fork_counted_totals: Option<CodexTotals> = initial_counted;
+    let mut fork_saw_divergent = if owned_suffix.is_some() {
+        false
+    } else {
+        resume.initial_has_divergent_totals
+    };
 
     let mut days: BTreeMap<String, BTreeMap<String, Vec<i64>>> = BTreeMap::new();
     let mut rows: Vec<CodexUsageRow> = Vec::new();
     let mut token_snapshots: Vec<CodexTokenSnapshot> = Vec::new();
-    let mut ledger = CodexRequestLedgerState::default();
-    let mut event_index = 0usize;
+    let mut ledger = resume.initial_request_ledger_state.cloned().unwrap_or_default();
+    if ledger.session_id.is_none()
+        && let Some(ref meta) = session_meta
+    {
+        ledger.session_id = meta
+            .request_session_id
+            .clone()
+            .or_else(|| Some(meta.session_id.clone()).filter(|s| !s.is_empty()));
+    }
+    let retained_rows_by_index: BTreeMap<usize, CodexUsageRow> = resume
+        .initial_request_ledger_rows
+        .iter()
+        .filter_map(|r| r.event_index.map(|idx| (idx, r.clone())))
+        .collect();
+    let mut replaced_legacy_row_indices: BTreeSet<usize> = BTreeSet::new();
+    let mut ledger_legacy_pricing_keys: BTreeMap<usize, CodexSourcePricingKey> = BTreeMap::new();
+    let mut buffered_subagent_lines: Vec<CodexBufferedLine> = Vec::new();
+    let mut event_index = resume.initial_next_usage_row_index;
+    let mut seen_leaf_session_meta_in_pass = start_offset > 0 && resume.initial_session_id.is_some();
 
-    for (line_idx, end_offset, _ordinal, was_truncated, raw, val_opt) in parsed_lines {
-        if !was_truncated
+    for (
+        line_idx,
+        end_offset,
+        ordinal,
+        was_truncated,
+        raw,
+        val_opt,
+        deferred_mirror,
+        is_replayed_buffer,
+    ) in parsed_lines
+    {
+        if !is_replayed_buffer
+            && !was_truncated
             && let Some(ref val) = val_opt
             && let Some(obj) = val.as_object()
             && obj.get("type").and_then(Value::as_str) == Some("event_msg")
@@ -1449,6 +1970,128 @@ where
             }
         }
 
+        if buffer_subagent_lines {
+            // Bare usage is counted immediately even while buffering subagent lines;
+            // replace its buffered entry with a mirror boundary so replay does not double-count it.
+            if !was_truncated
+                && let Some(ref val) = val_opt
+                && let Some(obj) = val.as_object()
+                && obj.get("type").is_none()
+                && let Some((bare_delta, bare_model)) = extract_bare_usage_row(obj)
+                && !bare_delta.is_zero()
+            {
+                let line_ts_str = obj.get("timestamp").and_then(Value::as_str);
+                let line_day_and_ms = line_ts_str
+                    .and_then(|ts| timestamp::day_key_from_timestamp(ts, range.timezone.clone()));
+                if let Some((ref dk, ms)) = line_day_and_ms {
+                    last_accepted_day_key = Some(dk.clone());
+                    last_accepted_ts_ms = Some(ms);
+                    last_accepted_ts_str = line_ts_str.map(String::from);
+                }
+                if let Some(day_key) = line_day_and_ms
+                    .as_ref()
+                    .map(|(dk, _)| dk.clone())
+                    .or_else(|| last_accepted_day_key.clone())
+                {
+                    let ts_ms = line_day_and_ms
+                        .as_ref()
+                        .map(|(_, ms)| *ms)
+                        .or(last_accepted_ts_ms);
+                    ledger.clear_pending_mirrors();
+                    let effective_raw = bare_model
+                        .as_deref()
+                        .or(current_model.as_deref())
+                        .unwrap_or("gpt-5");
+                    let normalized_model = pricing::normalize_codex_model(effective_raw);
+                    let pricing_model = resolve_codex_priority_pricing_model(
+                        &normalized_model,
+                        current_turn_id.as_deref(),
+                        priority_turns,
+                        catalog,
+                    );
+                    let session_id_opt = session_meta
+                        .as_ref()
+                        .map(|m| m.session_id.as_str())
+                        .filter(|s| !s.is_empty());
+                    let bare_tier = pricing::normalize_codex_service_tier(
+                        obj.get("service_tier").and_then(Value::as_str),
+                    )
+                    .or(current_service_tier);
+                    let is_fast = is_codex_turn_priority(
+                        bare_tier,
+                        current_turn_id.as_deref(),
+                        session_id_opt,
+                        &ledger.priority_turn_ids,
+                        priority_turns,
+                    );
+                    let this_event_index = event_index;
+                    event_index += 1;
+                    record_codex_row(
+                        day_key.as_str(),
+                        &normalized_model,
+                        &pricing_model,
+                        Some(effective_raw),
+                        current_turn_id.as_deref(),
+                        Some(this_event_index),
+                        ts_ms,
+                        bare_delta,
+                        is_fast,
+                        None,
+                        None,
+                        session_id_opt,
+                        Some(&file_identity),
+                        None,
+                        range,
+                        catalog,
+                        &mut days,
+                        &mut rows,
+                    );
+                    buffered_subagent_lines.push(CodexBufferedLine {
+                        line_index: line_idx,
+                        ordinal,
+                        end_offset,
+                        raw: MIRROR_BOUNDARY_JSON.to_owned(),
+                        ledger_mirror: None,
+                    });
+                    continue;
+                }
+            }
+            if !was_truncated
+                && let Some(ref val) = val_opt
+                && let Some(obj) = val.as_object()
+            {
+                let line_ts_str = obj.get("timestamp").and_then(Value::as_str);
+                let line_day_and_ms = line_ts_str
+                    .and_then(|ts| timestamp::day_key_from_timestamp(ts, range.timezone.clone()));
+                if let Some((ref dk, ms)) = line_day_and_ms {
+                    last_accepted_day_key = Some(dk.clone());
+                    last_accepted_ts_ms = Some(ms);
+                    last_accepted_ts_str = line_ts_str.map(String::from);
+                }
+                if obj.get("type").and_then(Value::as_str) == Some("turn_context")
+                    && line_day_and_ms.is_some()
+                    && let Some(payload) = obj.get("payload").and_then(Value::as_object)
+                {
+                    if let Some(m) = extract_turn_context_model(payload) {
+                        current_model = if m.is_empty() { None } else { Some(m) };
+                    }
+                    if let Some(tid) = extract_codex_turn_id(payload) {
+                        current_turn_id = Some(tid);
+                    }
+                }
+            }
+            if !was_truncated {
+                buffered_subagent_lines.push(CodexBufferedLine {
+                    line_index: line_idx,
+                    ordinal,
+                    end_offset,
+                    raw,
+                    ledger_mirror: None,
+                });
+            }
+            continue;
+        }
+
         if line_idx < replay_start_line_index {
             continue;
         }
@@ -1470,19 +2113,32 @@ where
             .and_then(|ts| timestamp::day_key_from_timestamp(ts, range.timezone.clone()));
 
         let record_type = obj.get("type").and_then(Value::as_str);
+        if record_type == Some(MIRROR_BOUNDARY_TYPE) {
+            ledger.clear_pending_mirrors();
+            if has_unresolved_fork_baseline {
+                buffered_unresolved_fork_lines.push(CodexBufferedLine {
+                    line_index: line_idx,
+                    ordinal,
+                    end_offset,
+                    raw,
+                    ledger_mirror: None,
+                });
+            }
+            continue;
+        }
+
         if matches!(
             record_type,
-            Some("turn_context" | "inter_agent_communication_metadata")
+            Some("turn_context" | "inter_agent_communication_metadata" | "token_usage_record")
         ) && line_day_and_ms.is_none()
         {
-            // Upstream `requiresValidTimestamp`: `turn_context` and `inter_agent_communication_metadata`
-            // without a valid root timestamp are rejected before mutating parser state.
             continue;
         }
 
         if let Some((ref dk, ms)) = line_day_and_ms {
             last_accepted_day_key = Some(dk.clone());
             last_accepted_ts_ms = Some(ms);
+            last_accepted_ts_str = line_ts_str.map(String::from);
             if let Some(ref mut meta) = session_meta {
                 meta.latest_activity_unix_ms =
                     Some(meta.latest_activity_unix_ms.map_or(ms, |prev| prev.max(ms)));
@@ -1492,8 +2148,44 @@ where
             }
         }
 
+        let mut line_ledger_mirror: Option<CodexNearMirror> = None;
+        let mut line_replaced_by_boundary = false;
+
         match record_type {
             Some("session_meta") => {
+                if let Some(meta) = extract_session_metadata(&val).filter(|m| !m.session_id.is_empty()) {
+                    if seen_leaf_session_meta_in_pass {
+                        if let Some(ref leaf) = session_meta
+                            && CodexSubagentRolloutShape::same_concrete_session_id(
+                                Some(&leaf.session_id),
+                                Some(&meta.session_id),
+                            )
+                        {
+                            ledger.clear_pending_mirrors();
+                            ledger.last_ledger_total = None;
+                            ledger.last_legacy_total = None;
+                            if ledger.session_id.is_none() {
+                                ledger.session_id = meta
+                                    .request_session_id
+                                    .or(Some(meta.session_id));
+                            }
+                        } else if !is_forked_session && !is_subagent_session {
+                            session_meta = Some(meta.clone());
+                            ledger.session_id = meta
+                                .request_session_id
+                                .or(Some(meta.session_id));
+                            ledger.clear_pending_mirrors();
+                            ledger.legacy_row_indices.clear();
+                        }
+                    } else {
+                        seen_leaf_session_meta_in_pass = true;
+                        if ledger.session_id.is_none() {
+                            ledger.session_id = meta
+                                .request_session_id
+                                .or(Some(meta.session_id));
+                        }
+                    }
+                }
                 if let Some(payload) = obj.get("payload").and_then(Value::as_object)
                     && let Some(tier) = pricing::normalize_codex_service_tier(
                         payload.get("service_tier").and_then(Value::as_str),
@@ -1503,349 +2195,532 @@ where
                 }
             }
             Some("turn_context") => {
+                ledger.clear_pending_mirrors();
                 if let Some(payload) = obj.get("payload").and_then(Value::as_object) {
-                    if let Some(m) = extract_model_from_map(payload) {
-                        current_model = Some(m);
+                    let turn_id_in_ctx = extract_codex_turn_id(payload);
+                    if let Some(ref tid) = turn_id_in_ctx {
+                        current_turn_id = Some(tid.clone());
+                        ledger.active_turn_id = Some(tid.clone());
                     }
-                    if let Some(tid) = payload
-                        .get("turn_id")
-                        .or_else(|| payload.get("id"))
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                    {
-                        current_turn_id = Some(tid.to_owned());
+                    if let Some(m) = extract_turn_context_model(payload) {
+                        current_model = if m.is_empty() { None } else { Some(m) };
+                    }
+                    if let (Some(tid), Some(model)) = (&turn_id_in_ctx, &current_model) {
+                        ledger.turn_models.insert(tid.clone(), model.clone());
                     }
                     if let Some(tier) = pricing::normalize_codex_service_tier(
                         payload.get("service_tier").and_then(Value::as_str),
                     ) {
                         current_service_tier = Some(tier);
                     }
+                    if let Some(ref mut meta) = session_meta {
+                        if let Some(cwd) = payload
+                            .get("cwd")
+                            .or_else(|| payload.get("current_working_directory"))
+                            .or_else(|| payload.get("currentWorkingDirectory"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            meta.cwd = Some(cwd.to_owned());
+                        }
+                        if let Some(title) = payload
+                            .get("title")
+                            .or_else(|| payload.get("name"))
+                            .and_then(Value::as_str)
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            meta.title = Some(title.to_owned());
+                        }
+                    }
                 }
             }
             Some("token_usage_record") => {
-                if suppress_unowned_copied_prefix || has_unresolved_fork_baseline {
-                    continue;
-                }
-                process_token_usage_record(
-                    obj,
-                    line_day_and_ms.as_ref(),
-                    last_accepted_day_key.as_ref(),
-                    last_accepted_ts_ms,
-                    session_meta.as_ref(),
-                    &file_identity,
-                    current_model.as_deref(),
-                    current_turn_id.as_deref(),
-                    current_service_tier,
-                    &priority_turn_ids,
-                    priority_turns,
-                    catalog,
-                    &mut ledger,
-                    &mut days,
-                    &mut rows,
-                );
-            }
-            Some("event_msg") => {
-                let Some(payload) = obj.get("payload").and_then(Value::as_object) else {
-                    continue;
-                };
-                let payload_type = payload.get("type").and_then(Value::as_str);
-                if payload_type == Some("thread_settings_applied") {
-                    let tier_raw = payload
-                        .get("thread_settings")
-                        .and_then(Value::as_object)
-                        .and_then(|ts| ts.get("service_tier"))
-                        .or_else(|| payload.get("service_tier"))
-                        .and_then(Value::as_str);
-                    let is_prio = matches!(
-                        pricing::normalize_codex_service_tier(tier_raw),
-                        Some(CodexServiceTier::Priority | CodexServiceTier::Fast)
-                    );
-                    thread_priority = Some(is_prio);
-                    continue;
-                }
-                if payload_type == Some("task_started") || payload_type == Some("turn_started") {
-                    if let Some(tid) = payload
-                        .get("turn_id")
-                        .or_else(|| payload.get("id"))
-                        .and_then(Value::as_str)
-                        .filter(|s| !s.is_empty())
-                    {
-                        current_turn_id = Some(tid.to_owned());
-                        if let Some(is_prio) = thread_priority {
-                            if is_prio {
-                                priority_turn_ids.insert(tid.to_owned());
-                            } else {
-                                priority_turn_ids.remove(tid);
-                            }
-                        }
-                    }
-                    continue;
-                }
-                if payload_type == Some("token_usage_record") {
-                    if suppress_unowned_copied_prefix || has_unresolved_fork_baseline {
-                        continue;
-                    }
-                    process_token_usage_record(
-                        payload,
+                if !suppress_unowned_copied_prefix {
+                    line_ledger_mirror = process_token_usage_record(
+                        obj,
+                        line_ts_str.unwrap_or_default(),
                         line_day_and_ms.as_ref(),
-                        last_accepted_day_key.as_ref(),
-                        last_accepted_ts_ms,
                         session_meta.as_ref(),
                         &file_identity,
                         current_model.as_deref(),
                         current_turn_id.as_deref(),
                         current_service_tier,
-                        &priority_turn_ids,
                         priority_turns,
+                        range,
                         catalog,
+                        has_unresolved_fork_baseline,
+                        deferred_mirror.as_ref(),
+                        &retained_rows_by_index,
+                        &mut event_index,
                         &mut ledger,
+                        &mut replaced_legacy_row_indices,
+                        &mut ledger_legacy_pricing_keys,
                         &mut days,
                         &mut rows,
                     );
+                }
+            }
+            Some("event_msg") => {
+                if line_day_and_ms.is_none() {
                     continue;
                 }
-                if payload_type != Some("token_count") {
-                    continue;
-                }
-                if line_idx < skip_token_lines_before {
-                    continue;
-                }
-
-                let Some(info) = payload.get("info").and_then(Value::as_object) else {
+                let Some(payload) = obj.get("payload").and_then(Value::as_object) else {
                     continue;
                 };
-                let record_model = extract_model_from_map(info)
-                    .or_else(|| extract_model_from_map(payload))
-                    .or_else(|| extract_model_from_map(obj));
-                if let Some(tier) = pricing::normalize_codex_service_tier(
-                    info.get("service_tier")
-                        .or_else(|| payload.get("service_tier"))
-                        .and_then(Value::as_str),
-                ) {
-                    current_service_tier = Some(tier);
-                }
-                let turn_id = info
-                    .get("turn_id")
-                    .or_else(|| payload.get("turn_id"))
-                    .and_then(Value::as_str)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from)
-                    .or_else(|| current_turn_id.clone());
+                let payload_type = payload.get("type").and_then(Value::as_str);
+                if payload_type == Some("thread_settings_applied") {
+                    // LOW 1: match upstream CostUsageScanner.swift:3766-3770 and 4901-4902:
+                    // only inspect `payload["thread_settings"]["service_tier"]`, trim whitespace,
+                    // and check exact equality `== "priority"` (no `"fast"`, no case-folding).
+                    let tier_raw = payload
+                        .get("thread_settings")
+                        .and_then(Value::as_object)
+                        .and_then(|ts| ts.get("service_tier"))
+                        .and_then(Value::as_str)
+                        .map(str::trim);
+                    let is_prio = tier_raw == Some("priority");
+                    ledger.thread_priority = Some(is_prio);
+                } else if payload_type == Some("task_started") || payload_type == Some("turn_started") {
+                    ledger.clear_pending_mirrors();
+                    let tid = extract_codex_turn_id(payload);
+                    current_turn_id = tid.clone();
+                    let turn_key = tid.unwrap_or_default();
+                    if ledger.thread_priority == Some(true) {
+                        ledger.priority_turn_ids.insert(turn_key);
+                    } else {
+                        ledger.priority_turn_ids.remove(&turn_key);
+                    }
+                } else if payload_type == Some("token_count") && line_idx >= skip_token_lines_before {
+                    if let Some(info) = payload.get("info").and_then(Value::as_object) {
+                        let record_model = extract_model_from_map(info)
+                            .or_else(|| extract_model_from_map(payload))
+                            .or_else(|| extract_model_from_map(obj));
+                        if let Some(tier) = pricing::normalize_codex_service_tier(
+                            info.get("service_tier")
+                                .or_else(|| payload.get("service_tier"))
+                                .and_then(Value::as_str),
+                        ) {
+                            current_service_tier = Some(tier);
+                        }
+                        let record_turn_id = extract_codex_turn_id(payload);
+                        let last_usage = info
+                            .get("last_token_usage")
+                            .and_then(Value::as_object)
+                            .and_then(parse_codex_totals_map);
+                        let total_usage = info
+                            .get("total_token_usage")
+                            .and_then(Value::as_object)
+                            .and_then(parse_codex_totals_map);
 
-                let last_usage = info
-                    .get("last_token_usage")
-                    .and_then(Value::as_object)
-                    .and_then(parse_codex_totals_map);
-                let total_usage = info
-                    .get("total_token_usage")
-                    .and_then(Value::as_object)
-                    .and_then(parse_codex_totals_map);
-
-                if last_usage.is_none() && total_usage.is_none() {
-                    continue;
-                }
-
-                let this_event_index = event_index;
-                event_index += 1;
-
-                if suppress_unowned_copied_prefix || has_unresolved_fork_baseline {
-                    continue;
-                }
-
-                // Continued counter adjustment when history_base.thread_id != forked_from_id
-                if is_forked_session
-                    && !raised_continued_counter
-                    && let Some(ref meta) = session_meta
-                {
-                    raised_continued_counter = true;
-                    if let (Some(hb_id), Some(fork_id)) = (
-                        meta.history_base_thread_id.as_deref(),
-                        meta.forked_from_id.as_deref(),
-                    ) && !CodexSubagentRolloutShape::same_concrete_session_id(
-                        Some(hb_id),
-                        Some(fork_id),
-                    ) && let (Some(total), Some(last)) = (total_usage, last_usage)
-                        && codex_totals_at_least(total, last)
-                    {
-                        let origin = codex_total_delta(Some(last), total);
-                        let current_inherited = inherited_totals.unwrap_or_default();
-                        if !origin.is_zero()
-                            && codex_totals_at_least(origin, current_inherited)
-                            && !codex_totals_equal(Some(origin), Some(current_inherited))
+                        if (last_usage.is_some() || total_usage.is_some())
+                            && !suppress_unowned_copied_prefix
+                            && let Some((ref day_key, ts_ms)) = line_day_and_ms
                         {
-                            inherited_totals = Some(origin);
-                            remaining_inherited_totals = Some(origin);
+                            let ts_str = line_ts_str.unwrap_or_default();
+                            let mirror_turn_id = record_turn_id
+                                .as_deref()
+                                .or(current_turn_id.as_deref())
+                                .or(ledger.active_turn_id.as_deref())
+                                .map(String::from);
+                            let observation_key = make_codex_mirror_key(
+                                mirror_turn_id.as_deref(),
+                                last_usage,
+                                total_usage,
+                                Some(ts_str),
+                            );
+                            let already_observed = (total_usage.is_some()
+                                && ledger.legacy_row_indices.contains_key(&observation_key))
+                                || (last_usage.is_none()
+                                    && ledger.mirrored_responses.contains_key(&observation_key));
+                            if !already_observed {
+                                if has_unresolved_fork_baseline {
+                                    ledger.clear_pending_mirrors();
+                                } else {
+                                    let original_response_id = if ledger.pending_ledger_near_mirror.is_some() {
+                                        ledger.pending_ledger_response_id.clone()
+                                    } else {
+                                        None
+                                    };
+                                    let mut mirror = observe_legacy_mirror(
+                                        &mut ledger,
+                                        last_usage,
+                                        mirror_turn_id.as_deref(),
+                                        total_usage,
+                                        ts_str,
+                                        ts_ms,
+                                    );
+                                    let owner = mirror
+                                        .as_ref()
+                                        .and_then(|m| ledger.mirrored_responses.get(&m.snapshot))
+                                        .cloned();
+                                    ledger.remember_legacy_counter(
+                                        total_usage,
+                                        original_response_id.is_some() && owner == original_response_id,
+                                    );
+
+                                    // Continued counter adjustment when history_base.thread_id != forked_from_id
+                                    if is_forked_session
+                                        && !raised_continued_counter
+                                        && let Some(ref meta) = session_meta
+                                    {
+                                        raised_continued_counter = true;
+                                        if let (Some(hb_id), Some(fork_id)) = (
+                                            meta.history_base_thread_id.as_deref(),
+                                            meta.forked_from_id.as_deref(),
+                                        ) && !CodexSubagentRolloutShape::same_concrete_session_id(
+                                            Some(hb_id),
+                                            Some(fork_id),
+                                        ) && let (Some(total), Some(last)) = (total_usage, last_usage)
+                                            && codex_totals_at_least(total, last)
+                                        {
+                                            let origin = codex_total_delta(Some(last), total);
+                                            let current_inherited = inherited_totals.unwrap_or_default();
+                                            if !origin.is_zero()
+                                                && codex_totals_at_least(origin, current_inherited)
+                                                && !codex_totals_equal(Some(origin), Some(current_inherited))
+                                            {
+                                                inherited_totals = Some(origin);
+                                                remaining_inherited_totals = Some(origin);
+                                            }
+                                        }
+                                    }
+
+                                    let (delta, skipped_seen_or_stale) = if is_forked_session {
+                                        compute_forked_event_delta(
+                                            last_usage,
+                                            total_usage,
+                                            inherited_totals,
+                                            &mut remaining_inherited_totals,
+                                            &mut accumulator.tracker,
+                                            &mut fork_raw_baseline,
+                                            &mut fork_counted_totals,
+                                            &mut fork_saw_divergent,
+                                        )
+                                    } else {
+                                        apply_accumulator_event_with_skip(
+                                            &mut accumulator,
+                                            last_usage,
+                                            total_usage,
+                                        )
+                                    };
+
+                                    if skipped_seen_or_stale {
+                                        if delta.is_zero()
+                                            && total_usage.is_some()
+                                            && total_usage == ledger.last_ledger_total
+                                            && let Some(ref resp_id) =
+                                                ledger.pending_ledger_response_id.clone()
+                                        {
+                                            let row_turn_id = record_turn_id
+                                                .as_deref()
+                                                .or(current_turn_id.as_deref());
+                                            let session_id_opt = session_meta
+                                                .as_ref()
+                                                .map(|m| m.session_id.as_str())
+                                                .filter(|s| !s.is_empty());
+                                            let is_fast = is_codex_turn_priority(
+                                                current_service_tier,
+                                                row_turn_id,
+                                                session_id_opt,
+                                                &ledger.priority_turn_ids,
+                                                priority_turns,
+                                            );
+                                            if is_fast {
+                                                heal_ledger_row_from_legacy_mirror(
+                                                    resp_id,
+                                                    None,
+                                                    None,
+                                                    true,
+                                                    catalog,
+                                                    &mut days,
+                                                    &mut rows,
+                                                );
+                                            }
+                                        }
+                                        if mirror.is_none() {
+                                            ledger.clear_pending_mirrors();
+                                        }
+                                    } else {
+                                        ledger.remember_legacy_counter(total_usage, owner.is_none());
+                                        if mirror.is_none() {
+                                            mirror = observe_legacy_mirror(
+                                                &mut ledger,
+                                                Some(delta),
+                                                mirror_turn_id.as_deref(),
+                                                total_usage,
+                                                ts_str,
+                                                ts_ms,
+                                            );
+                                        }
+                                        if mirror.is_none() {
+                                            ledger.clear_pending_mirrors();
+                                        }
+
+                                        let raw_model = current_model
+                                            .as_deref()
+                                            .or(record_model.as_deref())
+                                            .map(String::from)
+                                            .unwrap_or_else(|| {
+                                                resolve_codex_turn_raw_model(
+                                                    None,
+                                                    mirror_turn_id.as_deref(),
+                                                    priority_turns,
+                                                )
+                                            });
+                                        let normalized_model =
+                                            pricing::normalize_codex_model(&raw_model);
+                                        let row_turn_id = record_turn_id
+                                            .as_deref()
+                                            .or(current_turn_id.as_deref());
+                                        let session_id_opt = session_meta
+                                            .as_ref()
+                                            .map(|m| m.session_id.as_str())
+                                            .filter(|s| !s.is_empty());
+                                        let is_fast = is_codex_turn_priority(
+                                            current_service_tier,
+                                            row_turn_id,
+                                            session_id_opt,
+                                            &ledger.priority_turn_ids,
+                                            priority_turns,
+                                        );
+
+                                        if let Some(ref m) = mirror
+                                            && let Some(response_id) =
+                                                ledger.mirrored_responses.get(&m.snapshot).cloned()
+                                        {
+                                            ledger.remember_mirrors(
+                                                std::iter::once(observation_key.as_str()),
+                                                &response_id,
+                                            );
+                                            heal_ledger_row_from_legacy_mirror(
+                                                &response_id,
+                                                Some(&normalized_model),
+                                                Some(&raw_model),
+                                                is_fast,
+                                                catalog,
+                                                &mut days,
+                                                &mut rows,
+                                            );
+                                            let legacy_row = CodexUsageRow {
+                                                day: day_key.as_str().to_owned(),
+                                                model: normalized_model,
+                                                raw_model: Some(raw_model),
+                                                turn_id: row_turn_id.map(String::from),
+                                                event_index: None,
+                                                timestamp_unix_ms: Some(ts_ms),
+                                                input: delta.input,
+                                                cached: delta.cached,
+                                                output: delta.output,
+                                                reasoning: delta.reasoning,
+                                                response_id: None,
+                                                request_mirror_keys: None,
+                                                known_cost_nanos: None,
+                                                unpriced_tokens: None,
+                                                pricing_model: None,
+                                                pricing_mode: None,
+                                                session_id: None,
+                                                file_identity: None,
+                                            };
+                                            remember_mirrored_legacy_pricing_key(
+                                                &response_id,
+                                                &legacy_row,
+                                                (&m.snapshot, m.owning_response_id.as_deref()),
+                                                &rows,
+                                                &retained_rows_by_index,
+                                                &mut ledger_legacy_pricing_keys,
+                                            );
+                                        } else if !delta.is_zero() {
+                                            let pricing_model = resolve_codex_priority_pricing_model(
+                                                &normalized_model,
+                                                row_turn_id,
+                                                priority_turns,
+                                                catalog,
+                                            );
+                                            let mirror_keys = mirror.as_ref().map(|m| {
+                                                let mut ks = vec![m.snapshot.clone()];
+                                                if last_usage.is_none() {
+                                                    ks.push(observation_key.clone());
+                                                }
+                                                ks
+                                            });
+                                            let this_event_index = event_index;
+                                            event_index += 1;
+                                            if let Some(ref ks) = mirror_keys {
+                                                for k in ks {
+                                                    ledger
+                                                        .legacy_row_indices
+                                                        .insert(k.clone(), this_event_index);
+                                                }
+                                            }
+                                            ledger.pending_legacy_mirrors =
+                                                mirror.as_ref().map(|m| m.adjacent.clone());
+                                            ledger.pending_legacy_row_index =
+                                                Some(this_event_index);
+                                            ledger.pending_legacy_near_mirror =
+                                                mirror.and_then(|m| m.near);
+
+                                            record_codex_row(
+                                                day_key.as_str(),
+                                                &normalized_model,
+                                                &pricing_model,
+                                                Some(&raw_model),
+                                                row_turn_id,
+                                                Some(this_event_index),
+                                                Some(ts_ms),
+                                                delta,
+                                                is_fast,
+                                                None,
+                                                mirror_keys,
+                                                session_id_opt,
+                                                Some(&file_identity),
+                                                None,
+                                                range,
+                                                catalog,
+                                                &mut days,
+                                                &mut rows,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-
-                let delta = if is_forked_session {
-                    compute_forked_event_delta(
-                        last_usage,
-                        total_usage,
-                        inherited_totals,
-                        &mut remaining_inherited_totals,
-                        &mut accumulator.tracker,
-                        &mut fork_raw_baseline,
-                        &mut fork_counted_totals,
-                        &mut fork_saw_divergent,
-                    )
-                } else {
-                    let (d, _) = accumulator.apply_event(last_usage, total_usage, false);
-                    d
-                };
-
-                if delta.is_zero() {
-                    continue;
-                }
-
-                let Some(day_key) = line_day_and_ms
-                    .as_ref()
-                    .map(|(dk, _)| dk.clone())
-                    .or_else(|| last_accepted_day_key.clone())
-                else {
-                    continue;
-                };
-                let ts_ms = line_day_and_ms
-                    .as_ref()
-                    .map(|(_, ms)| *ms)
-                    .or(last_accepted_ts_ms);
-
-                // Check request ledger mirror deduplication
-                let snapshot_key = make_legacy_snapshot_key(
-                    turn_id.as_deref(),
-                    total_usage,
-                    delta,
-                    this_event_index,
-                );
-                let mirror_keys = make_mirror_keys(turn_id.as_deref(), total_usage, delta);
-                let prev_legacy_total = ledger.last_legacy_total;
-                if let Some(total) = total_usage {
-                    ledger.last_legacy_total = Some(total);
-                }
-                let counter_advanced_more = match (prev_legacy_total, total_usage) {
-                    (Some(prev), Some(cur)) => {
-                        let diff = codex_total_delta(Some(prev), cur);
-                        diff.input > delta.input
-                            || diff.cached > delta.cached
-                            || diff.output > delta.output
-                    }
-                    _ => false,
-                };
-                let near = NearMirror {
-                    turn_id: turn_id.clone(),
-                    timestamp_unix_ms: ts_ms,
-                    usage: delta,
-                    counter_advanced_strictly_more_than_usage: counter_advanced_more,
-                };
-
-                if is_matched_by_pending_ledger(&mut ledger, &snapshot_key, &mirror_keys, &near) {
-                    continue;
-                }
-
-                let raw_model = current_model
-                    .as_deref()
-                    .or(record_model.as_deref())
-                    .map(String::from)
-                    .unwrap_or_else(|| {
-                        resolve_codex_turn_raw_model(None, turn_id.as_deref(), priority_turns)
-                    });
-                let normalized_model = pricing::normalize_codex_model(&raw_model);
-                let pricing_model = resolve_codex_priority_pricing_model(
-                    &normalized_model,
-                    turn_id.as_deref(),
-                    priority_turns,
-                );
-                let session_id_opt = session_meta
-                    .as_ref()
-                    .map(|m| m.session_id.as_str())
-                    .filter(|s| !s.is_empty());
-                let is_fast = is_codex_turn_priority(
-                    current_service_tier,
-                    turn_id.as_deref(),
-                    session_id_opt,
-                    &priority_turn_ids,
-                    priority_turns,
-                );
-
-                let row_idx = rows.len();
-                ledger.pending_legacy_mirrors = Some(mirror_keys.iter().cloned().collect());
-                ledger.pending_legacy_row_index = Some(row_idx);
-                ledger.pending_legacy_near = Some(near);
-
-                record_codex_row(
-                    day_key.as_str(),
-                    &normalized_model,
-                    &pricing_model,
-                    Some(&raw_model),
-                    turn_id.as_deref(),
-                    Some(this_event_index),
-                    ts_ms,
-                    delta,
-                    is_fast,
-                    None,
-                    Some(mirror_keys),
-                    session_id_opt,
-                    Some(&file_identity),
-                    catalog,
-                    &mut days,
-                    &mut rows,
-                );
             }
-            _ => {
+            None => {
                 // Check for bare usage row (`usage`, `data.usage`, `response.usage`, `result.usage`)
-                if suppress_unowned_copied_prefix || has_unresolved_fork_baseline {
-                    continue;
-                }
-                if let Some((bare_delta, bare_model)) = extract_bare_usage_row(obj) {
-                    if bare_delta.is_zero() {
-                        continue;
-                    }
-                    let Some(day_key) = line_day_and_ms
+                // when `type` is absent at root (`CostUsageScanner.swift:5088`).
+                if !suppress_unowned_copied_prefix
+                    && let Some((bare_delta, bare_model)) = extract_bare_usage_row(obj)
+                    && !bare_delta.is_zero()
+                    && let Some(day_key) = line_day_and_ms
                         .as_ref()
                         .map(|(dk, _)| dk.clone())
                         .or_else(|| last_accepted_day_key.clone())
-                    else {
-                        continue;
-                    };
+                {
                     let ts_ms = line_day_and_ms
                         .as_ref()
                         .map(|(_, ms)| *ms)
                         .or(last_accepted_ts_ms);
+                    if line_day_and_ms.is_none()
+                        && let Some(ref prev_ts) = last_accepted_ts_str
+                    {
+                        let _ = prev_ts;
+                    }
+                    ledger.clear_pending_mirrors();
                     let effective_raw = bare_model
                         .as_deref()
                         .or(current_model.as_deref())
-                        .unwrap_or("unknown");
+                        .unwrap_or("gpt-5");
                     let normalized_model = pricing::normalize_codex_model(effective_raw);
-                    let this_event_index = event_index;
-                    event_index += 1;
-
+                    let pricing_model = resolve_codex_priority_pricing_model(
+                        &normalized_model,
+                        current_turn_id.as_deref(),
+                        priority_turns,
+                        catalog,
+                    );
                     let session_id_opt = session_meta
                         .as_ref()
                         .map(|m| m.session_id.as_str())
                         .filter(|s| !s.is_empty());
+                    let bare_tier = pricing::normalize_codex_service_tier(
+                        obj.get("service_tier").and_then(Value::as_str),
+                    )
+                    .or(current_service_tier);
+                    let is_fast = is_codex_turn_priority(
+                        bare_tier,
+                        current_turn_id.as_deref(),
+                        session_id_opt,
+                        &ledger.priority_turn_ids,
+                        priority_turns,
+                    );
+                    let this_event_index = event_index;
+                    event_index += 1;
+
                     record_codex_row(
                         day_key.as_str(),
                         &normalized_model,
-                        &normalized_model,
+                        &pricing_model,
                         Some(effective_raw),
                         current_turn_id.as_deref(),
                         Some(this_event_index),
                         ts_ms,
                         bare_delta,
-                        false,
+                        is_fast,
                         None,
                         None,
                         session_id_opt,
                         Some(&file_identity),
+                        None,
+                        range,
                         catalog,
                         &mut days,
                         &mut rows,
                     );
+                    line_replaced_by_boundary = true;
                 }
             }
+            _ => {}
+        }
+
+        if has_unresolved_fork_baseline {
+            buffered_unresolved_fork_lines.push(CodexBufferedLine {
+                line_index: line_idx,
+                ordinal,
+                end_offset,
+                raw: if line_replaced_by_boundary {
+                    MIRROR_BOUNDARY_JSON.to_owned()
+                } else {
+                    raw
+                },
+                ledger_mirror: line_ledger_mirror,
+            });
         }
     }
+
+    let final_counted_totals = if is_forked_session {
+        fork_counted_totals
+    } else {
+        accumulator.counted_totals
+    };
+    let final_raw_baseline = if is_forked_session {
+        fork_raw_baseline
+    } else {
+        accumulator.raw_totals_baseline
+    };
+    let final_saw_divergent = if is_forked_session {
+        fork_saw_divergent
+    } else {
+        accumulator.saw_divergent_totals
+    };
+    let effective_session_id = session_meta
+        .as_ref()
+        .map(|m| m.session_id.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .or_else(|| resume.initial_session_id.map(String::from));
+    let effective_forked_from_id = session_meta
+        .as_ref()
+        .and_then(|m| m.forked_from_id.clone())
+        .or_else(|| resume.initial_forked_from_id.map(String::from));
+    let effective_fork_timestamp = session_meta
+        .as_ref()
+        .and_then(|m| m.fork_timestamp.clone())
+        .or_else(|| resume.initial_fork_timestamp.map(String::from));
+
+    let ledger_is_empty = ledger.response_ids.is_empty()
+        && ledger.legacy_row_indices.is_empty()
+        && ledger.turn_models.is_empty()
+        && ledger.active_turn_id.is_none()
+        && ledger.session_id == effective_session_id
+        && ledger.thread_priority.is_none()
+        && ledger.priority_turn_ids.is_empty()
+        && ledger.pending_ledger_mirrors.is_none()
+        && ledger.pending_legacy_mirrors.is_none()
+        && ledger.last_ledger_total.is_none()
+        && ledger.last_legacy_total.is_none();
 
     CodexParseResult {
         days,
@@ -1853,19 +2728,74 @@ where
         token_snapshots,
         parsed_bytes: offset,
         last_model: current_model,
-        last_totals: accumulator.raw_totals_baseline.or(fork_raw_baseline),
+        last_totals: final_raw_baseline.or(final_counted_totals),
+        last_counted_totals: final_counted_totals,
+        last_raw_totals_baseline: final_raw_baseline,
+        last_raw_totals_watermark: accumulator.tracker.watermark,
+        seen_raw_totals: accumulator.tracker.seen_raw_totals,
+        has_divergent_totals: final_saw_divergent
+            && !codex_totals_equal(final_raw_baseline, final_counted_totals),
+        has_interleaved_totals: accumulator.tracker.saw_interleaved_totals,
         last_codex_turn_id: current_turn_id,
-        session_id: session_meta
-            .as_ref()
-            .map(|m| m.session_id.as_str())
-            .filter(|s| !s.is_empty())
-            .map(String::from),
-        forked_from_id: session_meta.as_ref().and_then(|m| m.forked_from_id.clone()),
-        fork_timestamp: session_meta.as_ref().and_then(|m| m.fork_timestamp.clone()),
+        last_service_tier: current_service_tier,
+        next_usage_row_index: event_index,
+        session_id: effective_session_id,
+        forked_from_id: effective_forked_from_id,
+        fork_timestamp: effective_fork_timestamp,
         depends_on_parent_totals,
         has_unresolved_fork_baseline,
+        resolved_inherited_totals: if is_forked_session && !has_unresolved_fork_baseline {
+            inherited_totals
+        } else {
+            None
+        },
+        remaining_inherited_totals: if is_forked_session && !has_unresolved_fork_baseline {
+            remaining_inherited_totals
+        } else {
+            None
+        },
+        buffered_subagent_lines: if buffer_subagent_lines {
+            buffered_subagent_lines
+        } else {
+            Vec::new()
+        },
+        buffered_unresolved_fork_lines: if has_unresolved_fork_baseline {
+            buffered_unresolved_fork_lines
+        } else {
+            Vec::new()
+        },
+        request_ledger_state: if ledger_is_empty { None } else { Some(ledger) },
+        replaced_legacy_row_indices,
+        ledger_legacy_pricing_keys,
         codex_session: session_meta,
     }
+}
+
+fn apply_accumulator_event_with_skip(
+    accumulator: &mut CodexSnapshotAccumulator,
+    last: Option<CodexTotals>,
+    total: Option<CodexTotals>,
+) -> (CodexTotals, bool) {
+    if let Some(total) = total {
+        if accumulator.tracker.is_seen(total) {
+            return (CodexTotals::default(), true);
+        }
+        let stale_baseline = accumulator
+            .tracker
+            .watermark
+            .or(accumulator.raw_totals_baseline);
+        if let Some(previous_total) = stale_baseline
+            && codex_looks_like_stale_regression(
+                total,
+                previous_total,
+                last.unwrap_or_default(),
+            )
+        {
+            return (CodexTotals::default(), true);
+        }
+    }
+    let (delta, _) = accumulator.apply_event(last, total, false);
+    (delta, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1878,7 +2808,7 @@ fn compute_forked_event_delta(
     raw_baseline: &mut Option<CodexTotals>,
     counted_totals: &mut Option<CodexTotals>,
     saw_divergent: &mut bool,
-) -> CodexTotals {
+) -> (CodexTotals, bool) {
     let mut adjust_last_delta = |raw_delta: CodexTotals| -> CodexTotals {
         let Some(mut rem) = *remaining_inherited_totals else {
             return raw_delta;
@@ -1914,7 +2844,7 @@ fn compute_forked_event_delta(
             None => total,
         };
         if tracker.is_seen(adjusted_total) {
-            return CodexTotals::default();
+            return (CodexTotals::default(), true);
         }
         let stale_baseline = tracker.watermark.or(*raw_baseline);
         if let Some(prev_water) = stale_baseline
@@ -1924,7 +2854,7 @@ fn compute_forked_event_delta(
                 last.unwrap_or_default(),
             )
         {
-            return CodexTotals::default();
+            return (CodexTotals::default(), true);
         }
         tracker.latch_if_below_watermark(adjusted_total);
         let watermark_baseline = tracker.watermark.or(*raw_baseline);
@@ -1952,7 +2882,7 @@ fn compute_forked_event_delta(
         }
         *remaining_inherited_totals = None;
         tracker.commit_observed(adjusted_total);
-        return delta;
+        return (delta, false);
     }
 
     if let Some(last) = last {
@@ -1962,156 +2892,473 @@ fn compute_forked_event_delta(
         *counted_totals = Some(next);
         *raw_baseline = Some(next);
         tracker.raise_watermark(next);
-        return adjusted_delta;
+        return (adjusted_delta, false);
     }
 
-    CodexTotals::default()
+    (CodexTotals::default(), true)
+}
+
+#[derive(Debug, Clone)]
+struct LegacyMirrorObservation {
+    snapshot: String,
+    adjacent: BTreeSet<String>,
+    near: Option<CodexNearMirror>,
+    owning_response_id: Option<String>,
+}
+
+fn observe_legacy_mirror(
+    ledger: &mut CodexRequestLedgerState,
+    usage: Option<CodexTotals>,
+    turn_id: Option<&str>,
+    total: Option<CodexTotals>,
+    timestamp: &str,
+    timestamp_ms: i64,
+) -> Option<LegacyMirrorObservation> {
+    let usage = usage?;
+    let snapshot = make_codex_mirror_key(turn_id, Some(usage), total, Some(timestamp));
+    let adjacent = make_codex_adjacent_mirror_keys(turn_id, usage, total, timestamp);
+    let near = Some(make_codex_near_mirror(
+        turn_id,
+        usage,
+        total,
+        ledger.last_legacy_total,
+        timestamp_ms,
+    ));
+    let owning_response_id = ledger.begin_legacy_observation(&adjacent, &snapshot, near.as_ref());
+    Some(LegacyMirrorObservation {
+        snapshot,
+        adjacent,
+        near,
+        owning_response_id,
+    })
+}
+
+/// Builds a canonical mirror snapshot key (`CostUsageScanner.mirrorKey`).
+#[must_use]
+pub fn make_codex_mirror_key(
+    turn_id: Option<&str>,
+    usage: Option<CodexTotals>,
+    total: Option<CodexTotals>,
+    timestamp: Option<&str>,
+) -> String {
+    [
+        turn_id.unwrap_or(""),
+        &usage.map_or_else(String::new, |u| u.input.to_string()),
+        &usage.map_or_else(String::new, |u| u.cached.to_string()),
+        &usage.map_or_else(String::new, |u| u.output.to_string()),
+        &usage.map_or_else(String::new, |u| u.reasoning.unwrap_or(0).to_string()),
+        &total.map_or_else(String::new, |t| t.input.to_string()),
+        &total.map_or_else(String::new, |t| t.cached.to_string()),
+        &total.map_or_else(String::new, |t| t.output.to_string()),
+        timestamp.unwrap_or(""),
+    ]
+    .join("\x1F")
+}
+
+/// Builds the adjacent mirror key set (`CostUsageScanner.adjacentMirrorKeys`).
+#[must_use]
+pub fn make_codex_adjacent_mirror_keys(
+    turn_id: Option<&str>,
+    usage: CodexTotals,
+    total: Option<CodexTotals>,
+    timestamp: &str,
+) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    keys.insert(make_codex_mirror_key(
+        turn_id,
+        Some(usage),
+        None,
+        Some(timestamp),
+    ));
+    if total.is_some() {
+        keys.insert(make_codex_mirror_key(turn_id, Some(usage), total, None));
+    }
+    keys
+}
+
+/// Builds the near-window mirror descriptor (`CostUsageScanner.nearMirror`).
+#[must_use]
+pub fn make_codex_near_mirror(
+    turn_id: Option<&str>,
+    usage: CodexTotals,
+    total: Option<CodexTotals>,
+    previous: Option<CodexTotals>,
+    timestamp_ms: i64,
+) -> CodexNearMirror {
+    let key = turn_id.filter(|t| !t.is_empty()).map(|turn| {
+        [
+            turn,
+            &usage.input.to_string(),
+            &usage.cached.to_string(),
+            &usage.output.to_string(),
+        ]
+        .join("\x1F")
+    });
+    let counter_advance = match (previous, total) {
+        (Some(prev), Some(tot)) => {
+            let delta = [
+                tot.input - prev.input,
+                tot.cached - prev.cached,
+                tot.output - prev.output,
+            ];
+            let expected = [usage.input, usage.cached, usage.output];
+            if delta == expected {
+                CodexCounterAdvance::Exact
+            } else if delta.iter().zip(expected.iter()).any(|(d, e)| d > e) {
+                CodexCounterAdvance::Intervening
+            } else {
+                CodexCounterAdvance::Bounded
+            }
+        }
+        _ => CodexCounterAdvance::Unknown,
+    };
+    CodexNearMirror {
+        key,
+        timestamp_ms,
+        counter_advance,
+    }
+}
+
+fn parse_strict_request_usage(map: &serde_json::Map<String, Value>) -> Option<CodexTotals> {
+    let integer = |key: &str, default_val: Option<i64>| -> Option<i64> {
+        let Some(val) = map.get(key) else {
+            return default_val;
+        };
+        let num = val.as_number()?;
+        if let Some(i) = num.as_i64() {
+            if i >= 0 && i < i64::MAX {
+                return Some(i);
+            }
+            return None;
+        }
+        if let Some(f) = num.as_f64()
+            && f.is_finite()
+            && f >= 0.0
+            && f < (i64::MAX as f64)
+            && f.trunc() == f
+        {
+            return Some(f as i64);
+        }
+        None
+    };
+    let input = integer("input_tokens", None)?;
+    let output = integer("output_tokens", None)?;
+    let cached = integer("cached_input_tokens", Some(0))?;
+    if cached > input {
+        return None;
+    }
+    let reasoning = integer("reasoning_output_tokens", Some(0))?;
+    if reasoning > output {
+        return None;
+    }
+    input.checked_add(output)?;
+    Some(CodexTotals {
+        input,
+        cached,
+        output,
+        reasoning: Some(reasoning),
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn process_token_usage_record(
     obj: &serde_json::Map<String, Value>,
+    timestamp_str: &str,
     line_day_and_ms: Option<&(DayKey, i64)>,
-    last_accepted_day_key: Option<&DayKey>,
-    last_accepted_ts_ms: Option<i64>,
     session_meta: Option<&CodexSessionMetadata>,
     file_identity: &str,
     current_model: Option<&str>,
     current_turn_id: Option<&str>,
     current_service_tier: Option<CodexServiceTier>,
-    priority_turn_ids: &BTreeSet<String>,
     priority_turns: &BTreeMap<String, CodexPriorityTurnMetadata>,
+    range: &DayRange,
     catalog: Option<&ModelsDevCatalog>,
+    has_unresolved_fork_baseline: bool,
+    deferred_mirror: Option<&CodexNearMirror>,
+    retained_rows_by_index: &BTreeMap<usize, CodexUsageRow>,
+    event_index: &mut usize,
     ledger: &mut CodexRequestLedgerState,
+    replaced_legacy_row_indices: &mut BTreeSet<usize>,
+    ledger_legacy_pricing_keys: &mut BTreeMap<usize, CodexSourcePricingKey>,
     days: &mut BTreeMap<String, BTreeMap<String, Vec<i64>>>,
     rows: &mut Vec<CodexUsageRow>,
-) {
-    let payload = obj.get("payload").and_then(Value::as_object).unwrap_or(obj);
-    let record_thread_id = payload
-        .get("thread_id")
-        .or_else(|| payload.get("session_id"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty());
+) -> Option<CodexNearMirror> {
+    let payload = obj.get("payload")?.as_object()?;
+    let leaf_session_id = session_meta
+        .map(|m| m.session_id.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    let record_thread_id = match payload.get("thread_id") {
+        Some(v) => v.as_str().map(str::trim).filter(|s| !s.is_empty())?,
+        None if leaf_session_id.is_empty() => "",
+        None => return None,
+    };
+    let response_id = match payload.get("response_id") {
+        Some(v) => v
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())?
+            .to_owned(),
+        None if payload
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty() && s.trim().is_empty()) =>
+        {
+            format!("anon-resp-{}", *event_index)
+        }
+        None => return None,
+    };
+    let usage = payload
+        .get("usage")
+        .and_then(Value::as_object)
+        .and_then(parse_strict_request_usage)?;
+    let thread_total = match payload.get("thread_token_usage") {
+        Some(v) => v.as_object().and_then(parse_strict_request_usage)?,
+        None => payload
+            .get("total_token_usage")
+            .and_then(Value::as_object)
+            .and_then(parse_strict_request_usage)
+            .unwrap_or(usage),
+    };
+    if !codex_totals_at_least(thread_total, usage) {
+        return None;
+    }
     let record_session_id = payload
         .get("session_id")
         .and_then(Value::as_str)
+        .map(str::trim)
         .filter(|s| !s.is_empty());
-
-    if let Some(meta) = session_meta {
-        if let Some(tid) = record_thread_id
-            && tid != meta.session_id
-        {
-            return;
-        }
-        if let Some(sid) = record_session_id
-            && sid != meta.session_id
-        {
-            return;
-        }
+    if payload.get("session_id").is_some_and(|v| !v.is_null()) && record_session_id.is_none() {
+        return None;
     }
-
-    let response_id = payload
-        .get("response_id")
-        .or_else(|| payload.get("id"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-
-    let is_replay = response_id
-        .as_ref()
-        .is_some_and(|rid| !ledger.response_ids.insert(rid.clone()));
-
-    let usage_map = payload
-        .get("usage")
-        .or_else(|| payload.get("last_token_usage"))
-        .and_then(Value::as_object);
-    let Some(delta) = usage_map.and_then(parse_codex_totals_map) else {
-        return;
-    };
-    if delta.is_zero() {
-        return;
-    }
-
-    let total_usage = payload
-        .get("thread_token_usage")
-        .or_else(|| payload.get("total_token_usage"))
-        .and_then(Value::as_object)
-        .and_then(parse_codex_totals_map);
     let turn_total = payload
         .get("turn_token_usage")
         .and_then(Value::as_object)
-        .and_then(parse_codex_totals_map);
-    let turn_id = payload
-        .get("turn_id")
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(String::from)
-        .or_else(|| current_turn_id.map(String::from));
+        .and_then(parse_strict_request_usage)
+        .filter(|tt| codex_totals_at_least(*tt, usage));
 
-    let Some(day_key) = line_day_and_ms
-        .map(|(dk, _)| dk.clone())
-        .or_else(|| last_accepted_day_key.cloned())
-    else {
-        return;
-    };
-    let ts_ms = line_day_and_ms.map(|(_, ms)| *ms).or(last_accepted_ts_ms);
-
-    let mut mirror_keys = make_mirror_keys(turn_id.as_deref(), total_usage, delta);
-    if let Some(tt) = turn_total {
-        mirror_keys.extend(make_mirror_keys(turn_id.as_deref(), Some(tt), delta));
+    if !leaf_session_id.is_empty() && record_thread_id != leaf_session_id {
+        return None;
     }
-    let prev_ledger_total = ledger.last_ledger_total;
-    if !is_replay && let Some(total) = total_usage {
-        ledger.last_ledger_total = Some(total);
-    }
-    let counter_advanced_more = match (prev_ledger_total, total_usage) {
-        (Some(prev), Some(cur)) => {
-            let diff = codex_total_delta(Some(prev), cur);
-            diff.input > delta.input || diff.cached > delta.cached || diff.output > delta.output
-        }
-        _ => false,
-    };
-    let near = NearMirror {
-        turn_id: turn_id.clone(),
-        timestamp_unix_ms: ts_ms,
-        usage: delta,
-        counter_advanced_strictly_more_than_usage: counter_advanced_more,
-    };
-
-    // If a legacy `token_count` mirror was emitted right before this `token_usage_record`, replace it!
-    if let Some(legacy_row_idx) = take_matching_pending_legacy(ledger, &mirror_keys, &near)
-        && legacy_row_idx < rows.len()
+    let expected_request_session_id = ledger.session_id.as_deref().unwrap_or(leaf_session_id);
+    if let Some(sid) = record_session_id
+        && !expected_request_session_id.is_empty()
+        && sid != expected_request_session_id
     {
-        let old_row = rows.remove(legacy_row_idx);
-        subtract_codex_row_from_days(&old_row, days);
-    } else if let Some(ref rid) = response_id {
-        ledger.pending_ledger_mirrors = Some(mirror_keys.iter().cloned().collect());
-        ledger.pending_ledger_response_id = Some(rid.clone());
-        ledger.pending_ledger_near = Some(near);
+        return None;
+    }
+
+    let (day_key, ts_ms) = line_day_and_ms?;
+    let record_turn_id = extract_codex_turn_id(payload);
+    let turn_id = record_turn_id
+        .as_deref()
+        .or(current_turn_id)
+        .or(ledger.active_turn_id.as_deref())
+        .map(String::from);
+
+    let mut keys = vec![
+        make_codex_mirror_key(
+            turn_id.as_deref(),
+            Some(usage),
+            Some(thread_total),
+            Some(timestamp_str),
+        ),
+        make_codex_mirror_key(turn_id.as_deref(), Some(usage), None, Some(timestamp_str)),
+    ];
+    if let Some(tt) = turn_total {
+        keys.push(make_codex_mirror_key(
+            turn_id.as_deref(),
+            Some(usage),
+            Some(tt),
+            Some(timestamp_str),
+        ));
+    }
+
+    let record_model = payload
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    let raw_model = record_model
+        .or_else(|| {
+            turn_id
+                .as_deref()
+                .and_then(|tid| ledger.turn_models.get(tid).cloned())
+        })
+        .or_else(|| {
+            if turn_id.as_deref() == current_turn_id
+                || turn_id.as_deref() == ledger.active_turn_id.as_deref()
+            {
+                current_model.map(String::from)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            resolve_codex_turn_raw_model(None, turn_id.as_deref(), priority_turns)
+        });
+
+    let is_replay = ledger.response_ids.contains(&response_id);
+    let mirror = keys
+        .iter()
+        .find(|k| ledger.legacy_row_indices.contains_key(*k))
+        .cloned();
+    let adjacent_keys =
+        make_codex_adjacent_mirror_keys(turn_id.as_deref(), usage, Some(thread_total), timestamp_str);
+    let pending_original = if ledger.pending_ledger_response_id.as_deref()
+        == Some(response_id.as_str())
+        && ledger.pending_ledger_mirrors.as_ref() == Some(&adjacent_keys)
+    {
+        ledger.pending_ledger_near_mirror.clone()
+    } else {
+        None
+    };
+    let near = if is_replay {
+        deferred_mirror.cloned().or(pending_original)
+    } else {
+        Some(make_codex_near_mirror(
+            turn_id.as_deref(),
+            usage,
+            Some(thread_total),
+            ledger.last_ledger_total,
+            *ts_ms,
+        ))
+    };
+    if !is_replay || deferred_mirror.is_some() {
+        ledger.last_ledger_total = Some(thread_total);
+    }
+
+    let matches_adjacent = ledger
+        .pending_legacy_mirrors
+        .as_ref()
+        .is_some_and(|p| !p.is_disjoint(&adjacent_keys))
+        || near
+            .as_ref()
+            .is_some_and(|n| n.matches(ledger.pending_legacy_near_mirror.as_ref(), false));
+    let adjacent_index = if matches_adjacent {
+        ledger.pending_legacy_row_index
+    } else {
+        None
+    };
+    let mirror_index = mirror
+        .as_ref()
+        .and_then(|k| ledger.legacy_row_indices.get(k).copied())
+        .or(adjacent_index);
+    let has_mirror = mirror_index.is_some();
+
+    ledger.clear_pending_mirrors();
+    ledger.pending_ledger_mirrors = if has_mirror {
+        None
+    } else {
+        Some(adjacent_keys)
+    };
+    ledger.pending_ledger_response_id = if has_mirror {
+        None
+    } else {
+        Some(response_id.clone())
+    };
+    ledger.pending_ledger_near_mirror = if has_mirror { None } else { near.clone() };
+
+    let owns_pricing = !is_replay
+        || rows
+            .iter()
+            .rev()
+            .find(|r| r.response_id.as_deref() == Some(response_id.as_str()))
+            .or_else(|| {
+                retained_rows_by_index
+                    .values()
+                    .find(|r| r.response_id.as_deref() == Some(response_id.as_str()))
+            })
+            .and_then(|r| r.request_mirror_keys.as_ref())
+            .and_then(|ks| ks.first())
+            == keys.first();
+    ledger.pending_ledger_pricing_response_id = if !has_mirror && owns_pricing {
+        Some(response_id.clone())
+    } else {
+        None
+    };
+
+    let legacy_row = mirror_index.and_then(|idx| {
+        rows.iter()
+            .find(|r| r.event_index == Some(idx))
+            .cloned()
+            .or_else(|| retained_rows_by_index.get(&idx).cloned())
+    });
+    if let Some(ref lrow) = legacy_row
+        && let Some(ref mks) = lrow.request_mirror_keys
+    {
+        keys.extend(mks.iter().cloned());
+    }
+
+    let base = ledger.counted_usage.unwrap_or_default();
+    if !is_replay {
+        let new_in = base.input.checked_add(usage.input)?;
+        let _new_cached = base.cached.checked_add(usage.cached)?;
+        let new_out = base.output.checked_add(usage.output)?;
+        new_in.checked_add(new_out)?;
+    }
+
+    if !has_unresolved_fork_baseline {
+        ledger.remember_mirrors(keys.iter(), &response_id);
+    }
+    ledger.response_ids.insert(response_id.clone());
+
+    if let (Some(idx), Some(lrow)) = (mirror_index, legacy_row.as_ref()) {
+        ledger.legacy_row_indices.retain(|_, v| *v != idx);
+        replaced_legacy_row_indices.insert(idx);
+        if let Some(pos) = rows.iter().position(|r| r.event_index == Some(idx)) {
+            let removed = rows.remove(pos);
+            subtract_codex_row_from_days(&removed, days);
+        }
+        let _ = lrow;
     }
 
     if is_replay {
-        return;
+        if let Some(ref lrow) = legacy_row {
+            remember_mirrored_legacy_pricing_key(
+                &response_id,
+                lrow,
+                (&keys[0], if owns_pricing { Some(response_id.as_str()) } else { None }),
+                rows,
+                retained_rows_by_index,
+                ledger_legacy_pricing_keys,
+            );
+        }
+        return deferred_mirror.cloned();
     }
 
-    let raw_model = extract_model_from_map(payload)
-        .or_else(|| current_model.map(String::from))
-        .unwrap_or_else(|| {
-            resolve_codex_turn_raw_model(current_model, turn_id.as_deref(), priority_turns)
-        });
+    ledger.counted_usage = Some(codex_add_totals(base, usage));
+
+    let raw_model = if pricing::normalize_codex_model(&raw_model) == "unknown"
+        && let Some(ref lrow) = legacy_row
+        && lrow.model != "unknown"
+    {
+        lrow.raw_model
+            .clone()
+            .unwrap_or_else(|| lrow.model.clone())
+    } else {
+        raw_model
+    };
     let normalized_model = pricing::normalize_codex_model(&raw_model);
-    let pricing_model =
-        resolve_codex_priority_pricing_model(&normalized_model, turn_id.as_deref(), priority_turns);
+    let pricing_model = resolve_codex_priority_pricing_model(
+        &normalized_model,
+        turn_id.as_deref(),
+        priority_turns,
+        catalog,
+    );
     let tier =
         pricing::normalize_codex_service_tier(payload.get("service_tier").and_then(Value::as_str))
             .or(current_service_tier);
     let is_fast = is_codex_turn_priority(
         tier,
         turn_id.as_deref(),
-        session_meta.map(|m| m.session_id.as_str()),
-        priority_turn_ids,
+        Some(leaf_session_id),
+        &ledger.priority_turn_ids,
         priority_turns,
     );
+    let this_event_index = *event_index;
+    *event_index += 1;
 
     record_codex_row(
         day_key.as_str(),
@@ -2119,103 +3366,110 @@ fn process_token_usage_record(
         &pricing_model,
         Some(&raw_model),
         turn_id.as_deref(),
-        None,
-        ts_ms,
-        delta,
+        Some(this_event_index),
+        Some(*ts_ms),
+        usage,
         is_fast,
-        response_id,
-        Some(mirror_keys),
-        session_meta.map(|m| m.session_id.as_str()),
+        Some(response_id.clone()),
+        Some(keys.clone()),
+        Some(leaf_session_id),
         Some(file_identity),
+        legacy_row.as_ref(),
+        range,
         catalog,
         days,
         rows,
     );
+
+    if let Some(ref lrow) = legacy_row {
+        remember_mirrored_legacy_pricing_key(
+            &response_id,
+            lrow,
+            (&keys[0], if owns_pricing { Some(response_id.as_str()) } else { None }),
+            rows,
+            retained_rows_by_index,
+            ledger_legacy_pricing_keys,
+        );
+    }
+
+    near
 }
 
-fn make_legacy_snapshot_key(
-    turn_id: Option<&str>,
-    total: Option<CodexTotals>,
-    delta: CodexTotals,
-    event_index: usize,
-) -> String {
-    let tid = turn_id.unwrap_or("");
-    if let Some(t) = total {
-        format!("snap|{tid}|{}|{}|{}", t.input, t.cached, t.output)
+fn remember_mirrored_legacy_pricing_key(
+    response_id: &str,
+    legacy_row: &CodexUsageRow,
+    mirror: (&str, Option<&str>),
+    rows: &[CodexUsageRow],
+    retained_rows_by_index: &BTreeMap<usize, CodexUsageRow>,
+    ledger_legacy_pricing_keys: &mut BTreeMap<usize, CodexSourcePricingKey>,
+) {
+    let Some(ledger_row) = rows
+        .iter()
+        .rev()
+        .find(|r| r.response_id.as_deref() == Some(response_id))
+        .or_else(|| {
+            retained_rows_by_index
+                .values()
+                .find(|r| r.response_id.as_deref() == Some(response_id))
+        })
+    else {
+        return;
+    };
+    let Some(ledger_index) = ledger_row.event_index else {
+        return;
+    };
+    if ledger_row.model != legacy_row.model {
+        return;
+    }
+    let Some(legacy_key) = CodexSourcePricingKey::from_row(legacy_row) else {
+        return;
+    };
+    let owns_snapshot = mirror.1 == Some(response_id)
+        || ledger_row
+            .request_mirror_keys
+            .as_ref()
+            .is_some_and(|ks| ks.iter().any(|k| k == mirror.0));
+    if !owns_snapshot {
+        return;
+    }
+    ledger_legacy_pricing_keys.insert(ledger_index, legacy_key);
+}
+
+fn extract_codex_turn_id(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    let info = payload.get("info").and_then(Value::as_object);
+    for container in [Some(payload), info].into_iter().flatten() {
+        for key in ["turn_id", "turnId", "id"] {
+            if let Some(v) = container.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                return Some(v.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn extract_turn_context_model(payload: &serde_json::Map<String, Value>) -> Option<String> {
+    let info = payload.get("info").and_then(Value::as_object);
+    let candidates = [
+        payload.get("model"),
+        payload.get("model_name"),
+        info.and_then(|i| i.get("model")),
+        info.and_then(|i| i.get("model_name")),
+    ];
+    let mut saw_candidate = false;
+    for cand in candidates.into_iter().flatten() {
+        if let Some(s) = cand.as_str() {
+            saw_candidate = true;
+            let trimmed = s.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    if saw_candidate {
+        Some(String::new())
     } else {
-        format!(
-            "snap_idx|{tid}|{event_index}|{}|{}|{}",
-            delta.input, delta.cached, delta.output
-        )
+        None
     }
-}
-
-fn make_mirror_keys(
-    turn_id: Option<&str>,
-    total: Option<CodexTotals>,
-    delta: CodexTotals,
-) -> Vec<String> {
-    let mut keys = Vec::new();
-    let tid = turn_id.unwrap_or("");
-    keys.push(format!(
-        "delta|{tid}|{}|{}|{}",
-        delta.input, delta.cached, delta.output
-    ));
-    if let Some(t) = total {
-        keys.push(format!("total|{tid}|{}|{}|{}", t.input, t.cached, t.output));
-    }
-    keys
-}
-
-fn is_matched_by_pending_ledger(
-    ledger: &mut CodexRequestLedgerState,
-    snapshot_key: &str,
-    mirror_keys: &[String],
-    near: &NearMirror,
-) -> bool {
-    let Some(ref pending_keys) = ledger.pending_ledger_mirrors else {
-        return false;
-    };
-    let Some(ref response_id) = ledger.pending_ledger_response_id else {
-        ledger.clear_pending();
-        return false;
-    };
-    if let Some(owner) = ledger.mirrored_snapshots.get(snapshot_key)
-        && owner != response_id
-    {
-        ledger.clear_pending();
-        return false;
-    }
-    let key_overlap = mirror_keys.iter().any(|k| pending_keys.contains(k));
-    let near_match = ledger
-        .pending_ledger_near
-        .as_ref()
-        .is_some_and(|p| near.matches(p, true));
-    let matched = key_overlap || near_match;
-    if matched {
-        ledger
-            .mirrored_snapshots
-            .insert(snapshot_key.to_owned(), response_id.clone());
-    }
-    ledger.clear_pending();
-    matched
-}
-
-fn take_matching_pending_legacy(
-    ledger: &mut CodexRequestLedgerState,
-    mirror_keys: &[String],
-    near: &NearMirror,
-) -> Option<usize> {
-    let pending_keys = ledger.pending_legacy_mirrors.as_ref()?;
-    let row_idx = ledger.pending_legacy_row_index?;
-    let key_overlap = mirror_keys.iter().any(|k| pending_keys.contains(k));
-    let near_match = ledger
-        .pending_legacy_near
-        .as_ref()
-        .is_some_and(|p| near.matches(p, true));
-    let matched = key_overlap || near_match;
-    ledger.clear_pending();
-    if matched { Some(row_idx) } else { None }
 }
 
 fn resolve_codex_turn_raw_model(
@@ -2237,14 +3491,26 @@ fn resolve_codex_priority_pricing_model(
     row_model: &str,
     turn_id: Option<&str>,
     priority_turns: &BTreeMap<String, CodexPriorityTurnMetadata>,
+    catalog: Option<&ModelsDevCatalog>,
 ) -> String {
     if let Some(tid) = turn_id
         && let Some(meta) = priority_turns.get(tid)
         && let Some(ref priority_model) = meta.model
         && !priority_model.is_empty()
-        && pricing::codex_api_fast_multiplier(priority_model).is_some()
     {
-        return pricing::normalize_codex_model(priority_model);
+        let normalized_prio = pricing::normalize_codex_model(priority_model);
+        if pricing::codex_cost_usd_with_tier(
+            &normalized_prio,
+            1,
+            0,
+            0,
+            Some(CodexServiceTier::Priority),
+            catalog,
+        )
+        .is_some()
+        {
+            return normalized_prio;
+        }
     }
     row_model.to_owned()
 }
@@ -2290,30 +3556,66 @@ fn record_codex_row(
     request_mirror_keys: Option<Vec<String>>,
     session_id: Option<&str>,
     file_identity: Option<&str>,
+    retained_pricing: Option<&CodexUsageRow>,
+    range: &DayRange,
     catalog: Option<&ModelsDevCatalog>,
     days: &mut BTreeMap<String, BTreeMap<String, Vec<i64>>>,
     rows: &mut Vec<CodexUsageRow>,
 ) {
-    let tier = if is_fast {
+    if !range.contains_scan_day(day_key) {
+        return;
+    }
+    let retained = retained_pricing.filter(|r| r.model == normalized_model);
+    let effective_is_fast = is_fast
+        || retained_pricing
+            .and_then(|r| r.pricing_mode.as_deref())
+            .is_some_and(|m| m == "priority");
+    let effective_pricing_model = retained
+        .and_then(|r| r.pricing_model.as_deref())
+        .unwrap_or(pricing_model);
+    let tier = if effective_is_fast {
         Some(CodexServiceTier::Priority)
     } else {
         Some(CodexServiceTier::Standard)
     };
-    let cost_usd = pricing::codex_cost_usd_with_tier(
-        pricing_model,
-        delta.input,
-        delta.cached,
-        delta.output,
-        tier,
-        catalog,
-    );
-    let cost_nanos = cost_usd.map(|c| (c * 1_000_000_000.0).round() as i64);
+    let pricing_epoch_secs = timestamp_unix_ms.map(|ms| ms.div_euclid(1000));
+    let cost_nanos = retained
+        .and_then(|r| r.known_cost_nanos)
+        .or_else(|| {
+            pricing::codex_cost_usd_with_tier_and_epoch(
+                effective_pricing_model,
+                delta.input,
+                delta.cached,
+                delta.output,
+                tier,
+                pricing_epoch_secs,
+                catalog,
+            )
+            .or_else(|| {
+                if effective_is_fast {
+                    pricing::codex_cost_usd_with_tier_and_epoch(
+                        effective_pricing_model,
+                        delta.input,
+                        delta.cached,
+                        delta.output,
+                        Some(CodexServiceTier::Standard),
+                        pricing_epoch_secs,
+                        catalog,
+                    )
+                } else {
+                    None
+                }
+            })
+            .map(|c| (c * 1_000_000_000.0).round() as i64)
+        });
     let total_tokens = delta.scanner_units();
-    let unpriced_tokens = if cost_nanos.is_none() {
-        Some(total_tokens)
-    } else {
-        None
-    };
+    let unpriced_tokens = retained
+        .and_then(|r| r.unpriced_tokens)
+        .or(if cost_nanos.is_none() {
+            Some(total_tokens)
+        } else {
+            None
+        });
 
     let row = CodexUsageRow {
         day: day_key.to_owned(),
@@ -2330,8 +3632,15 @@ fn record_codex_row(
         request_mirror_keys,
         known_cost_nanos: cost_nanos,
         unpriced_tokens,
-        pricing_model: Some(pricing_model.to_owned()),
-        pricing_mode: Some(if is_fast { "priority" } else { "standard" }.to_owned()),
+        pricing_model: Some(effective_pricing_model.to_owned()),
+        pricing_mode: Some(
+            if effective_is_fast {
+                "priority"
+            } else {
+                "standard"
+            }
+            .to_owned(),
+        ),
         session_id: session_id.map(String::from),
         file_identity: file_identity.map(String::from),
     }
@@ -2339,6 +3648,92 @@ fn record_codex_row(
 
     add_codex_row_to_days(&row, days);
     rows.push(row);
+}
+
+fn heal_ledger_row_from_legacy_mirror(
+    response_id: &str,
+    legacy_normalized_model: Option<&str>,
+    legacy_raw_model: Option<&str>,
+    legacy_is_fast: bool,
+    catalog: Option<&ModelsDevCatalog>,
+    days: &mut BTreeMap<String, BTreeMap<String, Vec<i64>>>,
+    rows: &mut [CodexUsageRow],
+) {
+    let Some(pos) = rows
+        .iter()
+        .rposition(|r| r.response_id.as_deref() == Some(response_id))
+    else {
+        return;
+    };
+    let mut updated = rows[pos].clone();
+    let mut changed = false;
+
+    if updated.model == "unknown"
+        && let Some(m) = legacy_normalized_model
+        && m != "unknown"
+    {
+        updated.model = m.to_owned();
+        updated.raw_model = legacy_raw_model.map(String::from);
+        updated.pricing_model = Some(m.to_owned());
+        changed = true;
+    }
+    if legacy_is_fast && updated.pricing_mode.as_deref() != Some("priority") {
+        updated.pricing_mode = Some("priority".to_owned());
+        changed = true;
+    }
+    if !changed {
+        return;
+    }
+
+    subtract_codex_row_from_days(&rows[pos], days);
+    let is_fast = updated.pricing_mode.as_deref() == Some("priority");
+    let pricing_model = updated
+        .pricing_model
+        .as_deref()
+        .unwrap_or(&updated.model);
+    let tier = if is_fast {
+        Some(CodexServiceTier::Priority)
+    } else {
+        Some(CodexServiceTier::Standard)
+    };
+    let cost_nanos = pricing::codex_cost_usd_with_tier(
+        pricing_model,
+        updated.input,
+        updated.cached,
+        updated.output,
+        tier,
+        catalog,
+    )
+    .or_else(|| {
+        if is_fast {
+            pricing::codex_cost_usd_with_tier(
+                pricing_model,
+                updated.input,
+                updated.cached,
+                updated.output,
+                Some(CodexServiceTier::Standard),
+                catalog,
+            )
+        } else {
+            None
+        }
+    })
+    .map(|c| (c * 1_000_000_000.0).round() as i64);
+    let total_tokens = CodexTotals {
+        input: updated.input,
+        cached: updated.cached,
+        output: updated.output,
+        reasoning: updated.reasoning,
+    }
+    .scanner_units();
+    updated.known_cost_nanos = cost_nanos;
+    updated.unpriced_tokens = if cost_nanos.is_none() {
+        Some(total_tokens)
+    } else {
+        None
+    };
+    add_codex_row_to_days(&updated, days);
+    rows[pos] = updated;
 }
 
 fn add_codex_row_to_days(
@@ -2462,6 +3857,13 @@ fn extract_session_metadata(val: &Value) -> Option<CodexSessionMetadata> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(String::from);
+    let request_session_id = payload
+        .and_then(|p| p.get("session_id").or_else(|| p.get("sessionId")))
+        .or_else(|| obj.get("session_id"))
+        .or_else(|| obj.get("sessionId"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
     let cwd = payload
         .and_then(|p| p.get("cwd"))
         .and_then(Value::as_str)
@@ -2485,6 +3887,7 @@ fn extract_session_metadata(val: &Value) -> Option<CodexSessionMetadata> {
         is_subagent_thread,
         subagent_history_start_ordinal,
         history_base_thread_id,
+        request_session_id,
         cwd,
         title,
         started_at_unix_ms,
@@ -2507,6 +3910,9 @@ fn enrich_same_leaf_metadata(leaf: &mut CodexSessionMetadata, extra: &CodexSessi
     }
     if leaf.history_base_thread_id.is_none() {
         leaf.history_base_thread_id = extra.history_base_thread_id.clone();
+    }
+    if leaf.request_session_id.is_none() {
+        leaf.request_session_id = extra.request_session_id.clone();
     }
     if leaf.cwd.is_none() {
         leaf.cwd = extra.cwd.clone();
@@ -2566,13 +3972,22 @@ fn extract_json_string_field(text: &str, key: &str) -> Option<String> {
     None
 }
 
-type PredecodedCodexLine = (usize, u64, Option<i64>, bool, String, Option<Value>);
+type PredecodedCodexLine = (
+    usize,
+    u64,
+    Option<i64>,
+    bool,
+    String,
+    Option<Value>,
+    Option<CodexNearMirror>,
+    bool,
+);
 
 fn build_subagent_observations(
     parsed_lines: &[PredecodedCodexLine],
 ) -> Vec<CodexSubagentObservation> {
     let mut observations = Vec::new();
-    for (idx, _end_offset, _ordinal, was_truncated, raw, val_opt) in parsed_lines {
+    for (idx, _end_offset, _ordinal, was_truncated, raw, val_opt, _, _) in parsed_lines {
         if *was_truncated {
             if let Some((true, sid)) = extract_truncated_session_id(raw) {
                 observations.push(CodexSubagentObservation::session_metadata(*idx, sid));
@@ -2649,13 +4064,13 @@ fn compute_explicit_ordinal_suffix(
 ) -> Option<CodexSubagentOwnedSuffix> {
     let first_owned_line_idx = parsed_lines
         .iter()
-        .find(|(_, _, ord, _, _, _)| ord.unwrap_or(i64::MIN) >= start_ordinal)
-        .map(|(idx, _, _, _, _, _)| *idx)?;
+        .find(|(_, _, ord, _, _, _, _, _)| ord.unwrap_or(i64::MIN) >= start_ordinal)
+        .map(|(idx, _, _, _, _, _, _, _)| *idx)?;
 
     let mut inherited_total: Option<CodexTotals> = None;
-    for (_, _, ord, _, _, val_opt) in parsed_lines
+    for (_, _, ord, _, _, val_opt, _, _) in parsed_lines
         .iter()
-        .take_while(|(_, _, ord, _, _, _)| ord.unwrap_or(i64::MIN) < start_ordinal)
+        .take_while(|(_, _, ord, _, _, _, _, _)| ord.unwrap_or(i64::MIN) < start_ordinal)
     {
         let _ = ord;
         if let Some(val) = val_opt
@@ -2666,7 +4081,7 @@ fn compute_explicit_ordinal_suffix(
     }
 
     let mut first_owned_token: Option<(usize, Option<CodexTotals>, Option<CodexTotals>)> = None;
-    for (idx, _, ord, _, _, val_opt) in parsed_lines {
+    for (idx, _, ord, _, _, val_opt, _, _) in parsed_lines {
         if ord.unwrap_or(i64::MIN) < start_ordinal {
             continue;
         }
@@ -2830,7 +4245,8 @@ fn parse_codex_totals_map(map: &serde_json::Map<String, Value>) -> Option<CodexT
     let cached_b = json_non_negative_i64(map.get("cache_read_input_tokens")).unwrap_or(0);
     let cached = cached_a.max(cached_b);
     let output = json_non_negative_i64(map.get("output_tokens")).unwrap_or(0);
-    let reasoning = json_non_negative_i64(map.get("reasoning_output_tokens"));
+    let reasoning = json_non_negative_i64(map.get("reasoning_output_tokens"))
+        .map(|r| r.max(0).min(output.max(0)));
     Some(CodexTotals {
         input,
         cached,
@@ -2849,6 +4265,13 @@ fn extract_bare_usage_row(
         .or_else(|| obj.get("result").and_then(|r| r.get("usage")))?;
     let usage_map = usage_val.as_object()?;
 
+    let input_raw = json_non_negative_i64(usage_map.get("input_tokens"))
+        .or_else(|| json_non_negative_i64(usage_map.get("prompt_tokens")))
+        .or_else(|| json_non_negative_i64(usage_map.get("input")))?;
+    let output = json_non_negative_i64(usage_map.get("output_tokens"))
+        .or_else(|| json_non_negative_i64(usage_map.get("completion_tokens")))
+        .or_else(|| json_non_negative_i64(usage_map.get("output")))?;
+
     let cached = [
         "cached_input_tokens",
         "cache_read_input_tokens",
@@ -2857,24 +4280,12 @@ fn extract_bare_usage_row(
     .into_iter()
     .filter_map(|k| json_non_negative_i64(usage_map.get(k)))
     .max()
-    .unwrap_or(0);
+    .unwrap_or(0)
+    .max(0);
 
-    let input = if let Some(inp) = json_non_negative_i64(usage_map.get("input_tokens"))
-        .or_else(|| json_non_negative_i64(usage_map.get("input")))
-    {
-        inp
-    } else if let Some(prompt) = json_non_negative_i64(usage_map.get("prompt_tokens")) {
-        (prompt - cached).max(0)
-    } else {
-        0
-    };
-
-    let output = json_non_negative_i64(usage_map.get("output_tokens"))
-        .or_else(|| json_non_negative_i64(usage_map.get("completion_tokens")))
-        .or_else(|| json_non_negative_i64(usage_map.get("output")))
-        .unwrap_or(0);
-
-    let reasoning = json_non_negative_i64(usage_map.get("reasoning_output_tokens"));
+    let input = (input_raw - cached).max(0);
+    let reasoning = json_non_negative_i64(usage_map.get("reasoning_output_tokens"))
+        .map(|r| r.max(0).min(output.max(0)));
     if input <= 0 && cached <= 0 && output <= 0 {
         return None;
     }
@@ -3083,6 +4494,257 @@ pub fn deduplicate_codex_rows(rows: Vec<CodexUsageRow>) -> Vec<CodexUsageRow> {
     out
 }
 
+/// Groups where recovered source rows outnumber retained store rows (`CostUsageScanner.codexExcessPricingRowGroups`).
+#[must_use]
+pub fn codex_excess_pricing_row_groups(
+    retained: &[CodexUsageRow],
+    source: &[CodexUsageRow],
+) -> BTreeSet<CodexSourcePricingKey> {
+    let mut retained_counts: BTreeMap<CodexSourcePricingKey, usize> = BTreeMap::new();
+    let mut source_counts: BTreeMap<CodexSourcePricingKey, usize> = BTreeMap::new();
+    for row in retained {
+        for key in CodexSourcePricingKey::match_keys(row) {
+            *retained_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    for row in source {
+        for key in CodexSourcePricingKey::match_keys(row) {
+            *source_counts.entry(key).or_insert(0) += 1;
+        }
+    }
+    source_counts
+        .into_iter()
+        .filter_map(|(key, count)| {
+            let r_count = retained_counts.get(&key).copied().unwrap_or(0);
+            if r_count > 0 && count > r_count {
+                Some(key)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Returns true when `source` has more rows than `retained` for any `CodexSourcePricingKey` group.
+#[must_use]
+pub fn has_excess_codex_pricing_rows(
+    retained: &[CodexUsageRow],
+    source: &[CodexUsageRow],
+) -> bool {
+    !codex_excess_pricing_row_groups(retained, source).is_empty()
+}
+
+/// Reattaches retained priority/unpriced pricing metadata onto recovered source rows
+/// when the trace DB is missing or older turns were trimmed (`CostUsageScanner.swift:2835-2960`).
+#[must_use]
+pub fn recover_codex_rows_with_retained_pricing(
+    source_rows: &[CodexUsageRow],
+    retained_rows: &[CodexUsageRow],
+    ledger_legacy_pricing_keys: &BTreeMap<usize, CodexSourcePricingKey>,
+) -> Vec<CodexUsageRow> {
+    let mut retained_by_index: BTreeMap<usize, &CodexUsageRow> = BTreeMap::new();
+    let mut retained_by_response_id: BTreeMap<&str, &CodexUsageRow> = BTreeMap::new();
+    let mut retained_by_key: BTreeMap<CodexSourcePricingKey, Vec<(usize, &CodexUsageRow)>> =
+        BTreeMap::new();
+
+    for (pos, row) in retained_rows.iter().enumerate() {
+        if let Some(idx) = row.event_index {
+            retained_by_index.entry(idx).or_insert(row);
+        }
+        if let Some(ref rid) = row.response_id {
+            retained_by_response_id.entry(rid.as_str()).or_insert(row);
+        }
+        for key in CodexSourcePricingKey::match_keys(row) {
+            retained_by_key.entry(key).or_default().push((pos, row));
+        }
+    }
+
+    let excess_groups = codex_excess_pricing_row_groups(retained_rows, source_rows);
+    let mut consumed_retained_positions: BTreeSet<usize> = BTreeSet::new();
+    let mut out = Vec::with_capacity(source_rows.len());
+
+    for row in source_rows {
+        let mut matched_retained: Option<&CodexUsageRow> = None;
+
+        // 1. Exact response_id match
+        if let Some(ref rid) = row.response_id
+            && let Some(&r) = retained_by_response_id.get(rid.as_str())
+            && r.model == row.model
+            && r.input == row.input
+            && r.cached == row.cached
+            && r.output == row.output
+        {
+            matched_retained = Some(r);
+        }
+
+        // 2. Mirrored legacy pricing key recorded during request-ledger replacement
+        if matched_retained.is_none()
+            && let Some(idx) = row.event_index
+            && let Some(legacy_key) = ledger_legacy_pricing_keys.get(&idx)
+            && !excess_groups.contains(legacy_key)
+            && let Some(candidates) = retained_by_key.get(legacy_key)
+            && let Some(&(pos, r)) = candidates
+                .iter()
+                .find(|(pos, _)| !consumed_retained_positions.contains(pos))
+        {
+            consumed_retained_positions.insert(pos);
+            matched_retained = Some(r);
+        }
+
+        // 3. Exact event_index + token/model match
+        if matched_retained.is_none()
+            && let Some(idx) = row.event_index
+            && let Some(&r) = retained_by_index.get(&idx)
+            && r.model == row.model
+            && r.day == row.day
+            && r.input == row.input
+            && r.cached == row.cached
+            && r.output == row.output
+            && r.turn_id == row.turn_id
+        {
+            matched_retained = Some(r);
+        }
+
+        // 4. Unambiguous CodexSourcePricingKey group match (skipped if source has excess rows for that group)
+        if matched_retained.is_none() {
+            let match_keys = CodexSourcePricingKey::match_keys(row);
+            let is_excess = match_keys.iter().any(|k| excess_groups.contains(k));
+            if !is_excess {
+                for key in match_keys {
+                    if let Some(candidates) = retained_by_key.get(&key)
+                        && let Some(&(pos, r)) = candidates
+                            .iter()
+                            .find(|(pos, _)| !consumed_retained_positions.contains(pos))
+                    {
+                        consumed_retained_positions.insert(pos);
+                        matched_retained = Some(r);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let mut updated = row.clone();
+        if let Some(r) = matched_retained
+            && (r.pricing_mode.as_deref() == Some("priority") || r.known_cost_nanos.is_some())
+        {
+            if r.pricing_mode.as_deref() == Some("priority")
+                || updated.pricing_mode.as_deref() != Some("priority")
+            {
+                updated.pricing_mode = r.pricing_mode.clone().or(updated.pricing_mode);
+                updated.pricing_model = r.pricing_model.clone().or(updated.pricing_model);
+                updated.known_cost_nanos = r.known_cost_nanos;
+                updated.unpriced_tokens = r.unpriced_tokens;
+            }
+        }
+        out.push(updated);
+    }
+
+    out
+}
+
+/// Token snapshot index anchor for verifying cached snapshots before appending tail snapshots
+/// (`CostUsageScanner.codexTokenIndexAnchor`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodexTokenIndexAnchor {
+    pub count: usize,
+    pub last_timestamp: String,
+    pub last_input: Option<i64>,
+    pub last_cached: Option<i64>,
+    pub last_output: Option<i64>,
+    pub total_input: Option<i64>,
+    pub total_cached: Option<i64>,
+    pub total_output: Option<i64>,
+}
+
+/// Builds a [`CodexTokenIndexAnchor`] from the current `token_snapshots` slice.
+#[must_use]
+pub fn codex_token_index_anchor(
+    snapshots: &[CodexTokenSnapshot],
+) -> Option<CodexTokenIndexAnchor> {
+    let last = snapshots.last()?;
+    Some(CodexTokenIndexAnchor {
+        count: snapshots.len(),
+        last_timestamp: last.timestamp.clone(),
+        last_input: last.last.map(|t| t.input),
+        last_cached: last.last.map(|t| t.cached),
+        last_output: last.last.map(|t| t.output),
+        total_input: last.total.map(|t| t.input),
+        total_cached: last.total.map(|t| t.cached),
+        total_output: last.total.map(|t| t.output),
+    })
+}
+
+/// Verifies whether `snapshots` matches the expected `anchor`.
+#[must_use]
+pub fn codex_token_index_anchor_matches(
+    snapshots: &[CodexTokenSnapshot],
+    anchor: Option<&CodexTokenIndexAnchor>,
+) -> bool {
+    match (codex_token_index_anchor(snapshots), anchor) {
+        (None, None) => true,
+        (Some(ref actual), Some(expected)) => actual == expected,
+        _ => false,
+    }
+}
+
+/// Computes remaining unread bytes for a file given its size and cached `parsed_bytes`
+/// (`CostUsageScanner.pendingCodexScanWorkBytes`).
+#[must_use]
+pub fn pending_codex_scan_work_bytes(file_size: u64, cached_parsed_bytes: Option<u64>) -> u64 {
+    let size = file_size;
+    let Some(parsed) = cached_parsed_bytes else {
+        return size;
+    };
+    if parsed > size {
+        return size;
+    }
+    size - parsed
+}
+
+/// Scan budget controller for bounded incremental Codex refreshes (`CostUsageScanner.CodexScanBudget`).
+#[derive(Debug, Clone)]
+pub struct CodexScanBudget {
+    pub max_bytes: Option<u64>,
+    pub consumed_bytes: u64,
+    pub processed_files: usize,
+    pub deferred_changed_file: bool,
+}
+
+impl CodexScanBudget {
+    #[must_use]
+    pub fn new(max_bytes: Option<u64>) -> Self {
+        Self {
+            max_bytes,
+            consumed_bytes: 0,
+            processed_files: 0,
+            deferred_changed_file: false,
+        }
+    }
+
+    pub fn should_defer(&mut self, pending_bytes: u64) -> bool {
+        if pending_bytes == 0 {
+            return false;
+        }
+        let Some(limit) = self.max_bytes else {
+            return false;
+        };
+        if self.processed_files > 0 && self.consumed_bytes.saturating_add(pending_bytes) > limit {
+            self.deferred_changed_file = true;
+            return true;
+        }
+        false
+    }
+
+    pub fn record_processed(&mut self, consumed_bytes: u64) {
+        if consumed_bytes == 0 {
+            return;
+        }
+        self.processed_files += 1;
+        self.consumed_bytes = self.consumed_bytes.saturating_add(consumed_bytes);
+    }
+}
+
 /// Options for scanning a Codex home or sessions directory.
 #[derive(Debug, Clone, Default)]
 pub struct CodexScanOptions {
@@ -3091,6 +4753,11 @@ pub struct CodexScanOptions {
     pub priority_db_path: Option<PathBuf>,
     pub timezone: Option<TimeZone>,
     pub catalog: Option<ModelsDevCatalog>,
+    pub temp_dir: Option<PathBuf>,
+    pub max_sqlite_bytes: Option<u64>,
+    pub priority_deadline: Option<std::time::Instant>,
+    pub persisted_priority_cursor: Option<codex_priority::CodexPriorityTurnsPersistedCursor>,
+    pub force_rescan: bool,
 }
 
 /// Aggregate result of scanning a Codex home directory across `sessions/` and `archived_sessions/`.
@@ -3098,6 +4765,10 @@ pub struct CodexScanOptions {
 pub struct CodexScanReport {
     pub rows: Vec<CodexUsageRow>,
     pub unmetered_requests_by_day: BTreeMap<String, u64>,
+    pub unpriced_requests_by_day: BTreeMap<String, u64>,
+    pub priority_data_is_partial: bool,
+    pub validation_pending: bool,
+    pub persisted_priority_cursor: Option<codex_priority::CodexPriorityTurnsPersistedCursor>,
     pub files: BTreeMap<String, CodexParseResult>,
 }
 
@@ -3112,27 +4783,55 @@ pub fn scan_codex_home(range: &DayRange, options: &CodexScanOptions) -> CodexSca
             .and_then(|r| r.parent().map(Path::to_path_buf))
     });
 
-    let priority_turns = if let Some(ref db_path) = options.priority_db_path {
-        codex_priority::codex_priority_turns(
+    let mut memo_state = if options.force_rescan {
+        codex_priority::CodexPriorityTurnsMemoState::default()
+    } else if let Some(ref cursor) = options.persisted_priority_cursor {
+        codex_priority::CodexPriorityTurnsMemoState::from_persisted_cursor(cursor)
+    } else {
+        codex_priority::CodexPriorityTurnsMemoState::default()
+    };
+    let max_sqlite_bytes = options
+        .max_sqlite_bytes
+        .unwrap_or(codex_priority::MAX_CODEX_SQLITE_BYTES);
+
+    let priority_resolution = if let Some(ref db_path) = options.priority_db_path {
+        codex_priority::resolve_codex_priority_turns(
             db_path,
             Some(range.scan_since_key.as_str()),
             Some(range.scan_until_key.as_str()),
             range.timezone.clone(),
+            &mut memo_state,
+            options.priority_deadline,
+            options.temp_dir.as_deref(),
+            max_sqlite_bytes,
         )
     } else if let Some(ref home) = codex_home {
-        codex_priority::load_codex_priority_turns_for_home(
+        codex_priority::resolve_codex_priority_turns_for_home(
             home,
             Some(range.scan_since_key.as_str()),
             Some(range.scan_until_key.as_str()),
             range.timezone.clone(),
+            &mut memo_state,
+            options.priority_deadline,
+            options.temp_dir.as_deref(),
+            max_sqlite_bytes,
         )
     } else {
-        BTreeMap::new()
+        codex_priority::CodexPriorityTurnsResolution::default()
     };
+    let persisted_cursor = memo_state
+        .any_persisted_cursor()
+        .or_else(|| options.persisted_priority_cursor.clone());
+
+    let priority_turns = priority_resolution.turns;
+    let priority_data_is_partial =
+        priority_resolution.database_skipped || priority_resolution.validation_pending;
 
     let session_tiers = codex_home
         .as_deref()
-        .map(codex_priority::codex_session_service_tiers)
+        .map(|home| {
+            codex_priority::codex_session_service_tiers_with_temp(home, options.temp_dir.as_deref())
+        })
         .unwrap_or_default();
 
     let mut all_files = Vec::new();
@@ -3209,10 +4908,20 @@ pub fn scan_codex_home(range: &DayRange, options: &CodexScanOptions) -> CodexSca
     }
 
     let deduped_rows = deduplicate_codex_rows(all_rows);
+    let mut unpriced_requests_by_day: BTreeMap<String, u64> = BTreeMap::new();
+    for row in &deduped_rows {
+        if row.known_cost_nanos.is_none() || row.unpriced_tokens.unwrap_or(0) > 0 {
+            *unpriced_requests_by_day.entry(row.day.clone()).or_insert(0) += 1;
+        }
+    }
 
     CodexScanReport {
         rows: deduped_rows,
         unmetered_requests_by_day,
+        unpriced_requests_by_day,
+        priority_data_is_partial,
+        validation_pending: priority_resolution.validation_pending,
+        persisted_priority_cursor: persisted_cursor,
         files: parsed_by_path,
     }
 }
@@ -3268,7 +4977,7 @@ fn parse_codex_file_with_recursive_parents(
             }
             let (inherited, parent_fork_origin) = resolve_parent_inherited_totals_with_origin(
                 &parent_res.token_snapshots,
-                None,
+                parent_res.resolved_inherited_totals,
                 cutoff_ts,
             );
             if inherited.is_none()
