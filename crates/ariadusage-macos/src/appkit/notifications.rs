@@ -11,6 +11,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2_foundation::{NSArray, NSBundle, NSString};
 
+// SAFETY: Empty extern block that only instructs the linker to link `UserNotifications.framework`
+// so Objective-C runtime lookups (`AnyClass::get`) can resolve `UNUserNotificationCenter`,
+// `UNMutableNotificationContent`, `UNNotificationRequest`, and `UNNotificationSound` at runtime.
 #[link(name = "UserNotifications", kind = "framework")]
 unsafe extern "C" {}
 

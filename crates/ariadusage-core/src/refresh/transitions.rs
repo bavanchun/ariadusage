@@ -180,58 +180,61 @@ impl HookEvent {
     pub fn environment_variables(&self) -> BTreeMap<String, String> {
         let mut env = BTreeMap::new();
         env.insert(
-            "CODEXBAR_EVENT".to_string(),
+            "ARIADUSAGE_EVENT".to_string(),
             self.event.as_str().to_string(),
         );
-        env.insert("CODEXBAR_PROVIDER".to_string(), self.provider.clone());
-        env.insert("CODEXBAR_TIMESTAMP".to_string(), self.timestamp.to_string());
+        env.insert("ARIADUSAGE_PROVIDER".to_string(), self.provider.clone());
+        env.insert(
+            "ARIADUSAGE_TIMESTAMP".to_string(),
+            self.timestamp.to_string(),
+        );
         if let Some(account) = &self.account {
-            env.insert("CODEXBAR_ACCOUNT".to_string(), account.clone());
+            env.insert("ARIADUSAGE_ACCOUNT".to_string(), account.clone());
         }
         if let Some(window) = &self.window {
-            env.insert("CODEXBAR_WINDOW".to_string(), window.clone());
+            env.insert("ARIADUSAGE_WINDOW".to_string(), window.clone());
         }
         if let Some(usage_percent) = self.usage_percent {
             env.insert(
-                "CODEXBAR_USAGE_PERCENT".to_string(),
+                "ARIADUSAGE_USAGE_PERCENT".to_string(),
                 format_number(usage_percent),
             );
         }
         if let Some(window_minutes) = self.window_minutes {
             env.insert(
-                "CODEXBAR_WINDOW_MINUTES".to_string(),
+                "ARIADUSAGE_WINDOW_MINUTES".to_string(),
                 window_minutes.to_string(),
             );
         }
         if let Some(used) = self.used {
-            env.insert("CODEXBAR_USED".to_string(), format_number(used));
+            env.insert("ARIADUSAGE_USED".to_string(), format_number(used));
         }
         if let Some(limit) = self.limit {
-            env.insert("CODEXBAR_LIMIT".to_string(), format_number(limit));
+            env.insert("ARIADUSAGE_LIMIT".to_string(), format_number(limit));
         }
         if let Some(reset_at) = self.reset_at {
-            env.insert("CODEXBAR_RESET_AT".to_string(), reset_at.to_string());
+            env.insert("ARIADUSAGE_RESET_AT".to_string(), reset_at.to_string());
         }
         if let Some(secondary_usage_percent) = self.secondary_usage_percent {
             env.insert(
-                "CODEXBAR_SECONDARY_USAGE_PERCENT".to_string(),
+                "ARIADUSAGE_SECONDARY_USAGE_PERCENT".to_string(),
                 format_number(secondary_usage_percent),
             );
         }
         if let Some(secondary_window_minutes) = self.secondary_window_minutes {
             env.insert(
-                "CODEXBAR_SECONDARY_WINDOW_MINUTES".to_string(),
+                "ARIADUSAGE_SECONDARY_WINDOW_MINUTES".to_string(),
                 secondary_window_minutes.to_string(),
             );
         }
         if let Some(secondary_reset_at) = self.secondary_reset_at {
             env.insert(
-                "CODEXBAR_SECONDARY_RESET_AT".to_string(),
+                "ARIADUSAGE_SECONDARY_RESET_AT".to_string(),
                 secondary_reset_at.to_string(),
             );
         }
         if let Some(status) = &self.status {
-            env.insert("CODEXBAR_STATUS".to_string(), status.clone());
+            env.insert("ARIADUSAGE_STATUS".to_string(), status.clone());
         }
         env
     }
@@ -1758,28 +1761,28 @@ mod tests {
         )
         .environment_variables();
         assert_eq!(
-            env.get("CODEXBAR_EVENT").map(String::as_str),
+            env.get("ARIADUSAGE_EVENT").map(String::as_str),
             Some("quota_low")
         );
         assert_eq!(
-            env.get("CODEXBAR_PROVIDER").map(String::as_str),
+            env.get("ARIADUSAGE_PROVIDER").map(String::as_str),
             Some("codex")
         );
         assert_eq!(
-            env.get("CODEXBAR_WINDOW").map(String::as_str),
+            env.get("ARIADUSAGE_WINDOW").map(String::as_str),
             Some("weekly")
         );
         assert_eq!(
-            env.get("CODEXBAR_USAGE_PERCENT").map(String::as_str),
+            env.get("ARIADUSAGE_USAGE_PERCENT").map(String::as_str),
             Some("0.5")
         );
         assert_eq!(
-            env.get("CODEXBAR_RESET_AT").map(String::as_str),
+            env.get("ARIADUSAGE_RESET_AT").map(String::as_str),
             Some("2023-11-14T22:13:20Z")
         );
-        assert!(env.contains_key("CODEXBAR_TIMESTAMP"));
-        assert!(!env.contains_key("CODEXBAR_ACCOUNT"));
-        assert!(!env.contains_key("CODEXBAR_STATUS"));
+        assert!(env.contains_key("ARIADUSAGE_TIMESTAMP"));
+        assert!(!env.contains_key("ARIADUSAGE_ACCOUNT"));
+        assert!(!env.contains_key("ARIADUSAGE_STATUS"));
     }
 
     // upstream: TestsLinux/HooksTests.swift:123 json payload round-trips
@@ -2601,7 +2604,7 @@ mod tests {
         assert!(
             !event
                 .environment_variables()
-                .contains_key("CODEXBAR_SECONDARY_USAGE_PERCENT")
+                .contains_key("ARIADUSAGE_SECONDARY_USAGE_PERCENT")
         );
     }
 
@@ -2662,7 +2665,7 @@ mod tests {
                 !dispatch
                     .event
                     .environment_variables()
-                    .contains_key("CODEXBAR_ACCOUNT")
+                    .contains_key("ARIADUSAGE_ACCOUNT")
             );
         }
     }

@@ -2897,7 +2897,6 @@ mod tests {
         assert_eq!(transition, SessionQuotaTransition::None);
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:39 depleted notification copy follows Traditional Chinese app language
     #[test]
     fn session_quota_depleted_notification_copy_english() {
         let (title, body) = SessionQuotaNotificationLogic::notification_copy(
@@ -2908,7 +2907,6 @@ mod tests {
         assert_eq!(body, "0% left. Will notify when it's available again.");
     }
 
-    // upstream: SessionQuotaNotificationLogicTests.swift:51 restored notification copy follows Traditional Chinese app language
     #[test]
     fn session_quota_restored_notification_copy_english() {
         let (title, body) = SessionQuotaNotificationLogic::notification_copy(
@@ -2950,7 +2948,6 @@ mod tests {
         assert_eq!(body, "0% left. Reached your 50% weekly warning threshold.");
     }
 
-    // upstream: QuotaWarningNotificationLogicTests.swift:35 quota warning copy includes account when provided
     #[test]
     fn quota_warning_copy_never_includes_account_identifier() {
         let (title, body) = QuotaWarningNotificationLogic::notification_copy(
