@@ -275,6 +275,10 @@ impl AntigravityStatusSnapshot {
         quota_summary.groups.iter().any(|g| !g.buckets.is_empty())
     }
 
+    pub fn is_quota_summary_window_id(id: &str) -> bool {
+        id.starts_with(QUOTA_SUMMARY_WINDOW_ID_PREFIX)
+    }
+
     pub fn canonical_model_id(model_id: &str) -> String {
         let key = model_id.trim().to_lowercase();
         for &(retired, replacement) in RETIRED_FLASH_TIERS {
