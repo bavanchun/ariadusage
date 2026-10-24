@@ -235,8 +235,11 @@ mod macos {
 
         view.select_pane(SettingsPane::Provider("codex".to_string()));
         let provider_classes = view.descendant_class_names();
+        assert!(
+            !provider_classes.iter().any(|c| c.contains("NSSwitch")),
+            "expected no `NSSwitch` in Provider pane (header Enabled and row toggles are checkboxes), found {provider_classes:?}"
+        );
         for required in [
-            "NSSwitch",
             "NSPopUpButton",
             "NSButton",
             "NSSegmentedControl",

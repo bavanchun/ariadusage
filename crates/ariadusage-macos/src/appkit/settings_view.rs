@@ -2557,28 +2557,33 @@ impl SettingsView {
                 }
                 card_view.addSubview(&ref_btn);
 
-                let sw = NSSwitch::new(mtm);
-                sw.setFrame(ns_rect(to_card(*toggle_rect)));
-                sw.setState(if *enabled {
+                let cb = NSButton::new(mtm);
+                cb.setFrame(ns_rect(to_card(*toggle_rect)));
+                cb.setButtonType(NSButtonType::Switch);
+                cb.setTitle(&NSString::from_str(""));
+                cb.setState(if *enabled {
                     NSControlStateValueOn
                 } else {
                     NSControlStateValueOff
                 });
-                sw.setEnabled(toggle_setting_id.is_some() && row_enabled);
-                // SAFETY: setting accessibility description `"Enabled"` and target/action on `NSSwitch`.
+                cb.setEnabled(toggle_setting_id.is_some() && row_enabled);
+                // SAFETY: setting accessibility description `"Enabled"`, subrole `"AXToggle"`,
+                // and target/action on the provider header checkbox toggle.
                 unsafe {
                     let desc = NSString::from_str("Enabled");
-                    let _: () = msg_send![&sw, setAccessibilityLabel: &*desc];
+                    let subrole = NSString::from_str("AXToggle");
+                    let _: () = msg_send![&cb, setAccessibilityLabel: &*desc];
+                    let _: () = msg_send![&cb, setAccessibilitySubrole: &*subrole];
                     if let Some(id) = toggle_setting_id {
                         let tag = self.register_binding(ControlBinding::Toggle {
                             setting_id: id.clone(),
                         });
-                        sw.setTag(tag);
-                        sw.setTarget(Some(self));
-                        sw.setAction(Some(sel!(switchToggled:)));
+                        cb.setTag(tag);
+                        cb.setTarget(Some(self));
+                        cb.setAction(Some(sel!(checkboxToggled:)));
                     }
                 }
-                card_view.addSubview(&sw);
+                card_view.addSubview(&cb);
             }
             FormControlLayout::UsageWindowBar {
                 title_rect,
@@ -2705,7 +2710,6 @@ impl SettingsView {
                 currency_rect,
                 coverage_rect,
                 metric_boxes,
-                token_items,
                 footer_rect,
                 currency_label,
                 coverage_label,
@@ -2758,31 +2762,6 @@ impl SettingsView {
                         m_val,
                         14.0,
                         Weight::Semibold,
-                        &palette.text_primary(),
-                        NSTextAlignment::Left,
-                        1,
-                        true,
-                    ));
-                }
-                for (tok_r, t_title, t_val) in token_items {
-                    let tc = to_card(*tok_r);
-                    card_view.addSubview(&make_label(
-                        mtm,
-                        Rect::new(tc.x, tc.y + 2.0, tc.w, 15.0),
-                        t_title,
-                        11.0,
-                        Weight::Regular,
-                        &palette.text_secondary(),
-                        NSTextAlignment::Left,
-                        1,
-                        true,
-                    ));
-                    card_view.addSubview(&make_label(
-                        mtm,
-                        Rect::new(tc.x, tc.y + 18.0, tc.w, 16.0),
-                        t_val,
-                        12.0,
-                        Weight::Medium,
                         &palette.text_primary(),
                         NSTextAlignment::Left,
                         1,
