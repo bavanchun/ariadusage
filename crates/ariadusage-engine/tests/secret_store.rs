@@ -1017,4 +1017,46 @@ mod macos_tests {
             "UI must be restored to true after background call returns"
         );
     }
+
+    #[tokio::test]
+    async fn macos_err_sec_read_only_attr_maps_to_storage_not_busy() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
+        ensure_no_keychain_ui();
+        assert_eq!(os_status::ERR_SEC_READ_ONLY_ATTR, -25309);
+        assert_ne!(
+            os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY,
+            os_status::ERR_SEC_READ_ONLY_ATTR
+        );
+
+        let ops = Arc::new(FakeKeychainOps::default());
+        *ops.next_get_error.lock().unwrap() = Some(os_status::ERR_SEC_READ_ONLY_ATTR);
+        *ops.next_set_error.lock().unwrap() = Some(os_status::ERR_SEC_READ_ONLY_ATTR);
+
+        let store = SecretStore::new(ServiceBackend::with_operations(ops.clone()));
+        let api_id = secret_id("providers.claude.apiKey");
+
+        assert_eq!(
+            store
+                .background(call(FetchInteraction::Background))
+                .lookup(&api_id)
+                .await,
+            SecretLookup::Unavailable
+        );
+        assert_eq!(
+            store
+                .user(call(FetchInteraction::UserInitiated))
+                .set(&api_id, &SecretString::new("invented-api-key"))
+                .await
+                .unwrap_err(),
+            SecretStoreError::Storage
+        );
+
+        let key_source = SafeStorageKeySource::new(ServiceBackend::with_operations(ops));
+        assert_eq!(
+            key_source
+                .chromium_safe_storage("chrome", &call(FetchInteraction::Background))
+                .await,
+            Err(SafeStorageError::Storage)
+        );
+    }
 }

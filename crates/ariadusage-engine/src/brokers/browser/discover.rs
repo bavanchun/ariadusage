@@ -169,6 +169,7 @@ impl SessionCursor<'_> {
             &mut self.safe_storage_keys,
             self.inner.keys.as_ref(),
         );
+        let mut browser_candidates = Vec::new();
         for profile in profiles {
             if self.call.cancel.is_cancelled() {
                 break;
@@ -196,7 +197,7 @@ impl SessionCursor<'_> {
             };
             match result {
                 Ok((candidates, error)) => {
-                    self.pending.extend(candidates);
+                    browser_candidates.extend(candidates);
                     if let Some(error) = error {
                         self.last_error = prefer_error(self.last_error, error);
                     }
@@ -204,7 +205,30 @@ impl SessionCursor<'_> {
                 Err(error) => self.last_error = prefer_error(self.last_error, error),
             }
         }
+        if *browser == Browser::Safari {
+            coalesce_safari_candidates(&mut browser_candidates);
+        }
+        self.pending.extend(browser_candidates);
         true
+    }
+}
+
+fn coalesce_safari_candidates(candidates: &mut Vec<CookieCandidate>) {
+    let total_access_denied: usize = candidates.iter().map(|c| c.diagnostics.access_denied).sum();
+    if total_access_denied == 0 {
+        return;
+    }
+    let has_readable_candidate = candidates
+        .iter()
+        .any(|c| !c.records.is_empty() || c.diagnostics.rows_read > 0);
+    if has_readable_candidate {
+        candidates.retain(|c| !c.records.is_empty() || c.diagnostics.rows_read > 0);
+        if let Some(first) = candidates.first_mut() {
+            first.diagnostics.access_denied = total_access_denied;
+        }
+    } else if candidates.len() > 1 {
+        candidates.truncate(1);
+        candidates[0].diagnostics.access_denied = total_access_denied;
     }
 }
 
@@ -362,9 +386,10 @@ fn has_safari_cookie_file(root_path: &Path) -> Option<PathBuf> {
     if !canonical_parent.starts_with(root_path) {
         return None;
     }
-    let metadata = std::fs::symlink_metadata(&candidate).ok()?;
-    if !metadata.file_type().is_file() {
-        return None;
+    match std::fs::symlink_metadata(&candidate) {
+        Ok(metadata) if metadata.file_type().is_file() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+        _ => return None,
     }
     Some(canonical_parent.join(candidate.file_name()?))
 }

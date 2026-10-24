@@ -48,10 +48,13 @@ pub mod os_status {
     pub const ERR_SEC_DUPLICATE_ITEM: i32 = -25299;
     pub const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
     pub const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
+    pub const ERR_SEC_READ_ONLY_ATTR: i32 = -25309;
     /// Internal synthetic status returned by [`super::with_macos_keychain_interaction`] when a
     /// non-interactive background call is skipped because a user-initiated prompt holds
-    /// `USER_PROMPT_LOCK` on another thread.
-    pub const ERR_SEC_PROMPT_IN_FLIGHT_BUSY: i32 = -25309;
+    /// `USER_PROMPT_LOCK` on another thread. Chosen outside Apple's `OSStatus` range so real
+    /// Security framework status codes (such as `errSecReadOnlyAttr = -25309`) are never
+    /// misclassified as `Busy`.
+    pub const ERR_SEC_PROMPT_IN_FLIGHT_BUSY: i32 = i32::MIN;
 }
 
 /// Low-level Keychain operations seam on macOS so tests can inject deterministic status codes

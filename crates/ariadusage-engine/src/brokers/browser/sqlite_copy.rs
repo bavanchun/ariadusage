@@ -63,6 +63,12 @@ pub(super) fn copy_database(source: &Path, target_dir: &Path) -> Result<PathBuf,
     Ok(target)
 }
 
+pub(super) enum OptionalOwnedFile {
+    Bytes(Vec<u8>),
+    Missing,
+    AccessDenied,
+}
+
 pub(super) fn read_owned_file(path: &Path, max_size: usize) -> Result<Vec<u8>, BrowserError> {
     read_optional_owned_file(path, max_size)?.ok_or(BrowserError::Io)
 }
@@ -71,13 +77,16 @@ pub(super) fn read_optional_owned_file(
     path: &Path,
     max_size: usize,
 ) -> Result<Option<Vec<u8>>, BrowserError> {
-    read_optional_owned_file_with_policy(path, max_size, false)
+    match read_optional_owned_file_with_policy(path, max_size, false)? {
+        OptionalOwnedFile::Bytes(bytes) => Ok(Some(bytes)),
+        OptionalOwnedFile::Missing | OptionalOwnedFile::AccessDenied => Ok(None),
+    }
 }
 
-pub(super) fn read_optional_owned_file_allowing_permission_denied(
+pub(super) fn read_optional_owned_file_with_access_status(
     path: &Path,
     max_size: usize,
-) -> Result<Option<Vec<u8>>, BrowserError> {
+) -> Result<OptionalOwnedFile, BrowserError> {
     read_optional_owned_file_with_policy(path, max_size, true)
 }
 
@@ -85,14 +94,16 @@ fn read_optional_owned_file_with_policy(
     path: &Path,
     max_size: usize,
     allow_permission_denied: bool,
-) -> Result<Option<Vec<u8>>, BrowserError> {
+) -> Result<OptionalOwnedFile, BrowserError> {
     let file = match open_owned_file(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(OptionalOwnedFile::Missing);
+        }
         Err(error)
             if allow_permission_denied && error.kind() == std::io::ErrorKind::PermissionDenied =>
         {
-            return Ok(None);
+            return Ok(OptionalOwnedFile::AccessDenied);
         }
         Err(_) => return Err(BrowserError::Io),
     };
@@ -106,7 +117,7 @@ fn read_optional_owned_file_with_policy(
     if bytes.len() > max_size {
         return Err(BrowserError::Io);
     }
-    Ok(Some(bytes))
+    Ok(OptionalOwnedFile::Bytes(bytes))
 }
 
 fn copy_one(source: &Path, target: &Path, already_copied: u64) -> Result<u64, BrowserError> {
