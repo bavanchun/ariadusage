@@ -153,8 +153,12 @@ impl CodexReconciledState {
         account_email: Option<&str>,
         account_plan: Option<&str>,
     ) -> Option<Self> {
-        let identity =
-            Some(Self::attached_dashboard_identity(snapshot, provider, account_email, account_plan));
+        let identity = Some(Self::attached_dashboard_identity(
+            snapshot,
+            provider,
+            account_email,
+            account_plan,
+        ));
         Self::make(
             snapshot.primary_limit.clone(),
             snapshot.secondary_limit.clone(),

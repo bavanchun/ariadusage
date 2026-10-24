@@ -8,24 +8,28 @@ use std::time::{Duration, Instant};
 use ariadusage_core::cookie::normalize;
 use ariadusage_core::hosts::ProviderHosts;
 use ariadusage_core::model::window::{NamedRateWindow, RateWindow};
-use ariadusage_core::pipeline::{ClassifiedError, FetchError, TransportClass};
+use ariadusage_core::pipeline::{ClassifiedError, FetchError, FetchInteraction, TransportClass};
 use ariadusage_protocol::secret::SecretString;
 use ariadusage_protocol::usage::ProviderErrorKind;
 use jiff::Timestamp;
-use reqwest::header::{ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, COOKIE, HeaderValue, USER_AGENT};
+use reqwest::header::{
+    ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, COOKIE, HeaderMap, HeaderName, HeaderValue, USER_AGENT,
+};
 use reqwest::{Method, Url};
 use serde::Deserialize;
+use tokio_util::sync::CancellationToken;
 
 use crate::brokers::call::BrokerCall;
 use crate::brokers::net::{
-    DeclaredOrigins, NetBroker, NetError, NetRequest, OriginError, RedactedHeaders,
+    DeclaredOrigins, NetBroker, NetError, NetRequest, OverrideError, OverridePolicy,
+    is_loopback_host, validate_override,
 };
 
 use super::credits::{CodexCreditLimitSnapshot, CreditEvent};
 use super::dashboard_authority::normalize_workspace_account_id;
 use super::identity::CodexIdentityResolver;
 use super::normalizer::{CodexAdditionalRateLimitMapper, WindowSnapshot};
-use super::openai_dashboard_cookie_importer::OpenAIDashboardBrowserCookieImporter;
+use super::openai_dashboard_cookie_importer::find_first_email_in_json;
 use super::openai_dashboard_models::{
     OpenAIDashboardDailyBreakdown, OpenAIDashboardSnapshot, OpenAISubscriptionFetchResult,
     OpenAISubscriptionMetadataParser,
@@ -34,15 +38,21 @@ use super::openai_dashboard_parser::OpenAIDashboardParser;
 use super::usage_fetcher::{
     CodexOAuthUsageFetcher, CodexSpendControlsMonthlyUsageGate,
     CodexSpendControlsMonthlyUsageResponse, CodexUsageResponse,
-    CodexWorkspaceRemainingBalanceResponse,
 };
 
-pub const DEFAULT_CHATGPT_BASE_URL: &str = "https://chatgpt.com";
+pub const DEFAULT_CHATGPT_WEB_BASE_URL: &str = "https://chatgpt.com";
 pub const CHATGPT_HOST: &str = "chatgpt.com";
 pub const DEFAULT_CREDITS_PURCHASE_URL: &str = "https://chatgpt.com/codex/settings/usage";
 pub const DEFAULT_DASHBOARD_API_TIMEOUT: Duration = Duration::from_secs(4);
 pub const DEFAULT_SESSION_AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_SUBSCRIPTIONS_API_TIMEOUT: Duration = Duration::from_secs(6);
+
+fn is_valid_header_value_str(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
+}
 
 #[derive(Debug, Clone)]
 pub struct OpenAIDashboardEndpointConfig {
@@ -52,7 +62,8 @@ pub struct OpenAIDashboardEndpointConfig {
 
 impl Default for OpenAIDashboardEndpointConfig {
     fn default() -> Self {
-        let base_url = Url::parse(DEFAULT_CHATGPT_BASE_URL).expect("valid default ChatGPT URL");
+        let base_url =
+            Url::parse(DEFAULT_CHATGPT_WEB_BASE_URL).expect("valid default ChatGPT web URL");
         let hosts = ProviderHosts::new([CHATGPT_HOST]).expect("valid ChatGPT host");
         let declared_origins = DeclaredOrigins::from_provider_hosts(&hosts);
         Self {
@@ -63,10 +74,38 @@ impl Default for OpenAIDashboardEndpointConfig {
 }
 
 impl OpenAIDashboardEndpointConfig {
-    pub fn with_base_url(base_url: Url) -> Result<Self, OriginError> {
-        let declared_origins = DeclaredOrigins::from_urls([base_url.clone()])?;
+    pub fn validate_base_url(value: &str) -> Result<Url, OverrideError> {
+        let trimmed = value.trim();
+        if !trimmed.starts_with("https://") && !trimmed.starts_with("http://") {
+            return Err(OverrideError::UnsupportedScheme);
+        }
+        let url = validate_override(trimmed, &OverridePolicy::AllowLoopbackHttp)?;
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(OverrideError::Malformed);
+        }
+        let host = url.host_str().ok_or(OverrideError::MissingHost)?;
+        if !is_loopback_host(host) {
+            validate_override(
+                trimmed,
+                &OverridePolicy::ProviderOwnedOnly {
+                    allowed_hosts: vec![CHATGPT_HOST.to_owned()],
+                    allowed_domain_suffixes: vec![CHATGPT_HOST.to_owned()],
+                },
+            )?;
+        }
+        Ok(url)
+    }
+
+    pub fn with_base_url(base_url: Url) -> Result<Self, OverrideError> {
+        Self::from_base_url_str(base_url.as_str())
+    }
+
+    pub fn from_base_url_str(value: &str) -> Result<Self, OverrideError> {
+        let validated = Self::validate_base_url(value)?;
+        let declared_origins = DeclaredOrigins::from_urls([validated.clone()])
+            .map_err(|_| OverrideError::Malformed)?;
         Ok(Self {
-            base_url,
+            base_url: validated,
             declared_origins,
         })
     }
@@ -239,7 +278,6 @@ impl DashboardAPIData {
             || self.credits_remaining.is_some()
             || self.credits_available == Some(true)
             || self.codex_credit_limit.is_some()
-            || self.account_plan.as_ref().is_some_and(|p| !p.is_empty())
     }
 
     /// Converts direct HTTPS JSON API data into `OpenAIDashboardSnapshot`.
@@ -325,6 +363,22 @@ struct AuthSessionUser {
 pub struct OpenAIDashboardFetcher;
 
 impl OpenAIDashboardFetcher {
+    pub fn sanitized_timeout(timeout: Duration) -> Duration {
+        if timeout.is_zero() {
+            Duration::from_secs(1)
+        } else {
+            timeout
+        }
+    }
+
+    pub fn deadline(starting_at: Instant, timeout: Duration) -> Instant {
+        starting_at + Self::sanitized_timeout(timeout)
+    }
+
+    pub fn deadline_from(starting_at: Instant, timeout: Duration) -> Instant {
+        Self::deadline(starting_at, timeout)
+    }
+
     pub fn dashboard_api_data(response: &CodexUsageResponse, now: Timestamp) -> DashboardAPIData {
         let primary = response
             .rate_limit
@@ -375,29 +429,45 @@ impl OpenAIDashboardFetcher {
         deadline: Option<Instant>,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<SessionAuthorization> {
-        let timeout = Self::remaining_timeout(deadline, DEFAULT_SESSION_AUTH_TIMEOUT, now_fn())?;
-        let url = endpoint.auth_session_url().ok()?;
+    ) -> Result<Option<SessionAuthorization>, OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
+        let Some(timeout) =
+            Self::remaining_timeout(deadline, DEFAULT_SESSION_AUTH_TIMEOUT, now_fn())
+        else {
+            return Err(OpenAIDashboardFetchError::Timeout);
+        };
+        let url = endpoint.auth_session_url()?;
         let (data, status) =
             Self::execute_get(net, endpoint, url, cookie_header, None, None, timeout, call).await?;
         if !(200..=299).contains(&status) {
-            return None;
+            return Ok(None);
         }
-        let decoded: AuthSessionPayload = serde_json::from_slice(&data).ok()?;
-        let raw_email = decoded.user.and_then(|u| u.email)?;
+        let Ok(decoded) = serde_json::from_slice::<AuthSessionPayload>(&data) else {
+            return Ok(None);
+        };
+        let Some(raw_email) = decoded.user.and_then(|u| u.email) else {
+            return Ok(None);
+        };
         let email = raw_email.trim().to_owned();
         if email.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let raw_token = decoded.access_token?;
-        let token = raw_token.trim().to_owned();
-        if token.is_empty() || token.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return None;
+        let Some(raw_token) = decoded.access_token else {
+            return Ok(None);
+        };
+        if raw_token.is_empty()
+            || raw_token
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Ok(None);
         }
-        Some(SessionAuthorization {
-            bearer_token: SecretString::new(token),
+        Ok(Some(SessionAuthorization {
+            bearer_token: SecretString::new(raw_token),
             verified_email: email,
-        })
+        }))
     }
 
     pub async fn fetch_dashboard_usage_response(
@@ -407,14 +477,21 @@ impl OpenAIDashboardFetcher {
         deadline: Option<Instant>,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<(Vec<u8>, u16, Option<SessionAuthorization>)> {
-        let timeout = Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())?;
-        let url = endpoint.usage_url().ok()?;
+    ) -> Result<(Vec<u8>, u16, Option<SessionAuthorization>), OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
+        let Some(timeout) =
+            Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())
+        else {
+            return Err(OpenAIDashboardFetchError::Timeout);
+        };
+        let url = endpoint.usage_url()?;
         let (data, status) =
             Self::execute_get(net, endpoint, url, cookie_header, None, None, timeout, call).await?;
 
-        if status == 401
-            && let Some(authorization) = Self::fetch_dashboard_session_authorization(
+        if status == 401 {
+            let Some(authorization) = Self::fetch_dashboard_session_authorization(
                 net,
                 endpoint,
                 cookie_header,
@@ -422,11 +499,16 @@ impl OpenAIDashboardFetcher {
                 now_fn,
                 call,
             )
-            .await
-        {
-            let retry_timeout =
-                Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())?;
-            let retry_url = endpoint.usage_url().ok()?;
+            .await?
+            else {
+                return Ok((data, status, None));
+            };
+            let Some(retry_timeout) =
+                Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())
+            else {
+                return Err(OpenAIDashboardFetchError::Timeout);
+            };
+            let retry_url = endpoint.usage_url()?;
             let (retry_data, retry_status) = Self::execute_get(
                 net,
                 endpoint,
@@ -438,10 +520,10 @@ impl OpenAIDashboardFetcher {
                 call,
             )
             .await?;
-            return Some((retry_data, retry_status, Some(authorization)));
+            return Ok((retry_data, retry_status, Some(authorization)));
         }
 
-        Some((data, status, None))
+        Ok((data, status, None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -453,8 +535,14 @@ impl OpenAIDashboardFetcher {
         now: Timestamp,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<DashboardAPIResponse> {
-        let (data, status, authorization) = Self::fetch_dashboard_usage_response(
+    ) -> Result<Option<DashboardAPIResponse>, OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
+        if cookie_header.trim().is_empty() {
+            return Ok(None);
+        }
+        let (data, status, authorization) = match Self::fetch_dashboard_usage_response(
             net,
             endpoint,
             cookie_header,
@@ -462,11 +550,20 @@ impl OpenAIDashboardFetcher {
             now_fn,
             call,
         )
-        .await?;
+        .await
+        {
+            Ok(res) => res,
+            Err(OpenAIDashboardFetchError::Cancelled) => {
+                return Err(OpenAIDashboardFetchError::Cancelled);
+            }
+            Err(_) => return Ok(None),
+        };
         if !(200..=299).contains(&status) {
-            return None;
+            return Ok(None);
         }
-        let decoded = CodexOAuthUsageFetcher::decode_usage_response(&data).ok()?;
+        let Ok(decoded) = CodexOAuthUsageFetcher::decode_usage_response(&data) else {
+            return Ok(None);
+        };
         let mut result = Self::dashboard_api_data(&decoded, now);
         let bearer = authorization
             .as_ref()
@@ -483,7 +580,7 @@ impl OpenAIDashboardFetcher {
             now_fn,
             call,
         )
-        .await
+        .await?
         {
             result.codex_credit_limit = Some(monthly_limit);
         }
@@ -499,16 +596,16 @@ impl OpenAIDashboardFetcher {
                 now_fn,
                 call,
             )
-            .await
+            .await?
         {
             result.credits_remaining = Some(workspace_balance);
             result.balance_is_workspace = Some(true);
         }
 
-        Some(DashboardAPIResponse {
+        Ok(Some(DashboardAPIResponse {
             api_data: result,
             verified_signed_in_email: authorization.map(|a| a.verified_email),
-        })
+        }))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -522,19 +619,30 @@ impl OpenAIDashboardFetcher {
         now: Timestamp,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<CodexCreditLimitSnapshot> {
+    ) -> Result<Option<CodexCreditLimitSnapshot>, OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
         if !CodexSpendControlsMonthlyUsageGate::should_fetch(response) {
-            return None;
+            return Ok(None);
         }
-        let account_id = response.account_id.as_deref()?.trim();
-        if account_id.is_empty() {
-            return None;
-        }
-        let timeout = Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())?;
-        let url = endpoint
-            .spend_controls_monthly_usage_url(account_id)
-            .ok()?;
-        let (data, status) = Self::execute_get(
+        let Some(account_id) = response
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(timeout) =
+            Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())
+        else {
+            return Ok(None);
+        };
+        let Ok(url) = endpoint.spend_controls_monthly_usage_url(account_id) else {
+            return Ok(None);
+        };
+        let (data, status) = match Self::execute_get(
             net,
             endpoint,
             url,
@@ -544,13 +652,22 @@ impl OpenAIDashboardFetcher {
             timeout,
             call,
         )
-        .await?;
+        .await
+        {
+            Ok(res) => res,
+            Err(OpenAIDashboardFetchError::Cancelled) => {
+                return Err(OpenAIDashboardFetchError::Cancelled);
+            }
+            Err(_) => return Ok(None),
+        };
         if !(200..=299).contains(&status) {
-            return None;
+            return Ok(None);
         }
-        let decoded: CodexSpendControlsMonthlyUsageResponse =
-            serde_json::from_slice(&data).ok()?;
-        decoded.codex_credit_limit_snapshot(now)
+        let Ok(decoded) = serde_json::from_slice::<CodexSpendControlsMonthlyUsageResponse>(&data)
+        else {
+            return Ok(None);
+        };
+        Ok(decoded.codex_credit_limit_snapshot(now))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -563,18 +680,33 @@ impl OpenAIDashboardFetcher {
         deadline: Option<Instant>,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<f64> {
-        let credits = response.credits.as_ref()?;
+    ) -> Result<Option<f64>, OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
+        let Some(credits) = response.credits.as_ref() else {
+            return Ok(None);
+        };
         if !credits.has_credits || credits.unlimited || credits.balance.is_some() {
-            return None;
+            return Ok(None);
         }
-        let account_id = response.account_id.as_deref()?.trim();
-        if account_id.is_empty() {
-            return None;
-        }
-        let timeout = Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())?;
-        let url = endpoint.workspace_remaining_balance_url(account_id).ok()?;
-        let (data, status) = Self::execute_get(
+        let Some(account_id) = response
+            .account_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(timeout) =
+            Self::remaining_timeout(deadline, DEFAULT_DASHBOARD_API_TIMEOUT, now_fn())
+        else {
+            return Ok(None);
+        };
+        let Ok(url) = endpoint.workspace_remaining_balance_url(account_id) else {
+            return Ok(None);
+        };
+        let (data, status) = match Self::execute_get(
             net,
             endpoint,
             url,
@@ -584,11 +716,71 @@ impl OpenAIDashboardFetcher {
             timeout,
             call,
         )
-        .await?;
+        .await
+        {
+            Ok(res) => res,
+            Err(OpenAIDashboardFetchError::Cancelled) => {
+                return Err(OpenAIDashboardFetchError::Cancelled);
+            }
+            Err(_) => return Ok(None),
+        };
         if !(200..=299).contains(&status) {
-            return None;
+            return Ok(None);
         }
-        CodexWorkspaceRemainingBalanceResponse::parse(&data)
+        Ok(
+            CodexOAuthUsageFetcher::decode_workspace_remaining_balance_response(&data)
+                .ok()
+                .and_then(|r| r.balance),
+        )
+    }
+
+    pub async fn fetch_signed_in_email_from_api(
+        net: &NetBroker,
+        endpoint: &OpenAIDashboardEndpointConfig,
+        cookie_header: &str,
+        deadline: Option<Instant>,
+        now_fn: &(dyn Fn() -> Instant + Send + Sync),
+        call: Option<&BrokerCall>,
+    ) -> Result<Option<String>, OpenAIDashboardFetchError> {
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
+        }
+        if cookie_header.trim().is_empty() {
+            return Ok(None);
+        }
+        let urls = [endpoint.me_url()?, endpoint.auth_session_url()?];
+        for url in urls {
+            let Some(timeout) =
+                Self::remaining_timeout(deadline, Duration::from_secs(10), now_fn())
+            else {
+                return Err(OpenAIDashboardFetchError::Timeout);
+            };
+            match Self::execute_get(net, endpoint, url, cookie_header, None, None, timeout, call)
+                .await
+            {
+                Ok((data, status)) if (200..=299).contains(&status) => {
+                    if let Some(email) = find_first_email_in_json(&data) {
+                        let trimmed = email.trim().to_owned();
+                        if !trimmed.is_empty() {
+                            return Ok(Some(trimmed));
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(OpenAIDashboardFetchError::Cancelled) => {
+                    return Err(OpenAIDashboardFetchError::Cancelled);
+                }
+                Err(_) => {
+                    if deadline.is_some()
+                        && Self::remaining_timeout(deadline, Duration::from_secs(10), now_fn())
+                            .is_none()
+                    {
+                        return Err(OpenAIDashboardFetchError::Timeout);
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -600,8 +792,8 @@ impl OpenAIDashboardFetcher {
         now: Timestamp,
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
-    ) -> Option<(DashboardAPIData, Option<String>)> {
-        let response = Self::fetch_dashboard_api_response(
+    ) -> Result<Option<(DashboardAPIData, Option<String>)>, OpenAIDashboardFetchError> {
+        let Some(response) = Self::fetch_dashboard_api_response(
             net,
             endpoint,
             cookie_header,
@@ -610,11 +802,14 @@ impl OpenAIDashboardFetcher {
             now_fn,
             call,
         )
-        .await?;
+        .await?
+        else {
+            return Ok(None);
+        };
         let signed_in_email = if let Some(verified) = response.verified_signed_in_email {
             Some(verified)
         } else if response.api_data.has_usage_data() {
-            OpenAIDashboardBrowserCookieImporter::fetch_signed_in_email_from_api(
+            Self::fetch_signed_in_email_from_api(
                 net,
                 endpoint,
                 cookie_header,
@@ -623,10 +818,12 @@ impl OpenAIDashboardFetcher {
                 call,
             )
             .await
+            .ok()
+            .flatten()
         } else {
             None
         };
-        Some((response.api_data, signed_in_email))
+        Ok(Some((response.api_data, signed_in_email)))
     }
 
     pub async fn fetch_subscription_from_api(
@@ -638,6 +835,9 @@ impl OpenAIDashboardFetcher {
         now_fn: &(dyn Fn() -> Instant + Send + Sync),
         call: Option<&BrokerCall>,
     ) -> OpenAISubscriptionFetchResult {
+        if cookie_header.trim().is_empty() {
+            return OpenAISubscriptionFetchResult::Unavailable;
+        }
         let Some(timeout) =
             Self::remaining_timeout(deadline, DEFAULT_SUBSCRIPTIONS_API_TIMEOUT, now_fn())
         else {
@@ -646,7 +846,7 @@ impl OpenAIDashboardFetcher {
         let Ok(url) = endpoint.subscriptions_url(account_id) else {
             return OpenAISubscriptionFetchResult::Unavailable;
         };
-        let Some((data, status)) =
+        let Ok((data, status)) =
             Self::execute_get(net, endpoint, url, cookie_header, None, None, timeout, call).await
         else {
             return OpenAISubscriptionFetchResult::Unavailable;
@@ -657,37 +857,24 @@ impl OpenAIDashboardFetcher {
         OpenAISubscriptionMetadataParser::parse_result(&data)
     }
 
-    pub fn subscription_metadata_result(
-        api_result: OpenAISubscriptionFetchResult,
-        fallback_result: Option<OpenAISubscriptionFetchResult>,
-    ) -> OpenAISubscriptionFetchResult {
-        match api_result {
-            OpenAISubscriptionFetchResult::Resolved(_)
-            | OpenAISubscriptionFetchResult::ConfirmedAbsent => api_result,
-            OpenAISubscriptionFetchResult::Unavailable => {
-                fallback_result.unwrap_or(OpenAISubscriptionFetchResult::Unavailable)
-            }
-        }
+    pub fn subscription_metadata_result(data: &[u8]) -> OpenAISubscriptionFetchResult {
+        OpenAISubscriptionMetadataParser::parse_result(data)
     }
 
     pub fn snapshot_by_merging_api(
-        api: &DashboardAPIData,
+        api_data: &DashboardAPIData,
         previous: Option<&OpenAIDashboardSnapshot>,
-        signed_in_email: Option<String>,
+        verified_email: Option<&str>,
         subscription_result: OpenAISubscriptionFetchResult,
         updated_at: Timestamp,
     ) -> OpenAIDashboardSnapshot {
-        let snapshot = api.to_snapshot(signed_in_email, updated_at);
-        let matching_previous = previous.and_then(|prev| {
-            let prev_email = CodexIdentityResolver::normalize_email(prev.signed_in_email.as_deref())?;
-            let curr_email =
-                CodexIdentityResolver::normalize_email(snapshot.signed_in_email.as_deref())?;
-            if prev_email == curr_email && Self::dashboard_can_reuse_snapshot(&snapshot, prev) {
-                Some(prev)
-            } else {
-                None
-            }
+        let email = verified_email.unwrap_or("").trim().to_owned();
+        let previous = previous.filter(|prev| {
+            Self::dashboard_emails_match(Some(&email), prev.signed_in_email.as_deref())
+                && Self::dashboard_can_reuse_snapshot(Some(prev), api_data.account_id.as_deref())
         });
+        let uses_api_balance =
+            api_data.credits_remaining.is_some() || api_data.credits_available.is_some();
 
         let (
             subscription_expires_at,
@@ -702,7 +889,7 @@ impl OpenAIDashboardFetcher {
                 metadata.subscription_renews_at_is_date_only,
             ),
             OpenAISubscriptionFetchResult::ConfirmedAbsent => (None, false, None, false),
-            OpenAISubscriptionFetchResult::Unavailable => matching_previous
+            OpenAISubscriptionFetchResult::Unavailable => previous
                 .map(|prev| {
                     (
                         prev.subscription_expires_at,
@@ -714,75 +901,58 @@ impl OpenAIDashboardFetcher {
                 .unwrap_or((None, false, None, false)),
         };
 
-        let Some(prev) = matching_previous else {
-            let mut out = snapshot;
-            out.subscription_expires_at = subscription_expires_at;
-            out.subscription_expires_at_is_date_only = subscription_expires_at_is_date_only;
-            out.subscription_renews_at = subscription_renews_at;
-            out.subscription_renews_at_is_date_only = subscription_renews_at_is_date_only;
-            return out;
+        let extra_rate_windows = match &api_data.extra_rate_windows {
+            Some(w) if !w.is_empty() => Some(w.clone()),
+            _ => previous.and_then(|p| p.extra_rate_windows.clone()),
         };
 
         let mut merged = OpenAIDashboardSnapshot::new(
-            snapshot
-                .signed_in_email
-                .or_else(|| prev.signed_in_email.clone()),
-            snapshot.account_id.or_else(|| prev.account_id.clone()),
-            snapshot
-                .code_review_remaining_percent
-                .or(prev.code_review_remaining_percent),
-            snapshot
-                .code_review_limit
-                .or_else(|| prev.code_review_limit.clone()),
-            if snapshot.credit_events.is_empty() {
-                prev.credit_events.clone()
-            } else {
-                snapshot.credit_events
-            },
-            if snapshot.daily_breakdown.is_empty() {
-                prev.daily_breakdown.clone()
-            } else {
-                snapshot.daily_breakdown
-            },
-            if snapshot.usage_breakdown.is_empty() {
-                prev.usage_breakdown.clone()
-            } else {
-                snapshot.usage_breakdown
-            },
-            snapshot
-                .credits_purchase_url
-                .or_else(|| prev.credits_purchase_url.clone()),
-            snapshot
+            (!email.is_empty()).then_some(email),
+            api_data.account_id.clone(),
+            previous.and_then(|p| p.code_review_remaining_percent),
+            previous.and_then(|p| p.code_review_limit.clone()),
+            previous
+                .map(|p| p.credit_events.clone())
+                .unwrap_or_default(),
+            previous
+                .map(|p| p.daily_breakdown.clone())
+                .unwrap_or_default(),
+            previous
+                .map(|p| p.usage_breakdown.clone())
+                .unwrap_or_default(),
+            previous.and_then(|p| p.credits_purchase_url.clone()),
+            api_data
                 .primary_limit
-                .or_else(|| prev.primary_limit.clone()),
-            snapshot
+                .clone()
+                .or_else(|| previous.and_then(|p| p.primary_limit.clone())),
+            api_data
                 .secondary_limit
-                .or_else(|| prev.secondary_limit.clone()),
-            snapshot
-                .extra_rate_windows
-                .or_else(|| prev.extra_rate_windows.clone()),
-            if snapshot.credits_remaining.is_some() {
-                snapshot.credits_remaining
-            } else if api.credits_available == Some(false) {
-                None
+                .clone()
+                .or_else(|| previous.and_then(|p| p.secondary_limit.clone())),
+            extra_rate_windows,
+            if uses_api_balance {
+                api_data.credits_remaining
             } else {
-                prev.credits_remaining
+                previous.and_then(|p| p.credits_remaining)
             },
-            snapshot.credits_available.or(prev.credits_available),
-            if snapshot.balance_is_workspace.is_some() {
-                snapshot.balance_is_workspace
-            } else if snapshot.credits_remaining.is_some() || api.credits_available == Some(false) {
-                None
+            api_data
+                .credits_available
+                .or_else(|| previous.and_then(|p| p.credits_available)),
+            if uses_api_balance {
+                api_data.balance_is_workspace
             } else {
-                prev.balance_is_workspace
+                previous.and_then(|p| p.balance_is_workspace)
             },
-            snapshot
+            api_data
                 .codex_credit_limit
-                .or_else(|| prev.codex_credit_limit.clone()),
-            snapshot.account_plan.or_else(|| prev.account_plan.clone()),
+                .clone()
+                .or_else(|| previous.and_then(|p| p.codex_credit_limit.clone())),
+            previous
+                .and_then(|p| p.account_plan.clone())
+                .or_else(|| api_data.account_plan.clone()),
             subscription_expires_at,
             subscription_renews_at,
-            snapshot.updated_at,
+            updated_at,
         );
         merged.subscription_expires_at_is_date_only = subscription_expires_at_is_date_only;
         merged.subscription_renews_at_is_date_only = subscription_renews_at_is_date_only;
@@ -792,46 +962,57 @@ impl OpenAIDashboardFetcher {
     pub fn filling_missing_page_fields(
         snapshot: OpenAIDashboardSnapshot,
         previous: Option<&OpenAIDashboardSnapshot>,
+        subscription_result: OpenAISubscriptionFetchResult,
     ) -> OpenAIDashboardSnapshot {
         let Some(prev) = previous else {
             return snapshot;
         };
-        let Some(prev_email) =
-            CodexIdentityResolver::normalize_email(prev.signed_in_email.as_deref())
-        else {
-            return snapshot;
-        };
-        let Some(curr_email) =
-            CodexIdentityResolver::normalize_email(snapshot.signed_in_email.as_deref())
-        else {
-            return snapshot;
-        };
-        if prev_email != curr_email || !Self::dashboard_can_reuse_snapshot(&snapshot, prev) {
+        if !Self::dashboard_emails_match(
+            snapshot.signed_in_email.as_deref(),
+            prev.signed_in_email.as_deref(),
+        ) || !Self::dashboard_can_reuse_snapshot(Some(prev), snapshot.account_id.as_deref())
+        {
             return snapshot;
         }
 
-        let subscription_expires_at = snapshot
-            .subscription_expires_at
-            .or(prev.subscription_expires_at);
-        let subscription_expires_at_is_date_only = if snapshot.subscription_expires_at.is_some() {
-            snapshot.subscription_expires_at_is_date_only
+        let uses_current_balance =
+            snapshot.credits_remaining.is_some() || snapshot.credits_available.is_some();
+        let (
+            subscription_expires_at,
+            subscription_expires_at_is_date_only,
+            subscription_renews_at,
+            subscription_renews_at_is_date_only,
+        ) = if subscription_result.succeeded() {
+            (
+                snapshot.subscription_expires_at,
+                snapshot.subscription_expires_at_is_date_only,
+                snapshot.subscription_renews_at,
+                snapshot.subscription_renews_at_is_date_only,
+            )
         } else {
-            prev.subscription_expires_at_is_date_only
-        };
-        let subscription_renews_at = snapshot
-            .subscription_renews_at
-            .or(prev.subscription_renews_at);
-        let subscription_renews_at_is_date_only = if snapshot.subscription_renews_at.is_some() {
-            snapshot.subscription_renews_at_is_date_only
-        } else {
-            prev.subscription_renews_at_is_date_only
+            (
+                snapshot
+                    .subscription_expires_at
+                    .or(prev.subscription_expires_at),
+                if snapshot.subscription_expires_at.is_some() {
+                    snapshot.subscription_expires_at_is_date_only
+                } else {
+                    prev.subscription_expires_at_is_date_only
+                },
+                snapshot
+                    .subscription_renews_at
+                    .or(prev.subscription_renews_at),
+                if snapshot.subscription_renews_at.is_some() {
+                    snapshot.subscription_renews_at_is_date_only
+                } else {
+                    prev.subscription_renews_at_is_date_only
+                },
+            )
         };
 
         let mut merged = OpenAIDashboardSnapshot::new(
-            snapshot
-                .signed_in_email
-                .or_else(|| prev.signed_in_email.clone()),
-            snapshot.account_id.or_else(|| prev.account_id.clone()),
+            snapshot.signed_in_email,
+            snapshot.account_id,
             snapshot
                 .code_review_remaining_percent
                 .or(prev.code_review_remaining_percent),
@@ -865,12 +1046,14 @@ impl OpenAIDashboardFetcher {
             snapshot
                 .extra_rate_windows
                 .or_else(|| prev.extra_rate_windows.clone()),
-            snapshot.credits_remaining.or(prev.credits_remaining),
+            if uses_current_balance {
+                snapshot.credits_remaining
+            } else {
+                prev.credits_remaining
+            },
             snapshot.credits_available.or(prev.credits_available),
-            if snapshot.balance_is_workspace.is_some() {
+            if uses_current_balance {
                 snapshot.balance_is_workspace
-            } else if snapshot.credits_remaining.is_some() {
-                None
             } else {
                 prev.balance_is_workspace
             },
@@ -887,50 +1070,50 @@ impl OpenAIDashboardFetcher {
         merged
     }
 
-    pub fn snapshot_for_unpaired_page(
-        page: OpenAIDashboardSnapshot,
-        previous: Option<&OpenAIDashboardSnapshot>,
-        expected_email: Option<&str>,
-    ) -> OpenAIDashboardSnapshot {
-        if page
-            .signed_in_email
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty())
-        {
-            return Self::filling_missing_page_fields(page, previous);
-        }
-        let Some(prev) = previous else {
-            return page;
-        };
-        let Some(expected) = CodexIdentityResolver::normalize_email(expected_email) else {
-            return page;
-        };
-        let Some(prev_email) =
-            CodexIdentityResolver::normalize_email(prev.signed_in_email.as_deref())
-        else {
-            return page;
-        };
-        if expected != prev_email {
-            return page;
-        }
-        let mut with_email = page;
-        with_email.signed_in_email = Some(prev_email);
-        Self::filling_missing_page_fields(with_email, Some(prev))
+    pub fn should_wait_for_page_identity(
+        verified_signed_in_email: Option<&str>,
+        page_signed_in_email: Option<&str>,
+    ) -> bool {
+        CodexIdentityResolver::normalize_email(verified_signed_in_email).is_some()
+            && CodexIdentityResolver::normalize_email(page_signed_in_email).is_none()
     }
 
-    pub fn should_wait_for_page_identity(
-        signed_in_email: Option<&str>,
-        expected_email: Option<&str>,
-        attempt: usize,
-        max_attempts: usize,
-    ) -> bool {
-        if attempt >= max_attempts {
-            return false;
+    pub fn snapshot_for_unpaired_page(
+        api_data: Option<&DashboardAPIData>,
+        verified_signed_in_email: Option<&str>,
+        page_signed_in_email: Option<&str>,
+        subscription_result: OpenAISubscriptionFetchResult,
+        previous: Option<&OpenAIDashboardSnapshot>,
+        updated_at: Timestamp,
+    ) -> Result<Option<OpenAIDashboardSnapshot>, OpenAIDashboardFetchError> {
+        let Some(api_data) = api_data else {
+            return Ok(None);
+        };
+        let Some(verified_email) = verified_signed_in_email
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        let Some(page_email) = page_signed_in_email
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
+            return Ok(None);
+        };
+        if Self::dashboard_emails_match(Some(verified_email), Some(page_email)) {
+            return Ok(None);
         }
-        if signed_in_email.is_some_and(|s| !s.trim().is_empty()) {
-            return false;
+        if !api_data.has_usage_data() {
+            return Err(OpenAIDashboardFetchError::NoDashboardData);
         }
-        CodexIdentityResolver::normalize_email(expected_email).is_some()
+        Ok(Some(Self::snapshot_by_merging_api(
+            api_data,
+            previous,
+            Some(verified_email),
+            subscription_result,
+            updated_at,
+        )))
     }
 
     pub fn has_returnable_dashboard_data(snapshot: &OpenAIDashboardSnapshot) -> bool {
@@ -948,24 +1131,27 @@ impl OpenAIDashboardFetcher {
             || !snapshot.credit_events.is_empty()
             || !snapshot.daily_breakdown.is_empty()
             || !snapshot.usage_breakdown.is_empty()
-            || snapshot
-                .account_plan
-                .as_ref()
-                .is_some_and(|p| !p.trim().is_empty())
     }
 
     pub fn parse_dashboard_scrape(
         scrape: &DashboardScrapePayload,
         previous: Option<&OpenAIDashboardSnapshot>,
-        expected_email: Option<&str>,
+        now: Timestamp,
+    ) -> Result<OpenAIDashboardSnapshot, OpenAIDashboardFetchError> {
+        Self::parse_dashboard_scrape_with_api(scrape, None, previous, now)
+    }
+
+    pub fn parse_dashboard_scrape_with_api(
+        scrape: &DashboardScrapePayload,
+        api_data: Option<&DashboardAPIData>,
+        previous: Option<&OpenAIDashboardSnapshot>,
         now: Timestamp,
     ) -> Result<OpenAIDashboardSnapshot, OpenAIDashboardFetchError> {
         let bootstrap_email =
             OpenAIDashboardParser::parse_signed_in_email_from_client_bootstrap(&scrape.html);
-        let auth_status = scrape
-            .auth_status
-            .clone()
-            .or_else(|| OpenAIDashboardParser::parse_auth_status_from_client_bootstrap(&scrape.html));
+        let auth_status = scrape.auth_status.clone().or_else(|| {
+            OpenAIDashboardParser::parse_auth_status_from_client_bootstrap(&scrape.html)
+        });
         if scrape.login_required
             || auth_status
                 .as_deref()
@@ -985,17 +1171,40 @@ impl OpenAIDashboardFetcher {
             OpenAIDashboardParser::parse_code_review_remaining_percent(&scrape.body_text);
         let code_review_limit =
             OpenAIDashboardParser::parse_code_review_limit(&scrape.body_text, now);
-        let (primary_limit, secondary_limit) =
+        let (parsed_primary, parsed_secondary) =
             OpenAIDashboardParser::parse_rate_limits(&scrape.body_text, now);
-        let credits_remaining = OpenAIDashboardParser::parse_credits_remaining(&scrape.body_text);
-        let account_plan = OpenAIDashboardParser::parse_plan_from_html(&scrape.html);
+        let primary_limit = api_data
+            .and_then(|a| a.primary_limit.clone())
+            .or(parsed_primary);
+        let secondary_limit = api_data
+            .and_then(|a| a.secondary_limit.clone())
+            .or(parsed_secondary);
+        let parsed_credits_remaining =
+            OpenAIDashboardParser::parse_credits_remaining(&scrape.body_text);
+        // An explicit API response withholds a balance deliberately; the page may still show a placeholder zero.
+        let uses_api_balance = api_data
+            .is_some_and(|a| a.credits_remaining.is_some() || a.credits_available.is_some());
+        let credits_remaining = if uses_api_balance {
+            api_data.and_then(|a| a.credits_remaining)
+        } else {
+            parsed_credits_remaining
+        };
+        let credits_available = api_data.and_then(|a| a.credits_available);
+        let balance_is_workspace = if uses_api_balance {
+            api_data.and_then(|a| a.balance_is_workspace)
+        } else {
+            None
+        };
+        let codex_credit_limit = api_data.and_then(|a| a.codex_credit_limit.clone());
+        let account_plan = OpenAIDashboardParser::parse_plan_from_html(&scrape.html)
+            .or_else(|| api_data.and_then(|a| a.account_plan.clone()));
         let credit_events: Vec<CreditEvent> =
             OpenAIDashboardParser::parse_credit_events(&scrape.rows);
         let daily_breakdown = OpenAIDashboardSnapshot::make_daily_breakdown(&credit_events, 30);
 
         let page_snapshot = OpenAIDashboardSnapshot::new(
             signed_in_email,
-            None,
+            api_data.and_then(|a| a.account_id.clone()),
             code_review,
             code_review_limit,
             credit_events,
@@ -1009,18 +1218,22 @@ impl OpenAIDashboardFetcher {
                 .map(str::to_owned),
             primary_limit,
             secondary_limit,
-            None,
+            api_data.and_then(|a| a.extra_rate_windows.clone()),
             credits_remaining,
-            None,
-            None,
-            None,
+            credits_available,
+            balance_is_workspace,
+            codex_credit_limit,
             account_plan,
             None,
             None,
             now,
         );
 
-        let snapshot = Self::snapshot_for_unpaired_page(page_snapshot, previous, expected_email);
+        let snapshot = Self::filling_missing_page_fields(
+            page_snapshot,
+            previous,
+            OpenAISubscriptionFetchResult::Unavailable,
+        );
         if Self::has_returnable_dashboard_data(&snapshot) {
             Ok(snapshot)
         } else {
@@ -1047,10 +1260,10 @@ impl OpenAIDashboardFetcher {
         let Some(cookie_header) = normalize(raw_cookie_header) else {
             return Err(OpenAIDashboardFetchError::InvalidCookieHeader);
         };
-        let effective_timeout = timeout.max(Duration::from_secs(1));
+        let effective_timeout = Self::sanitized_timeout(timeout);
         let deadline = Some(now_fn() + effective_timeout);
 
-        let Some((usage_bytes, status, authorization)) = Self::fetch_dashboard_usage_response(
+        let (usage_bytes, status, authorization) = Self::fetch_dashboard_usage_response(
             net,
             endpoint,
             &cookie_header,
@@ -1058,16 +1271,7 @@ impl OpenAIDashboardFetcher {
             now_fn,
             call,
         )
-        .await
-        else {
-            if call.is_some_and(|c| c.cancel.is_cancelled()) {
-                return Err(OpenAIDashboardFetchError::Cancelled);
-            }
-            if deadline.is_some_and(|d| now_fn() >= d) {
-                return Err(OpenAIDashboardFetchError::Timeout);
-            }
-            return Err(OpenAIDashboardFetchError::NetworkError(None));
-        };
+        .await?;
 
         if status == 401 || status == 403 {
             return Err(OpenAIDashboardFetchError::LoginRequired);
@@ -1094,7 +1298,7 @@ impl OpenAIDashboardFetcher {
             now_fn,
             call,
         )
-        .await
+        .await?
         {
             api_data.codex_credit_limit = Some(monthly_limit);
         }
@@ -1110,7 +1314,7 @@ impl OpenAIDashboardFetcher {
                 now_fn,
                 call,
             )
-            .await
+            .await?
         {
             api_data.credits_remaining = Some(workspace_balance);
             api_data.balance_is_workspace = Some(true);
@@ -1119,7 +1323,7 @@ impl OpenAIDashboardFetcher {
         let signed_in_email = if let Some(verified) = authorization.map(|a| a.verified_email) {
             Some(verified)
         } else {
-            OpenAIDashboardBrowserCookieImporter::fetch_signed_in_email_from_api(
+            Self::fetch_signed_in_email_from_api(
                 net,
                 endpoint,
                 &cookie_header,
@@ -1128,6 +1332,8 @@ impl OpenAIDashboardFetcher {
                 call,
             )
             .await
+            .ok()
+            .flatten()
         };
 
         let subscription_result = Self::fetch_subscription_from_api(
@@ -1144,7 +1350,7 @@ impl OpenAIDashboardFetcher {
         let snapshot = Self::snapshot_by_merging_api(
             &api_data,
             previous,
-            signed_in_email,
+            signed_in_email.as_deref(),
             subscription_result,
             now,
         );
@@ -1156,20 +1362,28 @@ impl OpenAIDashboardFetcher {
     }
 
     pub fn dashboard_can_reuse_snapshot(
-        current: &OpenAIDashboardSnapshot,
-        previous: &OpenAIDashboardSnapshot,
+        previous: Option<&OpenAIDashboardSnapshot>,
+        account_id: Option<&str>,
     ) -> bool {
-        let prev_id = normalize_workspace_account_id(previous.account_id.as_deref());
-        let curr_id = normalize_workspace_account_id(current.account_id.as_deref());
-        let previous_requires_workspace_scope = previous.balance_is_workspace == Some(true)
-            || (previous.credits_available == Some(true) && previous.credits_remaining.is_none());
-        if previous_requires_workspace_scope {
-            return curr_id.is_some() && curr_id == prev_id;
+        let Some(previous) = previous else {
+            return false;
+        };
+        let current_id = normalize_workspace_account_id(account_id);
+        let previous_id = normalize_workspace_account_id(previous.account_id.as_deref());
+        if previous.requires_workspace_balance_scope() {
+            return current_id.is_some() && current_id == previous_id;
         }
-        if let (Some(curr_id), Some(prev_id)) = (curr_id, prev_id) {
-            return curr_id == prev_id;
+        if let (Some(curr), Some(prev)) = (current_id, previous_id) {
+            return curr == prev;
         }
         true
+    }
+
+    pub fn dashboard_emails_match(first: Option<&str>, second: Option<&str>) -> bool {
+        let Some(first) = CodexIdentityResolver::normalize_email(first) else {
+            return false;
+        };
+        Some(first) == CodexIdentityResolver::normalize_email(second)
     }
 
     fn remaining_timeout(
@@ -1197,48 +1411,66 @@ impl OpenAIDashboardFetcher {
         chatgpt_account_id: Option<&str>,
         timeout: Duration,
         call: Option<&BrokerCall>,
-    ) -> Option<(Vec<u8>, u16)> {
+    ) -> Result<(Vec<u8>, u16), OpenAIDashboardFetchError> {
         if call.is_some_and(|c| c.cancel.is_cancelled()) {
-            return None;
+            return Err(OpenAIDashboardFetchError::Cancelled);
         }
-        let mut headers = RedactedHeaders::new();
-        headers.insert_secret(COOKIE, HeaderValue::from_str(cookie_header).ok()?);
-        headers.insert_public(ACCEPT, HeaderValue::from_static("application/json"));
-        headers.insert_public(
-            ACCEPT_LANGUAGE,
-            HeaderValue::from_static("en-US,en;q=0.9"),
-        );
-        headers.insert_public(USER_AGENT, HeaderValue::from_static("CodexBar"));
-        if let Some(token) = bearer_token {
-            let auth_val = format!("Bearer {}", token.trim());
-            headers.insert_secret(AUTHORIZATION, HeaderValue::from_str(&auth_val).ok()?);
+        if !is_valid_header_value_str(cookie_header) {
+            return Err(OpenAIDashboardFetchError::InvalidCookieHeader);
         }
+
+        let mut headers = HeaderMap::new();
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("AriadUsage"));
         if let Some(account_id) = chatgpt_account_id.map(str::trim).filter(|s| !s.is_empty()) {
-            headers.insert_secret(
-                "ChatGPT-Account-Id",
-                HeaderValue::from_str(account_id).ok()?,
-            );
+            let acct_val = HeaderValue::from_str(account_id)
+                .map_err(|_| OpenAIDashboardFetchError::NetworkError(None))?;
+            headers.insert(HeaderName::from_static("chatgpt-account-id"), acct_val);
         }
 
-        let request = NetRequest {
-            url,
-            method: Method::GET,
-            headers,
-            body: None,
-            timeout,
-        };
+        let mut request = NetRequest::new(Method::GET, url);
+        request.headers = headers;
+        request
+            .credentials
+            .push((COOKIE, SecretString::new(cookie_header.to_owned())));
+        if let Some(token) = bearer_token.map(str::trim).filter(|s| !s.is_empty()) {
+            if !is_valid_header_value_str(token) {
+                return Err(OpenAIDashboardFetchError::NetworkError(None));
+            }
+            request
+                .credentials
+                .push((AUTHORIZATION, SecretString::new(format!("Bearer {token}"))));
+        }
+        request.timeout = Some(timeout);
 
-        let result = if let Some(call) = call {
-            net.execute(call, &endpoint.declared_origins, request).await
+        let default_call;
+        let effective_call = if let Some(call) = call {
+            call
         } else {
-            let default_call = BrokerCall::default();
-            net.execute(&default_call, &endpoint.declared_origins, request)
-                .await
+            default_call = BrokerCall {
+                interaction: FetchInteraction::UserInitiated,
+                cancel: CancellationToken::new(),
+                request_id: "codex.web.dashboard".to_owned(),
+            };
+            &default_call
         };
-        match result {
-            Ok(resp) => Some((resp.body.to_vec(), resp.status.as_u16())),
-            Err(NetError::Cancelled) => None,
-            Err(_) => None,
+
+        let resp = net
+            .send_response(effective_call, &endpoint.declared_origins, request)
+            .await
+            .map_err(|err| match err {
+                NetError::Cancelled | NetError::Transport(TransportClass::Cancelled) => {
+                    OpenAIDashboardFetchError::Cancelled
+                }
+                NetError::Transport(TransportClass::Timeout) => OpenAIDashboardFetchError::Timeout,
+                NetError::Transport(tc) => OpenAIDashboardFetchError::NetworkError(Some(tc)),
+                _ => OpenAIDashboardFetchError::NetworkError(None),
+            })?;
+
+        if call.is_some_and(|c| c.cancel.is_cancelled()) {
+            return Err(OpenAIDashboardFetchError::Cancelled);
         }
+        Ok((resp.body().to_vec(), resp.status.as_u16()))
     }
 }

@@ -5,8 +5,13 @@ pub mod cli_launch_gate;
 pub mod cli_rpc;
 pub mod credentials;
 pub mod credits;
+pub mod dashboard_authority;
 pub mod identity;
 pub mod normalizer;
+pub mod openai_dashboard_cookie_importer;
+pub mod openai_dashboard_fetcher;
+pub mod openai_dashboard_models;
+pub mod openai_dashboard_parser;
 pub mod pat;
 pub mod plan;
 pub mod reconciled;
@@ -32,6 +37,14 @@ pub use credits::{
     CodexRateLimitResetCreditInventory, CodexRateLimitResetCreditStatus,
     CodexRateLimitResetCreditsSnapshot, CreditEvent, CreditsSnapshot,
 };
+pub use dashboard_authority::{
+    CodexCLIDashboardAuthorityContext, CodexDashboardAllowedEffect, CodexDashboardAuthority,
+    CodexDashboardAuthorityDecision, CodexDashboardAuthorityInput, CodexDashboardCleanup,
+    CodexDashboardDecisionReason, CodexDashboardDisposition, CodexDashboardKnownOwnerCandidate,
+    CodexDashboardOwnershipProofContext, CodexDashboardPolicyError, CodexDashboardRoutingHints,
+    CodexDashboardSourceKind, CodexOpenAIWorkspaceIdentity, CodexOpenAIWorkspaceIdentityCache,
+    CodexOpenAIWorkspaceResolver, CodexOpenAIWorkspaceResolverError, DEFAULT_CHATGPT_ACCOUNTS_URL,
+};
 pub use identity::{
     CodexAuthBackedAccount, CodexIdentity, CodexIdentityResolver,
     CodexNativeCredentialOwnerIdentity,
@@ -40,6 +53,32 @@ pub use normalizer::{
     AdditionalRateLimit, AdditionalRateLimitDetails, CodexAdditionalRateLimitMapper,
     CodexRateWindowNormalizer, WindowSnapshot,
 };
+pub use openai_dashboard_cookie_importer::{
+    FoundAccount, OPENAI_COOKIE_DOMAINS, OpenAIDashboardBrowserCookieImporter,
+    OpenAIDashboardCandidateSource, OpenAIDashboardCookieCandidate,
+    OpenAIDashboardCookieImportError, OpenAIDashboardCookieImportResult,
+    OpenAIDashboardPageScrapeGate, OpenAIWebRefreshGateContext, OpenAIWebRefreshPolicyContext,
+    PersistentCookieSessionError, actionable_openai_dashboard_import_failure,
+    concise_openai_cookie_mismatch_status, cookie_summary_from_header, dashboard_has_page_history,
+    force_openai_web_refresh_for_stale_request, has_session_cookies_in_header,
+    is_openai_session_cookie_name, openai_dashboard_friendly_error, openai_declared_domains,
+    openai_web_refresh_phase, openai_web_target_isolation_key, refresh_phase,
+    should_allow_openai_dashboard_page_scrape, should_attempt_cookie_import,
+    should_run_openai_web_refresh, should_skip_openai_web_empty_history_retry,
+    should_skip_openai_web_refresh,
+};
+pub use openai_dashboard_fetcher::{
+    CHATGPT_HOST, DEFAULT_CHATGPT_WEB_BASE_URL, DEFAULT_CREDITS_PURCHASE_URL, DashboardAPIData,
+    DashboardAPIResponse, DashboardScrapePayload, OpenAIDashboardEndpointConfig,
+    OpenAIDashboardFetchError, OpenAIDashboardFetcher, SessionAuthorization,
+};
+pub use openai_dashboard_models::{
+    DEFAULT_OPENAI_SUBSCRIPTIONS_URL, OpenAIDashboardCache, OpenAIDashboardCacheStore,
+    OpenAIDashboardDailyBreakdown, OpenAIDashboardServiceUsage, OpenAIDashboardSnapshot,
+    OpenAIDashboardUsageBreakdownSummary, OpenAISubscriptionFetchResult,
+    OpenAISubscriptionMetadata, OpenAISubscriptionMetadataParser,
+};
+pub use openai_dashboard_parser::OpenAIDashboardParser;
 pub use pat::{
     CodexCLIUserAgent, CodexPATUsageFetch, CodexPATUsageFetcher, DEFAULT_PAT_WHOAMI_URL,
     PAT_WHOAMI_PATH,
@@ -54,8 +93,9 @@ pub use strategy::{
     CODEX_PAT_STRATEGY_ID, CODEX_WEB_DASHBOARD_STRATEGY_ID, CodexCLIUsageStrategy,
     CodexFetchOutcome, CodexOAuthError, CodexOAuthFetchStrategy,
     CodexOAuthNativeRefreshCLIStrategy, CodexPATFetchStrategy, CodexProviderPlan,
-    CodexStrategyConfig, CodexUsageDataSource, CodexUsageStrategy, CodexWebDashboardStrategy,
-    no_data_message, resolve_usage_strategy,
+    CodexStrategyConfig, CodexUsageDataSource, CodexUsageStrategy, CodexWebDashboardError,
+    CodexWebDashboardStrategy, OpenAIWebCodexError, OpenAIWebCodexResult, no_data_message,
+    resolve_usage_strategy,
 };
 pub use usage_fetcher::{
     CHATGPT_USAGE_PATH, CODEX_USAGE_PATH, CodexOAuthFetchError, CodexOAuthUsageFetcher,
