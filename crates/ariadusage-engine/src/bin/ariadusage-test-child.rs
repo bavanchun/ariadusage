@@ -904,7 +904,7 @@ async fn run_fake_shell(
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 fn run_codex_app_server(
     mode: &str,
     remaining: &[std::ffi::OsString],
