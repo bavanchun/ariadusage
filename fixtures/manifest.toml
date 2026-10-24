@@ -930,12 +930,22 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/card.rs"
-sources = ["Sources/CodexBar/MenuCardView.swift", "Sources/CodexBar/MenuCardView+ModelHelpers.swift", "Sources/CodexBar/MenuCardView+Costs.swift"]
+sources = ["Sources/CodexBar/MenuCardView.swift", "Sources/CodexBar/MenuCardView+ModelHelpers.swift", "Sources/CodexBar/MenuCardView+Costs.swift", "Sources/CodexBar/MenuCardView+SessionEquivalent.swift", "Sources/CodexBar/MenuCardView+CodexResetCredits.swift", "Sources/CodexBar/InlineUsageDashboardContent.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/card_layout.rs"
 sources = ["Sources/CodexBar/UsageMenuCardLayout.swift", "Sources/CodexBar/MenuCardMetricRow.swift", "Sources/CodexBar/UsageMenuCardHeaderAndUsageSectionView.swift", "Sources/CodexBar/StatusItemController+MenuTypes.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/chart.rs"
+sources = ["Sources/CodexBar/MenuUsageBarStrip.swift", "Sources/CodexBar/InlineUsageDashboardContent.swift", "Sources/CodexBar/CostHistoryChartMenuView.swift", "Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift", "Sources/CodexBar/QuotaBurndownChartMenuView.swift", "Sources/CodexBar/QuotaBurndownModel.swift", "Sources/CodexBar/ChartBarHoverSelection.swift", "Sources/CodexBar/ChartAxisLabelLayout.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/src/appkit/chart_view.rs"
+sources = ["Sources/CodexBar/CostHistoryChartMenuView.swift", "Sources/CodexBar/QuotaBurndownChartMenuView.swift", "Sources/CodexBar/PlanUtilizationHistoryChartMenuView.swift", "Sources/CodexBar/ChartMenuViewLayout.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -945,7 +955,7 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/menu_descriptor.rs"
-sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
+sources = ["Sources/CodexBar/MenuDescriptor.swift", "Sources/CodexBar/StatusItemController+Menu.swift", "Sources/CodexBar/StatusItemController+MenuCardItems.swift", "Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift", "Sources/CodexBar/StatusItemController+CostMenuCard.swift", "Sources/CodexBar/StatusItemController+OverviewSpend.swift", "Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift", "Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift", "Sources/CodexBar/Providers/Antigravity/AntigravityProviderImplementation.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]

@@ -13,13 +13,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use objc2::rc::Retained;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBezierPath, NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSFont, NSFontTextStyle,
-    NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleFootnote, NSFontTextStyleHeadline,
-    NSFontTextStyleSubheadline, NSFontTextStyleTitle2, NSFontWeightBold, NSFontWeightMedium,
-    NSFontWeightRegular, NSFontWeightSemibold, NSLineBreakMode, NSResponder, NSTextAlignment,
-    NSTextField, NSView,
+    NSFontTextStyleBody, NSFontTextStyleCaption1, NSFontTextStyleCaption2, NSFontTextStyleFootnote,
+    NSFontTextStyleHeadline, NSFontTextStyleSubheadline, NSFontTextStyleTitle2, NSFontWeightBold,
+    NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSLineBreakMode, NSResponder,
+    NSTextAlignment, NSTextField, NSTrackingArea, NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{
     NSDictionary, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -29,11 +29,12 @@ use super::color::ns_color;
 use super::progress_bar_view::ProgressBarView;
 use crate::card::{Accent, CardModel};
 use crate::card_layout::{
-    self, Align, CardLayout, Font, Item, TextColor, TextItem, TextMeasure, TextStyle, Truncation,
-    Weight,
+    self, Align, CardLayout, CardSectionMode, Font, Item, TextColor, TextItem, TextMeasure,
+    TextStyle, Truncation, Weight,
 };
-use crate::geometry::{Rect, Size};
-use crate::highlight_style;
+use crate::chart::{MiniBarPoint, MiniBarStripGeometry};
+use crate::geometry::{Point, Rect, Size};
+use crate::highlight_style::{self, Color};
 use crate::menu_descriptor::OverviewSpendSummary;
 
 /// Labels draw their text 2 pt inside their frame on each side.
@@ -47,18 +48,47 @@ const UNBOUNDED: f64 = 100_000.0;
 
 type ClickCallback = Rc<dyn Fn()>;
 
+#[derive(Clone)]
+struct MiniStripView {
+    label_field: Retained<NSTextField>,
+    points: Vec<MiniBarPoint>,
+    max_label: Option<String>,
+    strip_frame: Rect,
+}
+
 /// What the card currently shows.
-#[derive(Default)]
 pub struct CardState {
     model: Option<CardModel>,
     spend_summary: Option<OverviewSpendSummary>,
-    overview_mode: bool,
+    section_mode: CardSectionMode,
     layout: Option<CardLayout>,
     highlighted: bool,
     pressed: bool,
     on_click: Option<ClickCallback>,
     labels: Vec<(Retained<NSTextField>, TextColor)>,
     bars: Vec<Retained<ProgressBarView>>,
+    mini_strips: Vec<MiniStripView>,
+    hovered_bar_index: Option<usize>,
+    tracking_area: Option<Retained<NSTrackingArea>>,
+}
+
+impl Default for CardState {
+    fn default() -> Self {
+        Self {
+            model: None,
+            spend_summary: None,
+            section_mode: CardSectionMode::Full,
+            layout: None,
+            highlighted: false,
+            pressed: false,
+            on_click: None,
+            labels: Vec::new(),
+            bars: Vec::new(),
+            mini_strips: Vec::new(),
+            hovered_bar_index: None,
+            tracking_area: None,
+        }
+    }
 }
 
 define_class!(
@@ -88,11 +118,30 @@ define_class!(
         fn hit_test(&self, point: NSPoint) -> *mut NSView {
             // SAFETY: `super(self)` is a valid NSView instance on the main thread.
             let hit: Option<Retained<NSView>> = unsafe { msg_send![super(self), hitTest: point] };
-            if hit.is_some() && self.ivars().borrow().on_click.is_some() {
+            let state = self.ivars().borrow();
+            if hit.is_some() && (state.on_click.is_some() || !state.mini_strips.is_empty()) {
                 std::ptr::from_ref::<Self>(self) as *mut NSView
             } else {
                 hit.map_or(std::ptr::null_mut(), |v| Retained::as_ptr(&v) as *mut NSView)
             }
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            // SAFETY: `super(self)` is a valid NSView on the main thread.
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+            self.sync_tracking_area();
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, event: &NSEvent) {
+            let loc = self.convertPoint_fromView(event.locationInWindow(), None);
+            self.update_mini_strip_hover(Some(Point::new(loc.x, loc.y)));
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.update_mini_strip_hover(None);
         }
 
         #[unsafe(method(mouseDown:))]
@@ -155,12 +204,43 @@ impl CardView {
 
     /// Shows `model` at `width` in the full provider card layout. Returns false when nothing changed.
     pub fn update(&self, model: &CardModel, width: f64) -> bool {
-        self.update_with_mode(model, width, false)
+        self.update_section(model, CardSectionMode::Full, width)
     }
 
     /// Shows `model` at `width` in the compact Overview row layout (`OverviewMenuCardRowView`).
     pub fn update_overview(&self, model: &CardModel, width: f64) -> bool {
-        self.update_with_mode(model, width, true)
+        self.update_section(model, CardSectionMode::OverviewRow, width)
+    }
+
+    /// Shows `model` at `width` in `section_mode` (`Full`, `HeaderAndUsage`, `CreditsOnly`, `ExtraUsageOnly`, `OverviewRow`).
+    pub fn update_section(
+        &self,
+        model: &CardModel,
+        section_mode: CardSectionMode,
+        width: f64,
+    ) -> bool {
+        {
+            let state = self.ivars().borrow();
+            let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width);
+            if same_width
+                && state.section_mode == section_mode
+                && state.model.as_ref() == Some(model)
+            {
+                return false;
+            }
+        }
+        let mtm = self.mtm();
+        let measure = AppKitMeasure::new(mtm);
+        let layout = card_layout::layout_section(model, section_mode, width, &measure);
+        self.apply_layout(layout, model.accent, &measure);
+        {
+            let mut state = self.ivars().borrow_mut();
+            state.model = Some(model.clone());
+            state.spend_summary = None;
+            state.section_mode = section_mode;
+            state.hovered_bar_index = None;
+        }
+        true
     }
 
     /// Shows `summary` at `width` in the Overview spend summary card layout (`OverviewSpendSummaryCardView`).
@@ -180,7 +260,8 @@ impl CardView {
             let mut state = self.ivars().borrow_mut();
             state.model = None;
             state.spend_summary = Some(summary.clone());
-            state.overview_mode = false;
+            state.section_mode = CardSectionMode::Full;
+            state.hovered_bar_index = None;
         }
         true
     }
@@ -208,45 +289,29 @@ impl CardView {
         width: f64,
         overview_mode: bool,
     ) -> bool {
+        let mode = if overview_mode {
+            CardSectionMode::OverviewRow
+        } else {
+            CardSectionMode::Full
+        };
+        self.has_compatible_section_height(model, mode, width)
+    }
+
+    /// Whether `model` at `width` in `section_mode` produces the same height as the
+    /// currently rendered layout.
+    pub fn has_compatible_section_height(
+        &self,
+        model: &CardModel,
+        section_mode: CardSectionMode,
+        width: f64,
+    ) -> bool {
         let Some(existing_h) = self.ivars().borrow().layout.as_ref().map(|l| l.size.h) else {
             return false;
         };
         let mtm = self.mtm();
         let measure = AppKitMeasure::new(mtm);
-        let next = if overview_mode {
-            card_layout::overview_layout(model, width, &measure)
-        } else {
-            card_layout::layout(model, width, &measure)
-        };
+        let next = card_layout::layout_section(model, section_mode, width, &measure);
         (existing_h - next.size.h).abs() <= 0.5
-    }
-
-    fn update_with_mode(&self, model: &CardModel, width: f64, overview_mode: bool) -> bool {
-        {
-            let state = self.ivars().borrow();
-            let same_width = state.layout.as_ref().is_some_and(|l| l.size.w == width);
-            if same_width
-                && state.overview_mode == overview_mode
-                && state.model.as_ref() == Some(model)
-            {
-                return false;
-            }
-        }
-        let mtm = self.mtm();
-        let measure = AppKitMeasure::new(mtm);
-        let layout = if overview_mode {
-            card_layout::overview_layout(model, width, &measure)
-        } else {
-            card_layout::layout(model, width, &measure)
-        };
-        self.apply_layout(layout, model.accent, &measure);
-        {
-            let mut state = self.ivars().borrow_mut();
-            state.model = Some(model.clone());
-            state.spend_summary = None;
-            state.overview_mode = overview_mode;
-        }
-        true
     }
 
     fn apply_layout(&self, layout: CardLayout, accent: Accent, measure: &AppKitMeasure) {
@@ -259,6 +324,7 @@ impl CardView {
         self.setFrameSize(NSSize::new(layout.size.w, layout.size.h));
         let mut labels = Vec::new();
         let mut bars = Vec::new();
+        let mut mini_strips = Vec::new();
         for placed in &layout.items {
             match &placed.item {
                 Item::Text(item) => {
@@ -282,7 +348,32 @@ impl CardView {
                     self.addSubview(&bar);
                     bars.push(bar);
                 }
-                Item::Divider => {}
+                Item::MiniBarStrip {
+                    points,
+                    max_label,
+                    label_frame: lf,
+                    strip_frame,
+                } => {
+                    let item = TextItem {
+                        text: max_label.clone().unwrap_or_default(),
+                        font: Font::new(TextStyle::Caption2, Weight::Regular),
+                        color: TextColor::Secondary,
+                        max_lines: 1,
+                        align: Align::Right,
+                        truncation: Truncation::Tail,
+                    };
+                    let field = measure.label(&item, highlighted);
+                    field.setFrame(label_frame(*lf));
+                    self.addSubview(&field);
+                    labels.push((field.clone(), TextColor::Secondary));
+                    mini_strips.push(MiniStripView {
+                        label_field: field,
+                        points: points.clone(),
+                        max_label: max_label.clone(),
+                        strip_frame: *strip_frame,
+                    });
+                }
+                Item::Divider | Item::ClockIcon { .. } => {}
             }
         }
         {
@@ -290,8 +381,81 @@ impl CardView {
             state.layout = Some(layout);
             state.labels = labels;
             state.bars = bars;
+            state.mini_strips = mini_strips;
         }
+        self.sync_tracking_area();
         self.setNeedsDisplay(true);
+    }
+
+    fn sync_tracking_area(&self) {
+        let mut state = self.ivars().borrow_mut();
+        if let Some(old) = state.tracking_area.take() {
+            self.removeTrackingArea(&old);
+        }
+        if !state.mini_strips.is_empty() {
+            let options = NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::MouseMoved
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect;
+            // SAFETY: `self` is a valid Objective-C object to receive tracking events.
+            let area = unsafe {
+                NSTrackingArea::initWithRect_options_owner_userInfo(
+                    NSTrackingArea::alloc(),
+                    self.bounds(),
+                    options,
+                    Some(self),
+                    None,
+                )
+            };
+            self.addTrackingArea(&area);
+            state.tracking_area = Some(area);
+        }
+    }
+
+    fn update_mini_strip_hover(&self, point: Option<Point>) {
+        let mut changed = false;
+        {
+            let mut state = self.ivars().borrow_mut();
+            let mut next_hover = None;
+            if let Some(pt) = point {
+                for strip in &state.mini_strips {
+                    if let Some(idx) = MiniBarStripGeometry::hovered_index(
+                        pt.x - strip.strip_frame.x,
+                        pt.y - strip.strip_frame.y,
+                        strip.strip_frame.w,
+                        strip.strip_frame.h,
+                        strip.points.len(),
+                    ) {
+                        next_hover = Some(idx);
+                        break;
+                    }
+                }
+            }
+            if state.hovered_bar_index != next_hover {
+                state.hovered_bar_index = next_hover;
+                changed = true;
+                for strip in &state.mini_strips {
+                    if let Some(idx) = next_hover
+                        && let Some(pt) = strip.points.get(idx)
+                        && let Some(summary) = &pt.hover_summary
+                    {
+                        strip
+                            .label_field
+                            .setStringValue(&NSString::from_str(summary));
+                        strip.label_field.setAlignment(NSTextAlignment::Left);
+                    } else {
+                        let fallback = strip.max_label.as_deref().unwrap_or("");
+                        strip
+                            .label_field
+                            .setStringValue(&NSString::from_str(fallback));
+                        strip.label_field.setAlignment(NSTextAlignment::Right);
+                    }
+                }
+            }
+        }
+        if changed {
+            self.setNeedsDisplay(true);
+        }
     }
 
     /// Switches between the normal and the highlighted colors.
@@ -348,13 +512,64 @@ impl CardView {
             .fill();
         }
         let Some(layout) = &state.layout else { return };
-        ns_color(card_layout::divider_color(), accent).setFill();
         for placed in &layout.items {
-            if placed.item == Item::Divider {
-                NSBezierPath::fillRect(ns_rect(placed.frame));
+            match &placed.item {
+                Item::Divider => {
+                    ns_color(card_layout::divider_color(), accent).setFill();
+                    NSBezierPath::fillRect(ns_rect(placed.frame));
+                }
+                Item::MiniBarStrip {
+                    points,
+                    strip_frame,
+                    ..
+                } => {
+                    let geom = MiniBarStripGeometry::compute(
+                        *strip_frame,
+                        points,
+                        state.hovered_bar_index,
+                    );
+                    ns_color(card_layout::divider_color(), accent).setFill();
+                    NSBezierPath::fillRect(ns_rect(geom.baseline));
+                    let tint_role = highlight_style::progress_tint(state.highlighted).role;
+                    for bar in &geom.bars {
+                        ns_color(Color::with_alpha(tint_role, bar.alpha), accent).setFill();
+                        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                            ns_rect(bar.rect),
+                            bar.corner_radius,
+                            bar.corner_radius,
+                        )
+                        .fill();
+                    }
+                }
+                Item::ClockIcon { color } => {
+                    draw_clock_icon(placed.frame, *color, state.highlighted, accent);
+                }
+                Item::Text(_) | Item::Bar { .. } => {}
             }
         }
     }
+}
+
+fn draw_clock_icon(frame: Rect, color: TextColor, highlighted: bool, accent: Accent) {
+    let inset = frame.x + 1.0;
+    let inset_y = frame.y + 1.0;
+    let d = (frame.w - 2.0).max(2.0);
+    let circle_rect = NSRect::new(NSPoint::new(inset, inset_y), NSSize::new(d, d));
+    let stroke = ns_color(color.resolve(highlighted), accent);
+    stroke.setStroke();
+    let circle = NSBezierPath::bezierPathWithOvalInRect(circle_rect);
+    circle.setLineWidth(1.2);
+    circle.stroke();
+
+    let cx = frame.x + frame.w * 0.5;
+    let cy = frame.y + frame.h * 0.5;
+    let r = d * 0.5;
+    let hands = NSBezierPath::bezierPath();
+    hands.setLineWidth(1.2);
+    hands.moveToPoint(NSPoint::new(cx, cy - r * 0.55));
+    hands.lineToPoint(NSPoint::new(cx, cy));
+    hands.lineToPoint(NSPoint::new(cx + r * 0.42, cy + r * 0.25));
+    hands.stroke();
 }
 
 /// PNG bytes of a bitmap from [`CardView::render_bitmap`].
@@ -486,6 +701,7 @@ fn text_style(style: TextStyle) -> &'static NSFontTextStyle {
             TextStyle::Body => NSFontTextStyleBody,
             TextStyle::Footnote => NSFontTextStyleFootnote,
             TextStyle::Caption => NSFontTextStyleCaption1,
+            TextStyle::Caption2 => NSFontTextStyleCaption2,
         }
     }
 }

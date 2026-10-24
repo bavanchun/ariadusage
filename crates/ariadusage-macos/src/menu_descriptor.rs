@@ -1,5 +1,8 @@
 // Ported from CodexBar Sources/CodexBar/MenuDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Menu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+MenuCardItems.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+UsageHistoryMenu.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/StatusItemController+CostMenuCard.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+OverviewSpend.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Claude/ClaudeProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexProviderImplementation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -9,9 +12,9 @@
 //!
 //! Given the current [`EngineSnapshot`], connection state and selected tab,
 //! [`build`] produces the switcher segments, primary card content (Overview
-//! rows or single-provider usage card), history submenus (`Plan Usage`, `Cost`),
-//! contextual provider actions and meta section in CodexBar's order and wording
-//! with AriadUsage's own identity.
+//! rows or single-provider usage card sections), history submenus (`Plan Usage`,
+//! `Cost`), contextual provider actions and meta section in CodexBar's order and
+//! wording with AriadUsage's own identity.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,6 +27,8 @@ use ariadusage_protocol::usage::{
 use jiff::Timestamp;
 
 use crate::card::{self, CardModel, CardPreferences, PercentStyle};
+use crate::card_layout::CardSectionMode;
+use crate::chart::{CostHistoryChartModel, PlanUtilizationChartModel, QuotaBurndownChartModel};
 use crate::format::{self, DateTexts};
 use crate::presentation;
 use crate::switcher::{self, SwitcherSegment, SwitcherSelection};
@@ -113,8 +118,9 @@ impl MenuAction {
     }
 }
 
-/// An item inside a submenu (`StatusItemController.makeStatusComponentsSubmenu`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// An item inside a submenu (`StatusItemController.makeStatusComponentsSubmenu`,
+/// `StatusItemController+UsageHistoryMenu.swift`, `StatusItemController+CostMenuCard.swift`).
+#[derive(Debug, Clone, PartialEq)]
 pub enum SubmenuEntry {
     SecondaryText(String),
     Separator,
@@ -123,10 +129,13 @@ pub enum SubmenuEntry {
         action: MenuAction,
         enabled: bool,
     },
+    QuotaBurndownChart(Box<QuotaBurndownChartModel>),
+    PlanUtilizationChart(Box<PlanUtilizationChartModel>),
+    CostHistoryChart(Box<CostHistoryChartModel>),
 }
 
 /// A row in the history, contextual actions or meta section (`MenuDescriptor.Entry`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum MenuEntry {
     SecondaryText(String),
     Action {
@@ -156,11 +165,20 @@ pub struct OverviewSpendSummary {
     pub pricing_coverage_text: String,
 }
 
+/// One card section `NSMenuItem` produced by `addMenuCardSections`
+/// (`StatusItemController+Menu.swift:1290-1400`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CardSectionEntry {
+    pub mode: CardSectionMode,
+    pub has_cost_submenu: bool,
+}
+
 /// One provider row on the `Overview` tab (`OverviewMenuCardRowView`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OverviewCard {
     pub provider_id: String,
     pub model: CardModel,
+    pub cost_submenu: Vec<SubmenuEntry>,
 }
 
 /// Primary card content above the history, action and meta sections.
@@ -174,10 +192,12 @@ pub enum PrimaryContent {
         share_action: Option<MenuEntry>,
         cards: Vec<OverviewCard>,
     },
-    /// Shown when a single provider tab is active (`UsageMenuCardView`).
+    /// Shown when a single provider tab is active (`UsageMenuCardView` / `addMenuCardSections`).
     Provider {
         provider_id: String,
         card: Box<CardModel>,
+        sections: Vec<CardSectionEntry>,
+        cost_submenu: Vec<SubmenuEntry>,
         buy_credits: Option<MenuEntry>,
     },
 }
@@ -251,6 +271,7 @@ pub fn build(
                 .map(|provider| OverviewCard {
                     provider_id: provider.id.as_str().to_string(),
                     model: card::provider_card(provider, prefs, now, dates),
+                    cost_submenu: cost_chart_submenu_items(provider),
                 })
                 .collect();
             MenuStructure {
@@ -275,8 +296,10 @@ pub fn build(
                 .find(|p| p.id.as_str() == id.as_str())
                 .unwrap_or(enabled[0]);
             let card_model = card::provider_card(provider, prefs, now, dates);
+            let sections = provider_card_sections(provider, &card_model);
+            let cost_submenu = cost_chart_submenu_items(provider);
             let buy_credits = buy_credits_entry(provider, prefs);
-            let history = build_history_section(provider, prefs);
+            let history = build_history_section_at(provider, prefs, now, dates);
             let actions = build_actions_section(provider, now, dates);
             MenuStructure {
                 selection: Some(selection),
@@ -284,6 +307,8 @@ pub fn build(
                 primary: PrimaryContent::Provider {
                     provider_id: provider.id.as_str().to_string(),
                     card: Box::new(card_model),
+                    sections,
+                    cost_submenu,
                     buy_credits,
                 },
                 history,
@@ -292,6 +317,66 @@ pub fn build(
             }
         }
     }
+}
+
+/// Splits a provider's card into separate `NSMenuItem` sections when the
+/// provider has a daily cost-history chart (`addMenuCardSections`,
+/// `StatusItemController+Menu.swift:1290-1400`).
+pub fn provider_card_sections(
+    provider: &ProviderSnapshot,
+    card: &CardModel,
+) -> Vec<CardSectionEntry> {
+    let has_cost_chart = provider
+        .cost_history
+        .as_ref()
+        .and_then(displayable_value)
+        .is_some_and(|h| !h.daily.is_empty());
+    if !has_cost_chart {
+        return vec![CardSectionEntry {
+            mode: CardSectionMode::Full,
+            has_cost_submenu: false,
+        }];
+    }
+    let has_credits = card.credits.is_some();
+    let usage_bottom = if has_credits { 4.0 } else { 6.0 };
+    let mut sections = vec![CardSectionEntry {
+        mode: CardSectionMode::HeaderAndUsage {
+            bottom_padding: usage_bottom,
+        },
+        has_cost_submenu: true,
+    }];
+    if has_credits {
+        sections.push(CardSectionEntry {
+            mode: CardSectionMode::CreditsOnly {
+                top_padding: 6.0,
+                bottom_padding: 4.0,
+            },
+            has_cost_submenu: false,
+        });
+    }
+    if card.provider_cost.is_some() {
+        sections.push(CardSectionEntry {
+            mode: CardSectionMode::ExtraUsageOnly {
+                top_padding: 6.0,
+                bottom_padding: usage_bottom,
+            },
+            has_cost_submenu: false,
+        });
+    }
+    sections
+}
+
+fn cost_chart_submenu_items(provider: &ProviderSnapshot) -> Vec<SubmenuEntry> {
+    let currency = provider
+        .cost_history
+        .as_ref()
+        .and_then(displayable_value)
+        .and_then(|h| h.currency_code.as_deref())
+        .unwrap_or("USD");
+    let Some(chart) = CostHistoryChartModel::from_provider(provider, currency) else {
+        return Vec::new();
+    };
+    vec![SubmenuEntry::CostHistoryChart(Box::new(chart))]
 }
 
 /// Builds the `OverviewSpendSummary` across enabled providers from their
@@ -549,8 +634,37 @@ pub fn build_history_section(
     provider: &ProviderSnapshot,
     prefs: &CardPreferences,
 ) -> Vec<MenuEntry> {
+    struct UtcFallbackDates;
+    impl DateTexts for UtcFallbackDates {
+        fn time_zone(&self) -> jiff::tz::TimeZone {
+            jiff::tz::TimeZone::UTC
+        }
+        fn hour_minute(&self, date: Timestamp) -> String {
+            let z = date.to_zoned(jiff::tz::TimeZone::UTC);
+            z.strftime("%-I:%M %p").to_string()
+        }
+        fn month_day_hour_minute(&self, date: Timestamp) -> String {
+            let z = date.to_zoned(jiff::tz::TimeZone::UTC);
+            z.strftime("%b %-d at %-I:%M %p").to_string()
+        }
+        fn relative_abbreviated(&self, date: Timestamp, now: Timestamp) -> String {
+            let secs = now.duration_since(date).as_secs();
+            format!("{} min ago", secs / 60)
+        }
+    }
+    let now = provider.updated_at.unwrap_or(Timestamp::UNIX_EPOCH);
+    build_history_section_at(provider, prefs, now, &UtcFallbackDates)
+}
+
+/// Builds the usage & cost history submenus using explicit `now` and `dates`.
+pub fn build_history_section_at(
+    provider: &ProviderSnapshot,
+    prefs: &CardPreferences,
+    now: Timestamp,
+    dates: &dyn DateTexts,
+) -> Vec<MenuEntry> {
     let mut entries = Vec::new();
-    if let Some(plan_usage) = plan_usage_submenu(provider, prefs) {
+    if let Some(plan_usage) = plan_usage_submenu(provider, prefs, now, dates) {
         entries.push(plan_usage);
     }
     if let Some(cost) = cost_submenu(provider) {
@@ -559,32 +673,50 @@ pub fn build_history_section(
     entries
 }
 
-fn plan_usage_submenu(provider: &ProviderSnapshot, prefs: &CardPreferences) -> Option<MenuEntry> {
+fn plan_usage_submenu(
+    provider: &ProviderSnapshot,
+    prefs: &CardPreferences,
+    now: Timestamp,
+    dates: &dyn DateTexts,
+) -> Option<MenuEntry> {
     let series_list: &Vec<PlanUtilizationSeries> =
         provider.utilization.as_ref().and_then(displayable_value)?;
-    let style = if prefs.show_used {
-        PercentStyle::Used
-    } else {
-        PercentStyle::Left
-    };
+    let burndown = QuotaBurndownChartModel::from_provider(provider, now, dates);
+    let util = PlanUtilizationChartModel::from_provider(provider, dates);
     let mut items = Vec::new();
-    for series in series_list {
-        let Some(latest) = series.entries.last() else {
-            continue;
-        };
-        let title = series
-            .title
-            .as_deref()
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| default_series_title(&series.name));
-        let pct = if prefs.show_used {
-            latest.used_percent.clamp(0.0, 100.0)
+    if let Some(b) = burndown {
+        items.push(SubmenuEntry::QuotaBurndownChart(Box::new(b)));
+    }
+    if let Some(u) = util {
+        if !items.is_empty() {
+            items.push(SubmenuEntry::Separator);
+        }
+        items.push(SubmenuEntry::PlanUtilizationChart(Box::new(u)));
+    }
+    if items.is_empty() {
+        let style = if prefs.show_used {
+            PercentStyle::Used
         } else {
-            (100.0 - latest.used_percent).clamp(0.0, 100.0)
+            PercentStyle::Left
         };
-        let pct_text = format::percent_text(pct, style.label_suffix());
-        items.push(SubmenuEntry::SecondaryText(format!("{title}: {pct_text}")));
+        for series in series_list {
+            let Some(latest) = series.entries.last() else {
+                continue;
+            };
+            let title = series
+                .title
+                .as_deref()
+                .map(str::trim)
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| default_series_title(&series.name));
+            let pct = if prefs.show_used {
+                latest.used_percent.clamp(0.0, 100.0)
+            } else {
+                (100.0 - latest.used_percent).clamp(0.0, 100.0)
+            };
+            let pct_text = format::percent_text(pct, style.label_suffix());
+            items.push(SubmenuEntry::SecondaryText(format!("{title}: {pct_text}")));
+        }
     }
     if items.is_empty() {
         return None;
@@ -615,6 +747,13 @@ fn cost_submenu(provider: &ProviderSnapshot) -> Option<MenuEntry> {
 
     if let Some(history) = history {
         let currency = history.currency_code.as_deref().unwrap_or("USD");
+        if let Some(chart) = CostHistoryChartModel::from_provider(provider, currency) {
+            return Some(MenuEntry::Submenu {
+                title: "Cost".to_string(),
+                system_image: None,
+                items: vec![SubmenuEntry::CostHistoryChart(Box::new(chart))],
+            });
+        }
         if history.session_cost_usd.is_some() || history.session_tokens.is_some() {
             let cost_str = history
                 .session_cost_usd
@@ -670,7 +809,9 @@ fn cost_submenu(provider: &ProviderSnapshot) -> Option<MenuEntry> {
                         format::token_count_string(t as i64)
                     ),
                     (Some(c), None) => format_currency(c, currency),
-                    (None, Some(t)) => format!("{} tokens", format::token_count_string(t as i64)),
+                    (None, Some(t)) => {
+                        format!("{} tokens", format::token_count_string(t as i64))
+                    }
                     (None, None) => String::new(),
                 };
                 let line = if detail.is_empty() {

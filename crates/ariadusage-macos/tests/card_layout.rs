@@ -1,12 +1,15 @@
 mod common;
 
 use ariadusage_macos::card::{
-    Accent, CardModel, CreditsSection, MetricRow, PercentStyle, Subtitle, SubtitleStyle,
+    Accent, CardModel, CreditsSection, InlineUsageDashboardSection, KpiEmphasis, KpiItem,
+    LimitResetCreditsSection, MetricRow, PercentStyle, ProviderCostPresentation,
+    ProviderCostSection, Subtitle, SubtitleStyle, WindowComparisonItem,
 };
 use ariadusage_macos::card_layout::{
-    Align, CardLayout, Item, MIN_CARD_WIDTH, TextColor, Truncation, layout, overview_layout,
-    rendered_width, spend_summary_layout,
+    Align, CardLayout, CardSectionMode, Item, MIN_CARD_WIDTH, TextColor, Truncation, layout,
+    layout_section, overview_layout, rendered_width, spend_summary_layout,
 };
+use ariadusage_macos::chart::MiniBarPoint;
 use ariadusage_macos::geometry::Rect;
 use ariadusage_macos::menu_descriptor::OverviewSpendSummary;
 use ariadusage_macos::progress_bar::WorkdayTickAppearance;
@@ -21,9 +24,15 @@ fn model(subtitle: &str, style: SubtitleStyle) -> CardModel {
             style,
         },
         plan: None,
+        shows_submenu_indicator: false,
         metrics: Vec::new(),
+        usage_notes: Vec::new(),
+        limit_reset_credits: None,
+        inline_usage_dashboard: None,
+        cloud_credits: None,
         placeholder: None,
         credits: None,
+        provider_cost: None,
         accent: Accent::System,
     }
 }
@@ -39,6 +48,8 @@ fn row(title: &str, percent: f64, reset: Option<&str>) -> MetricRow {
         detail_text: None,
         detail_left_text: None,
         detail_right_text: None,
+        session_equivalent_left_text: None,
+        session_equivalent_right_text: None,
         pace_percent: None,
         detail_is_pace_derived: false,
         pace_on_top: true,
@@ -66,7 +77,7 @@ fn frames_of_kind(layout: &CardLayout, divider: bool) -> Vec<Rect> {
         .filter(|p| match p.item {
             Item::Divider => divider,
             Item::Bar { .. } => !divider,
-            Item::Text(_) => false,
+            _ => false,
         })
         .map(|p| p.frame)
         .collect()
@@ -191,6 +202,7 @@ fn credits_follow_a_divider_after_usage_rows() {
         show_progress: true,
         progress_percent: Some(42.5),
         scale_text: Some("100 tokens".to_string()),
+        hint_text: None,
     });
     let l = layout(&m, 310.0, &FixedMeasure);
     let bars = frames_of_kind(&l, false);
@@ -227,6 +239,7 @@ fn credits_only_card_has_no_extra_divider() {
         show_progress: true,
         progress_percent: None,
         scale_text: None,
+        hint_text: None,
     });
     let l = layout(&m, 310.0, &FixedMeasure);
     let dividers = frames_of_kind(&l, true);
@@ -278,6 +291,7 @@ fn overview_layout_omits_dividers_and_credits() {
         show_progress: true,
         progress_percent: Some(42.5),
         scale_text: Some("100 tokens".to_string()),
+        hint_text: None,
     });
     let l = overview_layout(&m, 310.0, &FixedMeasure);
     assert!(
@@ -321,4 +335,97 @@ fn spend_summary_layout_places_five_rows_at_310pt_width() {
     let pricing = frame_of(&l, "Priced 3,570 · Unpriced 0 · Unmetered 0 · Estimated 0");
     assert_eq!(pricing.y, prov.max_y() + 7.0);
     assert_eq!(l.size.h, pricing.max_y() + 10.0);
+}
+
+#[test]
+fn card_details_layout_places_chevron_notes_reset_credits_dashboard_and_sections() {
+    let mut m = model("Updated 4 min ago", SubtitleStyle::Info);
+    m.shows_submenu_indicator = true;
+    m.metrics = vec![row("Session", 64.0, Some("Resets in 2h"))];
+    m.usage_notes = vec!["Plan renews: Nov 1, 2026".to_string()];
+    m.limit_reset_credits = Some(LimitResetCreditsSection {
+        count_text: "2 available".to_string(),
+        expiry_text: Some("14d 7h".to_string()),
+    });
+    m.inline_usage_dashboard = Some(InlineUsageDashboardSection {
+        kpis: vec![
+            KpiItem {
+                title: "Today".to_string(),
+                value: "$288.80".to_string(),
+                emphasis: KpiEmphasis::Primary,
+            },
+            KpiItem {
+                title: "Current window".to_string(),
+                value: "$812.40".to_string(),
+                emphasis: KpiEmphasis::Primary,
+            },
+        ],
+        points: vec![MiniBarPoint {
+            day_key: "2026-10-06".to_string(),
+            value: Some(288.80),
+            hover_summary: Some("Oct 6: $288.80".to_string()),
+        }],
+        max_bar_label: Some("$289".to_string()),
+        recent_windows: vec![WindowComparisonItem {
+            title: "Current window".to_string(),
+            value: "$812.40 · 2.4B tokens".to_string(),
+            range: "Oct 3 - Oct 6".to_string(),
+            note: Some("Partial window (4 of 7 days)".to_string()),
+        }],
+        detail_lines: vec!["Top model: claude-opus-4-6 ($214.28 · 565M tokens)".to_string()],
+    });
+    m.cloud_credits = Some(ProviderCostSection {
+        title: "Cloud credits".to_string(),
+        presentation: ProviderCostPresentation::InlineBalance {
+            value: "$48.50".to_string(),
+        },
+    });
+    m.provider_cost = Some(ProviderCostSection {
+        title: "Credits".to_string(),
+        presentation: ProviderCostPresentation::InlineBalance {
+            value: "$0.00".to_string(),
+        },
+    });
+
+    let header_usage = layout_section(
+        &m,
+        CardSectionMode::HeaderAndUsage {
+            bottom_padding: 6.0,
+        },
+        310.0,
+        &FixedMeasure,
+    );
+    assert_eq!(
+        frame_of(&header_usage, "›"),
+        Rect::new(294.0, 8.0, 6.0, 13.0)
+    );
+    assert!(frame_of(&header_usage, "Plan renews: Nov 1, 2026").y > 60.0);
+    assert!(frame_of(&header_usage, "Limit Reset Credits").y > 80.0);
+    assert!(frame_of(&header_usage, "2 available").y > 90.0);
+    assert!(frame_of(&header_usage, "14d 7h").y > 90.0);
+    assert!(
+        header_usage
+            .items
+            .iter()
+            .any(|p| matches!(p.item, Item::ClockIcon { .. }))
+    );
+    assert!(
+        header_usage
+            .items
+            .iter()
+            .any(|p| matches!(p.item, Item::MiniBarStrip { .. }))
+    );
+    assert!(frame_of(&header_usage, "Cloud credits").y > 200.0);
+
+    let extra_only = layout_section(
+        &m,
+        CardSectionMode::ExtraUsageOnly {
+            top_padding: 6.0,
+            bottom_padding: 6.0,
+        },
+        310.0,
+        &FixedMeasure,
+    );
+    assert_eq!(frame_of(&extra_only, "Credits").y, 6.0);
+    assert_eq!(frame_of(&extra_only, "$0.00").max_x(), 290.0);
 }
