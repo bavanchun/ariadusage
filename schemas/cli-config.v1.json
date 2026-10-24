@@ -1,0 +1,153 @@
+{
+  "$defs": {
+    "ConfigIssueSeverity": {
+      "description": "Severity level of a configuration validation issue emitted by `ariadusage config validate --format json`.",
+      "enum": [
+        "warning",
+        "error"
+      ],
+      "type": "string"
+    },
+    "ConfigProviderStatusResult": {
+      "description": "Provider row emitted by `ariadusage config providers --format json`.",
+      "properties": {
+        "defaultEnabled": {
+          "type": "boolean"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "displayName",
+        "enabled",
+        "defaultEnabled"
+      ],
+      "type": "object"
+    },
+    "ConfigProviderToggleResult": {
+      "description": "Result payload emitted by `ariadusage config enable|disable --format json`.",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "displayName",
+        "enabled",
+        "configPath"
+      ],
+      "type": "object"
+    },
+    "ConfigSetSourceResult": {
+      "description": "Result payload emitted by `ariadusage config set-source --format json`.",
+      "properties": {
+        "configPath": {
+          "type": "string"
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "provider": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "displayName",
+        "enabled",
+        "source",
+        "configPath"
+      ],
+      "type": "object"
+    },
+    "ConfigValidationIssuePayload": {
+      "description": "Validation issue entry emitted by `ariadusage config validate --format json`.",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "field": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message": {
+          "type": "string"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "severity": {
+          "$ref": "#/$defs/ConfigIssueSeverity"
+        }
+      },
+      "required": [
+        "severity",
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ProviderId": {
+      "description": "A unique identifier for a provider instance (1–64 characters, `[a-z0-9-]`).\n\nFollows the same grammar and length restrictions as CodexBar's `ProviderInstanceID`.",
+      "pattern": "^[a-z0-9-]{1,64}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/bavanchun/ariadusage/schemas/cli-config.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "items": {
+        "$ref": "#/$defs/ConfigValidationIssuePayload"
+      },
+      "type": "array"
+    },
+    {
+      "items": {
+        "$ref": "#/$defs/ConfigProviderStatusResult"
+      },
+      "type": "array"
+    },
+    {
+      "$ref": "#/$defs/ConfigSetSourceResult"
+    },
+    {
+      "$ref": "#/$defs/ConfigProviderToggleResult"
+    }
+  ],
+  "description": "Union of JSON payloads emitted by `ariadusage config` subcommands (`validate`, `providers`,\n`enable`, `disable`, `set-source`).",
+  "title": "CliConfigPayload"
+}

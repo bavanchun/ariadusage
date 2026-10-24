@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use ariadusage_protocol::cli_cost_config::CostPayload;
+use ariadusage_protocol::cli_cost_config::{CliConfigPayload, CostPayload};
 use ariadusage_protocol::ipc::IpcMessage;
 use ariadusage_protocol::snapshot::EngineSnapshot;
 use schemars::generate::SchemaSettings;
@@ -11,6 +11,8 @@ pub const SNAPSHOT_SCHEMA_ID: &str =
 pub const IPC_SCHEMA_ID: &str = "https://github.com/bavanchun/ariadusage/schemas/ipc.v1.json";
 pub const CLI_COST_SCHEMA_ID: &str =
     "https://github.com/bavanchun/ariadusage/schemas/cli-cost.v1.json";
+pub const CLI_CONFIG_SCHEMA_ID: &str =
+    "https://github.com/bavanchun/ariadusage/schemas/cli-config.v1.json";
 
 #[allow(dead_code)]
 pub fn repository_root() -> PathBuf {
@@ -36,6 +38,11 @@ pub fn ipc_schema_path() -> PathBuf {
 #[allow(dead_code)]
 pub fn cli_cost_schema_path() -> PathBuf {
     repository_root().join("schemas/cli-cost.v1.json")
+}
+
+#[allow(dead_code)]
+pub fn cli_config_schema_path() -> PathBuf {
+    repository_root().join("schemas/cli-config.v1.json")
 }
 
 #[allow(dead_code)]
@@ -131,6 +138,22 @@ pub fn generated_cli_cost_schema() -> String {
         .as_object_mut()
         .expect("CostPayload schema is an object");
     object.insert("$id".to_owned(), json!(CLI_COST_SCHEMA_ID));
+    let schema_val = serde_json::to_value(&schema).expect("schema converts to value");
+    let mut contents =
+        serde_json::to_string_pretty(&schema_val).expect("schema serializes to JSON");
+    contents.push('\n');
+    contents
+}
+
+#[allow(dead_code)]
+pub fn generated_cli_config_schema() -> String {
+    let mut schema = SchemaSettings::draft2020_12()
+        .into_generator()
+        .into_root_schema_for::<CliConfigPayload>();
+    let object = schema
+        .as_object_mut()
+        .expect("CliConfigPayload schema is an object");
+    object.insert("$id".to_owned(), json!(CLI_CONFIG_SCHEMA_ID));
     let schema_val = serde_json::to_value(&schema).expect("schema converts to value");
     let mut contents =
         serde_json::to_string_pretty(&schema_val).expect("schema serializes to JSON");

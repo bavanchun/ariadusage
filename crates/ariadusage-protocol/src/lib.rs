@@ -17,9 +17,10 @@ pub mod codec;
 pub mod fixture;
 
 pub use cli_cost_config::{
-    ConfigProviderStatusResult, ConfigProviderToggleResult, ConfigSetSourceResult,
-    CostDailyEntryPayload, CostErrorPayload, CostModelBreakdownPayload, CostPayload,
-    CostProjectPayload, CostProjectSourcePayload, CostTotalsPayload, CostUsageCoverageCounts,
+    CliConfigPayload, ConfigIssueSeverity, ConfigProviderStatusResult, ConfigProviderToggleResult,
+    ConfigSetSourceResult, ConfigValidationIssuePayload, CostDailyEntryPayload, CostErrorPayload,
+    CostModelBreakdownPayload, CostPayload, CostProjectPayload, CostProjectSourcePayload,
+    CostTotalsPayload, CostUsageCoverageCounts,
 };
 pub use ids::{ActionId, IdError, ProviderId, RequestId, SettingId};
 pub use ipc::{

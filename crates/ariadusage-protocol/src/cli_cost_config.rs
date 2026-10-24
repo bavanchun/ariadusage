@@ -6,6 +6,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::ids::ProviderId;
+
 /// Root JSON payload emitted by `ariadusage cost --format json` (serialized as a list of provider payloads).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -254,4 +256,33 @@ pub struct ConfigSetSourceResult {
     pub enabled: bool,
     pub source: String,
     pub config_path: String,
+}
+
+/// Severity level of a configuration validation issue emitted by `ariadusage config validate --format json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigIssueSeverity {
+    Warning,
+    Error,
+}
+
+/// Validation issue entry emitted by `ariadusage config validate --format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigValidationIssuePayload {
+    pub severity: ConfigIssueSeverity,
+    pub provider: Option<ProviderId>,
+    pub field: Option<String>,
+    pub code: String,
+    pub message: String,
+}
+
+/// Union of JSON payloads emitted by `ariadusage config` subcommands (`validate`, `providers`,
+/// `enable`, `disable`, `set-source`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum CliConfigPayload {
+    Validate(Vec<ConfigValidationIssuePayload>),
+    Providers(Vec<ConfigProviderStatusResult>),
+    SetSource(ConfigSetSourceResult),
+    Toggle(ConfigProviderToggleResult),
 }
