@@ -384,7 +384,7 @@ pub struct EngineRuntime {
     secret_store: Arc<SecretStore>,
     net: Arc<NetBroker>,
     cookie_cache: Arc<CookieCache>,
-    cost_cache_dir: RwLock<Option<std::path::PathBuf>>,
+    cost_cache_root: RwLock<Option<std::path::PathBuf>>,
     status_fetcher: RwLock<ProviderStatusFetcher>,
     registry: RwLock<ProviderRegistry>,
     coordinator: Arc<ProviderRefreshCoordinator<ProviderId>>,
@@ -527,7 +527,7 @@ impl EngineRuntime {
             secret_store,
             net,
             cookie_cache: Arc::new(CookieCache::new()),
-            cost_cache_dir: RwLock::new(None),
+            cost_cache_root: RwLock::new(None),
             status_fetcher: RwLock::new(ProviderStatusFetcher::default()),
             registry: RwLock::new(registry),
             coordinator: Arc::new(ProviderRefreshCoordinator::new()),
@@ -572,9 +572,9 @@ impl EngineRuntime {
         &self.cookie_cache
     }
 
-    /// Overrides the directory used when clearing cost usage caches (`clearCostCache`).
-    pub fn with_cost_cache_dir(self, dir: impl Into<std::path::PathBuf>) -> Self {
-        *self.cost_cache_dir.write().expect("cost_cache_dir lock") = Some(dir.into());
+    /// Overrides the cache root directory (`<root>/cost-usage`) used when clearing cost usage caches (`clearCostCache`).
+    pub fn with_cost_cache_root(self, root: impl Into<std::path::PathBuf>) -> Self {
+        *self.cost_cache_root.write().expect("cost_cache_root lock") = Some(root.into());
         self
     }
 
@@ -643,7 +643,7 @@ impl EngineRuntime {
 
     /// Sets the base environment map passed into provider plan resolution and updates initial
     /// provider account keys accordingly.
-    pub fn set_base_environment(&self, env: BTreeMap<String, SecretString>) {
+    pub fn with_base_environment(self, env: BTreeMap<String, SecretString>) -> Self {
         *self.base_environment.write().expect("base_env lock") = env.clone();
         let config = self.load_config();
         let registry = self.registry.read().expect("registry lock").clone();
@@ -672,11 +672,7 @@ impl EngineRuntime {
                 state.account_key = account_key;
             }
         }
-    }
-
-    /// Builder variant of [`EngineRuntime::set_base_environment`].
-    pub fn with_base_environment(self, env: BTreeMap<String, SecretString>) -> Self {
-        self.set_base_environment(env);
+        drop(states);
         self
     }
 
@@ -717,14 +713,6 @@ impl EngineRuntime {
             .write()
             .expect("registry lock")
             .register_plan(id, plan);
-    }
-
-    /// Registers the default [`crate::registry::AntigravityProviderPlanFactory`] on the runtime's registry.
-    pub fn register_antigravity_default(&self) {
-        self.registry
-            .write()
-            .expect("registry lock")
-            .register_antigravity_default(Arc::clone(&self.net));
     }
 
     /// Returns a reference to the underlying [`SnapshotStore`].
@@ -2674,39 +2662,26 @@ impl EngineRuntime {
         }
     }
 
-    /// Clears persisted cost usage cache JSON files from the cost cache directory.
+    /// Clears the persisted cost usage cache directory (`<cache_root>/cost-usage`) without
+    /// touching sibling directories such as `codex-sqlite-copies` (`CLICacheCommand.swift:55-68`).
     pub fn clear_cost_cache(&self) -> (usize, Option<String>) {
-        let dir = self
-            .cost_cache_dir
+        let root = self
+            .cost_cache_root
             .read()
-            .expect("cost_cache_dir lock")
+            .expect("cost_cache_root lock")
             .clone()
-            .or_else(|| {
-                crate::paths::state_dir()
-                    .ok()
-                    .map(|d| d.join("ariadusage").join("cost-usage"))
-            });
-        let Some(dir) = dir else {
-            return (0, None);
-        };
-        if !dir.exists() {
+            .unwrap_or_else(crate::cost::store::default_cache_root);
+        if root.as_os_str().is_empty() {
             return (0, None);
         }
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) => return (0, Some(err.to_string())),
-        };
-        let mut cleared = 0usize;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "json") {
-                match std::fs::remove_file(&path) {
-                    Ok(()) => cleared += 1,
-                    Err(err) => return (cleared, Some(err.to_string())),
-                }
-            }
+        let cache_dir = root.join("cost-usage");
+        if !cache_dir.exists() {
+            return (0, None);
         }
-        (cleared, None)
+        match std::fs::remove_dir_all(&cache_dir) {
+            Ok(()) => (1, None),
+            Err(err) => (0, Some(err.to_string())),
+        }
     }
 
     /// Executes a live fetch outcome for `id` without mutating the daemon's cached snapshot state,
@@ -2724,9 +2699,26 @@ impl EngineRuntime {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
         let request_state = self.coordinator.begin_replacing_request(id.clone()).state;
-        let inputs = self
+        let mut inputs = self
             .resolve_plan_inputs(id, &config, &prefs, interaction, &request_state)
             .await;
+        for key in [
+            "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
+            "ANTHROPIC_ADMIN_API_KEY",
+            "ANTHROPIC_ADMIN_KEY",
+            "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
+            "OPENAI_API_KEY",
+            "CODEX_HOME",
+            "GEMINI_CLI_HOME",
+        ] {
+            if !inputs.base_environment.contains_key(key)
+                && let Ok(val) = std::env::var(key)
+            {
+                inputs
+                    .base_environment
+                    .insert(key.to_owned(), SecretString::new(val));
+            }
+        }
         let spec = self
             .registry
             .read()

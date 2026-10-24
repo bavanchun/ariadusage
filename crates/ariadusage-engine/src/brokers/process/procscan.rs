@@ -189,34 +189,6 @@ pub fn process_group(root: &Path, pid: i32) -> Option<i32> {
         .ok()
 }
 
-pub fn process_ppid_and_start_secs(root: &Path, pid: i32) -> Option<(i32, Option<i64>)> {
-    if pid <= 0 {
-        return None;
-    }
-    #[cfg(target_os = "macos")]
-    if is_live_proc_root(root) {
-        if let Some(info) = darwin_bsd_info(pid) {
-            let ppid = info.pbi_ppid.0 as i32;
-            let start_secs = i64::try_from(info.pbi_start_tvsec).ok();
-            return Some((ppid, start_secs));
-        }
-        if let Some(short) = darwin_bsd_short_info(pid) {
-            let ppid = short.pbsi_ppid.0 as i32;
-            return Some((ppid, None));
-        }
-        return None;
-    }
-    let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
-    let suffix_start = stat.rfind(')')?.checked_add(1)?;
-    let ppid = stat
-        .get(suffix_start..)?
-        .split_whitespace()
-        .nth(1)?
-        .parse::<i32>()
-        .ok()?;
-    Some((ppid, None))
-}
-
 pub fn process_net_ns(root: &Path, pid: i32) -> Option<String> {
     if pid <= 0 {
         return None;

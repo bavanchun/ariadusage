@@ -3,9 +3,8 @@ pub mod hooks;
 #[cfg(target_os = "macos")]
 use ariadusage_cli::launch_agent;
 use ariadusage_cli::{
-    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, SessionsOptions,
-    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_sessions_focus,
-    execute_sessions_list, execute_usage,
+    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, execute_cache_clear,
+    execute_cookie_refresh, execute_diagnose, execute_usage,
 };
 
 use std::io::{self, IsTerminal, Read};
@@ -113,18 +112,6 @@ enum Commands {
         command: CookieCommands,
     },
 
-    /// List or focus live local coding agent sessions
-    Sessions {
-        #[arg(long)]
-        json: bool,
-        #[arg(long = "json-v2")]
-        json_v2: bool,
-        #[arg(long)]
-        pretty: bool,
-        #[command(subcommand)]
-        action: Option<SessionsCommands>,
-    },
-
     /// Fetch provider usage metrics directly for CLI inspection
     Usage {
         #[arg(long)]
@@ -189,24 +176,6 @@ enum CookieCommands {
         verbose: bool,
         #[arg(long)]
         json_output: bool,
-    },
-}
-
-#[derive(Subcommand, Debug)]
-enum SessionsCommands {
-    /// List live local coding agent sessions
-    List {
-        #[arg(long)]
-        json: bool,
-        #[arg(long = "json-v2")]
-        json_v2: bool,
-        #[arg(long)]
-        pretty: bool,
-    },
-    /// Focus the terminal or desktop window of a live session
-    Focus {
-        /// Session identifier
-        id: Option<String>,
     },
 }
 
@@ -442,39 +411,6 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Sessions {
-            json,
-            json_v2,
-            pretty,
-            action,
-        }) => match action {
-            None => {
-                let opts = SessionsOptions {
-                    json_shortcut: json,
-                    json_v2,
-                    pretty,
-                };
-                println!("{}", execute_sessions_list(&opts));
-            }
-            Some(SessionsCommands::List {
-                json: l_json,
-                json_v2: l_json_v2,
-                pretty: l_pretty,
-            }) => {
-                let opts = SessionsOptions {
-                    json_shortcut: json || l_json,
-                    json_v2: json_v2 || l_json_v2,
-                    pretty: pretty || l_pretty,
-                };
-                println!("{}", execute_sessions_list(&opts));
-            }
-            Some(SessionsCommands::Focus { id }) => {
-                if let Err((code, msg)) = execute_sessions_focus(id.as_deref()) {
-                    eprintln!("{msg}");
-                    std::process::exit(i32::from(code));
-                }
-            }
-        },
         Some(Commands::Usage {
             provider,
             verbose,
