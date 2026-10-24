@@ -1091,6 +1091,8 @@ pub enum AntigravityStatusProbeError {
     PortDetectionFailed(String),
     #[error("{}", Self::api_error_description(.0))]
     ApiError(String),
+    #[error("Antigravity API error: network transport failed")]
+    Transport(TransportClass),
     #[error("Could not parse Antigravity quota: {0}")]
     ParseFailed(String),
     #[error("Antigravity quota request timed out.")]
@@ -1128,6 +1130,10 @@ impl AntigravityStatusProbeError {
             }
             Self::ApiError(_) => {
                 ClassifiedError::new(ProviderErrorKind::ApiFailure, self.to_string())
+            }
+            Self::Transport(transport) => {
+                ClassifiedError::new(ProviderErrorKind::NetworkFailure, self.to_string())
+                    .with_transport(*transport)
             }
             Self::ParseFailed(_) => {
                 ClassifiedError::new(ProviderErrorKind::ParseFailure, self.to_string())
@@ -2430,7 +2436,10 @@ impl AntigravityStatusProbe {
     fn map_net_error(err: NetError) -> AntigravityStatusProbeError {
         match err {
             NetError::Transport(TransportClass::Timeout) => AntigravityStatusProbeError::TimedOut,
-            NetError::Cancelled => AntigravityStatusProbeError::Cancelled,
+            NetError::Transport(TransportClass::Cancelled) | NetError::Cancelled => {
+                AntigravityStatusProbeError::Cancelled
+            }
+            NetError::Transport(transport) => AntigravityStatusProbeError::Transport(transport),
             NetError::Http { status } => {
                 AntigravityStatusProbeError::ApiError(format!("HTTP {status}"))
             }

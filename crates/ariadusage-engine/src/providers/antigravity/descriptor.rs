@@ -970,6 +970,7 @@ impl AntigravityOfflinePlaceholderStrategy {
                     "the usage request failed".to_owned()
                 }
             }
+            AntigravityStatusProbeError::Transport(_) => "the usage request failed".to_owned(),
             AntigravityStatusProbeError::NotRunning
             | AntigravityStatusProbeError::MissingCSRFToken
             | AntigravityStatusProbeError::TimedOut => error.to_string(),

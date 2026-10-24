@@ -242,8 +242,27 @@ impl AntigravityOAuthConfig {
         home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
         let candidate_bundle_urls: Vec<PathBuf> = match app_bundle_url {
-            Some(url) => vec![url.to_path_buf()],
-            None => Self::installed_app_urls(home_directory),
+            Some(url) => {
+                if !Self::is_allowed_explicit_bundle(url) {
+                    return None;
+                }
+                vec![url.to_path_buf()]
+            }
+            None => {
+                let mut roots = vec![PathBuf::from("/Applications")];
+                if let Some(home) = home_directory
+                    && !home.to_string_lossy().trim().is_empty()
+                {
+                    roots.push(home.join("Applications"));
+                }
+                let mut urls = Self::candidate_antigravity_app_bundle_urls(&roots);
+                for install_url in Self::installed_app_urls(home_directory) {
+                    if install_url.extension().and_then(|e| e.to_str()) != Some("app") {
+                        urls.push(install_url);
+                    }
+                }
+                urls
+            }
         };
 
         for bundle_url in candidate_bundle_urls {
@@ -258,6 +277,137 @@ impl AntigravityOAuthConfig {
             }
         }
         None
+    }
+
+    pub fn discover_client_from_installed_app<P: AsRef<Path>>(
+        application_roots: &[P],
+    ) -> Option<AntigravityOAuthClient> {
+        for candidate_url in Self::candidate_oauth_client_artifact_urls(application_roots) {
+            let Some(data) = Self::read_bounded_artifact(&candidate_url) else {
+                continue;
+            };
+            if let Some(client) = Self::parse_client_from_installed_artifact_data(&data) {
+                return Some(client);
+            }
+        }
+        None
+    }
+
+    pub fn candidate_oauth_client_artifact_urls<P: AsRef<Path>>(
+        application_roots: &[P],
+    ) -> Vec<PathBuf> {
+        let app_bundle_urls = Self::candidate_antigravity_app_bundle_urls(application_roots);
+        let mut urls = Vec::new();
+        for bundle_url in app_bundle_urls {
+            for relative_path in Self::RELATIVE_CLIENT_CONFIG_PATHS {
+                urls.push(bundle_url.join(relative_path));
+            }
+        }
+        urls
+    }
+
+    pub fn candidate_antigravity_app_bundle_urls<P: AsRef<Path>>(
+        application_roots: &[P],
+    ) -> Vec<PathBuf> {
+        let mut urls = Vec::new();
+        for root_ref in application_roots {
+            let root = root_ref.as_ref();
+            let antigravity_url = root.join("Antigravity.app");
+            if Self::is_allowed_explicit_bundle(&antigravity_url) {
+                urls.push(antigravity_url);
+            }
+
+            // "Gemini.app" is a generic name, so unlike "Antigravity.app" it is
+            // only accepted when the bundle identifier confirms the renamed app.
+            let gemini_url = root.join("Gemini.app");
+            if Self::is_antigravity_app_bundle(&gemini_url) {
+                urls.push(gemini_url);
+            }
+
+            if let Ok(entries) = std::fs::read_dir(root) {
+                let mut app_paths: Vec<PathBuf> = entries
+                    .filter_map(Result::ok)
+                    .map(|e| e.path())
+                    .filter(|path| {
+                        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                            return false;
+                        };
+                        !name.starts_with('.')
+                            && path.extension().and_then(|ext| ext.to_str()) == Some("app")
+                    })
+                    .collect();
+                app_paths.sort();
+                for app_url in app_paths {
+                    if Self::is_antigravity_app_bundle(&app_url) {
+                        urls.push(app_url);
+                    }
+                }
+            }
+        }
+
+        let mut seen = BTreeSet::new();
+        let mut deduped = Vec::new();
+        for url in urls {
+            let clean = normalize_lexical_path(&url);
+            let key = clean.to_string_lossy().into_owned();
+            if seen.insert(key) {
+                deduped.push(clean);
+            }
+        }
+        deduped
+    }
+
+    pub fn is_antigravity_app_bundle(bundle_url: &Path) -> bool {
+        Self::bundle_identifier(bundle_url)
+            .is_some_and(|id| Self::is_known_bundle_identifier(&id))
+    }
+
+    pub fn is_known_bundle_identifier(bundle_id: &str) -> bool {
+        matches!(
+            bundle_id.trim(),
+            "com.google.antigravity"
+                | "com.google.antigravity-ide"
+                | "com.google.GeminiMacOS"
+        )
+    }
+
+    pub fn bundle_identifier(bundle_url: &Path) -> Option<String> {
+        let info_plist_path = bundle_url.join("Contents").join("Info.plist");
+        let data = Self::read_bounded_artifact(&info_plist_path)?;
+        let text = std::str::from_utf8(&data).ok()?;
+        Self::parse_bundle_identifier_from_plist_xml(text)
+    }
+
+    fn parse_bundle_identifier_from_plist_xml(xml: &str) -> Option<String> {
+        let mut rest = xml;
+        while let Some(key_start) = rest.find("<key>") {
+            let after_key_open = &rest[key_start + "<key>".len()..];
+            let key_end = after_key_open.find("</key>")?;
+            let key_name = after_key_open[..key_end].trim();
+            let after_key_close = &after_key_open[key_end + "</key>".len()..];
+            if key_name == "CFBundleIdentifier" {
+                let trimmed = after_key_close.trim_start();
+                let after_string_open = trimmed.strip_prefix("<string>")?;
+                let string_end = after_string_open.find("</string>")?;
+                let value = after_string_open[..string_end].trim();
+                if value.is_empty() {
+                    return None;
+                }
+                return Some(value.to_owned());
+            }
+            rest = after_key_close;
+        }
+        None
+    }
+
+    fn is_allowed_explicit_bundle(bundle_url: &Path) -> bool {
+        if bundle_url.file_name().and_then(|n| n.to_str()) == Some("Gemini.app") {
+            return Self::is_antigravity_app_bundle(bundle_url);
+        }
+        match Self::bundle_identifier(bundle_url) {
+            Some(id) => Self::is_known_bundle_identifier(&id),
+            None => true,
+        }
     }
 
     fn read_bounded_artifact(path: &Path) -> Option<Vec<u8>> {
