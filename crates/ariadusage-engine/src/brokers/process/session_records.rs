@@ -9,11 +9,14 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(unix)]
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use super::{ProcessSignal, process_identity, read_marker_environment, signal_group};
+use super::process_identity;
+#[cfg(unix)]
+use super::{ProcessSignal, read_marker_environment, signal_group};
 
 pub type ProcessFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
@@ -98,44 +101,52 @@ impl SessionRecordIdentity for ProcSessionRecordIdentity {
     }
 
     fn terminate_record(&self, record: SessionRecord) -> ProcessFuture<()> {
-        Box::pin(async move {
-            let Ok(pid) = i32::try_from(record.pid) else {
-                return;
-            };
-            let root = Path::new("/proc");
-            let Some(identity) = process_identity(root, pid) else {
-                return;
-            };
-            if (identity.start_ticks as f64 - record.start_epoch).abs() >= 0.001 {
-                return;
-            }
-            let Some(group) = record
-                .process_group
-                .and_then(|group| i32::try_from(group).ok())
-            else {
-                return;
-            };
-            let Some(marker) = record.marker.as_deref() else {
-                return;
-            };
-            let marker_matches =
-                read_marker_environment(root, pid, super::procscan::PROCESS_MARKER_ENV)
-                    .is_some_and(|current| current.as_slice() == marker.as_bytes());
-            if !marker_matches {
-                return;
-            }
-            if !signal_group(identity, group, ProcessSignal::Term).unwrap_or(false) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            if process_identity(root, pid) != Some(identity)
-                || !read_marker_environment(root, pid, super::procscan::PROCESS_MARKER_ENV)
-                    .is_some_and(|current| current.as_slice() == marker.as_bytes())
-            {
-                return;
-            }
-            let _ = signal_group(identity, group, ProcessSignal::Kill);
-        })
+        #[cfg(not(unix))]
+        {
+            let _ = record;
+            Box::pin(async {})
+        }
+        #[cfg(unix)]
+        {
+            Box::pin(async move {
+                let Ok(pid) = i32::try_from(record.pid) else {
+                    return;
+                };
+                let root = Path::new("/proc");
+                let Some(identity) = process_identity(root, pid) else {
+                    return;
+                };
+                if (identity.start_ticks as f64 - record.start_epoch).abs() >= 0.001 {
+                    return;
+                }
+                let Some(group) = record
+                    .process_group
+                    .and_then(|group| i32::try_from(group).ok())
+                else {
+                    return;
+                };
+                let Some(marker) = record.marker.as_deref() else {
+                    return;
+                };
+                let marker_matches =
+                    read_marker_environment(root, pid, super::procscan::PROCESS_MARKER_ENV)
+                        .is_some_and(|current| current.as_slice() == marker.as_bytes());
+                if !marker_matches {
+                    return;
+                }
+                if !signal_group(identity, group, ProcessSignal::Term).unwrap_or(false) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if process_identity(root, pid) != Some(identity)
+                    || !read_marker_environment(root, pid, super::procscan::PROCESS_MARKER_ENV)
+                        .is_some_and(|current| current.as_slice() == marker.as_bytes())
+                {
+                    return;
+                }
+                let _ = signal_group(identity, group, ProcessSignal::Kill);
+            })
+        }
     }
 }
 
