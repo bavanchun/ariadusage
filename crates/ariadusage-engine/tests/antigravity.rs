@@ -494,7 +494,7 @@ fn local_source_keeps_saved_oauth_accounts_passive_without_deleting_them() {
 }
 
 #[test]
-// CodexBar: Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift:10
+// CodexBar: Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift:49 Antigravity ignores observed resets while Codex still honors them (Antigravity half only)
 fn antigravity_descriptor_ignores_observed_quota_reset_boundaries_and_advertises_oauth() {
     let descriptor = find_by_id_str("antigravity").expect("antigravity descriptor");
     assert_eq!(
