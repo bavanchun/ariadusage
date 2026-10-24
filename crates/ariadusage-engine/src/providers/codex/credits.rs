@@ -58,6 +58,7 @@ pub struct CodexCreditLimitSnapshot {
     pub title: String,
     pub used: f64,
     pub limit: f64,
+    pub remaining: f64,
     pub remaining_percent: f64,
     #[serde(
         default,
@@ -87,10 +88,14 @@ impl CodexCreditLimitSnapshot {
         } else {
             trimmed.to_owned()
         };
+        let used = used.max(0.0);
+        let limit = limit.max(0.0);
+        let remaining = (limit - used).max(0.0);
         Self {
             title: normalized_title,
-            used: used.max(0.0),
-            limit: limit.max(0.0),
+            used,
+            limit,
+            remaining,
             remaining_percent: remaining_percent.clamp(0.0, 100.0),
             resets_at,
             updated_at,
@@ -115,7 +120,7 @@ impl CodexCreditLimitSnapshot {
     }
 
     pub fn remaining(&self) -> f64 {
-        (self.limit - self.used).max(0.0)
+        self.remaining
     }
 
     pub fn used_percent(&self) -> f64 {
