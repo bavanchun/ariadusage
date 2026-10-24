@@ -2508,3 +2508,70 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-engine/tests/antigravity_port_discovery_cases.rs"
 sources = ["TestsLinux/AntigravityPortDiscoveryTests.swift", "TestsLinux/AntigravityProcessLauncherLinuxTests.swift"]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+sources = [
+    "Tests/CodexBarTests/Issue2037FixtureSupport.swift",
+    "Tests/CodexBarTests/Issue2037FixtureHarnessTests.swift",
+    "Tests/CodexBarTests/Issue2037ProvenanceFixtureTests.swift",
+    "Tests/CodexBarTests/Issue2037ScannerIntegrationTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/cost_ledger.rs"
+sources = [
+    "Tests/CodexBarTests/CostUsageWindowSummaryTests.swift",
+    "Tests/CodexBarTests/CostUsageStoreTests.swift",
+    "Tests/CodexBarTests/CostUsageStoreCutoverTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/sessions.rs"
+sources = [
+    "Sources/CodexBarCore/AgentSession.swift",
+    "Sources/CodexBarCore/LocalAgentSessionScanner.swift",
+    "Sources/CodexBarCLI/CLISessionsCommand.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/agent_sessions.rs"
+sources = [
+    "Tests/CodexBarTests/AgentSessionParserTests.swift",
+    "Tests/CodexBarTests/AgentSessionExecutableTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/lib.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIDiagnoseCommand.swift",
+    "Sources/CodexBarCLI/CLICacheCommand.swift",
+    "Sources/CodexBarCLI/CLICookieCommand.swift",
+    "Sources/CodexBarCLI/CLISessionsCommand.swift",
+    "Sources/CodexBarCLI/CLIHelp.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_cache.rs"
+sources = ["Tests/CodexBarTests/CLICacheTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_diagnose.rs"
+sources = [
+    "Tests/CodexBarTests/CLIDiagnoseCommandTests.swift",
+    "Tests/CodexBarTests/CLIEntryTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_cookie_refresh.rs"
+sources = ["Tests/CodexBarTests/CLICookieRefreshTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_sessions.rs"
+sources = ["Tests/CodexBarTests/AgentSessionJSONTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

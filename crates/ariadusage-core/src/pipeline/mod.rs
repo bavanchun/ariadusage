@@ -10,7 +10,11 @@ pub mod strategy;
 pub use candidate::{CandidateRetryError, CandidateRetryRunner};
 pub use context::{FetchContext, FetchInteraction, FetchPhase, FetchRuntime};
 pub use diagnostics::{
-    DiagnosticError, DiagnosticFetchAttempt, category_safe_description, kind_label,
+    DiagnosticAuthSummary, DiagnosticBatchExport, DiagnosticError, DiagnosticExport,
+    DiagnosticExportBuilder, DiagnosticExportBuilderInput, DiagnosticFetchAttempt,
+    DiagnosticPlatform, DiagnosticRateWindow, DiagnosticSettingsSummary, DiagnosticUsageSummary,
+    category_label_safe_description, category_safe_description, error_category_label, kind_label,
+    redact_diagnostic_text, source_mode_label,
 };
 pub use env::{
     AccountTokenProjection, EnvPrecedence, EnvProjection, ProviderEnvDescriptor,

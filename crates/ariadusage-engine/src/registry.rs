@@ -20,6 +20,9 @@ use crate::brokers::net::{NetBroker, NetConfig};
 use crate::brokers::secret_store::SecretStore;
 use crate::config_store::ConfigStore;
 use crate::error::StoreError;
+use crate::providers::antigravity::{
+    AntigravityOAuthCredentialsStore, AntigravityProviderPlan, AntigravityStrategyConfig,
+};
 use crate::providers::claude::{
     CLAUDE_OAUTH_TOKEN_ENV_KEY, ClaudeAdminAPISettingsReader, ClaudeCredentialRoute,
     ClaudeCredentialRouting, ClaudeOAuthStrategyConfig, ClaudeProviderPlan,
@@ -232,6 +235,33 @@ impl ProviderPlanFactory for CodexProviderPlanFactory {
     }
 }
 
+/// Factory that builds an `AntigravityProviderPlan` from a shared `AntigravityStrategyConfig`
+/// template while applying per-refresh `HOME` directory overrides.
+pub struct AntigravityProviderPlanFactory {
+    base_config: AntigravityStrategyConfig,
+}
+
+impl AntigravityProviderPlanFactory {
+    pub fn new(base_config: AntigravityStrategyConfig) -> Self {
+        Self { base_config }
+    }
+}
+
+impl ProviderPlanFactory for AntigravityProviderPlanFactory {
+    fn build_plan(
+        &self,
+        _provider_config: Option<&ProviderConfig>,
+        _selected_account: Option<&TokenAccountMeta>,
+        inputs: &ProviderPlanInputs,
+    ) -> Arc<dyn ProviderPlan> {
+        let mut cfg = self.base_config.clone();
+        if let Some(home) = inputs.base_environment.get("HOME") {
+            cfg.home_directory = PathBuf::from(home.expose_secret());
+        }
+        Arc::new(AntigravityProviderPlan::new(cfg))
+    }
+}
+
 /// Resolved execution specification for a single provider in a refresh pass.
 pub struct ResolvedProviderSpec {
     pub descriptor: &'static ProviderDescriptor,
@@ -317,6 +347,22 @@ impl ProviderRegistry {
         registry.register_factory(
             codex_id,
             Arc::new(CodexProviderPlanFactory::new(codex_config)),
+        );
+        registry
+    }
+
+    /// Creates a registry with all three first-party provider plan factories (`claude`, `codex`,
+    /// and `antigravity`) registered.
+    pub fn with_all_first_party_configs(
+        claude_config: ClaudeOAuthStrategyConfig,
+        codex_config: CodexStrategyConfig,
+        antigravity_config: AntigravityStrategyConfig,
+    ) -> Self {
+        let mut registry = Self::with_claude_and_codex_config(claude_config, codex_config);
+        let agy_id = ProviderId::new("antigravity").expect("valid provider id");
+        registry.register_factory(
+            agy_id,
+            Arc::new(AntigravityProviderPlanFactory::new(antigravity_config)),
         );
         registry
     }
@@ -425,8 +471,14 @@ impl ProviderRegistry {
     }
 
     /// Resolves the active `TokenAccountMeta` for `provider_config`, if any accounts are configured.
+    ///
+    /// For Antigravity in `SourceMode::Cli` mode, saved OAuth token accounts remain passive.
     pub fn selected_account(provider_config: Option<&ProviderConfig>) -> Option<TokenAccountMeta> {
-        let accounts = provider_config?.token_accounts.as_ref()?;
+        let cfg = provider_config?;
+        if cfg.id.as_str() == "antigravity" && cfg.source == Some(SourceMode::Cli) {
+            return None;
+        }
+        let accounts = cfg.token_accounts.as_ref()?;
         if accounts.accounts.is_empty() {
             return None;
         }
@@ -541,20 +593,36 @@ impl ProviderRegistry {
             let env_descriptor = ProviderEnvDescriptor::<ProviderConfig> {
                 projections: Vec::new(),
                 account_projection: Some(AccountTokenProjection {
-                    scrub_keys: vec!["CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS".to_string()],
-                    target_key: Some("CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS".to_string()),
+                    scrub_keys: vec![
+                        AntigravityOAuthCredentialsStore::ENVIRONMENT_CREDENTIALS_KEY.to_string(),
+                        "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS".to_string(),
+                    ],
+                    target_key: Some(
+                        AntigravityOAuthCredentialsStore::ENVIRONMENT_CREDENTIALS_KEY.to_string(),
+                    ),
                 }),
             };
-            return ProviderEnvironmentResolver::resolve(
+            let empty_token = SecretString::new(String::new());
+            let mut resolved = ProviderEnvironmentResolver::resolve(
                 &base,
                 provider_config,
                 if selected_account.is_some() {
-                    inputs.selected_account_token.as_ref()
+                    inputs
+                        .selected_account_token
+                        .as_ref()
+                        .or(Some(&empty_token))
                 } else {
                     None
                 },
                 &env_descriptor,
             );
+            if resolved
+                .get(AntigravityOAuthCredentialsStore::ENVIRONMENT_CREDENTIALS_KEY)
+                .is_some_and(|v| v.expose_secret().trim().is_empty())
+            {
+                resolved.remove(AntigravityOAuthCredentialsStore::ENVIRONMENT_CREDENTIALS_KEY);
+            }
+            return resolved;
         }
 
         let env_descriptor = ProviderEnvDescriptor::<ProviderConfig> {
@@ -614,6 +682,7 @@ impl ProviderRegistry {
             CLAUDE_OAUTH_TOKEN_ENV_KEY,
             "ANTHROPIC_ADMIN_KEY",
             "ANTHROPIC_ADMIN_API_KEY",
+            AntigravityOAuthCredentialsStore::ENVIRONMENT_CREDENTIALS_KEY,
             "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS",
         ] {
             if let Some(val) = environment
