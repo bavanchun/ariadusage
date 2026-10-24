@@ -35,7 +35,7 @@ Hooks are configured under the `hooks` object in `config.json`:
 | `provider` | `string?` | Optional lowercase provider ID (`claude`, `codex`, `antigravity`). Omit or set to `null` to match all providers. |
 | `command` | `string` | Absolute path to the executable (`~/...` is expanded before validation). Relative command names without `/` are rejected. |
 | `arguments` | `string[]` | Fixed argument vector passed directly to the executable without shell evaluation. |
-| `timeoutSeconds` | `number` | Per-invocation timeout in seconds (clamped to `1..=60`, default `10`). |
+| `timeoutSeconds` | `number` | Per-invocation timeout in seconds (0.1 to 300 s, default 10; rules outside the range never run). |
 
 ## Supported events
 

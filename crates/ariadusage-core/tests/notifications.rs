@@ -2112,6 +2112,7 @@ fn codex_session_clearing_published_codex_usage_clears_typed_transition_state() 
 // CodexLimitResetOwnerKeyTests
 // =========================================================================
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:10 limit reset owner stays stable for the same provider workspace and email
 #[test]
 fn codex_limit_reset_owner_stays_stable_for_same_provider_workspace_and_email() {
@@ -2135,6 +2136,7 @@ fn codex_limit_reset_owner_stays_stable_for_same_provider_workspace_and_email() 
     assert!(!original.raw_value.contains("person-one@example.test"));
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:39 different emails in the same provider workspace use different owner keys
 #[test]
 fn codex_limit_reset_different_emails_in_same_provider_workspace_use_different_owner_keys() {
@@ -2155,6 +2157,7 @@ fn codex_limit_reset_different_emails_in_same_provider_workspace_use_different_o
     assert_ne!(member_1, member_2);
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:61 different provider workspaces with the same email use different owner keys
 #[test]
 fn codex_limit_reset_different_provider_workspaces_with_same_email_use_different_owner_keys() {
@@ -2179,6 +2182,7 @@ fn codex_limit_reset_different_provider_workspaces_with_same_email_use_different
     assert!(!ws_2.raw_value.contains("shared-person@example.test"));
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:88 email only owner fails closed even for one visible row
 #[test]
 fn codex_limit_reset_email_only_owner_fails_closed_even_for_one_visible_row() {
@@ -2193,6 +2197,7 @@ fn codex_limit_reset_email_only_owner_fails_closed_even_for_one_visible_row() {
     );
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:103 duplicate email only rows fail closed
 #[test]
 fn codex_limit_reset_duplicate_email_only_rows_fail_closed() {
@@ -2209,6 +2214,7 @@ fn codex_limit_reset_duplicate_email_only_rows_fail_closed() {
     );
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:118 provider row wins its own identity while same email fallback fails closed
 #[test]
 fn codex_limit_reset_provider_row_wins_its_own_identity_while_same_email_fallback_fails_closed() {
@@ -2230,6 +2236,7 @@ fn codex_limit_reset_provider_row_wins_its_own_identity_while_same_email_fallbac
     );
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:140 guard and visible row normalize the same provider owner
 #[test]
 fn codex_limit_reset_guard_and_visible_row_normalize_the_same_provider_owner() {
@@ -2250,6 +2257,7 @@ fn codex_limit_reset_guard_and_visible_row_normalize_the_same_provider_owner() {
     assert_eq!(visible_key, guard_key);
 }
 
+// partial: constructor half only (visible-row half belongs to the multi-account runtime slice)
 // upstream: CodexLimitResetOwnerKeyTests.swift:162 unresolved owner identity fails closed
 #[test]
 fn codex_limit_reset_unresolved_owner_identity_fails_closed() {
