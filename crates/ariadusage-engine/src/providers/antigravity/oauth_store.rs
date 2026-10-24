@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_protocol::secret::SecretString;
@@ -147,7 +147,8 @@ impl AntigravityOAuthClient {
 pub struct AntigravityOAuthConfig;
 
 const MAX_INSTALLED_ARTIFACT_BYTES: u64 = 128 * 1024 * 1024;
-static INSTALLED_CLIENT_CACHE: OnceLock<Option<AntigravityOAuthClient>> = OnceLock::new();
+static INSTALLED_CLIENT_CACHE: OnceLock<Mutex<BTreeMap<Option<PathBuf>, AntigravityOAuthClient>>> =
+    OnceLock::new();
 
 impl AntigravityOAuthConfig {
     pub const DEFAULT_SCOPES: &[&str] = &[
@@ -212,9 +213,18 @@ impl AntigravityOAuthConfig {
     pub fn installed_client_cached(
         home_directory: Option<&Path>,
     ) -> Option<AntigravityOAuthClient> {
-        INSTALLED_CLIENT_CACHE
-            .get_or_init(|| Self::installed_client_uncached(None, home_directory))
-            .clone()
+        let key = home_directory.map(Path::to_path_buf);
+        let cache = INSTALLED_CLIENT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+        if let Ok(guard) = cache.lock()
+            && let Some(cached) = guard.get(&key)
+        {
+            return Some(cached.clone());
+        }
+        let discovered = Self::installed_client_uncached(None, home_directory)?;
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(key, discovered.clone());
+        }
+        Some(discovered)
     }
 
     pub fn installed_client(
