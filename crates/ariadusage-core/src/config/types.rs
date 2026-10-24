@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/Config/CodexBarConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Config/ProviderConfigCoding.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Config/ProviderModelRateLimit.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/TokenAccounts.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, HashSet};
@@ -283,6 +284,50 @@ impl ProviderConfig {
             }
         } else {
             self.extra.remove("claudeWorkspaceSpendEnabled");
+        }
+    }
+
+    /// Raw optional `antigravityAdditionalProfileHomes` setting from `extra["antigravityAdditionalProfileHomes"]`.
+    pub fn antigravity_additional_profile_homes(&self) -> Option<Vec<String>> {
+        self.extra
+            .get("antigravityAdditionalProfileHomes")
+            .and_then(|raw| serde_json::from_str::<Vec<String>>(raw.get()).ok())
+    }
+
+    /// Sets or clears `extra["antigravityAdditionalProfileHomes"]`.
+    pub fn set_antigravity_additional_profile_homes(&mut self, homes: Option<Vec<String>>) {
+        match homes {
+            Some(values) => {
+                if let Ok(raw) = serde_json::value::to_raw_value(&values) {
+                    self.extra
+                        .insert("antigravityAdditionalProfileHomes".to_owned(), raw);
+                }
+            }
+            None => {
+                self.extra.remove("antigravityAdditionalProfileHomes");
+            }
+        }
+    }
+
+    /// Raw optional `antigravityPrioritizeExhaustedQuotas` setting from `extra["antigravityPrioritizeExhaustedQuotas"]`.
+    pub fn antigravity_prioritize_exhausted_quotas(&self) -> Option<bool> {
+        self.extra
+            .get("antigravityPrioritizeExhaustedQuotas")
+            .and_then(|raw| serde_json::from_str::<bool>(raw.get()).ok())
+    }
+
+    /// Sets or clears `extra["antigravityPrioritizeExhaustedQuotas"]`.
+    pub fn set_antigravity_prioritize_exhausted_quotas(&mut self, enabled: Option<bool>) {
+        match enabled {
+            Some(value) => {
+                if let Ok(raw) = serde_json::value::to_raw_value(&value) {
+                    self.extra
+                        .insert("antigravityPrioritizeExhaustedQuotas".to_owned(), raw);
+                }
+            }
+            None => {
+                self.extra.remove("antigravityPrioritizeExhaustedQuotas");
+            }
         }
     }
 }
