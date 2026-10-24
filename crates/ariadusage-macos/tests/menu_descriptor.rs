@@ -557,3 +557,30 @@ fn antigravity_with_utilization_attaches_plan_usage_without_burndown_and_codex_w
     assert!(!sections[0].has_cost_submenu);
     assert!(cost_submenu.is_empty());
 }
+
+#[test]
+fn section_split_predicates_follow_upstream_token_cost_capabilities() {
+    assert!(menu_descriptor::provider_supports_token_cost("claude"));
+    assert!(menu_descriptor::provider_supports_token_cost("codex"));
+    assert!(menu_descriptor::provider_supports_token_cost("antigravity"));
+    assert!(menu_descriptor::provider_supports_token_cost("openai"));
+    assert!(menu_descriptor::provider_supports_token_cost("mistral"));
+    assert!(!menu_descriptor::provider_supports_token_cost("gemini"));
+    assert!(!menu_descriptor::provider_supports_token_cost("copilot"));
+
+    assert!(menu_descriptor::token_cost_requires_provider_snapshot(
+        "openai"
+    ));
+    assert!(menu_descriptor::token_cost_requires_provider_snapshot(
+        "mistral"
+    ));
+    assert!(menu_descriptor::token_cost_requires_provider_snapshot(
+        "openrouter"
+    ));
+    assert!(!menu_descriptor::token_cost_requires_provider_snapshot(
+        "claude"
+    ));
+    assert!(!menu_descriptor::token_cost_requires_provider_snapshot(
+        "codex"
+    ));
+}
