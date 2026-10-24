@@ -1313,7 +1313,9 @@ impl ClaudeStatusProbeParser {
         if tz_id.eq_ignore_ascii_case("UTC") || tz_id.eq_ignore_ascii_case("GMT") {
             Some(TimeZone::UTC)
         } else {
-            TimeZone::get(&tz_id).ok()
+            TimeZone::get(&tz_id).ok().or_else(|| {
+                canonical_iana_timezone(&tz_id).and_then(|canonical| TimeZone::get(canonical).ok())
+            })
         }
     }
 
@@ -1975,6 +1977,21 @@ fn parse_month_abbrev(s: &str) -> Option<i8> {
         "oct" => Some(10),
         "nov" => Some(11),
         "dec" => Some(12),
+        _ => None,
+    }
+}
+
+fn canonical_iana_timezone(tz_id: &str) -> Option<&'static str> {
+    match tz_id {
+        "Asia/Calcutta" => Some("Asia/Kolkata"),
+        "Asia/Saigon" => Some("Asia/Ho_Chi_Minh"),
+        "Asia/Katmandu" => Some("Asia/Kathmandu"),
+        "Asia/Rangoon" => Some("Asia/Yangon"),
+        "Europe/Kiev" | "Europe/Uzhgorod" | "Europe/Zaporozhye" => Some("Europe/Kyiv"),
+        "US/Eastern" => Some("America/New_York"),
+        "US/Central" => Some("America/Chicago"),
+        "US/Mountain" => Some("America/Denver"),
+        "US/Pacific" => Some("America/Los_Angeles"),
         _ => None,
     }
 }
