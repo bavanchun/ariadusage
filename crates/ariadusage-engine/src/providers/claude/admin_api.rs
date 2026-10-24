@@ -883,7 +883,10 @@ pub fn validate_admin_api_url(url: &Url) -> Result<(), OriginError> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeAdminAPIUsageError {
     MissingCredentials,
-    NetworkError(String),
+    NetworkError {
+        message: String,
+        transport: Option<TransportClass>,
+    },
     ApiError {
         endpoint: &'static str,
         status_code: u16,
@@ -899,7 +902,9 @@ impl fmt::Display for ClaudeAdminAPIUsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCredentials => f.write_str("Missing Anthropic Admin API key."),
-            Self::NetworkError(msg) => write!(f, "Claude API usage network error: {msg}"),
+            Self::NetworkError { message, .. } => {
+                write!(f, "Claude API usage network error: {message}")
+            }
             Self::ApiError {
                 endpoint,
                 status_code,
@@ -918,14 +923,32 @@ impl fmt::Display for ClaudeAdminAPIUsageError {
 impl std::error::Error for ClaudeAdminAPIUsageError {}
 
 impl ClaudeAdminAPIUsageError {
+    pub fn network_error(message: impl Into<String>, transport: Option<TransportClass>) -> Self {
+        Self::NetworkError {
+            message: message.into(),
+            transport,
+        }
+    }
+
     pub fn into_classified_error(self) -> ClassifiedError {
         let message = self.to_string();
         match self {
             Self::MissingCredentials => {
                 ClassifiedError::new(ProviderErrorKind::MissingCredential, message)
             }
-            Self::NetworkError(_) => {
-                ClassifiedError::new(ProviderErrorKind::NetworkFailure, message)
+            Self::NetworkError {
+                transport: Some(TransportClass::Cancelled),
+                ..
+            }
+            | Self::Cancelled => ClassifiedError::new(ProviderErrorKind::Unknown, message)
+                .with_transport(TransportClass::Cancelled),
+            Self::NetworkError { transport, .. } => {
+                let mut classified =
+                    ClassifiedError::new(ProviderErrorKind::NetworkFailure, message);
+                if let Some(class) = transport {
+                    classified = classified.with_transport(class);
+                }
+                classified
             }
             Self::ApiError {
                 status_code: 401 | 403,
@@ -944,14 +967,16 @@ impl ClaudeAdminAPIUsageError {
             Self::ParseFailed { .. } => {
                 ClassifiedError::new(ProviderErrorKind::ParseFailure, message)
             }
-            Self::Cancelled => ClassifiedError::new(ProviderErrorKind::Unknown, message)
-                .with_transport(TransportClass::Cancelled),
         }
     }
 
     pub fn into_fetch_error(self) -> FetchError {
         match self {
-            Self::Cancelled => FetchError::Cancelled,
+            Self::Cancelled
+            | Self::NetworkError {
+                transport: Some(TransportClass::Cancelled),
+                ..
+            } => FetchError::Cancelled,
             other => FetchError::Classified(other.into_classified_error()),
         }
     }
@@ -1327,14 +1352,20 @@ impl ClaudeAdminAPIUsageFetcher {
         let today = utc_date
             .at(0, 0, 0, 0)
             .to_zoned(TimeZone::UTC)
-            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?;
+            .map_err(|_| {
+                ClaudeAdminAPIUsageError::network_error("Failed to compute usage date range", None)
+            })?;
         let start = today
             .checked_sub(30.days())
-            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?
+            .map_err(|_| {
+                ClaudeAdminAPIUsageError::network_error("Failed to compute usage date range", None)
+            })?
             .timestamp();
         let end = today
             .checked_add(1.days())
-            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?
+            .map_err(|_| {
+                ClaudeAdminAPIUsageError::network_error("Failed to compute usage date range", None)
+            })?
             .timestamp();
         Ok((start, end))
     }
@@ -1378,7 +1409,7 @@ impl ClaudeAdminAPIUsageFetcher {
         let base = base_url.as_str().trim_end_matches('/');
         let rel = path.trim_start_matches('/');
         let mut url = Url::parse(&format!("{base}/{rel}"))
-            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?;
+            .map_err(|_| ClaudeAdminAPIUsageError::network_error("Invalid Claude API URL", None))?;
         {
             let mut pairs = url.query_pairs_mut();
             for (k, v) in query_items {
@@ -1418,7 +1449,9 @@ impl ClaudeAdminAPIUsageFetcher {
 
         let response = match response {
             Ok(resp) => resp,
-            Err(NetError::Cancelled) => return Err(ClaudeAdminAPIUsageError::Cancelled),
+            Err(NetError::Cancelled | NetError::Transport(TransportClass::Cancelled)) => {
+                return Err(ClaudeAdminAPIUsageError::Cancelled);
+            }
             Err(NetError::OriginNotDeclared | NetError::OverrideRejected(_)) => {
                 return Err(ClaudeAdminAPIUsageError::OriginRejected(
                     OriginError::Invalid,
@@ -1430,7 +1463,18 @@ impl ClaudeAdminAPIUsageFetcher {
                     status_code: status,
                 });
             }
-            Err(err) => return Err(ClaudeAdminAPIUsageError::NetworkError(err.to_string())),
+            Err(NetError::Transport(class)) => {
+                return Err(ClaudeAdminAPIUsageError::network_error(
+                    NetError::Transport(class).to_string(),
+                    Some(class),
+                ));
+            }
+            Err(err) => {
+                return Err(ClaudeAdminAPIUsageError::network_error(
+                    err.to_string(),
+                    None,
+                ));
+            }
         };
 
         let status = response.status.as_u16();

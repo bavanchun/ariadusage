@@ -1093,6 +1093,7 @@ sources = [
     "Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift",
     "Tests/CodexBarTests/StatusItemBlinkGatingTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift",
     "Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift",
     "Tests/CodexBarTests/CodexbarTests.swift",
 ]
@@ -1106,6 +1107,7 @@ sources = [
     "Tests/CodexBarTests/MergedWarpIconRenderingTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift",
     "Tests/CodexBarTests/StatusItemIconObservationSignatureTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationTests.swift",
     "Tests/CodexBarTests/CodexbarTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

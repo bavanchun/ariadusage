@@ -319,6 +319,10 @@ fn make_status_item(mtm: MainThreadMarker) -> Retained<NSStatusItem> {
     item
 }
 
+/// Updates quota-warning flash state across enabled providers.
+///
+/// Uses [`icon::DEFAULT_QUOTA_WARNING_THRESHOLDS`] (`[50, 20]`) until user-configured
+/// warning thresholds are exposed on the engine snapshot/settings.
 fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapshot) {
     let now = now_secs();
     for provider in &snapshot.providers {
@@ -483,15 +487,7 @@ fn provider_needs_loading_animation(state: &AppState, provider_id: Option<&str>)
     let Some(provider) = snapshot.providers.iter().find(|p| p.id.as_str() == id) else {
         return false;
     };
-    if !provider.enabled || provider.last_error.is_some() {
-        return false;
-    }
-    let has_satisfied_fetch = provider.updated_at.is_some()
-        || presentation::measured_window(provider.windows.primary.as_ref()).is_some()
-        || presentation::measured_window(provider.windows.secondary.as_ref()).is_some()
-        || presentation::measured_window(provider.windows.tertiary.as_ref()).is_some()
-        || !provider.windows.extra.is_empty();
-    !has_satisfied_fetch
+    presentation::should_animate_provider(provider, state.animation.debug_force_animation)
 }
 
 fn sync_animation_timers(state: &mut AppState) {
@@ -507,7 +503,19 @@ fn sync_animation_timers(state: &mut AppState) {
     let target_id = target_provider.map(|p| p.id.as_str());
 
     let needs_loading = provider_needs_loading_animation(state, target_id);
-    let loading_active = state.animation.sync_loading_animation(needs_loading, now);
+    let any_enabled_loading = state.global_loading
+        || !state.provider_loading.is_empty()
+        || state.snapshot.as_ref().is_some_and(|s| {
+            presentation::any_enabled_provider_needs_loading_animation(
+                s,
+                state.animation.debug_force_animation,
+            )
+        });
+    let loading_active = state.animation.sync_loading_animation_with_any_loading(
+        needs_loading,
+        any_enabled_loading,
+        now,
+    );
 
     if loading_active {
         if state.loading_timer.is_none() {
@@ -698,10 +706,9 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
     let needs_loading = provider_needs_loading_animation(state, provider_id);
     let phase = state.animation.active_loading_phase(needs_loading);
 
-    let effective_pattern =
-        state
-            .loading_pattern
-            .effective_for(input.style, merged, provider_id.unwrap_or(""));
+    let effective_pattern = state
+        .loading_pattern
+        .effective_for(input.style, merged, provider_id);
 
     if let Some(phase_val) = phase {
         if effective_pattern == icon::LoadingPattern::Unbraid {
@@ -734,9 +741,9 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
             }
             return;
         }
-        input.primary = Some(effective_pattern.value(phase_val));
-        input.secondary =
-            Some(effective_pattern.value(phase_val + effective_pattern.secondary_offset()));
+        let (primary, secondary) = icon::loading_frame_percents(effective_pattern, phase_val);
+        input.primary = Some(primary);
+        input.secondary = Some(secondary);
         input.credits_remaining = None;
         input.stale = false;
     }

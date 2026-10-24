@@ -157,22 +157,66 @@ pub fn primary_provider_for_unified_icon<'a>(
     is_stacked: bool,
     now: Option<Timestamp>,
 ) -> Option<&'a ProviderSnapshot> {
+    primary_provider_for_unified_icon_with_overview(
+        snapshot,
+        selected,
+        None,
+        false,
+        source,
+        focused_provider,
+        is_merged_menu_open,
+        is_stacked,
+        now,
+    )
+}
+
+/// Picks the provider for the merged status item across all `UnifiedIconSource`
+/// modes and explicit Overview subset / selection state
+/// (`StatusItemController.primaryProviderForUnifiedIcon` and `defaultProviderForUnifiedIcon`,
+/// `StatusItemController+Animation.swift:1152-1194`).
+#[allow(clippy::too_many_arguments)]
+pub fn primary_provider_for_unified_icon_with_overview<'a>(
+    snapshot: &'a EngineSnapshot,
+    selected: Option<&'a str>,
+    overview_providers: Option<&[&'a str]>,
+    last_selected_was_overview: bool,
+    source: UnifiedIconSource,
+    focused_provider: Option<&'a str>,
+    is_merged_menu_open: bool,
+    is_stacked: bool,
+    now: Option<Timestamp>,
+) -> Option<&'a ProviderSnapshot> {
     let enabled_list: Vec<&'a ProviderSnapshot> =
         snapshot.providers.iter().filter(|p| p.enabled).collect();
     if enabled_list.is_empty() {
         return None;
     }
     let enabled_ids: HashSet<&'a str> = enabled_list.iter().map(|p| p.id.as_str()).collect();
+    let overview_list: Vec<&'a ProviderSnapshot> = match overview_providers {
+        Some(ov) => ov
+            .iter()
+            .filter_map(|&id| enabled_list.iter().copied().find(|p| p.id.as_str() == id))
+            .collect(),
+        None => enabled_list.clone(),
+    };
 
-    let fallback_id = if source == UnifiedIconSource::HighestUsage {
-        provider_with_highest_usage(&enabled_list, now)
-            .or_else(|| enabled_list.first().copied())
-            .map(|p| p.id.as_str())?
+    let fallback_id = if source == UnifiedIconSource::HighestUsage
+        && let Some(p) = provider_with_highest_usage(&overview_list, now)
+            .or_else(|| overview_list.first().copied())
+    {
+        p.id.as_str()
+    } else if last_selected_was_overview && let Some(p) = overview_list.first().copied() {
+        p.id.as_str()
     } else if let Some(sel) = UnifiedIconContext::current_selection_provider(selected, &enabled_ids)
     {
         sel
     } else {
-        enabled_list.first().map(|p| p.id.as_str())?
+        enabled_list
+            .iter()
+            .copied()
+            .find(|p| provider_has_snapshot_data(p))
+            .or_else(|| enabled_list.first().copied())
+            .map(|p| p.id.as_str())?
     };
 
     let ctx = UnifiedIconContext {
@@ -187,7 +231,9 @@ pub fn primary_provider_for_unified_icon<'a>(
         .find(|p| p.id.as_str() == resolved_id)
 }
 
-fn provider_with_highest_usage<'a>(
+/// Picks the candidate provider with the highest non-exhausted usage (`remaining_percent > 0`),
+/// matching `UsageStore.providerWithHighestUsage(candidateProviders:)`.
+pub fn provider_with_highest_usage<'a>(
     candidates: &[&'a ProviderSnapshot],
     now: Option<Timestamp>,
 ) -> Option<&'a ProviderSnapshot> {
@@ -205,14 +251,16 @@ fn provider_with_highest_usage<'a>(
                 false,
                 false,
                 now,
-            ) && let Some(sel) = make_selection(
-                Candidate {
-                    window: w,
-                    slot: None,
-                },
-                provider.id.as_str(),
-                now,
-            ) && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
+            ) && remaining_percent(&w) > 0.0
+                && let Some(sel) = make_selection(
+                    Candidate {
+                        window: w,
+                        slot: None,
+                    },
+                    provider.id.as_str(),
+                    now,
+                )
+                && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
             {
                 best = Some((*provider, sel));
             }
@@ -224,14 +272,16 @@ fn provider_with_highest_usage<'a>(
             false,
             true,
             now,
-        ) && let Some(sel) = make_selection(
-            Candidate {
-                window: w,
-                slot: None,
-            },
-            provider.id.as_str(),
-            now,
-        ) && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
+        ) && remaining_percent(&w) > 0.0
+            && let Some(sel) = make_selection(
+                Candidate {
+                    window: w,
+                    slot: None,
+                },
+                provider.id.as_str(),
+                now,
+            )
+            && best.as_ref().is_none_or(|(_, b)| precedes(b, &sel))
         {
             best = Some((*provider, sel));
         }
@@ -278,14 +328,29 @@ pub fn icon_input_with_override(
     let policy =
         quota_layout_policy_for_provider(provider, secondary_override_window_id, prefs.now);
 
-    IconInput {
-        primary,
-        secondary,
-        credits_remaining: provider
+    let (raw_primary, raw_secondary) =
+        resolved_icon_windows(provider, secondary_override_window_id, prefs.now);
+    let credits_fallback_active = (raw_primary.is_none() && raw_secondary.is_none())
+        || raw_primary
+            .as_ref()
+            .is_some_and(|w| remaining_percent(w) <= 0.0)
+        || raw_secondary
+            .as_ref()
+            .is_some_and(|w| remaining_percent(w) <= 0.0);
+    let credits_remaining = if credits_fallback_active {
+        provider
             .credits
             .as_ref()
             .and_then(displayable_value)
-            .map(|c| c.remaining),
+            .map(|c| c.remaining)
+    } else {
+        None
+    };
+
+    IconInput {
+        primary,
+        secondary,
+        credits_remaining,
         stale: provider.last_error.is_some(),
         status: provider
             .status
@@ -896,6 +961,9 @@ pub fn resolve_menu_bar_metric_window(
                 .or(secondary)
                 .or(primary);
         }
+        "perplexity" if preference == MenuBarMetricPreference::Automatic => {
+            return perplexity_icon_windows(provider).0;
+        }
         "mistral" => match preference {
             MenuBarMetricPreference::Automatic => return None,
             MenuBarMetricPreference::MonthlyPlan => {
@@ -1079,7 +1147,7 @@ fn requested_lane_order(provider_id: &str, preference: MenuBarMetricPreference) 
             ]
         }
         MenuBarMetricPreference::Tertiary => {
-            if matches!(provider_id, "antigravity" | "cursor") {
+            if matches!(provider_id, "antigravity" | "cursor" | "perplexity") {
                 vec![
                     UsageLane::Tertiary,
                     UsageLane::Secondary,
@@ -1328,6 +1396,83 @@ pub fn store_icon_style(snapshot: Option<&EngineSnapshot>) -> IconStyle {
     }
 }
 
+/// Whether a provider has completed a snapshot fetch or has known-unavailable limits
+/// (`UsageStore.hasSatisfiedUsageFetch`, `UsageStore.swift:709-712`).
+pub fn provider_has_snapshot_data(provider: &ProviderSnapshot) -> bool {
+    let metric_resolved = |m: Option<&Metric<RateWindow>>| {
+        m.is_some_and(|metric| {
+            matches!(
+                metric.state,
+                MetricState::Value | MetricState::Stale | MetricState::Unknown
+            )
+        })
+    };
+    provider.updated_at.is_some()
+        || metric_resolved(provider.windows.primary.as_ref())
+        || metric_resolved(provider.windows.secondary.as_ref())
+        || metric_resolved(provider.windows.tertiary.as_ref())
+        || provider.windows.extra.iter().any(|w| {
+            matches!(
+                w.window.state,
+                MetricState::Value | MetricState::Stale | MetricState::Unknown
+            )
+        })
+        || provider
+            .credits
+            .as_ref()
+            .and_then(displayable_value)
+            .is_some()
+        || provider.cost.as_ref().and_then(displayable_value).is_some()
+}
+
+/// Whether `provider` needs the menu-bar loading animation
+/// (`StatusItemController.shouldAnimate(provider:)`, `StatusItemController+Animation.swift:1230-1254`).
+pub fn should_animate_provider(provider: &ProviderSnapshot, debug_force_animation: bool) -> bool {
+    if !provider.enabled {
+        return false;
+    }
+    if debug_force_animation {
+        return true;
+    }
+    let has_satisfied_usage_fetch = provider_has_snapshot_data(provider);
+    let is_stale = provider.last_error.is_some();
+    !has_satisfied_usage_fetch && !is_stale
+}
+
+/// Whether any enabled provider in `snapshot` needs the menu-bar loading animation
+/// (`StatusItemController.anyEnabledProviderNeedsLoadingAnimation()`,
+/// `StatusItemController+Animation.swift:32-36`).
+pub fn any_enabled_provider_needs_loading_animation(
+    snapshot: &EngineSnapshot,
+    debug_force_animation: bool,
+) -> bool {
+    snapshot
+        .providers
+        .iter()
+        .filter(|p| p.enabled)
+        .any(|p| should_animate_provider(p, debug_force_animation))
+}
+
+/// Whether the menu-bar status item should run the loading animation
+/// (`StatusItemController.needsMenuBarIconAnimation()`, `StatusItemController+Animation.swift:13-25`).
+/// When `merge_icons` is `true`, only the resolved unified icon provider is checked;
+/// when `merge_icons` is `false`, any enabled provider needing loading animation qualifies.
+pub fn needs_menu_bar_icon_animation(
+    snapshot: &EngineSnapshot,
+    selected_provider_id: Option<&str>,
+    merge_icons: bool,
+    debug_force_animation: bool,
+) -> bool {
+    if merge_icons {
+        let Some(provider) = icon_provider(snapshot, selected_provider_id) else {
+            return false;
+        };
+        should_animate_provider(provider, debug_force_animation)
+    } else {
+        any_enabled_provider_needs_loading_animation(snapshot, debug_force_animation)
+    }
+}
+
 /// Computes the store-icon observation signature used to skip redundant icon updates when
 /// non-visual snapshot or status metadata changes (`StatusItemController.storeIconObservationSignature`).
 pub fn store_icon_observation_signature(
@@ -1335,6 +1480,18 @@ pub fn store_icon_observation_signature(
     selected: Option<&str>,
     merge_icons: bool,
     prefs: IconPreferences,
+) -> u64 {
+    store_icon_observation_signature_with_override(snapshot, selected, merge_icons, prefs, None)
+}
+
+/// Computes the store-icon observation signature with an optional Copilot secondary window override ID
+/// (`StatusItemController.storeIconObservationSignature`).
+pub fn store_icon_observation_signature_with_override(
+    snapshot: Option<&EngineSnapshot>,
+    selected: Option<&str>,
+    merge_icons: bool,
+    prefs: IconPreferences,
+    secondary_override_window_id: Option<&str>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1353,7 +1510,7 @@ pub fn store_icon_observation_signature(
     let hash_provider =
         |p: &ProviderSnapshot, h: &mut std::collections::hash_map::DefaultHasher| {
             p.id.as_str().hash(h);
-            let input = icon_input(p, prefs);
+            let input = icon_input_with_override(p, prefs, secondary_override_window_id);
             input.primary.map(|v| (v * 1000.0).round() as i64).hash(h);
             input.secondary.map(|v| (v * 1000.0).round() as i64).hash(h);
             input

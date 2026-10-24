@@ -1211,7 +1211,11 @@ impl LoadingPattern {
 
     /// Effective loading pattern for a provider (`StatusItemController+Animation.swift:408-410`):
     /// Claude's glyph and merged combined icons fall back from `.unbraid` to `.cylon`.
-    pub fn effective_for(self, style: IconStyle, merged: bool, provider_id: &str) -> Self {
+    /// When no provider is resolved (`provider_id` is `None`), returns [`Self::default()`].
+    pub fn effective_for(self, style: IconStyle, merged: bool, provider_id: Option<&str>) -> Self {
+        let Some(provider_id) = provider_id else {
+            return Self::default();
+        };
         if self == Self::Unbraid
             && ((merged && style == IconStyle::Combined) || (!merged && provider_id == "claude"))
         {
@@ -1220,6 +1224,17 @@ impl LoadingPattern {
             self
         }
     }
+}
+
+/// Computes the primary and secondary loading percentages at `phase`, clamping each lane
+/// to [`LOADING_PERCENT_EPSILON`] so `0.0` never flips the two-bar layout into the
+/// weekly-exhausted single-bar layout (`StatusItemController+Animation.swift:419-422`).
+pub fn loading_frame_percents(pattern: LoadingPattern, phase: f64) -> (f64, f64) {
+    let primary = pattern.value(phase).max(LOADING_PERCENT_EPSILON);
+    let secondary = pattern
+        .value(phase + pattern.secondary_offset())
+        .max(LOADING_PERCENT_EPSILON);
+    (primary, secondary)
 }
 
 /// Frame rate of the status-item loading animation (`StatusItemController+Animation.swift:129`).
@@ -1658,6 +1673,7 @@ pub struct StatusItemAnimationState {
     pub blink_rng_counter: u64,
     pub quota_warning_flash_until_secs: BTreeMap<String, f64>,
     pub quota_warning_tracker: QuotaWarningTracker,
+    pub last_merged_render_signature: Option<u64>,
     pub last_rendered_signatures: BTreeMap<String, u64>,
     pub last_store_observation_signature: Option<u64>,
 }
@@ -1666,9 +1682,23 @@ impl StatusItemAnimationState {
     /// Synchronizes the loading animation start/cap state at `now_secs`.
     /// Returns `true` when the 30 FPS loading timer should be running.
     pub fn sync_loading_animation(&mut self, needs_animation: bool, now_secs: f64) -> bool {
+        self.sync_loading_animation_with_any_loading(needs_animation, needs_animation, now_secs)
+    }
+
+    /// Synchronizes the loading animation start/cap state at `now_secs`, retaining the
+    /// 30 s continuous cap marker when `needs_animation` is `false` (for example, after
+    /// switching the selected provider in merged mode) while `any_enabled_loading` is still `true`
+    /// (`StatusItemController.updateAnimationState`, `StatusItemController+Animation.swift:1256-1272`).
+    pub fn sync_loading_animation_with_any_loading(
+        &mut self,
+        needs_animation: bool,
+        any_enabled_loading: bool,
+        now_secs: f64,
+    ) -> bool {
         if !needs_animation {
+            let keep_cap_marker = any_enabled_loading && self.loading_capped;
             self.loading_started_at_secs = None;
-            self.loading_capped = false;
+            self.loading_capped = keep_cap_marker;
             self.animation_phase = 0.0;
             return false;
         }
@@ -1683,6 +1713,33 @@ impl StatusItemAnimationState {
             return false;
         }
         true
+    }
+
+    /// Returns `true` when a merged-icon render should be skipped because `signature` matches
+    /// the last applied merged signature (`StatusItemController.shouldSkipMergedIconRender`,
+    /// `StatusItemController+Animation.swift:306-316`).
+    pub fn should_skip_merged_icon_render(&mut self, signature: u64, merge_icons: bool) -> bool {
+        if !merge_icons {
+            self.last_merged_render_signature = Some(signature);
+            return false;
+        }
+        if self.last_merged_render_signature == Some(signature) {
+            return true;
+        }
+        self.last_merged_render_signature = Some(signature);
+        false
+    }
+
+    /// Returns `true` when a split per-provider icon render should be skipped because `signature`
+    /// matches the last applied signature for `provider_id`
+    /// (`StatusItemController.shouldSkipProviderIconRender`, `StatusItemController+Animation.swift:318-324`).
+    pub fn should_skip_provider_icon_render(&mut self, provider_id: &str, signature: u64) -> bool {
+        if self.last_rendered_signatures.get(provider_id).copied() == Some(signature) {
+            return true;
+        }
+        self.last_rendered_signatures
+            .insert(provider_id.to_string(), signature);
+        false
     }
 
     /// Advances the loading animation by one 30 FPS frame at `now_secs`.
