@@ -229,7 +229,7 @@ it changes the architecture, also add a Decision Log row.
 
 ### Antigravity managed session state
 
-Managed-session coordination resolves `paths::state_dir()` and appends `antigravity`; it does not read process environment in the provider or fall back to a shared temporary directory. If resolution fails, the session retains its in-memory lifecycle without cross-host records or a launch lock. The persisted-record policy is recorded in the Architecture Decision Log.
+Managed-session coordination resolves `paths::state_dir()` and appends `ariadusage/antigravity`; it does not read process environment in the provider or fall back to a shared temporary directory. If resolution fails, the session retains its in-memory lifecycle without cross-host records or a launch lock. The persisted-record policy is recorded in the Architecture Decision Log.
 
 ## Upstream drift
 
