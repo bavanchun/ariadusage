@@ -1094,7 +1094,7 @@ sources = [
     "Tests/CodexBarTests/IconRendererGrokTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationCapTests.swift",
     "Tests/CodexBarTests/StatusItemQuotaWarningFlashTests.swift",
-    "Tests/CodexBarTests/StatusItemBlinkGatingTests.swift",
+    "Tests/CodexBarTests/StatusItemAnimationCodexCreditsTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift",
     "Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift",

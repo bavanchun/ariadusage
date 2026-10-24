@@ -73,6 +73,8 @@ Ported from CodexBar <path> at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 Files not yet re-checked against v0.79.0 still carry `at 6a26b2e9b`.
 
+Test markers (`// upstream: <File>:<line> <test name>`) cite the upstream `@Test` line, not the function declaration.
+
 `<path>` is the file's path in the CodexBar repository. A file that combines
 several sources lists each path. The full CodexBar license is in
 [LICENSES/CodexBar-MIT.txt](../LICENSES/CodexBar-MIT.txt) and is referenced

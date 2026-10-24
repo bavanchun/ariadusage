@@ -68,7 +68,7 @@ fn spend_limit(used: f64, limit: f64, updated_at: Timestamp) -> Cost {
 // provider. In these two-provider combined cases the other provider has either one lane or the same
 // combined preference; passing PrimaryAndSecondary preserves every upstream selected metric.
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:9 combined codex metric uses weekly lane when ranking highest usage
+// upstream: CodexCombinedMetricHighestUsageTests.swift:8 combined codex metric uses weekly lane when ranking highest usage
 #[test]
 fn combined_codex_metric_uses_weekly_lane_when_ranking_highest_usage() {
     let now = Timestamp::now();
@@ -96,7 +96,7 @@ fn combined_codex_metric_uses_weekly_lane_when_ranking_highest_usage() {
     assert_eq!(selected.map(|w| w.used_percent), Some(91.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:30 combined codex metric ignores expired weekly lane when ranking highest usage
+// upstream: CodexCombinedMetricHighestUsageTests.swift:29 combined codex metric ignores expired weekly lane when ranking highest usage
 #[test]
 fn combined_codex_metric_ignores_expired_weekly_lane_when_ranking_highest_usage() {
     let now = Timestamp::from_second(1_800_000_000).unwrap();
@@ -124,7 +124,7 @@ fn combined_codex_metric_ignores_expired_weekly_lane_when_ranking_highest_usage(
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:61 combined codex metric excludes an actively binding weekly cap
+// upstream: CodexCombinedMetricHighestUsageTests.swift:60 combined codex metric excludes an actively binding weekly cap
 #[test]
 fn combined_codex_metric_excludes_an_actively_binding_weekly_cap() {
     let now = Timestamp::from_second(1_800_000_000).unwrap();
@@ -152,7 +152,7 @@ fn combined_codex_metric_excludes_an_actively_binding_weekly_cap() {
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:92 combined codex metric stays eligible when only one lane is exhausted
+// upstream: CodexCombinedMetricHighestUsageTests.swift:91 combined codex metric stays eligible when only one lane is exhausted
 #[test]
 fn combined_codex_metric_stays_eligible_when_only_one_lane_is_exhausted() {
     let now = Timestamp::now();
@@ -180,7 +180,7 @@ fn combined_codex_metric_stays_eligible_when_only_one_lane_is_exhausted() {
     assert_eq!(selected.map(|w| w.used_percent), Some(100.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:118 combined codex metric is excluded when both lanes are exhausted
+// upstream: CodexCombinedMetricHighestUsageTests.swift:117 combined codex metric is excluded when both lanes are exhausted
 #[test]
 fn combined_codex_metric_is_excluded_when_both_lanes_are_exhausted() {
     let now = Timestamp::now();
@@ -208,7 +208,7 @@ fn combined_codex_metric_is_excluded_when_both_lanes_are_exhausted() {
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:144 combined claude metric stays eligible when only one lane is exhausted
+// upstream: CodexCombinedMetricHighestUsageTests.swift:143 combined claude metric stays eligible when only one lane is exhausted
 #[test]
 fn combined_claude_metric_stays_eligible_when_only_one_lane_is_exhausted() {
     let now = Timestamp::now();
@@ -241,7 +241,7 @@ fn combined_claude_metric_stays_eligible_when_only_one_lane_is_exhausted() {
     assert_eq!(selected.map(|w| w.used_percent), Some(100.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:178 combined claude metric is excluded when both lanes are exhausted
+// upstream: CodexCombinedMetricHighestUsageTests.swift:177 combined claude metric is excluded when both lanes are exhausted
 #[test]
 fn combined_claude_metric_is_excluded_when_both_lanes_are_exhausted() {
     let now = Timestamp::now();
@@ -274,7 +274,7 @@ fn combined_claude_metric_is_excluded_when_both_lanes_are_exhausted() {
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:212 combined claude metric excludes an exhausted weekly-only account with a synthetic placeholder
+// upstream: CodexCombinedMetricHighestUsageTests.swift:211 combined claude metric excludes an exhausted weekly-only account with a synthetic placeholder
 #[test]
 fn combined_claude_metric_excludes_an_exhausted_weekly_only_account_with_a_synthetic_placeholder() {
     let now = Timestamp::now();
@@ -309,7 +309,7 @@ fn combined_claude_metric_excludes_an_exhausted_weekly_only_account_with_a_synth
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: CodexCombinedMetricHighestUsageTests.swift:252 combined claude metric excludes an exhausted spend-limit-only account
+// upstream: CodexCombinedMetricHighestUsageTests.swift:251 combined claude metric excludes an exhausted spend-limit-only account
 #[test]
 fn combined_claude_metric_excludes_an_exhausted_spend_limit_only_account() {
     let now = Timestamp::now();
@@ -386,7 +386,7 @@ fn antigravity_summary(
     antigravity
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:250 automatic metric ignores antigravity tertiary when compact icon has no quota summary
+// upstream: UsageStoreHighestUsageTests.swift:249 automatic metric ignores antigravity tertiary when compact icon has no quota summary
 #[test]
 fn automatic_metric_ignores_antigravity_tertiary_when_compact_icon_has_no_quota_summary() {
     let now = Timestamp::now();
@@ -410,7 +410,7 @@ fn automatic_metric_ignores_antigravity_tertiary_when_compact_icon_has_no_quota_
     assert_eq!(selected.map(|w| w.used_percent), Some(70.0));
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:289 automatic metric ignores unclassified antigravity compact fallback until exhausted priority is enabled
+// upstream: UsageStoreHighestUsageTests.swift:288 automatic metric ignores unclassified antigravity compact fallback until exhausted priority is enabled
 #[test]
 fn automatic_metric_ignores_unclassified_antigravity_compact_fallback_until_exhausted_priority_is_enabled()
  {
@@ -467,7 +467,7 @@ fn automatic_metric_ignores_unclassified_antigravity_compact_fallback_until_exha
     assert_eq!(selected.map(|w| w.used_percent), Some(64.0));
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:344 automatic metric ignores legacy antigravity family lanes without quota summary
+// upstream: UsageStoreHighestUsageTests.swift:343 automatic metric ignores legacy antigravity family lanes without quota summary
 #[test]
 fn automatic_metric_ignores_legacy_antigravity_family_lanes_without_quota_summary() {
     let now = Timestamp::now();
@@ -497,7 +497,7 @@ fn automatic_metric_ignores_legacy_antigravity_family_lanes_without_quota_summar
     assert_eq!(selected.map(|w| w.used_percent), Some(70.0));
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:385 antigravity automatic ranking keeps usable first until exhausted priority is enabled
+// upstream: UsageStoreHighestUsageTests.swift:384 antigravity automatic ranking keeps usable first until exhausted priority is enabled
 #[test]
 fn antigravity_automatic_ranking_keeps_usable_first_until_exhausted_priority_is_enabled() {
     let now = Timestamp::now();
@@ -569,7 +569,7 @@ fn antigravity_automatic_ranking_keeps_usable_first_until_exhausted_priority_is_
     );
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:462 opt in automatic metric excludes antigravity only when every summary family is blocked
+// upstream: UsageStoreHighestUsageTests.swift:461 opt in automatic metric excludes antigravity only when every summary family is blocked
 #[test]
 fn opt_in_automatic_metric_excludes_antigravity_only_when_every_summary_family_is_blocked() {
     let now = Timestamp::now();
@@ -614,7 +614,7 @@ fn opt_in_automatic_metric_excludes_antigravity_only_when_every_summary_family_i
     );
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:519 automatic metric ignores antigravity legacy detail rows
+// upstream: UsageStoreHighestUsageTests.swift:518 automatic metric ignores antigravity legacy detail rows
 #[test]
 fn automatic_metric_ignores_antigravity_legacy_detail_rows() {
     let now = Timestamp::now();
@@ -646,7 +646,7 @@ fn automatic_metric_ignores_antigravity_legacy_detail_rows() {
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:578 automatic metric skips antigravity with no quota lanes
+// upstream: UsageStoreHighestUsageTests.swift:577 automatic metric skips antigravity with no quota lanes
 #[test]
 fn automatic_metric_skips_antigravity_with_no_quota_lanes() {
     let now = Timestamp::now();
@@ -677,7 +677,7 @@ fn automatic_metric_skips_antigravity_with_no_quota_lanes() {
     assert_eq!(selected.map(|w| w.used_percent), Some(80.0));
 }
 
-// upstream: UsageStoreHighestUsageTests.swift:1098 explicit antigravity metric remains authoritative for highest usage
+// upstream: UsageStoreHighestUsageTests.swift:1097 explicit antigravity metric remains authoritative for highest usage
 #[test]
 fn explicit_antigravity_metric_remains_authoritative_for_highest_usage() {
     let now = Timestamp::now();
@@ -713,7 +713,7 @@ fn explicit_antigravity_metric_remains_authoritative_for_highest_usage() {
     assert_eq!(highest.map(|p| p.id.as_str()), Some("codex"));
 }
 
-// upstream: CodexWeeklyCapSurfaceTests.swift:68 primary menu bar metric and credits follow binding weekly reset
+// upstream: CodexWeeklyCapSurfaceTests.swift:67 primary menu bar metric and credits follow binding weekly reset
 #[test]
 fn primary_menu_bar_metric_and_credits_follow_binding_weekly_reset() {
     let now = Timestamp::from_second(1_800_000_000).unwrap();
@@ -753,7 +753,7 @@ fn primary_menu_bar_metric_and_credits_follow_binding_weekly_reset() {
     assert_eq!(reset_credits, None);
 }
 
-// upstream: CodexWeeklyCapSurfaceTests.swift:130 combined menu bar modes ignore exhausted weekly lane after its reset
+// upstream: CodexWeeklyCapSurfaceTests.swift:129 combined menu bar modes ignore exhausted weekly lane after its reset
 #[test]
 fn combined_menu_bar_modes_ignore_exhausted_weekly_lane_after_its_reset() {
     let now = Timestamp::from_second(1_800_000_000).unwrap();
@@ -814,4 +814,212 @@ fn combined_menu_bar_modes_ignore_exhausted_weekly_lane_after_its_reset() {
         menu_bar_credits_remaining_for_icon(&expired_session, Some(now)),
         None
     );
+}
+
+// Mapping regression: CodexConsumerProjection.swift:722-755 has no Tertiary-specific @Test.
+// Use the 12/91 session/weekly fixture from CodexCombinedMetricHighestUsageTests.swift:8.
+#[test]
+fn codex_tertiary_uses_second_displayed_lane_or_first_when_alone() {
+    let now = Timestamp::now();
+    let mut codex = provider(
+        "codex",
+        Some(window(12.0, Some(300), None)),
+        Some(window(91.0, Some(10080), None)),
+        now,
+    );
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Tertiary,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(91.0, Some(10080), None)));
+    codex.windows.primary = None;
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Tertiary,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(91.0, Some(10080), None)));
+}
+
+// Mapping regression: CodexConsumerProjection.swift:722-755 maps MonthlyPlan to first, including
+// a weekly-only account. The monthly-only 27/100 fixture comes from CodexConsumerProjectionTests:372.
+#[test]
+fn codex_monthly_plan_uses_first_displayed_lane() {
+    let now = Timestamp::now();
+    let mut codex = provider(
+        "codex",
+        Some(window(12.0, Some(300), None)),
+        Some(window(91.0, Some(10080), None)),
+        now,
+    );
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::MonthlyPlan,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(12.0, Some(300), None)));
+    codex.windows.primary = None;
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::MonthlyPlan,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(91.0, Some(10080), None)));
+    codex.windows.secondary = None;
+    codex.cost = Some(value(spend_limit(27.0, 100.0, now)));
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::MonthlyPlan,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected.map(|w| w.used_percent), Some(27.0));
+}
+
+// Mapping regression: CodexConsumerProjection.swift:737-738 is spendLimitWindow ?? first.
+// Use the primary=12, cost=27/1000, expected=2.7 values from CodexAccountScopedRefreshCreditsTests:95-171.
+#[test]
+fn codex_extra_usage_prefers_spend_limit_and_falls_back_to_first() {
+    let now = Timestamp::now();
+    let mut codex = provider("codex", Some(window(12.0, Some(300), None)), None, now);
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::ExtraUsage,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(12.0, Some(300), None)));
+    codex.cost = Some(value(spend_limit(27.0, 1000.0, now)));
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::ExtraUsage,
+        &codex,
+        false,
+        false,
+        Some(now),
+    )
+    .unwrap();
+    assert!((selected.used_percent - 2.7).abs() < 0.0001);
+}
+
+// Mapping regression: CodexConsumerProjection.swift:505-515, 751-752 always uses the Codex projection.
+// Extend the 0/90 fixture from CodexConsumerProjectionTests.swift:809 with an unprojected tertiary
+// and extra window; there is no matching upstream three-slot test.
+#[test]
+fn codex_automatic_ignores_tertiary_and_extra_windows() {
+    let now = Timestamp::from_second(1_800_000_000).unwrap();
+    let mut codex = provider(
+        "codex",
+        Some(window(0.0, Some(300), None)),
+        Some(window(90.0, Some(10080), None)),
+        now,
+    );
+    codex.windows.tertiary = Some(value(window(100.0, Some(43200), None)));
+    codex.windows.extra = vec![named_window("monthly", "Monthly", 100.0, Some(43200))];
+    let selected = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &codex,
+        false,
+        false,
+        Some(now),
+    );
+    assert_eq!(selected, Some(window(90.0, Some(10080), None)));
+}
+
+// Mapping regression: CodexConsumerProjection.swift:528-550 preserves displayed source-slot order;
+// :735-754 maps preferences to first/second, not to semantic session/weekly lane names.
+#[test]
+fn codex_metric_preferences_follow_display_order_after_reclassification() {
+    let now = Timestamp::now();
+    let weekly = window(91.0, Some(10080), None);
+    let session = window(12.0, Some(300), None);
+    let codex = provider("codex", Some(weekly.clone()), Some(session.clone()), now);
+    for (preference, expected) in [
+        (MenuBarMetricPreference::Primary, weekly.clone()),
+        (MenuBarMetricPreference::MonthlyPlan, weekly.clone()),
+        (MenuBarMetricPreference::Secondary, session.clone()),
+        (MenuBarMetricPreference::Tertiary, session.clone()),
+        (MenuBarMetricPreference::ExtraUsage, weekly.clone()),
+        (MenuBarMetricPreference::PrimaryAndSecondary, weekly.clone()),
+        (MenuBarMetricPreference::Average, weekly),
+    ] {
+        assert_eq!(
+            resolve_menu_bar_metric_window(preference, &codex, false, false, Some(now)),
+            Some(expected),
+            "{preference:?}"
+        );
+    }
+    let average = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Average,
+        &codex,
+        true,
+        false,
+        Some(now),
+    );
+    assert_eq!(average, Some(RateWindow::new((91.0 + 12.0) / 2.0)));
+}
+
+// Projection regression: CodexConsumerProjection.swift:505-515 ignores tertiary/extra rate slots;
+// :646-657 bases credits fallback on the projected lane map being empty, not raw-window presence.
+#[test]
+fn codex_credits_fallback_uses_empty_projected_lane_map() {
+    let now = Timestamp::now();
+    for use_extra in [false, true] {
+        let mut codex = provider("codex", None, None, now);
+        if use_extra {
+            codex.windows.extra = vec![named_window("monthly", "Monthly", 40.0, Some(43200))];
+        } else {
+            codex.windows.tertiary = Some(value(window(40.0, Some(43200), None)));
+        }
+        codex.credits = Some(value(Credits::new(80.0)));
+        assert_eq!(
+            menu_bar_credits_remaining_for_icon(&codex, Some(now)),
+            Some(80.0)
+        );
+    }
+}
+
+// Projection regression: UsageFetcher.swift:462-464 counts any non-nil rate window, and
+// CodexConsumerProjection.swift:515 allows the monthly credit-limit fallback only when none exist.
+// Snapshot v1 represents a present synthetic/unresolved window by Metric::unknown(), without a value.
+#[test]
+fn codex_monthly_credit_limit_is_blocked_by_any_present_rate_window() {
+    let now = Timestamp::now();
+    for slot in 0..4 {
+        let mut codex = provider("codex", None, None, now);
+        codex.cost = Some(value(spend_limit(27.0, 100.0, now)));
+        match slot {
+            0 => codex.windows.primary = Some(Metric::unknown()),
+            1 => codex.windows.secondary = Some(Metric::unknown()),
+            2 => codex.windows.tertiary = Some(Metric::unknown()),
+            _ => {
+                codex.windows.extra = vec![NamedWindow {
+                    id: "monthly".to_string(),
+                    title: "Monthly".to_string(),
+                    window: Metric::unknown(),
+                }]
+            }
+        }
+        assert_eq!(
+            resolve_menu_bar_metric_window(
+                MenuBarMetricPreference::Automatic,
+                &codex,
+                false,
+                false,
+                Some(now)
+            ),
+            None,
+            "slot {slot}"
+        );
+    }
 }

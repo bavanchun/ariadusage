@@ -809,7 +809,7 @@ fn litellm_automatic_metric_uses_team_budget_and_prioritizes_exhausted() {
     assert_eq!(exhausted.map(|w| w.used_percent), Some(100.0));
 }
 
-// upstream: MenuBarMetricWindowResolverTests.swift:248 automatic metric prioritizes exhausted default secondary window
+// upstream: MenuBarMetricWindowResolverTests.swift:247 automatic metric prioritizes exhausted default secondary window
 #[test]
 fn automatic_metric_prioritizes_exhausted_default_secondary_window() {
     let mut provider = make_provider("opencode");
@@ -834,7 +834,7 @@ fn automatic_metric_prioritizes_exhausted_default_secondary_window() {
     assert_eq!(window.map(|w| w.used_percent), Some(100.0));
 }
 
-// upstream: MenuBarMetricWindowResolverTests.swift:265 automatic metric prioritizes exhausted default tertiary window
+// upstream: MenuBarMetricWindowResolverTests.swift:264 automatic metric prioritizes exhausted default tertiary window
 #[test]
 fn automatic_metric_prioritizes_exhausted_default_tertiary_window() {
     let mut provider = make_provider("opencode");
@@ -862,7 +862,7 @@ fn automatic_metric_prioritizes_exhausted_default_tertiary_window() {
     assert_eq!(window.map(|w| w.used_percent), Some(100.0));
 }
 
-// upstream: MenuBarMetricWindowResolverTests.swift:283 automatic metric chooses highest usage without a forecast
+// upstream: MenuBarMetricWindowResolverTests.swift:282 automatic metric chooses highest usage without a forecast
 #[test]
 fn automatic_metric_chooses_highest_usage_without_a_forecast() {
     let mut provider = make_provider("opencode");
