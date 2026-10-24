@@ -12,7 +12,7 @@
 //! - Commands are executed with a fixed [`AbsolutePath`] and argv array (`Vec<OsString>`); a shell
 //!   command string is never constructed from data.
 //! - Only allowlisted general-purpose environment variables ([`FORWARDED_ENVIRONMENT_KEYS`]) plus
-//!   the event's own `CODEXBAR_*` variables are passed to the child process. Provider API keys,
+//!   the event's own `ARIADUSAGE_*` variables are passed to the child process. Provider API keys,
 //!   tokens, cookies, and unallowlisted base environment variables never reach a hook.
 //! - JSON stdin payloads are capped at [`MAXIMUM_PAYLOAD_BYTES`] (4096 bytes).
 //! - Timeouts (`rule.timeout_seconds`) and output caps ([`DEFAULT_OUTPUT_CAP`]) are enforced by the
@@ -368,7 +368,7 @@ fn simulate_test_sh(
     if request.arguments.len() >= 4 && request.arguments[0] == "-c" {
         let script = &request.arguments[1];
         let target_path = &request.arguments[3];
-        if script.contains("printf x >> \"$1\"") && !script.contains("CODEXBAR_ACCOUNT") {
+        if script.contains("printf x >> \"$1\"") && !script.contains("ARIADUSAGE_ACCOUNT") {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
@@ -379,14 +379,14 @@ fn simulate_test_sh(
                 .map_err(|_| HookRunnerError::LaunchFailed)?;
             return Ok(HookExecutionOutput::default());
         }
-        if script.contains("CODEXBAR_ACCOUNT+x") {
+        if script.contains("ARIADUSAGE_ACCOUNT+x") {
             use std::io::Write;
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(target_path)
                 .map_err(|_| HookRunnerError::LaunchFailed)?;
-            let marker = if request.environment.contains_key("CODEXBAR_ACCOUNT") {
+            let marker = if request.environment.contains_key("ARIADUSAGE_ACCOUNT") {
                 b"leak" as &[u8]
             } else {
                 b"x" as &[u8]
@@ -460,7 +460,7 @@ impl HookRunner {
     }
 
     /// Filters `base_environment` to [`FORWARDED_ENVIRONMENT_KEYS`] and overlays `event`'s
-    /// `CODEXBAR_*` variables (`HookRunner.run` environment filtering).
+    /// `ARIADUSAGE_*` variables (`HookRunner.run` environment filtering).
     pub fn filter_environment(
         base_environment: &BTreeMap<String, String>,
         event: &HookEvent,
@@ -617,8 +617,8 @@ mod tests {
             .run(&rule, &event, &BTreeMap::new())
             .await
             .expect("env hook succeeds");
-        assert!(result.stdout.contains("CODEXBAR_EVENT=quota_reached"));
-        assert!(result.stdout.contains("CODEXBAR_PROVIDER=codex"));
+        assert!(result.stdout.contains("ARIADUSAGE_EVENT=quota_reached"));
+        assert!(result.stdout.contains("ARIADUSAGE_PROVIDER=codex"));
     }
 
     // upstream: TestsLinux/HooksTests.swift:176 runner does not forward secrets from the base environment
@@ -979,7 +979,7 @@ mod tests {
         rule.provider = Some("codex".to_string());
         rule.arguments = vec![
             "-c".to_string(),
-            "if [ -z \"${CODEXBAR_ACCOUNT+x}\" ]; then printf x >> \"$1\"; else printf leak >> \"$1\"; fi".to_string(),
+            "if [ -z \"${ARIADUSAGE_ACCOUNT+x}\" ]; then printf x >> \"$1\"; else printf leak >> \"$1\"; fi".to_string(),
             "hook".to_string(),
             output.to_string_lossy().into_owned(),
         ];
@@ -1119,21 +1119,21 @@ mod tests {
         let event: HookEvent = serde_json::from_str(json).expect("decode HookEvent");
         let env = event.environment_variables();
         assert_eq!(
-            env.get("CODEXBAR_WINDOW_MINUTES").map(String::as_str),
+            env.get("ARIADUSAGE_WINDOW_MINUTES").map(String::as_str),
             Some("300")
         );
         assert_eq!(
-            env.get("CODEXBAR_SECONDARY_USAGE_PERCENT")
+            env.get("ARIADUSAGE_SECONDARY_USAGE_PERCENT")
                 .map(String::as_str),
             Some("0.4")
         );
         assert_eq!(
-            env.get("CODEXBAR_SECONDARY_WINDOW_MINUTES")
+            env.get("ARIADUSAGE_SECONDARY_WINDOW_MINUTES")
                 .map(String::as_str),
             Some("10080")
         );
         assert_eq!(
-            env.get("CODEXBAR_SECONDARY_RESET_AT").map(String::as_str),
+            env.get("ARIADUSAGE_SECONDARY_RESET_AT").map(String::as_str),
             Some("2026-09-12T12:00:00Z")
         );
     }
