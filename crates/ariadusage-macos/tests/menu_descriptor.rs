@@ -1,4 +1,7 @@
-// Ported from CodexBar Tests/CodexBarTests/MenuDescriptorTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/MenuDescriptorAntigravityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/MenuDescriptorCodexManagedFallbackTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/MenuDescriptorUpdateAndVersionTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusItemControllerMenuTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #![cfg(unix)]
 

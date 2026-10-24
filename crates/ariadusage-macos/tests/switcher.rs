@@ -1,4 +1,5 @@
-// Ported from CodexBar Tests/CodexBarTests/ProviderSwitcherViewTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/StatusMenuSwitcherLayoutTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/SwitcherExhaustedQuotaTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 #![cfg(unix)]
 

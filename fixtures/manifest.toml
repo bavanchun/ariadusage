@@ -1147,12 +1147,20 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/tests/switcher.rs"
-sources = ["Tests/CodexBarTests/ProviderSwitcherViewTests.swift"]
+sources = [
+    "Tests/CodexBarTests/StatusMenuSwitcherLayoutTests.swift",
+    "Tests/CodexBarTests/SwitcherExhaustedQuotaTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/tests/menu_descriptor.rs"
-sources = ["Tests/CodexBarTests/MenuDescriptorTests.swift"]
+sources = [
+    "Tests/CodexBarTests/MenuDescriptorAntigravityTests.swift",
+    "Tests/CodexBarTests/MenuDescriptorCodexManagedFallbackTests.swift",
+    "Tests/CodexBarTests/MenuDescriptorUpdateAndVersionTests.swift",
+    "Tests/CodexBarTests/StatusItemControllerMenuTests.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
