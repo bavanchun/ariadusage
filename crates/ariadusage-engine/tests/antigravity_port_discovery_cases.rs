@@ -16,7 +16,9 @@ use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
 use ariadusage_engine::brokers::local_probe::{ListenerCommandError, LocalProbe, ProbeError};
+use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
 use ariadusage_engine::brokers::process::{ProcessEnv, ProcessError, ProcessRegistry};
+use ariadusage_engine::providers::antigravity::AntigravityStrategyConfig;
 use ariadusage_engine::providers::antigravity::cli_https::{
     SnapshotWaitDependencies, wait_for_snapshot,
 };
@@ -320,6 +322,7 @@ async fn pty_launcher_uses_home() {
     assert_eq!(lines, [home.to_string_lossy()]);
 }
 
+// Rust-added: Rejects foreign ownership and namespace before any child can start.
 #[tokio::test]
 async fn foreign_real_or_effective_uid_and_namespace_never_launch_lsof() {
     for (status, namespace) in [
@@ -344,6 +347,7 @@ async fn foreign_real_or_effective_uid_and_namespace_never_launch_lsof() {
     }
 }
 
+// Rust-added: Pins broker argv and sorted unique parsing beyond the upstream cases.
 #[tokio::test]
 async fn listener_command_uses_exact_argv_and_parses_sorted_unique_ports() {
     let fixture = Fixture::new(concat!(
@@ -357,6 +361,7 @@ async fn listener_command_uses_exact_argv_and_parses_sorted_unique_ports() {
     );
 }
 
+// Rust-added: Prevents an output-cap error from recovering through procfs.
 #[tokio::test]
 async fn output_cap_is_terminal_even_when_proc_has_a_listener() {
     let fixture = Fixture::new("exec /usr/bin/head -c 1048577 /dev/zero");
@@ -369,6 +374,7 @@ async fn output_cap_is_terminal_even_when_proc_has_a_listener() {
     ));
 }
 
+// Rust-added: Rejects a process generation changed during the lsof command.
 #[tokio::test]
 async fn reused_pid_after_lsof_cannot_return_a_stale_port() {
     let fixture = Fixture::new("exit 0");
@@ -396,6 +402,7 @@ async fn reused_pid_after_lsof_cannot_return_a_stale_port() {
     );
 }
 
+// Rust-added: Exercises empty procfs for a valid process with lsof explicitly disabled.
 #[tokio::test]
 async fn disabled_lsof_and_valid_process_without_sockets_returns_no_ports() {
     let fixture = Fixture::new("exit 0");
@@ -408,6 +415,7 @@ async fn disabled_lsof_and_valid_process_without_sockets_returns_no_ports() {
     assert_eq!(result, Err(ProbeError::NoListeningPorts));
 }
 
+// Rust-added: Retains a selected executable failure across readiness retries.
 #[tokio::test]
 async fn readiness_deadline_preserves_missing_executable_diagnostic() {
     use ariadusage_engine::providers::antigravity::AntigravityStatusProbeError as Error;
@@ -447,4 +455,132 @@ async fn readiness_deadline_preserves_missing_executable_diagnostic() {
         error,
         Error::PortDiscoveryCommandFailed(ListenerCommandError::ExecutableUnavailable)
     ));
+}
+
+// Rust-added: Runs upstream :90 PID/timeout/error through automatic executable resolution.
+#[tokio::test]
+async fn unavailable_lsof_candidates_and_empty_proc_return_no_ports() {
+    let fixture = Fixture::new("exit 0");
+    fixture.remove_socket();
+    fs::rename(
+        fixture.root.path().join("42"),
+        fixture.root.path().join("999"),
+    )
+    .unwrap();
+    let stat = fixture.root.path().join("999/stat");
+    fs::write(
+        &stat,
+        fs::read_to_string(&stat)
+            .unwrap()
+            .replacen("42 (fixture)", "999 (fixture)", 1),
+    )
+    .unwrap();
+    let probe =
+        LocalProbe::with_hooks(fixture.root.path().into(), 1000, Some("net:[12345]".into()))
+            .with_listener_candidates(vec![fixture.root.path().join("not-installed/lsof")]);
+    let result = probe
+        .listening_tcp_ports(&call(), 999, Duration::from_secs(5))
+        .await;
+    assert_eq!(result, Err(ProbeError::NoListeningPorts));
+    assert_eq!(result.unwrap_err().to_string(), "no listening ports found");
+}
+
+fn configured_probe(fixture: &Fixture) -> AntigravityStrategyConfig {
+    AntigravityStrategyConfig::new(
+        Arc::new(NetBroker::new(NetConfig::default()).unwrap()),
+        fixture.root.path(),
+        fixture.root.path(),
+    )
+    .with_local_probe(LocalProbe::with_hooks(
+        fixture.root.path().into(),
+        1000,
+        Some("net:[12345]".into()),
+    ))
+}
+
+// Rust-added: Candidate overrides preserve the runtime registry, including shutdown ownership.
+#[tokio::test]
+async fn runtime_registry_owns_and_shuts_down_the_lsof_child() {
+    let fixture = Fixture::new("exit 0");
+    let ready = fixture.root.path().join("ready");
+    install(
+        &fixture.lsof,
+        &format!(
+            "#!/bin/sh\nprintf ready > '{}'\nexec sleep 10\n",
+            ready.display()
+        ),
+    );
+    let config = configured_probe(&fixture);
+    let registry = config.cli.registry.clone();
+    let probe = config
+        .local_probe
+        .with_listener_executable(Some(fixture.lsof.clone()));
+    let call = call();
+    let child_call = call.clone();
+    let task = tokio::spawn(async move {
+        probe
+            .listening_tcp_ports(&child_call, 42, Duration::from_secs(5))
+            .await
+    });
+    let ready_result = tokio::time::timeout(Duration::from_secs(3), async {
+        while !ready.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let registered = registry.active_launches();
+    let shutdown_result = if registered == 1 {
+        Some(tokio::time::timeout(Duration::from_secs(2), registry.shutdown()).await)
+    } else {
+        None
+    };
+    call.cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_secs(2), task).await;
+    assert!(
+        ready_result.is_ok(),
+        "lsof child never reached its ready marker"
+    );
+    assert_eq!(registered, 1);
+    assert!(shutdown_result.unwrap().is_ok());
+    assert!(result.is_ok());
+    assert_eq!(registry.active_launches(), 0);
+}
+
+// Rust-added: The supplied launch gate suppresses lsof before a child is started.
+#[tokio::test]
+async fn runtime_launch_gate_suppresses_the_lsof_child() {
+    use ariadusage_core::gates::launch::LaunchFailureKind;
+    let fixture = Fixture::new("exit 0");
+    fixture.remove_socket();
+    let launched = fixture.root.path().join("launched");
+    install(
+        &fixture.lsof,
+        &format!("#!/bin/sh\nprintf launched > '{}'\n", launched.display()),
+    );
+    let config = configured_probe(&fixture).with_cli_runtime(Arc::new(
+        ariadusage_engine::providers::antigravity::CliRuntime::default(),
+    ));
+    config
+        .cli
+        .gate
+        .record_failure(fixture.lsof.to_str().unwrap(), LaunchFailureKind::Process);
+    let probe = config
+        .local_probe
+        .with_listener_executable(Some(fixture.lsof.clone()));
+    let mut call = call();
+    call.interaction = FetchInteraction::Background;
+    let result = probe
+        .listening_tcp_ports(&call, 42, Duration::from_secs(5))
+        .await;
+    assert!(matches!(
+        result,
+        Err(ProbeError::ListenerDiscoveryPending(
+            ListenerCommandError::Process {
+                source: ProcessError::LaunchSuppressed { .. },
+                ..
+            }
+        ))
+    ));
+    assert!(!launched.exists());
+    assert_eq!(config.cli.registry.active_launches(), 0);
 }

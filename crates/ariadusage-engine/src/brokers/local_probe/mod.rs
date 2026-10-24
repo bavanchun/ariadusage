@@ -14,12 +14,15 @@ use std::io::Read;
 use std::path::Path;
 #[cfg(any(unix, feature = "test-hooks"))]
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
+use ariadusage_core::gates::launch::LaunchGate;
+
 use crate::brokers::call::BrokerCall;
-use crate::brokers::process::ProcessIdentity;
 #[cfg(unix)]
 use crate::brokers::process::procscan;
+use crate::brokers::process::{ProcessIdentity, ProcessRegistry};
 
 pub use error::{ListenerCommandError, ProbeError};
 pub use proc_net::{parse_tcp_table, socket_inode};
@@ -155,7 +158,8 @@ fn read_process_argv(proc_root: &Path, pid: i32) -> Option<Vec<String>> {
 }
 
 #[cfg(target_os = "linux")]
-fn same_effective_user(proc_root: &Path, pid: i32, uid: u32) -> bool {
+/// Requires both process UID columns to match the configured owner UID.
+fn process_uids_match(proc_root: &Path, pid: i32, uid: u32) -> bool {
     let Ok(status) = std::fs::read_to_string(proc_root.join(pid.to_string()).join("status")) else {
         return false;
     };
@@ -206,7 +210,7 @@ impl LocalProbe {
                 uid,
                 own_net_ns: resolved_ns,
                 #[cfg(target_os = "linux")]
-                listener_command: lsof::ListenerCommand::with_candidates(Vec::new()),
+                listener_command: lsof::ListenerCommand::default().with_candidates(Vec::new()),
             }
         }
         #[cfg(not(unix))]
@@ -219,14 +223,40 @@ impl LocalProbe {
     /// Overrides the lsof candidate for invented executable/proc fixtures.
     #[cfg(all(target_os = "linux", feature = "test-hooks"))]
     pub fn with_listener_executable(mut self, executable: Option<PathBuf>) -> Self {
-        self.listener_command =
-            lsof::ListenerCommand::with_candidates(executable.into_iter().collect());
+        self.listener_command = self.listener_command.with_executable(executable);
         self
+    }
+
+    /// Supplies automatic resolver candidates without consulting installed utilities.
+    #[cfg(all(target_os = "linux", feature = "test-hooks"))]
+    pub fn with_listener_candidates(mut self, candidates: Vec<PathBuf>) -> Self {
+        self.listener_command = self.listener_command.with_candidates(candidates);
+        self
+    }
+
+    /// Shares the owner's process lifecycle and launch-gating state for Linux lsof calls.
+    pub fn with_process_runtime(
+        self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        #[cfg(target_os = "linux")]
+        {
+            Self {
+                listener_command: self.listener_command.with_process_runtime(registry, gate),
+                ..self
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            drop((registry, gate));
+            self
+        }
     }
 
     #[cfg(target_os = "linux")]
     fn listener_identity(&self, pid: i32) -> Option<ProcessIdentity> {
-        if !same_effective_user(&self.proc_root, pid, self.uid)
+        if !process_uids_match(&self.proc_root, pid, self.uid)
             || self.own_net_ns.is_none()
             || procscan::process_net_ns(&self.proc_root, pid) != self.own_net_ns
         {
@@ -290,7 +320,7 @@ impl LocalProbe {
                             return Err(ProbeError::Cancelled);
                         }
                         #[cfg(target_os = "linux")]
-                        if !same_effective_user(&proc_root, identity.pid, uid) {
+                        if !process_uids_match(&proc_root, identity.pid, uid) {
                             continue;
                         }
                         let net_ns = procscan::process_net_ns(&proc_root, identity.pid);
@@ -530,7 +560,7 @@ impl LocalProbe {
                     return Ok(false);
                 }
                 #[cfg(target_os = "linux")]
-                if !same_effective_user(&proc_root, identity.pid, uid) {
+                if !process_uids_match(&proc_root, identity.pid, uid) {
                     return Ok(false);
                 }
                 // 3. Recheck network namespace
@@ -546,7 +576,7 @@ impl LocalProbe {
                     return Ok(false);
                 }
                 #[cfg(target_os = "linux")]
-                if !same_effective_user(&proc_root, identity.pid, uid)
+                if !process_uids_match(&proc_root, identity.pid, uid)
                     || procscan::process_net_ns(&proc_root, identity.pid) != own_net_ns
                 {
                     return Ok(false);
