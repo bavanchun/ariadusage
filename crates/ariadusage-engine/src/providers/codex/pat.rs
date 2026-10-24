@@ -11,7 +11,7 @@ use reqwest::{Method, Url};
 use serde::Deserialize;
 
 use crate::brokers::call::BrokerCall;
-use crate::brokers::net::{NetBroker, NetRequest, is_loopback_host};
+use crate::brokers::net::{DeclaredOrigins, NetBroker, NetRequest, is_loopback_host};
 
 use super::credentials::CodexPATCredentials;
 use super::reconciled::CodexPATWhoami;
@@ -67,27 +67,55 @@ impl CodexCLIUserAgent {
     fn operating_system_version_string() -> String {
         #[cfg(target_os = "linux")]
         {
-            if let Ok(raw) = std::fs::read_to_string("/proc/sys/kernel/osrelease") {
-                let prefix = raw
-                    .trim()
-                    .split(|c: char| !c.is_ascii_digit() && c != '.')
-                    .next()
-                    .unwrap_or("");
-                let nums: Vec<u32> = prefix
-                    .split('.')
-                    .filter(|s| !s.is_empty())
-                    .take(3)
-                    .filter_map(|s| s.parse::<u32>().ok())
-                    .collect();
-                if !nums.is_empty() {
-                    let major = nums.first().copied().unwrap_or(0);
-                    let minor = nums.get(1).copied().unwrap_or(0);
-                    let patch = nums.get(2).copied().unwrap_or(0);
-                    return format!("{major}.{minor}.{patch}");
-                }
+            if let Ok(raw) = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+                && let Some(formatted) = Self::format_three_part_os_version(&raw)
+            {
+                return formatted;
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(raw) =
+                std::fs::read_to_string("/System/Library/CoreServices/SystemVersion.plist")
+                && let Some(formatted) = Self::parse_os_version_from_system_version_plist(&raw)
+            {
+                return formatted;
             }
         }
         "0.0.0".to_owned()
+    }
+
+    pub fn format_three_part_os_version(raw: &str) -> Option<String> {
+        let prefix = raw
+            .trim()
+            .split(|c: char| !c.is_ascii_digit() && c != '.')
+            .next()
+            .unwrap_or("");
+        let nums: Vec<u32> = prefix
+            .split('.')
+            .filter(|s| !s.is_empty())
+            .take(3)
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect();
+        if nums.is_empty() {
+            return None;
+        }
+        let major = nums.first().copied().unwrap_or(0);
+        let minor = nums.get(1).copied().unwrap_or(0);
+        let patch = nums.get(2).copied().unwrap_or(0);
+        Some(format!("{major}.{minor}.{patch}"))
+    }
+
+    pub fn parse_os_version_from_system_version_plist(plist_xml: &str) -> Option<String> {
+        let key_needle = "<key>ProductVersion</key>";
+        let key_pos = plist_xml.find(key_needle)?;
+        let after_key = &plist_xml[key_pos + key_needle.len()..];
+        let start_needle = "<string>";
+        let end_needle = "</string>";
+        let start_pos = after_key.find(start_needle)?;
+        let value_region = &after_key[start_pos + start_needle.len()..];
+        let end_pos = value_region.find(end_needle)?;
+        Self::format_three_part_os_version(&value_region[..end_pos])
     }
 
     const fn architecture() -> &'static str {
@@ -155,7 +183,8 @@ impl CodexPATUsageFetcher {
         user_agent: &str,
         account_id: Option<&str>,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
-        HeaderValue::from_str(&format!("Bearer {token}"))
+        let bearer = SecretString::new(format!("Bearer {token}"));
+        HeaderValue::from_str(bearer.expose_secret())
             .map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
         let ua_val =
             HeaderValue::from_str(user_agent).map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
@@ -175,8 +204,7 @@ impl CodexPATUsageFetcher {
 
         let mut req = NetRequest::new(Method::GET, url);
         req.headers = headers;
-        req.credentials
-            .push((AUTHORIZATION, SecretString::new(format!("Bearer {token}"))));
+        req.credentials.push((AUTHORIZATION, bearer));
         req.timeout = Some(Duration::from_secs(30));
         Ok(req)
     }
@@ -242,9 +270,9 @@ impl CodexPATUsageFetcher {
     ) -> Result<CodexPATWhoami, CodexOAuthFetchError> {
         let (whoami_url, validated_override) = Self::resolve_whoami_url(env, home_dir)?;
         let req = Self::build_pat_request(whoami_url, token, user_agent, None)?;
+        let origins = Self::declared_origins(validated_override.as_ref())?;
         let body =
-            CodexOAuthUsageFetcher::perform_request(net, validated_override.as_ref(), req, call)
-                .await?;
+            CodexOAuthUsageFetcher::perform_request_with_origins(net, &origins, req, call).await?;
         Self::decode_whoami_response(&body)
     }
 
@@ -268,13 +296,28 @@ impl CodexPATUsageFetcher {
         let url = Url::parse(&format!("{normalized}{path}"))
             .map_err(|_| CodexOAuthFetchError::InvalidResponse)?;
         let req = Self::build_pat_request(url, token, user_agent, account_id)?;
+        let origins = Self::declared_origins(validated_override.as_ref())?;
         let body =
-            CodexOAuthUsageFetcher::perform_request(net, validated_override.as_ref(), req, call)
-                .await?;
+            CodexOAuthUsageFetcher::perform_request_with_origins(net, &origins, req, call).await?;
         CodexOAuthUsageFetcher::decode_usage_response(&body)
     }
 
-    fn resolve_whoami_url(
+    fn declared_origins(
+        validated_override: Option<&Url>,
+    ) -> Result<DeclaredOrigins, CodexOAuthFetchError> {
+        let mut urls = vec![
+            Url::parse("https://chatgpt.com").expect("valid static origin"),
+            Url::parse("https://chat.openai.com").expect("valid static origin"),
+            Url::parse("https://api.openai.com").expect("valid static origin"),
+            Url::parse("https://auth.openai.com").expect("valid static origin"),
+        ];
+        if let Some(override_url) = validated_override {
+            urls.push(override_url.clone());
+        }
+        DeclaredOrigins::from_urls(urls).map_err(|_| CodexOAuthFetchError::InvalidResponse)
+    }
+
+    pub fn resolve_whoami_url(
         env: &BTreeMap<String, String>,
         home_dir: Option<&Path>,
     ) -> Result<(Url, Option<Url>), CodexOAuthFetchError> {

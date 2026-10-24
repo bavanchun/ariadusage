@@ -1521,7 +1521,6 @@ sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift",
-    "Sources/CodexBar/Providers/Codex/UsageStore+CodexPATRefresh.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 

@@ -1,7 +1,11 @@
 // Ported from CodexBar Tests/CodexBarTests/CodexPATTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexPATAppPublicationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-use ariadusage_core::{pipeline::*, providers::SourceMode};
+use ariadusage_core::{
+    pipeline::*,
+    projection::{ProjectionInput, RefreshState, provider_snapshot},
+    providers::SourceMode,
+};
 use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
 use ariadusage_engine::providers::codex::*;
 use ariadusage_protocol::{ProviderId, metric::SourceKind};
@@ -135,6 +139,26 @@ fn user_agent_uses_the_settings_codex_version_without_a_hardcoded_fallback() {
     assert!(user_agent.starts_with("codex_cli_rs/0.148.0-alpha.9 ("));
     assert!(user_agent.contains("; "));
     assert!(!user_agent.contains("codex-cli"));
+    assert!(!user_agent.contains("0.0.0"));
+    assert_eq!(
+        CodexCLIUserAgent::parse_os_version_from_system_version_plist(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>ProductName</key>
+    <string>macOS</string>
+    <key>ProductVersion</key>
+    <string>15.4</string>
+</dict>
+</plist>"#
+        )
+        .as_deref(),
+        Some("15.4.0")
+    );
+    assert_eq!(
+        CodexCLIUserAgent::format_three_part_os_version("6.12.10-arch1-1").as_deref(),
+        Some("6.12.10")
+    );
 }
 
 // upstream: CodexPATTests.swift:110 fetch context Settings version is the primary PAT User-Agent source
@@ -485,18 +509,13 @@ async fn ambient_pat_publishes_while_a_different_managed_codex_account_is_active
         ),
     ]);
 
-    assert!(should_use_ambient_codex_pat_for_usage(
-        CodexUsageDataSource::Auto,
-        &environment,
-        Some(&ambient_root)
-    ));
-    assert!(!should_fetch_all_codex_visible_accounts(
-        CodexUsageDataSource::Auto,
-        &environment,
-        Some(&ambient_root),
-        true,
-        2
-    ));
+    assert!(
+        CodexOAuthCredentialsStore::load_pat_resolving_scoped_home(
+            &environment,
+            Some(&ambient_root)
+        )
+        .is_ok()
+    );
 
     let net = Arc::new(https::broker(NetConfig::default()));
     let mut cfg = CodexStrategyConfig::new(net, environment, &ambient_root, &ambient_root);
@@ -506,20 +525,34 @@ async fn ambient_pat_publishes_while_a_different_managed_codex_account_is_active
     let outcome = fetch_outcome(&cx.provider, &plan, &cx, &NoRetry).await;
     let r = outcome.result.unwrap();
     assert_eq!(r.source_label, "pat");
+    assert_eq!(r.strategy_id, CODEX_PAT_STRATEGY_ID);
     assert_eq!(
         r.usage.identity.as_ref().unwrap().account_email.as_deref(),
         Some("pat@example.com")
     );
     assert_eq!(r.usage.primary.as_ref().unwrap().used_percent, 68.0);
-    let guard = resolve_codex_refresh_publication_guard(
-        CodexActiveSource::ManagedAccount {
-            id: "AAAAAAAA-BBBB-CCCC-DDDD-999999999999".to_owned(),
-        },
-        &r.strategy_id,
-        &r.source_label,
+    let projected = provider_snapshot(
         &r.usage,
+        &ProjectionInput {
+            provider: cx.provider.clone(),
+            display_name: "Codex".into(),
+            enabled: true,
+            source_mode: "auto".into(),
+            refresh: RefreshState::Fresh,
+            kept_snapshot: false,
+            as_of: Timestamp::now(),
+            source_kind: r.strategy_kind,
+            source_label: r.source_label.clone(),
+            error: None,
+            pace: None,
+        },
     );
-    assert_eq!(guard.source, CodexActiveSource::LiveSystem);
+    let id_metric = projected.identity.as_ref().unwrap();
+    assert_eq!(id_metric.source.as_ref().unwrap().label, "pat");
+    assert_eq!(
+        id_metric.value.as_ref().unwrap().account_email.as_deref(),
+        Some("pat@example.com")
+    );
 }
 
 // upstream: CodexPATAppPublicationTests.swift:75 profile-only PAT skips stacked fan-out and publishes
@@ -594,18 +627,10 @@ async fn profile_only_pat_skips_stacked_fan_out_and_publishes() {
     let fetch_env = CodexHomeScope::scoped_environment(&environment_base, Some(&profile_home_str));
 
     assert!(CodexOAuthCredentialsStore::load_pat(&environment_base, Some(&ambient_root)).is_err());
-    assert!(should_use_ambient_codex_pat_for_usage(
-        CodexUsageDataSource::Auto,
-        &fetch_env,
-        Some(&ambient_root)
-    ));
-    assert!(!should_fetch_all_codex_visible_accounts(
-        CodexUsageDataSource::Auto,
-        &fetch_env,
-        Some(&ambient_root),
-        true,
-        2
-    ));
+    assert!(
+        CodexOAuthCredentialsStore::load_pat_resolving_scoped_home(&fetch_env, Some(&ambient_root))
+            .is_ok()
+    );
 
     let net = Arc::new(https::broker(NetConfig::default()));
     let cfg = CodexStrategyConfig::new(net, fetch_env, &ambient_root, &ambient_root);
@@ -614,9 +639,78 @@ async fn profile_only_pat_skips_stacked_fan_out_and_publishes() {
     let outcome = fetch_outcome(&cx.provider, &plan, &cx, &NoRetry).await;
     let r = outcome.result.unwrap();
     assert_eq!(r.source_label, "pat");
+    assert_eq!(r.strategy_id, CODEX_PAT_STRATEGY_ID);
     assert_eq!(
         r.usage.identity.as_ref().unwrap().account_email.as_deref(),
         Some("pat-profile@example.com")
     );
     assert_eq!(r.usage.primary.as_ref().unwrap().used_percent, 41.0);
+    let projected = provider_snapshot(
+        &r.usage,
+        &ProjectionInput {
+            provider: cx.provider.clone(),
+            display_name: "Codex".into(),
+            enabled: true,
+            source_mode: "auto".into(),
+            refresh: RefreshState::Fresh,
+            kept_snapshot: false,
+            as_of: Timestamp::now(),
+            source_kind: r.strategy_kind,
+            source_label: r.source_label.clone(),
+            error: None,
+            pace: None,
+        },
+    );
+    let id_metric = projected.identity.as_ref().unwrap();
+    assert_eq!(id_metric.source.as_ref().unwrap().label, "pat");
+    assert_eq!(
+        id_metric.value.as_ref().unwrap().account_email.as_deref(),
+        Some("pat-profile@example.com")
+    );
+}
+
+#[tokio::test]
+async fn hostile_chatgpt_base_url_in_config_blocks_pat_token_exfiltration_and_keeps_whoami_on_openai_auth()
+ {
+    let server = https::start_server();
+    let catch_all = server
+        .mock_async(|_when, then| {
+            then.status(200).body("{}");
+        })
+        .await;
+
+    let home = TempDir::new().unwrap();
+    let env = BTreeMap::from([(
+        "CODEX_HOME".to_owned(),
+        home.path().to_string_lossy().into_owned(),
+    )]);
+    let net = https::broker(NetConfig::default());
+    let creds = CodexPATCredentials::new("at-secret-token", CodexOAuthCredentialSource::CodexHome);
+
+    for hostile_url in [
+        "https://evil.invalid/backend-api",
+        "https://192.168.1.50/backend-api",
+        "http://169.254.169.254/backend-api",
+    ] {
+        fs::write(
+            home.path().join("config.toml"),
+            format!("chatgpt_base_url = \"{hostile_url}\"\n"),
+        )
+        .unwrap();
+        let err = CodexPATUsageFetcher::fetch_usage(&net, &creds, None, &env, Some(home.path()))
+            .await
+            .unwrap_err();
+        assert_eq!(err, CodexOAuthFetchError::InvalidResponse);
+    }
+    catch_all.assert_calls_async(0).await;
+
+    fs::write(
+        home.path().join("config.toml"),
+        "chatgpt_base_url = \"https://chatgpt.com/backend-api\"\n",
+    )
+    .unwrap();
+    let (whoami_url, loopback_override) =
+        CodexPATUsageFetcher::resolve_whoami_url(&env, Some(home.path())).unwrap();
+    assert_eq!(whoami_url.as_str(), DEFAULT_PAT_WHOAMI_URL);
+    assert_eq!(loopback_override, None);
 }
