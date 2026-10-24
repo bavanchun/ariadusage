@@ -15,10 +15,14 @@ pub mod openai_dashboard_parser;
 pub mod pat;
 pub mod plan;
 pub mod reconciled;
+pub mod status_probe;
 pub mod strategy;
 pub mod usage_fetcher;
 
-pub use cli_backend_config::{CodexCLIBackend, CodexCLIBackendRateLimitError, CodexUIErrorMapper};
+pub use cli_backend_config::{
+    CodexCLIBackend, CodexCLIBackendRateLimitError, CodexProviderErrorDisplay, CodexUIErrorMapper,
+    CodexUserFacingErrors,
+};
 pub use cli_launch_gate::CodexCLILaunchGate;
 pub use cli_rpc::{
     AccountInfo, CodexCLIAccountSnapshot, CodexCLIFetchError, CodexCLIUsageFetcher,
@@ -87,6 +91,10 @@ pub use plan::CodexPlanFormatting;
 pub use reconciled::{
     CodexPATWhoami, CodexReconciledState, CodexUsageLane, classify_codex_lane, icon_windows,
     plan_utilization_series, visible_windows, weekly_caps_session, windows_by_lane,
+};
+pub use status_probe::{
+    CodexCLISession, CodexCLISessionCaptureOptions, CodexCLISessionError, CodexStatusMarkers,
+    CodexStatusProbe, CodexStatusProbeIsolation, TextParsing,
 };
 pub use strategy::{
     CODEX_CLI_STRATEGY_ID, CODEX_OAUTH_NATIVE_REFRESH_CLI_STRATEGY_ID, CODEX_OAUTH_STRATEGY_ID,
