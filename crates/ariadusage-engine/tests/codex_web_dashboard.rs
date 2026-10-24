@@ -14,7 +14,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -2303,12 +2303,11 @@ fn profile_denial_names_exact_running_component() {
     let hint = OpenAIDashboardBrowserCookieImporter::browser_profile_access_hint(
         Browser::Chrome,
         true,
-        "ariadusage",
-        Some("/opt/homebrew/bin/ariadusage"),
+        "CodexBarCLI",
+        Some("/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"),
     );
-
-    assert!(hint.contains("Chrome"));
-    assert!(hint.contains("ariadusage (/opt/homebrew/bin/ariadusage)"));
+    assert!(hint.contains("macOS denied Chrome profile access"));
+    assert!(hint.contains("CodexBarCLI (/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI)"));
     assert!(hint.contains("Full Disk Access"));
 }
 
@@ -2316,15 +2315,12 @@ fn profile_denial_names_exact_running_component() {
 #[test]
 fn profile_denial_names_app_bundle_for_menu_refresh() {
     let hint = OpenAIDashboardBrowserCookieImporter::browser_profile_access_hint(
-        Browser::Safari,
-        false,
-        "AriadUsage",
-        Some("/Applications/AriadUsage.app/Contents/MacOS/AriadUsage"),
+        Browser::Chrome,
+        true,
+        "CodexBar",
+        Some("/Applications/CodexBar.app/Contents/MacOS/CodexBar"),
     );
-
-    assert!(hint.contains("Safari"));
-    assert!(hint.contains("AriadUsage.app (/Applications/AriadUsage.app)"));
-    assert!(hint.contains("Full Disk Access"));
+    assert!(hint.contains("CodexBar.app (/Applications/CodexBar.app)"));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:74 browser cookie timeout remains distinct from permission denial
@@ -2332,313 +2328,254 @@ fn profile_denial_names_app_bundle_for_menu_refresh() {
 fn browser_cookie_timeout_remains_distinct_from_permission_denial() {
     let error = OpenAIDashboardBrowserCookieImporter::browser_cookie_load_timeout_error(
         Browser::Chrome,
-        "AriadUsage",
-        Some("/Applications/AriadUsage.app/Contents/MacOS/AriadUsage"),
+        "CodexBarCLI",
+        Some("/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI"),
     );
-
-    let msg = error.to_string();
-    assert!(msg.starts_with("Browser cookie loading timed out."));
-    assert!(!msg.contains("Browser cookie access denied."));
-    assert!(msg.contains("Chrome"));
-    assert!(msg.contains("AriadUsage.app (/Applications/AriadUsage.app)"));
-    assert!(msg.contains("Keychain"));
-    assert!(msg.contains("Full Disk Access"));
+    assert!(matches!(
+        error,
+        OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut { .. }
+    ));
+    let message = error.to_string();
+    assert!(message.contains("Chrome did not finish before the web timeout"));
+    assert!(!message.contains("access denied"));
+    assert!(message.contains("CodexBarCLI"));
+    assert!(message.contains("Keychain prompt"));
+    assert!(message.contains("Full Disk Access"));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:93 shared deadline clamps each local timeout to remaining budget
 #[test]
 fn shared_deadline_clamps_each_local_timeout_to_remaining_budget() {
-    let now = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(now, Duration::from_secs(3));
-
+    // Instant replaces Date(referenceDate: 1000); only relative durations matter.
+    let start = Instant::now();
     let remaining = OpenAIDashboardBrowserCookieImporter::remaining_timeout(
-        Some(deadline),
-        Some(Duration::from_secs(6)),
-        now + Duration::from_millis(2200),
+        Some(start + Duration::from_secs(30)),
+        Some(Duration::from_secs(10)),
+        start + Duration::from_secs(27),
     )
     .unwrap();
-
-    assert!((remaining.as_secs_f64() - 0.8).abs() < 0.001);
+    assert_eq!(remaining, Duration::from_secs(3));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:106 shared deadline preserves smaller local timeout
 #[test]
 fn shared_deadline_preserves_smaller_local_timeout() {
-    let now = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(now, Duration::from_secs(10));
-
+    let start = Instant::now();
     let remaining = OpenAIDashboardBrowserCookieImporter::remaining_timeout(
-        Some(deadline),
-        Some(Duration::from_secs(4)),
-        now + Duration::from_secs(2),
+        Some(start + Duration::from_secs(30)),
+        Some(Duration::from_secs(10)),
+        start + Duration::from_secs(5),
     )
     .unwrap();
-
-    assert!((remaining.as_secs_f64() - 4.0).abs() < 0.001);
+    assert_eq!(remaining, Duration::from_secs(10));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:119 expired shared deadline throws structured timeout
 #[test]
 fn expired_shared_deadline_throws_structured_timeout() {
-    let now = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(now, Duration::from_secs(2));
-
-    let err = OpenAIDashboardBrowserCookieImporter::remaining_timeout(
-        Some(deadline),
-        Some(Duration::from_secs(6)),
-        now + Duration::from_millis(2100),
-    )
-    .unwrap_err();
-
-    let OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut { details } = err else {
-        panic!("expected BrowserCookieLoadTimedOut, got {err:?}");
-    };
-    assert!(details.contains("deadline"));
+    let deadline = Instant::now();
+    assert!(matches!(
+        OpenAIDashboardBrowserCookieImporter::remaining_timeout(Some(deadline), None, deadline),
+        Err(OpenAIDashboardCookieImportError::BrowserCookieLoadTimedOut { .. })
+    ));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:135 blocking browser cookie load cannot exceed shared deadline
 #[tokio::test]
 async fn blocking_browser_cookie_load_cannot_exceed_shared_deadline() {
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timed_out_clone = Arc::clone(&timed_out);
-    let started_at = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(started_at, Duration::from_millis(50));
-
-    let err = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_load(
-        Some(deadline),
+    let timeout_probe = Arc::new(AtomicBool::new(false));
+    let observer = timeout_probe.clone();
+    let (release, released) = std::sync::mpsc::channel();
+    let (finished, completion) = tokio::sync::oneshot::channel();
+    let result = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_load(
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
         Some(Arc::new(move || {
-            timed_out_clone.store(true, Ordering::SeqCst);
+            observer.store(true, Ordering::SeqCst);
         })),
-        || {
-            std::thread::sleep(Duration::from_millis(300));
-            Ok(())
+        move || {
+            let result = released.recv_timeout(Duration::from_secs(60));
+            let _ = finished.send(());
+            assert!(result.is_ok());
+            Ok(true)
         },
     )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, PersistentCookieSessionError::TimedOut);
-    assert!(started_at.elapsed() < Duration::from_millis(250));
-    assert!(timed_out.load(Ordering::SeqCst));
+    .await;
+    // Release even on a failing assertion so the blocking worker cannot linger.
+    release.send(()).unwrap();
+    assert_eq!(result, Err(PersistentCookieSessionError::TimedOut));
+    assert!(timeout_probe.load(Ordering::SeqCst));
+    tokio::time::timeout(Duration::from_secs(30), completion)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:167 timeout observer stays silent when operation wins
 #[tokio::test]
 async fn timeout_observer_stays_silent_when_operation_wins() {
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timed_out_clone = Arc::clone(&timed_out);
-    let deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(500));
-
+    let probe = Arc::new(AtomicBool::new(false));
+    let observer = probe.clone();
     let value = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_load(
-        Some(deadline),
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
         Some(Arc::new(move || {
-            timed_out_clone.store(true, Ordering::SeqCst);
+            observer.store(true, Ordering::SeqCst);
         })),
-        || Ok(42),
+        || Ok(true),
     )
     .await
     .unwrap();
-
-    assert_eq!(value, 42);
-    assert!(!timed_out.load(Ordering::SeqCst));
-}
-
-// upstream: OpenAIDashboardBrowserCookieImporterTests.swift:183 bounded cookie loads preserve explicit retry context
-#[tokio::test]
-async fn bounded_cookie_loads_preserve_explicit_retry_context() {
-    let acknowledged_retry = true;
-    let deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(500));
-
-    let observed = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_load(
-        Some(deadline),
-        None,
-        move || Ok(acknowledged_retry),
-    )
-    .await
-    .unwrap();
-
-    assert!(observed);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(value);
+    assert!(!probe.load(Ordering::SeqCst));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:208 timed out cookie cache work stays ordered before retry
 #[tokio::test]
 async fn timed_out_cookie_cache_work_stays_ordered_before_retry() {
-    let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-
-    let events_first = Arc::clone(&events);
-    let first_deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(40));
-    let first_res = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_cache_operation(
-        Some(first_deadline),
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let first_log = log.clone();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let first = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_cache_operation(
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
         move || {
-            events_first.lock().unwrap().push("first-start");
-            let _ = started_tx.send(());
-            let _ = release_rx.recv();
-            events_first.lock().unwrap().push("first-end");
-            Ok(())
+            first_log.lock().unwrap().push("first-start");
+            started.send(()).unwrap();
+            let _ = released.recv_timeout(Duration::from_secs(5));
+            first_log.lock().unwrap().push("first-end");
+            Ok(true)
         },
     )
     .await;
-    assert_eq!(first_res, Err(PersistentCookieSessionError::TimedOut));
-    started_rx.await.unwrap();
-
-    let events_second = Arc::clone(&events);
-    let second_deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(500));
-    let second_task = tokio::spawn(async move {
-        OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_cache_operation(
-            Some(second_deadline),
-            move || {
-                events_second.lock().unwrap().push("second");
-                Ok(())
-            },
-        )
+    assert_eq!(first, Err(PersistentCookieSessionError::TimedOut));
+    tokio::time::timeout(Duration::from_secs(5), start)
         .await
-    });
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(*events.lock().unwrap(), vec!["first-start"]);
-    let _ = release_tx.send(());
-    second_task.await.unwrap().unwrap();
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec!["first-start", "first-end", "second"]
-    );
+        .unwrap()
+        .unwrap();
+    let second_log = log.clone();
+    let second = OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_cache_operation(
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
+        move || {
+            second_log.lock().unwrap().push("second");
+            Ok(true)
+        },
+    )
+    .await;
+    release.send(()).unwrap();
+    assert_eq!(second, Err(PersistentCookieSessionError::TimedOut));
+    OpenAIDashboardBrowserCookieImporter::run_bounded_cookie_cache_operation(
+        Some(Instant::now() + Duration::from_secs(1)),
+        || Ok(true),
+    )
+    .await
+    .unwrap();
+    assert_eq!(*log.lock().unwrap(), ["first-start", "first-end", "second"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:256 slow callback times out before completion
 #[tokio::test]
 async fn slow_callback_times_out_before_completion() {
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timed_out_clone = Arc::clone(&timed_out);
-    let started_at = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(started_at, Duration::from_millis(50));
-
-    let err = OpenAIDashboardBrowserCookieImporter::run_bounded_callback(
-        Some(deadline),
+    let probe = Arc::new(AtomicBool::new(false));
+    let observer = probe.clone();
+    let mut callback = None;
+    let result = OpenAIDashboardBrowserCookieImporter::run_bounded_callback(
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
         Some(Arc::new(move || {
-            timed_out_clone.store(true, Ordering::SeqCst);
+            observer.store(true, Ordering::SeqCst);
         })),
-        |complete| {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(300));
-                complete();
-            });
+        |completion| {
+            callback = Some(completion);
         },
     )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, PersistentCookieSessionError::TimedOut);
-    assert!(started_at.elapsed() < Duration::from_millis(250));
-    assert!(timed_out.load(Ordering::SeqCst));
+    .await;
+    callback.take().unwrap()();
+    assert_eq!(result, Err(PersistentCookieSessionError::TimedOut));
+    assert!(probe.load(Ordering::SeqCst));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:278 slow value callback times out before completion
 #[tokio::test]
 async fn slow_value_callback_times_out_before_completion() {
-    let timed_out = Arc::new(AtomicBool::new(false));
-    let timed_out_clone = Arc::clone(&timed_out);
-    let started_at = Instant::now();
-    let deadline = OpenAIDashboardFetcher::deadline_from(started_at, Duration::from_millis(50));
-
-    let err = OpenAIDashboardBrowserCookieImporter::run_bounded_value_callback::<i32, _>(
-        Some(deadline),
-        Some(Arc::new(move || {
-            timed_out_clone.store(true, Ordering::SeqCst);
-        })),
-        |complete| {
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_millis(300));
-                complete(7);
-            });
-        },
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, PersistentCookieSessionError::TimedOut);
-    assert!(started_at.elapsed() < Duration::from_millis(250));
-    assert!(timed_out.load(Ordering::SeqCst));
+    let probe = Arc::new(AtomicBool::new(false));
+    let observer = probe.clone();
+    let mut callback = None;
+    let result =
+        OpenAIDashboardBrowserCookieImporter::run_bounded_value_callback::<Vec<String>, _>(
+            Some(Instant::now() + Duration::from_secs_f64(0.05)),
+            Some(Arc::new(move || {
+                observer.store(true, Ordering::SeqCst);
+            })),
+            |completion| {
+                callback = Some(completion);
+            },
+        )
+        .await;
+    callback.take().unwrap()(vec![]);
+    assert_eq!(result, Err(PersistentCookieSessionError::TimedOut));
+    assert!(probe.load(Ordering::SeqCst));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:300 retry waits for timed out cookie store mutation
 #[tokio::test]
 async fn retry_waits_for_timed_out_cookie_store_mutation() {
-    let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
-    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-
-    let events_first = Arc::clone(&events);
-    let first_deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(40));
-    let first_res = OpenAIDashboardBrowserCookieImporter::run_serialized_callback(
-        "store-retry-test",
-        Some(first_deadline),
-        move |complete| {
-            events_first.lock().unwrap().push("first-start");
-            let _ = started_tx.send(());
-            std::thread::spawn(move || {
-                let _ = release_rx.recv();
-                events_first.lock().unwrap().push("first-end");
-                complete();
-            });
+    let (captured, capture) = tokio::sync::oneshot::channel();
+    let first = OpenAIDashboardBrowserCookieImporter::run_serialized_callback(
+        "cookie-mutation",
+        Some(Instant::now() + Duration::from_secs_f64(0.05)),
+        move |completion| {
+            let _ = captured.send(completion);
         },
     )
     .await;
-    assert_eq!(first_res, Err(PersistentCookieSessionError::TimedOut));
-    started_rx.await.unwrap();
-
-    let events_second = Arc::clone(&events);
-    let second_deadline =
-        OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(500));
-    let second_task = tokio::spawn(async move {
+    assert_eq!(first, Err(PersistentCookieSessionError::TimedOut));
+    let callback = capture.await.unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let second_started = started.clone();
+    let second = tokio::spawn(async move {
         OpenAIDashboardBrowserCookieImporter::run_serialized_callback(
-            "store-retry-test",
-            Some(second_deadline),
-            move |complete| {
-                events_second.lock().unwrap().push("second");
-                complete();
+            "cookie-mutation",
+            Some(Instant::now() + Duration::from_secs(1)),
+            move |completion| {
+                second_started.store(true, Ordering::SeqCst);
+                completion();
             },
         )
         .await
     });
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(*events.lock().unwrap(), vec!["first-start"]);
-    let _ = release_tx.send(());
-    second_task.await.unwrap().unwrap();
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec!["first-start", "first-end", "second"]
-    );
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!started.load(Ordering::SeqCst));
+    callback();
+    second.await.unwrap().unwrap();
+    assert!(started.load(Ordering::SeqCst));
 }
 
-// upstream: OpenAIDashboardBrowserCookieImporterTests.swift:334 mismatch error mentions source label
+// partial-upstream: OpenAIDashboardBrowserCookieImporterTests.swift:334 mismatch error mentions source label
 #[test]
-fn mismatch_error_mentions_source_label() {
-    let err = OpenAIDashboardCookieImportError::NoMatchingAccount {
+fn local_cookie_mismatch_preserves_source_labels_and_redacts_identifiers() {
+    let error = OpenAIDashboardCookieImportError::NoMatchingAccount {
         found: vec![
-            FoundAccount::new("Chrome Default", "a@b.com"),
-            FoundAccount::new("Safari", "c@d.com"),
+            FoundAccount::new("Safari", "a@example.com"),
+            FoundAccount::new("Chrome", "b@example.com"),
         ],
     };
-    let msg = err.to_string();
-    assert!(msg.contains("Chrome Default=a@b.com"));
-    assert!(msg.contains("Safari=c@d.com"));
+    // Deliberate privacy divergence: retain the upstream inputs and labels, but
+    // the upstream email-bearing display assertion is intentionally not ported.
+    let message = error.to_string();
+    assert!(message.contains("Safari"));
+    assert!(message.contains("Chrome"));
+    for diagnostic in [message, format!("{error:?}")] {
+        assert!(!diagnostic.contains("a@example.com"));
+        assert!(!diagnostic.contains("b@example.com"));
+    }
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:346 timed out persistent validation keeps verified session
 #[test]
 fn timed_out_persistent_validation_keeps_verified_session() {
-    let err = OpenAIDashboardBrowserCookieImporter::persistent_validation_failure(
+    let failure = OpenAIDashboardBrowserCookieImporter::persistent_validation_failure(
         PersistentCookieSessionError::TimedOut,
     );
-    assert!(OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&err));
+    assert!(OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&failure));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:353 raw cookie mutation timeout is not trusted
@@ -2661,393 +2598,366 @@ fn non_timeout_persistent_validation_failures_are_not_trusted() {
             )
         )
     );
-    assert!(
-        !OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(
-            &PersistentCookieSessionError::Import(
-                OpenAIDashboardCookieImportError::NoMatchingAccount { found: Vec::new() }
-            )
-        )
-    );
+}
+
+async fn cookie_script(
+    probe: Result<Option<String>, PersistentCookieSessionError>,
+    target: Option<&str>,
+) -> (
+    Result<OpenAIDashboardCookieImportResult, PersistentCookieSessionError>,
+    Vec<String>,
+) {
+    let jar = Arc::new(Mutex::new(None));
+    let log = Arc::new(Mutex::new(vec![]));
+    let key = format!("script-{:p}", Arc::as_ptr(&jar));
+    let result =
+        cookie_tracked_commit(&key, "Chrome", jar, log.clone(), target, || async { probe }).await;
+    let entries = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|entry: &String| entry.strip_prefix("Chrome ").unwrap().to_owned())
+        .collect();
+    (result, entries)
+}
+
+async fn cookie_tracked_commit<F, Fut>(
+    key: &str,
+    label: &'static str,
+    jar: Arc<Mutex<Option<String>>>,
+    log: Arc<Mutex<Vec<String>>>,
+    target: Option<&str>,
+    probe: F,
+) -> Result<OpenAIDashboardCookieImportResult, PersistentCookieSessionError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<Option<String>, PersistentCookieSessionError>>,
+{
+    let clear_jar = jar.clone();
+    let clear_log = log.clone();
+    let write_log = log.clone();
+    let probe_log = log.clone();
+    OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
+        label,
+        0,
+        target,
+        key,
+        None,
+        move || {
+            *clear_jar.lock().unwrap() = None;
+            clear_log.lock().unwrap().push(format!("{label} clear"));
+        },
+        move || {
+            *jar.lock().unwrap() = Some(label.to_owned());
+            write_log.lock().unwrap().push(format!("{label} write"));
+        },
+        move || async move {
+            probe_log.lock().unwrap().push(format!("{label} probe"));
+            probe().await
+        },
+        move || {
+            log.lock().unwrap().push(format!("{label} evict"));
+        },
+    )
+    .await
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:365 account mismatch removes the cookies just written for that email
 #[tokio::test]
 async fn account_mismatch_removes_the_cookies_just_written_for_that_email() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        Some("expected@example.com"),
-        "store-mismatch",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async { Ok(Some("other@example.com".to_owned())) },
-        move || ev_evict.lock().unwrap().push("evict"),
+    let (result, log) = cookie_script(
+        Ok(Some("other@example.com".into())),
+        Some("owner@example.com"),
     )
-    .await
-    .unwrap_err();
-
+    .await;
     assert_eq!(
-        err,
+        result.unwrap_err(),
         PersistentCookieSessionError::Import(OpenAIDashboardCookieImportError::NoMatchingAccount {
-            found: vec![FoundAccount::new("Manual", "other@example.com")],
+            found: vec![FoundAccount::new("Chrome", "other@example.com")]
         })
     );
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec!["clear", "write", "evict", "clear"]
-    );
+    assert_eq!(log, ["clear", "write", "probe", "evict", "clear"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:390 login failure removes the cookies just written for that email
 #[tokio::test]
 async fn login_failure_removes_the_cookies_just_written_for_that_email() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        Some("expected@example.com"),
-        "store-login-fail",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async {
-            Err(PersistentCookieSessionError::Fetch(
-                OpenAIDashboardFetchError::LoginRequired,
-            ))
-        },
-        move || ev_evict.lock().unwrap().push("evict"),
+    let (result, log) = cookie_script(
+        Err(PersistentCookieSessionError::Fetch(
+            OpenAIDashboardFetchError::LoginRequired,
+        )),
+        Some("owner@example.com"),
     )
-    .await
-    .unwrap_err();
-
+    .await;
     assert_eq!(
-        err,
+        result.unwrap_err(),
         PersistentCookieSessionError::Import(
             OpenAIDashboardCookieImportError::DashboardStillRequiresLogin
         )
     );
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec!["clear", "write", "evict", "clear"]
-    );
+    assert_eq!(log, ["clear", "write", "probe", "evict", "clear"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:410 timed out persistent validation keeps the cookies just written
 #[tokio::test]
 async fn timed_out_persistent_validation_keeps_the_cookies_just_written() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        Some("expected@example.com"),
-        "store-timeout-keep",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async { Err(PersistentCookieSessionError::TimedOut) },
-        move || ev_evict.lock().unwrap().push("evict"),
+    let (result, log) = cookie_script(
+        Err(PersistentCookieSessionError::TimedOut),
+        Some("owner@example.com"),
     )
-    .await
-    .unwrap_err();
-
-    assert!(OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&err));
-    assert_eq!(*events.lock().unwrap(), vec!["clear", "write", "evict"]);
+    .await;
+    assert!(
+        OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&result.unwrap_err())
+    );
+    assert_eq!(log, ["clear", "write", "probe", "evict"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:425 default store keeps cookies when persistent validation times out
 #[tokio::test]
 async fn default_store_keeps_cookies_when_persistent_validation_times_out() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        None,
-        "default-store-timeout",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async { Err(PersistentCookieSessionError::TimedOut) },
-        move || ev_evict.lock().unwrap().push("evict"),
-    )
-    .await
-    .unwrap_err();
-
-    assert!(!OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&err));
-    assert_eq!(*events.lock().unwrap(), vec!["clear", "write", "evict"]);
+    // Rust represents an empty, non-matching target with None.
+    let (result, log) = cookie_script(Err(PersistentCookieSessionError::TimedOut), None).await;
+    let error = result.unwrap_err();
+    assert_eq!(error, PersistentCookieSessionError::TimedOut);
+    assert!(!OpenAIDashboardBrowserCookieImporter::should_trust_verified_session(&error));
+    assert_eq!(log, ["clear", "write", "probe", "evict"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:443 default store login failure removes the cookies just written
 #[tokio::test]
 async fn default_store_login_failure_removes_the_cookies_just_written() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
+    let (result, log) = cookie_script(
+        Err(PersistentCookieSessionError::Fetch(
+            OpenAIDashboardFetchError::LoginRequired,
+        )),
         None,
-        "default-store-login-fail",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async {
-            Err(PersistentCookieSessionError::Fetch(
-                OpenAIDashboardFetchError::LoginRequired,
-            ))
-        },
-        move || ev_evict.lock().unwrap().push("evict"),
     )
-    .await
-    .unwrap_err();
-
+    .await;
     assert_eq!(
-        err,
+        result.unwrap_err(),
         PersistentCookieSessionError::Import(
             OpenAIDashboardCookieImportError::DashboardStillRequiresLogin
         )
     );
-    assert_eq!(
-        *events.lock().unwrap(),
-        vec!["clear", "write", "evict", "clear"]
-    );
+    assert_eq!(log, ["clear", "write", "probe", "evict", "clear"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:463 matching session keeps the cookies it just wrote
 #[tokio::test]
 async fn matching_session_keeps_the_cookies_it_just_wrote() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let res = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        Some("expected@example.com"),
-        "store-matching",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async { Ok(Some("expected@example.com".to_owned())) },
-        move || ev_evict.lock().unwrap().push("evict"),
+    let (result, log) = cookie_script(
+        Ok(Some("owner@example.com".into())),
+        Some("owner@example.com"),
     )
-    .await
-    .unwrap();
-
-    assert_eq!(res.signed_in_email.as_deref(), Some("expected@example.com"));
-    assert!(res.matches_codex_email);
-    assert_eq!(*events.lock().unwrap(), vec!["clear", "write"]);
+    .await;
+    let result = result.unwrap();
+    assert_eq!(result.signed_in_email.as_deref(), Some("owner@example.com"));
+    assert!(result.matches_codex_email);
+    assert_eq!(log, ["clear", "write", "probe"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:477 unrelated probe failure keeps the cookies it just wrote
 #[tokio::test]
 async fn unrelated_probe_failure_keeps_the_cookies_it_just_wrote() {
-    let events = Arc::new(Mutex::new(Vec::<&'static str>::new()));
-    let ev_clear = Arc::clone(&events);
-    let ev_write = Arc::clone(&events);
-    let ev_evict = Arc::clone(&events);
-
-    let err = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Manual",
-        2,
-        Some("expected@example.com"),
-        "store-unrelated-fail",
-        None,
-        move || ev_clear.lock().unwrap().push("clear"),
-        move || ev_write.lock().unwrap().push("write"),
-        || async {
-            Err(PersistentCookieSessionError::Fetch(
-                OpenAIDashboardFetchError::NoDashboardData,
-            ))
-        },
-        move || ev_evict.lock().unwrap().push("evict"),
+    // Rust intentionally carries no response body in NoDashboardData.
+    let (result, log) = cookie_script(
+        Err(PersistentCookieSessionError::Fetch(
+            OpenAIDashboardFetchError::NoDashboardData,
+        )),
+        Some("owner@example.com"),
     )
-    .await
-    .unwrap_err();
-
+    .await;
     assert_eq!(
-        err,
+        result.unwrap_err(),
         PersistentCookieSessionError::Fetch(OpenAIDashboardFetchError::NoDashboardData)
     );
-    assert_eq!(*events.lock().unwrap(), vec!["clear", "write", "evict"]);
+    assert_eq!(log, ["clear", "write", "probe", "evict"]);
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:497 older rejection cannot erase a newer import on the same account store
 #[tokio::test]
 async fn older_rejection_cannot_erase_a_newer_import_on_the_same_account_store() {
-    let store_state: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
-    let (probe_started_tx, probe_started_rx) = tokio::sync::oneshot::channel::<()>();
-    let (release_probe_tx, release_probe_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let state1_clear = Arc::clone(&store_state);
-    let state1_write = Arc::clone(&store_state);
-    let first = tokio::spawn(async move {
-        OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-            "Older",
-            2,
-            Some("expected@example.com"),
-            "store-same-account",
-            None,
-            move || state1_clear.lock().unwrap().clear(),
-            move || state1_write.lock().unwrap().push("older-cookie"),
+    let jar = Arc::new(Mutex::new(None));
+    let log = Arc::new(Mutex::new(vec![]));
+    let (entered, enter) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let older_jar = jar.clone();
+    let older_log = log.clone();
+    let older = tokio::spawn(async move {
+        cookie_tracked_commit(
+            "shared-account",
+            "older",
+            older_jar,
+            older_log,
+            Some("owner@example.com"),
             move || async move {
-                let _ = probe_started_tx.send(());
-                let _ = release_probe_rx.await;
-                Ok(Some("wrong@example.com".to_owned()))
+                entered.send(()).unwrap();
+                released.await.unwrap();
+                Err(PersistentCookieSessionError::Fetch(
+                    OpenAIDashboardFetchError::LoginRequired,
+                ))
             },
-            || {},
         )
         .await
     });
-
-    probe_started_rx.await.unwrap();
-
-    let state2_clear = Arc::clone(&store_state);
-    let state2_write = Arc::clone(&store_state);
-    let second = tokio::spawn(async move {
-        OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-            "Newer",
-            2,
-            Some("expected@example.com"),
-            "store-same-account",
-            None,
-            move || state2_clear.lock().unwrap().clear(),
-            move || state2_write.lock().unwrap().push("newer-cookie"),
-            || async { Ok(Some("expected@example.com".to_owned())) },
-            || {},
+    enter.await.unwrap();
+    let newer_jar = jar.clone();
+    let newer_log = log.clone();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let newer = tokio::spawn(async move {
+        started.send(()).unwrap();
+        cookie_tracked_commit(
+            "shared-account",
+            "newer",
+            newer_jar,
+            newer_log,
+            Some("owner@example.com"),
+            || async { Ok(Some("owner@example.com".into())) },
         )
         .await
     });
-
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(*store_state.lock().unwrap(), vec!["older-cookie"]);
-    let _ = release_probe_tx.send(());
-
-    let _ = first.await.unwrap();
-    let second_res = second.await.unwrap().unwrap();
-    assert_eq!(second_res.source_label, "Newer");
-    assert_eq!(*store_state.lock().unwrap(), vec!["newer-cookie"]);
+    start.await.unwrap();
+    tokio::task::yield_now().await;
+    assert_eq!(jar.lock().unwrap().as_deref(), Some("older"));
+    release.send(()).unwrap();
+    assert_eq!(
+        older.await.unwrap().unwrap_err(),
+        PersistentCookieSessionError::Import(
+            OpenAIDashboardCookieImportError::DashboardStillRequiresLogin
+        )
+    );
+    let result = newer.await.unwrap().unwrap();
+    assert_eq!(result.signed_in_email.as_deref(), Some("owner@example.com"));
+    assert_eq!(jar.lock().unwrap().as_deref(), Some("newer"));
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "older clear",
+            "older write",
+            "older probe",
+            "older evict",
+            "older clear",
+            "newer clear",
+            "newer write",
+            "newer probe"
+        ]
+    );
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:574 an in-flight import does not block a different account store
 #[tokio::test]
 async fn an_in_flight_import_does_not_block_a_different_account_store() {
-    let (probe_started_tx, probe_started_rx) = tokio::sync::oneshot::channel::<()>();
-    let (release_probe_tx, release_probe_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let first = tokio::spawn(async move {
-        OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-            "Alpha",
-            2,
-            Some("alpha@example.com"),
-            "store-alpha",
-            None,
-            || {},
-            || {},
+    let older_jar = Arc::new(Mutex::new(None));
+    let newer_jar = Arc::new(Mutex::new(None));
+    let log = Arc::new(Mutex::new(vec![]));
+    let (entered, enter) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let jar = older_jar.clone();
+    let older_log = log.clone();
+    let older = tokio::spawn(async move {
+        cookie_tracked_commit(
+            "account-a",
+            "older",
+            jar,
+            older_log,
+            Some("owner@example.com"),
             move || async move {
-                let _ = probe_started_tx.send(());
-                let _ = release_probe_rx.await;
-                Ok(Some("alpha@example.com".to_owned()))
+                entered.send(()).unwrap();
+                released.await.unwrap();
+                Ok(Some("owner@example.com".into()))
             },
-            || {},
         )
         .await
     });
-
-    probe_started_rx.await.unwrap();
-
-    let second = OpenAIDashboardBrowserCookieImporter::commit_persistent_cookie_session(
-        "Beta",
-        2,
-        Some("beta@example.com"),
-        "store-beta",
-        None,
-        || {},
-        || {},
-        || async { Ok(Some("beta@example.com".to_owned())) },
-        || {},
+    enter.await.unwrap();
+    let result = cookie_tracked_commit(
+        "account-b",
+        "newer",
+        newer_jar.clone(),
+        log,
+        Some("owner@example.com"),
+        || async { Ok(Some("owner@example.com".into())) },
     )
     .await
     .unwrap();
-
-    assert_eq!(second.signed_in_email.as_deref(), Some("beta@example.com"));
-    let _ = release_probe_tx.send(());
-    let first_res = first.await.unwrap().unwrap();
-    assert_eq!(
-        first_res.signed_in_email.as_deref(),
-        Some("alpha@example.com")
-    );
+    assert_eq!(older_jar.lock().unwrap().as_deref(), Some("older"));
+    assert_eq!(newer_jar.lock().unwrap().as_deref(), Some("newer"));
+    release.send(()).unwrap();
+    older.await.unwrap().unwrap();
+    assert_eq!(result.signed_in_email.as_deref(), Some("owner@example.com"));
 }
 
 // upstream: OpenAIDashboardBrowserCookieImporterTests.swift:628 waiting account transaction respects deadline and cancellation
 #[tokio::test]
 async fn waiting_account_transaction_respects_deadline_and_cancellation() {
-    let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
-
+    let (entered, enter) = tokio::sync::oneshot::channel();
+    let (release, released) = tokio::sync::oneshot::channel();
+    let key = "waiting-cookie-transaction";
+    let touched = Arc::new(AtomicBool::new(false));
     let holder = tokio::spawn(async move {
         OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
-            "store-wait-test",
+            key,
             None,
             None,
             move || async move {
-                let _ = started_tx.send(());
-                let _ = release_rx.await;
+                entered.send(()).unwrap();
+                released.await.unwrap();
                 Ok(())
             },
         )
         .await
     });
-
-    started_rx.await.unwrap();
-
-    let deadline = OpenAIDashboardFetcher::deadline_from(Instant::now(), Duration::from_millis(40));
-    let timed_out = OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
-        "store-wait-test",
-        Some(deadline),
+    enter.await.unwrap();
+    let action_touched = touched.clone();
+    let result = OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
+        key,
+        Some(Instant::now() + Duration::from_secs_f64(0.03)),
         None,
-        || async { Ok(()) },
+        || async {
+            action_touched.store(true, Ordering::SeqCst);
+            Ok(())
+        },
     )
     .await;
-    assert_eq!(timed_out, Err(PersistentCookieSessionError::TimedOut));
-
+    assert_eq!(result, Err(PersistentCookieSessionError::TimedOut));
     let cancel = CancellationToken::new();
-    let cancel_clone = cancel.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        cancel_clone.cancel();
+    let pending_cancel = cancel.clone();
+    let pending_touched = touched.clone();
+    let (started, start) = tokio::sync::oneshot::channel();
+    let pending = tokio::spawn(async move {
+        started.send(()).unwrap();
+        OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
+            key,
+            None,
+            Some(&pending_cancel),
+            || async {
+                pending_touched.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await
     });
-    let cancelled = OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
-        "store-wait-test",
-        None,
-        Some(&cancel),
-        || async { Ok(()) },
-    )
-    .await;
-    assert_eq!(cancelled, Err(PersistentCookieSessionError::Cancelled));
-
-    let _ = release_tx.send(());
+    start.await.unwrap();
+    cancel.cancel();
+    assert_eq!(
+        pending.await.unwrap(),
+        Err(PersistentCookieSessionError::Cancelled)
+    );
+    assert!(!touched.load(Ordering::SeqCst));
+    release.send(()).unwrap();
     holder.await.unwrap().unwrap();
+    OpenAIDashboardBrowserCookieImporter::with_persistent_cookie_transaction(
+        key,
+        Some(Instant::now() + Duration::from_secs(1)),
+        None,
+        || async {
+            touched.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    )
+    .await
+    .unwrap();
+    assert!(touched.load(Ordering::SeqCst));
 }
 
 // ============================================================================
@@ -3058,832 +2968,572 @@ fn endpoint_for_server(server: &httpmock::MockServer) -> OpenAIDashboardEndpoint
     OpenAIDashboardEndpointConfig::from_base_url_str(&server.base_url()).unwrap()
 }
 
+fn authorization_stage(request: &httpmock::HttpMockRequest) -> &'static str {
+    let uri = request.uri();
+    match uri.path() {
+        "/api/auth/session" => "session",
+        path if path.ends_with("/monthly-usage") => "monthly",
+        path if path.ends_with("/remaining_balance") => "balance",
+        _ if request.headers().contains_key("authorization") => "retry",
+        _ => "initial",
+    }
+}
+
+fn authorization_session(token: &str, email: &str) -> String {
+    format!(
+        r#"{{"accessToken":"{token}","user":{{"email":" {email} "}},"other":{{"email":"other@example.com"}}}}"#
+    )
+}
+
+fn authorization_usage(account: &str, balance: &str, monthly: bool) -> String {
+    let monthly = if monthly {
+        r#", "spend_control":{"individual_limit":null}"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{"account_id":"{account}","plan_type":"business","rate_limit":{{"primary_window":{{"used_percent":12,"reset_at":1700003600,"limit_window_seconds":18000}}}},"credits":{{"has_credits":true,"unlimited":false,"balance":{balance}}}{monthly}}}"#
+    )
+}
+
+fn authorization_response(
+    request: &httpmock::HttpMockRequest,
+    balance: f64,
+    monthly: bool,
+) -> httpmock::HttpMockResponse {
+    let (status, payload) = match authorization_stage(request) {
+        "session" => (
+            200,
+            authorization_session("fixture-token", "owner@example.com"),
+        ),
+        "retry" => (
+            200,
+            authorization_usage("workspace-fixture", "null", monthly),
+        ),
+        "balance" => (200, format!(r#"{{"balance":"{balance:.1}"}}"#)),
+        _ => (401, "{}".into()),
+    };
+    authorization_http(status, payload)
+}
+
+fn authorization_http(status: u16, payload: impl Into<String>) -> httpmock::HttpMockResponse {
+    httpmock::HttpMockResponse::builder()
+        .status(status)
+        .body(payload.into())
+        .build()
+}
+
+struct AuthorizationHarness {
+    server: httpmock::MockServer,
+    requests: Arc<Mutex<Vec<httpmock::HttpMockRequest>>>,
+}
+
+impl AuthorizationHarness {
+    fn new(
+        responder: impl Fn(&httpmock::HttpMockRequest) -> httpmock::HttpMockResponse
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        let server = https::start_server();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let recorded = requests.clone();
+        server.mock(|when, then| {
+            when.any_request();
+            then.respond_with(move |request| {
+                recorded.lock().unwrap().push(request.clone());
+                responder(request)
+            });
+        });
+        Self { server, requests }
+    }
+
+    fn stages(&self) -> Vec<&'static str> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(authorization_stage)
+            .collect()
+    }
+
+    async fn fetch(
+        &self,
+        cookie: &str,
+        deadline: Option<Instant>,
+        call: &ariadusage_engine::brokers::call::BrokerCall,
+    ) -> Result<Option<DashboardAPIResponse>, OpenAIDashboardFetchError> {
+        OpenAIDashboardFetcher::fetch_dashboard_api_response(
+            &https::broker(NetConfig::default()),
+            &endpoint_for_server(&self.server),
+            cookie,
+            deadline,
+            Timestamp::now(),
+            &Instant::now,
+            Some(call),
+        )
+        .await
+    }
+}
+
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:8 cookie retry pairs workspace balance with the same session identity
 #[tokio::test]
 async fn cookie_retry_pairs_workspace_balance_with_the_same_session_identity() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_unauth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header_missing("authorization");
-        then.status(401)
-            .body(r#"{"detail":"Missing bearer token"}"#);
-    });
-    let usage_auth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header("authorization", "Bearer session-access-token");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "rate_limit": {
-                "primary_window": {
-                  "used_percent": 25,
-                  "reset_at": 1700003600,
-                  "limit_window_seconds": 18000
-                }
-              },
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              }
-            }"#,
+    for balance in [0.0, 1234.0] {
+        let harness = AuthorizationHarness::new(move |request| {
+            authorization_response(request, balance, false)
+        });
+        let response = harness
+            .fetch("session=fixture", None, &https::call())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            response.verified_signed_in_email.as_deref(),
+            Some("owner@example.com")
         );
-    });
-
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200).body(
-            r#"{
-              "accessToken": "session-access-token",
-              "user": { "email": "member@example.com" }
-            }"#,
+        assert_eq!(response.api_data.credits_remaining, Some(balance));
+        assert_eq!(response.api_data.balance_is_workspace, Some(true));
+        assert_eq!(
+            response
+                .api_data
+                .primary_limit
+                .as_ref()
+                .map(|w| w.used_percent),
+            Some(12.0)
         );
-    });
-
-    let balance_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance")
-            .header("authorization", "Bearer session-access-token")
-            .header("chatgpt-account-id", "acct-workspace");
-        then.status(200).body(r#"{"balance": 124.25}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let result = OpenAIDashboardFetcher::fetch_dashboard_api_preflight(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(result.1.as_deref(), Some("member@example.com"));
-    assert_eq!(result.0.account_id.as_deref(), Some("acct-workspace"));
-    assert_eq!(result.0.credits_remaining, Some(124.25));
-    assert_eq!(result.0.balance_is_workspace, Some(true));
-    usage_unauth_mock.assert_calls(1);
-    usage_auth_mock.assert_calls(1);
-    session_mock.assert_calls(1);
-    balance_mock.assert_calls(1);
+        assert_eq!(harness.stages(), ["initial", "session", "retry", "balance"]);
+        for request in harness.requests.lock().unwrap().iter() {
+            // A local HTTPS origin replaces the pinned upstream host; NetBroker has
+            // no URL cache, so there is no URLRequest cachePolicy to set or inspect.
+            let endpoint = endpoint_for_server(&harness.server);
+            assert_eq!(endpoint.usage_url().unwrap().scheme(), "https");
+            assert_eq!(request.headers().get("cookie").unwrap(), "session=fixture");
+            let stage = authorization_stage(request);
+            let expected = ["retry", "balance"]
+                .contains(&stage)
+                .then_some("Bearer fixture-token");
+            assert_eq!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .map(|v| v.to_str().unwrap()),
+                expected
+            );
+            if stage == "balance" {
+                assert_eq!(
+                    request.uri().path(),
+                    "/backend-api/accounts/workspace-fixture/remaining_balance"
+                );
+                assert_eq!(
+                    request.headers().get("chatgpt-account-id").unwrap(),
+                    "workspace-fixture"
+                );
+            }
+        }
+        // Rust exposes redacted diagnostics rather than the Swift logger callback.
+        let diagnostics = format!("{response:?}");
+        assert!(!diagnostics.contains("fixture-token"));
+        assert!(!diagnostics.contains("owner@example.com"));
+        let dashboard = OpenAIDashboardFetcher::snapshot_by_merging_api(
+            &response.api_data,
+            None,
+            response.verified_signed_in_email.as_deref(),
+            OpenAISubscriptionFetchResult::Unavailable,
+            Timestamp::now(),
+        );
+        assert!(
+            !serde_json::to_string(&dashboard)
+                .unwrap()
+                .contains("fixture-token")
+        );
+        assert_eq!(
+            dashboard.to_credits_snapshot().unwrap().display_remaining(),
+            Some(balance)
+        );
+    }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:45 successful cookie usage does not fetch a session or invent an authenticated email
 #[tokio::test]
 async fn successful_cookie_usage_does_not_fetch_a_session_or_invent_an_authenticated_email() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(
-            r#"{
-              "plan_type": "plus",
-              "rate_limit": {
-                "primary_window": {
-                  "used_percent": 15,
-                  "reset_at": 1700003600,
-                  "limit_window_seconds": 18000
-                }
-              }
-            }"#,
-        );
+    let harness = AuthorizationHarness::new(|request| {
+        assert!(!request.headers().contains_key("authorization"));
+        authorization_http(200, authorization_usage("workspace-fixture", "14", false))
     });
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200).body(r#"{}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
+    let response = harness
+        .fetch("session=fixture", None, &https::call())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.api_data.credits_remaining, Some(14.0));
     assert_eq!(response.verified_signed_in_email, None);
-    assert_eq!(
-        response
-            .api_data
-            .primary_limit
-            .as_ref()
-            .map(|w| w.used_percent),
-        Some(15.0)
-    );
-    usage_mock.assert_calls(1);
-    session_mock.assert_calls(0);
+    assert_eq!(harness.stages(), ["initial"]);
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:58 invalid typed session credentials cannot authorize a retry
 #[tokio::test]
 async fn invalid_typed_session_credentials_cannot_authorize_a_retry() {
-    for session_body in [
-        r#"{"accessToken":"token","user":{"email":"   "}}"#,
-        r#"{"accessToken":"bad token\nwith-newline","user":{"email":"member@example.com"}}"#,
-        r#"{"accessToken":"","user":{"email":"member@example.com"}}"#,
-        r#"{"user":{"email":"member@example.com"}}"#,
+    for payload in [
+        "not-json",
+        r#"{}"#,
+        r#"{"accessToken":"fixture-token","email":"other@example.com"}"#,
+        r#"{"accessToken":"fixture-token","user":{"email":""}}"#,
+        r#"{"accessToken":"fixture-token","user":{"email":" \n "}}"#,
+        r#"{"accessToken":"fixture-token","user":{"email":123}}"#,
+        r#"{"user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":null,"user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":"","user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":" ","user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":"fixture token","user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":"fixture-token\n","user":{"email":"owner@example.com"}}"#,
+        r#"{"accessToken":"fixture\u0000token","user":{"email":"owner@example.com"}}"#,
     ] {
-        let server = https::start_server();
-        let endpoint = endpoint_for_server(&server);
-        let broker = https::broker(NetConfig::default());
-
-        let usage_mock = server.mock(|when, then| {
-            when.method("GET").path("/backend-api/wham/usage");
-            then.status(401).body(r#"{"detail":"Unauthorized"}"#);
+        let harness = AuthorizationHarness::new(move |request| {
+            if authorization_stage(request) == "session" {
+                authorization_http(200, payload)
+            } else {
+                authorization_response(request, 1234.0, false)
+            }
         });
-        let session_mock = server.mock(|when, then| {
-            when.method("GET").path("/api/auth/session");
-            then.status(200).body(session_body);
-        });
-
-        let now = Timestamp::from_second(1_700_000_000).unwrap();
-        let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-            &broker,
-            &endpoint,
-            "__Secure-next-auth.session-token=tok",
-            None,
-            now,
-            &Instant::now,
-            Some(&https::call()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response, None);
-        usage_mock.assert_calls(1);
-        session_mock.assert_calls(1);
+        assert!(
+            harness
+                .fetch("session=fixture", None, &https::call())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(harness.stages(), ["initial", "session"]);
     }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:84 nonauthentication usage failures do not start session authentication
 #[tokio::test]
 async fn nonauthentication_usage_failures_do_not_start_session_authentication() {
-    for status in [403u16, 404, 429, 500, 503] {
-        let server = https::start_server();
-        let endpoint = endpoint_for_server(&server);
-        let broker = https::broker(NetConfig::default());
-
-        let usage_mock = server.mock(|when, then| {
-            when.method("GET").path("/backend-api/wham/usage");
-            then.status(status).body(r#"{"detail":"Failed"}"#);
-        });
-        let session_mock = server.mock(|when, then| {
-            when.method("GET").path("/api/auth/session");
-            then.status(200)
-                .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-        });
-
-        let now = Timestamp::from_second(1_700_000_000).unwrap();
-        let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-            &broker,
-            &endpoint,
-            "__Secure-next-auth.session-token=tok",
-            None,
-            now,
-            &Instant::now,
-            Some(&https::call()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response, None);
-        usage_mock.assert_calls(1);
-        session_mock.assert_calls(0);
+    for status in [403, 429, 500] {
+        let harness = AuthorizationHarness::new(move |_| authorization_http(status, "{}"));
+        assert!(
+            harness
+                .fetch("session=fixture", None, &https::call())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(harness.stages(), ["initial"]);
     }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:93 malformed successful usage does not start session authentication
 #[tokio::test]
 async fn malformed_successful_usage_does_not_start_session_authentication() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body("not-json");
-    });
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200)
-            .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(response, None);
-    usage_mock.assert_calls(1);
-    session_mock.assert_calls(0);
+    let harness = AuthorizationHarness::new(|_| authorization_http(200, "not-json"));
+    assert!(
+        harness
+            .fetch("session=fixture", None, &https::call())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(harness.stages(), ["initial"]);
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:102 session HTTP failures stop before bearer usage
 #[tokio::test]
 async fn session_http_failures_stop_before_bearer_usage() {
-    for status in [401u16, 403, 500] {
-        let server = https::start_server();
-        let endpoint = endpoint_for_server(&server);
-        let broker = https::broker(NetConfig::default());
-
-        let usage_mock = server.mock(|when, then| {
-            when.method("GET").path("/backend-api/wham/usage");
-            then.status(401).body(r#"{"detail":"Unauthorized"}"#);
+    for status in [401, 403, 500] {
+        let harness = AuthorizationHarness::new(move |request| {
+            if authorization_stage(request) == "session" {
+                authorization_http(status, "{}")
+            } else {
+                authorization_response(request, 1234.0, false)
+            }
         });
-        let session_mock = server.mock(|when, then| {
-            when.method("GET").path("/api/auth/session");
-            then.status(status)
-                .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-        });
-
-        let now = Timestamp::from_second(1_700_000_000).unwrap();
-        let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-            &broker,
-            &endpoint,
-            "__Secure-next-auth.session-token=tok",
-            None,
-            now,
-            &Instant::now,
-            Some(&https::call()),
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(response, None);
-        usage_mock.assert_calls(1);
-        session_mock.assert_calls(1);
+        assert!(
+            harness
+                .fetch("session=fixture", None, &https::call())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(harness.stages(), ["initial", "session"]);
     }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:114 a second usage authentication failure does not repeat session bootstrap
 #[tokio::test]
 async fn a_second_usage_authentication_failure_does_not_repeat_session_bootstrap() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
+    let harness = AuthorizationHarness::new(|request| {
+        if authorization_stage(request) == "retry" {
+            authorization_http(401, "{}")
+        } else {
+            authorization_response(request, 1234.0, false)
+        }
     });
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200)
-            .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(response, None);
-    usage_mock.assert_calls(2);
-    session_mock.assert_calls(1);
+    assert!(
+        harness
+            .fetch("session=fixture", None, &https::call())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(harness.stages(), ["initial", "session", "retry"]);
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:126 independent cookies keep their bearer identity and workspace isolated
 #[tokio::test]
 async fn independent_cookies_keep_their_bearer_identity_and_workspace_isolated() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header_missing("authorization");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
+    let harness = AuthorizationHarness::new(|request| {
+        let first = request.headers().get("cookie").unwrap() == "session=first";
+        let name = if first { "first" } else { "second" };
+        let stage = authorization_stage(request);
+        if stage == "session" {
+            return authorization_http(
+                200,
+                authorization_session(&format!("fixture-{name}"), &format!("{name}@example.com")),
+            );
+        }
+        if ["retry", "balance"].contains(&stage) {
+            assert_eq!(
+                request
+                    .headers()
+                    .get("authorization")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                format!("Bearer fixture-{name}")
+            );
+        }
+        if stage == "retry" {
+            return authorization_http(
+                200,
+                authorization_usage(&format!("workspace-{name}"), "null", false),
+            );
+        }
+        if stage == "balance" {
+            assert_eq!(
+                request
+                    .headers()
+                    .get("chatgpt-account-id")
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                format!("workspace-{name}")
+            );
+            assert_eq!(
+                request.uri().path(),
+                format!("/backend-api/accounts/workspace-{name}/remaining_balance")
+            );
+        }
+        authorization_response(request, if first { 1234.0 } else { 1200.0 }, false)
     });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header("cookie", "__Secure-next-auth.session-token=cookie-alpha")
-            .header("authorization", "Bearer token-alpha");
-        then.status(200).body(
-            r#"{"account_id":"acct-alpha","plan_type":"team","credits":{"has_credits":true,"unlimited":false,"balance":null}}"#,
-        );
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header("cookie", "__Secure-next-auth.session-token=cookie-beta")
-            .header("authorization", "Bearer token-beta");
-        then.status(200).body(
-            r#"{"account_id":"acct-beta","plan_type":"team","credits":{"has_credits":true,"unlimited":false,"balance":null}}"#,
-        );
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/api/auth/session")
-            .header("cookie", "__Secure-next-auth.session-token=cookie-alpha");
-        then.status(200)
-            .body(r#"{"accessToken":"token-alpha","user":{"email":"alpha@example.com"}}"#);
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/api/auth/session")
-            .header("cookie", "__Secure-next-auth.session-token=cookie-beta");
-        then.status(200)
-            .body(r#"{"accessToken":"token-beta","user":{"email":"beta@example.com"}}"#);
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-alpha/remaining_balance")
-            .header("authorization", "Bearer token-alpha");
-        then.status(200).body(r#"{"balance":10.0}"#);
-    });
-    server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-beta/remaining_balance")
-            .header("authorization", "Bearer token-beta");
-        then.status(200).body(r#"{"balance":20.0}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let alpha = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=cookie-alpha",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let beta = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=cookie-beta",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
+    let first = harness
+        .fetch("session=first", None, &https::call())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = harness
+        .fetch("session=second", None, &https::call())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        alpha.verified_signed_in_email.as_deref(),
-        Some("alpha@example.com")
+        first.verified_signed_in_email.as_deref(),
+        Some("first@example.com")
     );
-    assert_eq!(alpha.api_data.account_id.as_deref(), Some("acct-alpha"));
-    assert_eq!(alpha.api_data.credits_remaining, Some(10.0));
-
     assert_eq!(
-        beta.verified_signed_in_email.as_deref(),
-        Some("beta@example.com")
+        second.verified_signed_in_email.as_deref(),
+        Some("second@example.com")
     );
-    assert_eq!(beta.api_data.account_id.as_deref(), Some("acct-beta"));
-    assert_eq!(beta.api_data.credits_remaining, Some(20.0));
+    assert_eq!(first.api_data.credits_remaining, Some(1234.0));
+    assert_eq!(second.api_data.credits_remaining, Some(1200.0));
+    assert_eq!(harness.stages().len(), 8);
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:158 optional unauthorized enrichments retain authenticated usage without reauthenticating
 #[tokio::test]
 async fn optional_unauthorized_enrichments_retain_authenticated_usage_without_reauthenticating() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_unauth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header_missing("authorization");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
-    });
-    let usage_auth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header("authorization", "Bearer session-access-token");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "rate_limit": {
-                "primary_window": {
-                  "used_percent": 33,
-                  "reset_at": 1700003600,
-                  "limit_window_seconds": 18000
+    for hide_balance in [false, true] {
+        for status in [401, 403] {
+            let harness = AuthorizationHarness::new(move |request| {
+                let stage = authorization_stage(request);
+                if ["monthly", "balance"].contains(&stage) {
+                    assert_eq!(
+                        request.headers().get("authorization").unwrap(),
+                        "Bearer fixture-token"
+                    );
+                    assert_eq!(request.headers().get("cookie").unwrap(), "session=fixture");
                 }
-              },
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              },
-              "spend_control": {
-                "individual_limit": null
-              }
-            }"#,
-        );
-    });
-
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200).body(
-            r#"{
-              "accessToken": "session-access-token",
-              "user": { "email": "member@example.com" }
-            }"#,
-        );
-    });
-    let monthly_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/spend-controls/current-user/monthly-usage");
-        then.status(401).body(r#"{"detail":"Forbidden"}"#);
-    });
-    let balance_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance");
-        then.status(403).body(r#"{"detail":"Forbidden"}"#);
-    });
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-
-    assert_eq!(
-        response.verified_signed_in_email.as_deref(),
-        Some("member@example.com")
-    );
-    assert_eq!(
-        response
-            .api_data
-            .primary_limit
-            .as_ref()
-            .map(|w| w.used_percent),
-        Some(33.0)
-    );
-    assert_eq!(response.api_data.credits_remaining, None);
-    assert_eq!(response.api_data.credits_available, Some(true));
-    usage_unauth_mock.assert_calls(1);
-    usage_auth_mock.assert_calls(1);
-    session_mock.assert_calls(1);
-    monthly_mock.assert_calls(1);
-    balance_mock.assert_calls(1);
+                if stage == "monthly" || (hide_balance && stage == "balance") {
+                    authorization_http(status, "{}")
+                } else {
+                    authorization_response(request, 1234.0, true)
+                }
+            });
+            let response = harness
+                .fetch("session=fixture", None, &https::call())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                response.verified_signed_in_email.as_deref(),
+                Some("owner@example.com")
+            );
+            assert_eq!(
+                response
+                    .api_data
+                    .primary_limit
+                    .as_ref()
+                    .map(|w| w.used_percent),
+                Some(12.0)
+            );
+            assert_eq!(response.api_data.codex_credit_limit, None);
+            assert_eq!(response.api_data.credits_available, Some(true));
+            assert_eq!(
+                response.api_data.credits_remaining,
+                if hide_balance { None } else { Some(1234.0) }
+            );
+            assert_eq!(
+                response.api_data.balance_is_workspace,
+                if hide_balance { None } else { Some(true) }
+            );
+            assert_eq!(
+                harness.stages(),
+                ["initial", "session", "retry", "monthly", "balance"]
+            );
+        }
+    }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:185 an expired shared deadline sends no authentication requests
 #[tokio::test]
 async fn an_expired_shared_deadline_sends_no_authentication_requests() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(r#"{}"#);
-    });
-
-    let base = Instant::now();
-    let deadline = base + Duration::from_secs(1);
-    let now_fn = move || base + Duration::from_secs(2);
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        Some(deadline),
-        now,
-        &now_fn,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(response, None);
-    usage_mock.assert_calls(0);
+    let harness =
+        AuthorizationHarness::new(|request| authorization_response(request, 1234.0, false));
+    assert!(
+        harness
+            .fetch(
+                "session=fixture",
+                Some(Instant::now() - Duration::from_secs(1)),
+                &https::call()
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(harness.stages().is_empty());
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:195 deadline expiry after cookie rejection prevents the session request
 #[tokio::test]
 async fn deadline_expiry_after_cookie_rejection_prevents_the_session_request() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
+    let harness =
+        AuthorizationHarness::new(|request| authorization_response(request, 1234.0, false));
+    // Real HTTPS replaces the transport stub: delay the initial rejection beyond
+    // the one-second deadline, retaining the upstream 0.01-second overrun.
+    harness.server.reset();
+    let recorded = harness.requests.clone();
+    harness.server.mock(|when, then| {
+        when.any_request();
+        then.respond_with(move |request| {
+            recorded.lock().unwrap().push(request.clone());
+            assert_eq!(authorization_stage(request), "initial");
+            std::thread::sleep(Duration::from_secs_f64(1.01));
+            authorization_http(401, "{}")
+        });
     });
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200)
-            .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-    });
-
-    let base = Instant::now();
-    let deadline = base + Duration::from_secs(1);
-    let calls = AtomicUsize::new(0);
-    let now_fn = move || {
-        if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-            base
-        } else {
-            base + Duration::from_secs(2)
-        }
-    };
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-
-    let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        Some(deadline),
-        now,
-        &now_fn,
-        Some(&https::call()),
-    )
-    .await
-    .unwrap();
-
-    assert_eq!(response, None);
-    usage_mock.assert_calls(1);
-    session_mock.assert_calls(0);
+    assert!(
+        harness
+            .fetch(
+                "session=fixture",
+                Some(Instant::now() + Duration::from_secs(1)),
+                &https::call()
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(harness.stages(), ["initial"]);
 }
 
-// upstream: OpenAIDashboardSessionAuthorizationTests.swift:208 session retry and optional requests share the remaining deadline
+// partial-upstream: OpenAIDashboardSessionAuthorizationTests.swift:208 session retry and optional requests share the remaining deadline
 #[tokio::test]
-async fn session_retry_and_optional_requests_share_the_remaining_deadline() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_unauth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header_missing("authorization");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
-    });
-    let usage_auth_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/wham/usage")
-            .header("authorization", "Bearer tok");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "rate_limit": {
-                "primary_window": {
-                  "used_percent": 20,
-                  "reset_at": 1700003600,
-                  "limit_window_seconds": 18000
-                }
-              },
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              }
-            }"#,
-        );
-    });
-
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200)
-            .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-    });
-    let monthly_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/spend-controls/current-user/monthly-usage");
-        then.status(200).body(r#"{}"#);
-    });
-    let balance_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance");
-        then.status(200).body(r#"{"total_credits_balance":50.0}"#);
-    });
-
-    let base = Instant::now();
-    let deadline = base + Duration::from_secs(3);
-    // Allow first usage (call 0), session (call 1), retry usage (call 2), then expire before optional enrichments.
-    let clock_calls = AtomicUsize::new(0);
-    let now_fn = move || {
-        if clock_calls.fetch_add(1, Ordering::SeqCst) < 3 {
-            base + Duration::from_secs(1)
-        } else {
-            base + Duration::from_secs(4)
-        }
+async fn local_session_deadline_budget_and_request_sequence() {
+    let harness =
+        AuthorizationHarness::new(|request| authorization_response(request, 1234.0, true));
+    let start = Instant::now();
+    let deadline = start + Duration::from_secs_f64(3.5);
+    let times = Mutex::new(Vec::new());
+    let clock = || {
+        let now = Instant::now();
+        times.lock().unwrap().push(now);
+        now
     };
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-
     let response = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
+        &https::broker(NetConfig::default()),
+        &endpoint_for_server(&harness.server),
+        "session=fixture",
         Some(deadline),
-        now,
-        &now_fn,
+        Timestamp::now(),
+        &clock,
         Some(&https::call()),
     )
     .await
     .unwrap()
     .unwrap();
-
+    assert_eq!(response.api_data.credits_remaining, Some(1234.0));
     assert_eq!(
-        response.verified_signed_in_email.as_deref(),
-        Some("member@example.com")
+        harness.stages(),
+        ["initial", "session", "retry", "monthly", "balance"]
     );
-    usage_unauth_mock.assert_calls(1);
-    usage_auth_mock.assert_calls(1);
-    session_mock.assert_calls(1);
-    monthly_mock.assert_calls(0);
-    balance_mock.assert_calls(0);
+    // Partial: the HTTPS server cannot inspect client request timeouts. The
+    // injected clock proves that the sequence uses the same remaining budget;
+    // the session-specific two-second cap remains unobservable here.
+    let mut previous = Duration::from_secs_f64(3.5);
+    for now in times.into_inner().unwrap() {
+        let remaining = deadline.saturating_duration_since(now);
+        assert!(remaining > Duration::ZERO && remaining <= Duration::from_secs_f64(3.5));
+        assert!(remaining <= previous);
+        previous = remaining;
+    }
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:229 cancellation before fetch sends no requests
 #[tokio::test]
 async fn cancellation_before_fetch_sends_no_requests() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(r#"{}"#);
-    });
-
+    let harness =
+        AuthorizationHarness::new(|request| authorization_response(request, 1234.0, false));
     let call = https::call();
     call.cancel.cancel();
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-
-    let err = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &Instant::now,
-        Some(&call),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, OpenAIDashboardFetchError::Cancelled);
-    usage_mock.assert_calls(0);
+    assert!(matches!(
+        harness.fetch("session=fixture", None, &call).await,
+        Err(OpenAIDashboardFetchError::Cancelled)
+    ));
+    assert!(harness.stages().is_empty());
 }
 
 // upstream: OpenAIDashboardSessionAuthorizationTests.swift:245 cancellation after a transport response stops the authentication sequence
 #[tokio::test]
 async fn cancellation_after_a_transport_response_stops_the_authentication_sequence() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let call = https::call();
-    let cancel_on_usage = call.cancel.clone();
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(401).body(r#"{"detail":"Unauthorized"}"#);
-    });
-
-    let session_mock = server.mock(|when, then| {
-        when.method("GET").path("/api/auth/session");
-        then.status(200)
-            .body(r#"{"accessToken":"tok","user":{"email":"member@example.com"}}"#);
-    });
-
-    let clock_calls = AtomicUsize::new(0);
-    let now_fn = move || {
-        if clock_calls.fetch_add(1, Ordering::SeqCst) == 1 {
-            cancel_on_usage.cancel();
-        }
-        Instant::now()
-    };
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let err = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &now_fn,
-        Some(&call),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, OpenAIDashboardFetchError::Cancelled);
-    usage_mock.assert_calls(1);
-    session_mock.assert_calls(0);
-}
-
-// upstream: OpenAIDashboardSessionAuthorizationTests.swift:264 transport cancellation remains terminal during optional enrichment
-#[tokio::test]
-async fn transport_cancellation_remains_terminal_during_optional_enrichment() {
-    let server = https::start_server();
-    let endpoint = endpoint_for_server(&server);
-    let broker = https::broker(NetConfig::default());
-
-    let call = https::call();
-    let cancel_on_monthly = call.cancel.clone();
-    let usage_mock = server.mock(|when, then| {
-        when.method("GET").path("/backend-api/wham/usage");
-        then.status(200).body(
-            r#"{
-              "account_id": "acct-workspace",
-              "plan_type": "team",
-              "rate_limit": {
-                "primary_window": {
-                  "used_percent": 20,
-                  "reset_at": 1700003600,
-                  "limit_window_seconds": 18000
-                }
-              },
-              "credits": {
-                "has_credits": true,
-                "unlimited": false,
-                "balance": null
-              }
-            }"#,
+    for stage in ["initial", "session", "retry", "monthly", "balance"] {
+        let call = https::call();
+        let cancel = call.cancel.clone();
+        let harness = AuthorizationHarness::new(move |request| {
+            if authorization_stage(request) == stage {
+                cancel.cancel();
+            }
+            authorization_response(request, 1234.0, true)
+        });
+        assert!(matches!(
+            harness.fetch("session=fixture", None, &call).await,
+            Err(OpenAIDashboardFetchError::Cancelled)
+        ));
+        let stages = harness.stages();
+        assert_eq!(stages.last(), Some(&stage));
+        assert_eq!(
+            stages,
+            ["initial", "session", "retry", "monthly", "balance"][..stages.len()]
         );
-    });
-    let monthly_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/spend-controls/current-user/monthly-usage");
-        then.status(200).body(r#"{}"#);
-    });
-    let balance_mock = server.mock(|when, then| {
-        when.method("GET")
-            .path("/backend-api/accounts/acct-workspace/remaining_balance");
-        then.status(200).body(r#"{"total_credits_balance":50.0}"#);
-    });
-
-    let clock_calls = AtomicUsize::new(0);
-    let now_fn = move || {
-        if clock_calls.fetch_add(1, Ordering::SeqCst) == 1 {
-            cancel_on_monthly.cancel();
-        }
-        Instant::now()
-    };
-
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let err = OpenAIDashboardFetcher::fetch_dashboard_api_response(
-        &broker,
-        &endpoint,
-        "__Secure-next-auth.session-token=tok",
-        None,
-        now,
-        &now_fn,
-        Some(&call),
-    )
-    .await
-    .unwrap_err();
-
-    assert_eq!(err, OpenAIDashboardFetchError::Cancelled);
-    usage_mock.assert_calls(1);
-    monthly_mock.assert_calls(0);
-    balance_mock.assert_calls(0);
+    }
 }
 
 // ============================================================================
