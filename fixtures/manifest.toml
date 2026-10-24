@@ -2419,3 +2419,77 @@ sources = [
     "Tests/CodexBarTests/CostUsageStoreCutoverTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/offline_store.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityOfflineStore.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/local_scan.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalScan.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/proto_reader.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityProtoReader.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/jsonl_object.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityJSONLObject.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/local_jsonl.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalJSONL.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/local_sqlite_schema.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalSQLiteSchema.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/local_sqlite.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalSQLite.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/local_reader.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalReader.swift",
+    "Sources/CodexBarCore/CostUsageFetcher.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_offline_cases.rs"
+sources = [
+    "Tests/CodexBarTests/AntigravityOfflineStoreTests.swift",
+    "Tests/CodexBarTests/AntigravityOfflineFallbackProofTests.swift",
+    "Tests/CodexBarTests/AntigravityProfileScanTests.swift",
+    "Tests/CodexBarTests/AntigravityProfileSettingsTests.swift",
+    "Tests/CodexBarTests/AntigravityHubIdentityTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity_local_reader_cases.rs"
+sources = [
+    "Tests/CodexBarTests/AntigravityLocalFixture.swift",
+    "Tests/CodexBarTests/AntigravityBotIDValidationTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalBotIDJoinTests.swift",
+    "Tests/CodexBarTests/AntigravityStepUUIDConsistencyTests.swift",
+    "TestsLinux/AntigravityJSONLNumberTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalWALTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalIntegrityTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalScanTests.swift",
+    "Tests/CodexBarTests/AntigravityLocalReaderTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
