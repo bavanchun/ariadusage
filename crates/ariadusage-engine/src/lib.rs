@@ -4,6 +4,7 @@ pub mod coordinator;
 pub mod daemon;
 pub mod error;
 pub mod hardening;
+pub mod hooks;
 pub mod ipc_server;
 pub mod paths;
 pub mod private_file;
@@ -20,8 +21,16 @@ pub use config_store::{ConfigStore, UpdateResult};
 pub use coordinator::{
     ProviderRefreshCoordinator, ProviderRefreshRequestState, Replacement, WaitResult,
 };
-pub use daemon::{ConfigIpcBackend, DaemonError, DefaultNotifier, NotificationError, Notifier};
+pub use daemon::{
+    CompositeNotifier, ConfigIpcBackend, DaemonError, DefaultNotifier, IpcNoticeNotifier,
+    LinuxDbusNotifier, NoopNotifier, NotificationError, Notifier, RecordingNotifier,
+};
 pub use error::StoreError;
+pub use hooks::{
+    DispatchOutcome, FORWARDED_ENVIRONMENT_KEYS, FakeHookCommandExecutor, HookCommandExecutor,
+    HookExecutionOutput, HookExecutionRequest, HookRunner, HookRunnerError, MAXIMUM_PAYLOAD_BYTES,
+    ProcessBrokerHookExecutor,
+};
 pub use ipc_server::{IpcBackend, IpcServerError, PeerIdentity, verify_peer_uid};
 pub use paths::{
     ENGINE_SOCKET_REL_PATH, PathError, SUN_PATH_MAX_BYTES, canonicalize_macos_var_prefix,

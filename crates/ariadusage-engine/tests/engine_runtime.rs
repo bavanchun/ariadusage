@@ -2363,3 +2363,98 @@ fn configured_claude_workspace_spend_some_false_projects_false_and_reader_treats
         "ClaudeAdminAPISettingsReader must treat projected 'false' as off"
     );
 }
+
+#[tokio::test]
+async fn runtime_persists_notification_state_and_dispatches_injected_notifier_and_hooks() {
+    use ariadusage_engine::{FakeHookCommandExecutor, HookRunner, RecordingNotifier};
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempDir::new().unwrap();
+    let t0: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+
+    let mut u1 = make_usage(10.0, t0, None, Some(claude_id.clone()));
+    u1.secondary = None;
+    let mut u2 = make_usage(85.0, t0, None, Some(claude_id.clone()));
+    u2.secondary = None;
+    let plan = ScriptedPlan::new("claude.oauth", SourceKind::Oauth);
+    // Poll 1: 10% used (90% remaining) -> baseline
+    plan.push_ok(u1);
+    // Poll 2: 85% used (15% remaining) -> crosses 50% and 20% quota warnings + QuotaLow hook
+    plan.push_ok(u2.clone());
+
+    let mut registry = ProviderRegistry::empty();
+    registry.register_plan(claude_id.clone(), Arc::new(plan));
+
+    let cfg_path = tmp.path().join("config.json");
+    let config_store = ConfigStore::new(cfg_path.clone());
+    config_store
+        .update(|cfg| {
+            ariadusage_core::config::set_provider_enabled(cfg, &claude_id, true);
+            cfg.set_hooks_config(Some(HooksConfig::new(
+                true,
+                vec![HookRule::new(HookEventType::QuotaLow, "/bin/true")],
+            )));
+        })
+        .expect("configure claude + hooks");
+
+    let state_path = tmp.path().join("notifications-state.json");
+    let notifier = Arc::new(RecordingNotifier::new());
+    let hook_exec = Arc::new(FakeHookCommandExecutor::new());
+    let hook_runner = Arc::new(HookRunner::new(Arc::clone(&hook_exec) as _));
+
+    let secret_store = Arc::new(SecretStore::new(MemoryBackend::new()));
+    let net = Arc::new(NetBroker::new(NetConfig::default()).unwrap());
+    let runtime = EngineRuntime::new(
+        ConfigStore::new(cfg_path.clone()),
+        Arc::clone(&secret_store),
+        Arc::clone(&net),
+        registry,
+    )
+    .with_notification_state_path(state_path.clone())
+    .with_notifier(Arc::clone(&notifier) as _)
+    .with_hook_runner(hook_runner)
+    .with_clock(Arc::new(move || t0));
+
+    let mut opts = RefreshOptions::user_initiated();
+    opts.refresh_status = false;
+
+    // Poll 1: baseline
+    runtime.refresh_provider(claude_id.clone(), opts).await;
+    assert!(notifier.posts().is_empty());
+    assert!(hook_exec.requests().is_empty());
+
+    // Poll 2: crosses 50% and 20% remaining thresholds (lowest crossed = 20%) and QuotaLow hook
+    runtime.refresh_provider(claude_id.clone(), opts).await;
+    let posted = notifier.posts();
+    assert_eq!(posted.len(), 1);
+    assert!(posted[0].id_prefix.contains("20"));
+    assert_eq!(hook_exec.requests().len(), 1);
+    assert_eq!(hook_exec.requests()[0].executable, "/bin/true");
+
+    // Verify notifications-state.json exists with mode 0600
+    let metadata = std::fs::metadata(&state_path).expect("persisted notifications-state.json");
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+
+    // Restart EngineRuntime with the same persisted state file: must not re-send already-notified thresholds
+    let mut u3 = make_usage(88.0, t0, None, Some(claude_id.clone()));
+    u3.secondary = None;
+    let plan2 = ScriptedPlan::new("claude.oauth", SourceKind::Oauth);
+    plan2.push_ok(u2);
+    plan2.push_ok(u3);
+    let mut registry2 = ProviderRegistry::empty();
+    registry2.register_plan(claude_id.clone(), Arc::new(plan2));
+
+    let notifier2 = Arc::new(RecordingNotifier::new());
+    let runtime2 = EngineRuntime::new(ConfigStore::new(cfg_path), secret_store, net, registry2)
+        .with_notification_state_path(state_path)
+        .with_notifier(Arc::clone(&notifier2) as _)
+        .with_clock(Arc::new(move || t0));
+
+    runtime2.refresh_provider(claude_id.clone(), opts).await;
+    runtime2.refresh_provider(claude_id, opts).await;
+    assert!(
+        notifier2.posts().is_empty(),
+        "restarted runtime must reload persisted notification state and suppress duplicate quota warnings"
+    );
+}

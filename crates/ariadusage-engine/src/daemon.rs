@@ -8,9 +8,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use ariadusage_core::config::{Config, CookieSource, ProviderConfig, ProviderEntry};
+use ariadusage_core::notifications::NotificationPost;
 use ariadusage_core::providers::SourceMode;
 use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
-use ariadusage_protocol::ipc::{ErrorCode, IpcError, ServerMessage};
+use ariadusage_protocol::ipc::{ErrorCode, IpcError, NoticeLevel, ServerMessage};
 use ariadusage_protocol::settings::{
     ChoiceOption, DescriptorKind, NumberConfig, SettingDescriptor, SettingsPage, SettingsScope,
     SettingsSection,
@@ -22,6 +23,7 @@ use tokio::sync::{Mutex, broadcast};
 
 use crate::config_store::ConfigStore;
 use crate::error::StoreError;
+use crate::hooks::HookRunner;
 #[cfg(unix)]
 use crate::ipc_server::start_ipc_server;
 use crate::ipc_server::{IpcBackend, IpcServerError};
@@ -44,18 +46,211 @@ pub enum NotificationError {
 pub trait Notifier: Send + Sync {
     /// Post a desktop notification with `title` and `body`.
     fn notify(&self, title: &str, body: &str) -> Result<(), NotificationError>;
+
+    /// Post a structured [`NotificationPost`] with identifier and sound metadata.
+    fn notify_post(&self, post: &NotificationPost) -> Result<(), NotificationError> {
+        self.notify(&post.title, &post.body)
+    }
 }
 
-/// Default notifier for the engine daemon.
+/// Default notifier for the engine daemon when invoked outside an IPC-backed runtime.
 ///
-/// On macOS, desktop notifications return [`NotificationError::Unsupported`] in this slice
-/// (`UNUserNotificationCenter` lives in a separate UI slice).
+/// Direct `notify` calls return [`NotificationError::Unsupported`] on macOS (`UNUserNotificationCenter`
+/// runs in the bundled `ariadusage-macos` app process over IPC `ServerMessage::Notice`).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DefaultNotifier;
 
 impl Notifier for DefaultNotifier {
     fn notify(&self, _title: &str, _body: &str) -> Result<(), NotificationError> {
         Err(NotificationError::Unsupported)
+    }
+}
+
+/// Silent no-op [`Notifier`] used by default in test runtimes so unit/integration tests never
+/// trigger real OS notifications unless a notifier is explicitly injected.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopNotifier;
+
+impl Notifier for NoopNotifier {
+    fn notify(&self, _title: &str, _body: &str) -> Result<(), NotificationError> {
+        Ok(())
+    }
+
+    fn notify_post(&self, _post: &NotificationPost) -> Result<(), NotificationError> {
+        Ok(())
+    }
+}
+
+/// In-memory [`Notifier`] that records every [`NotificationPost`] for deterministic inspection
+/// in tests.
+#[derive(Debug, Default)]
+pub struct RecordingNotifier {
+    posts: std::sync::Mutex<Vec<NotificationPost>>,
+}
+
+impl RecordingNotifier {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn posts(&self) -> Vec<NotificationPost> {
+        self.posts.lock().expect("recording notifier lock").clone()
+    }
+}
+
+impl Notifier for RecordingNotifier {
+    fn notify(&self, title: &str, body: &str) -> Result<(), NotificationError> {
+        self.notify_post(&NotificationPost::new("custom", title, body))
+    }
+
+    fn notify_post(&self, post: &NotificationPost) -> Result<(), NotificationError> {
+        self.posts
+            .lock()
+            .expect("recording notifier lock")
+            .push(post.clone());
+        Ok(())
+    }
+}
+
+/// [`Notifier`] backend that broadcasts [`ServerMessage::Notice`] over IPC v1 so connected
+/// frontends (such as `ariadusage-macos` via `UNUserNotificationCenter`) can render desktop
+/// notifications with bundle identity.
+#[derive(Debug, Clone)]
+pub struct IpcNoticeNotifier {
+    tx: broadcast::Sender<ServerMessage>,
+}
+
+impl IpcNoticeNotifier {
+    pub const fn new(tx: broadcast::Sender<ServerMessage>) -> Self {
+        Self { tx }
+    }
+}
+
+impl Notifier for IpcNoticeNotifier {
+    fn notify(&self, title: &str, body: &str) -> Result<(), NotificationError> {
+        let _ = self.tx.send(ServerMessage::Notice {
+            level: NoticeLevel::Info,
+            title: Some(title.to_string()),
+            message: body.to_string(),
+            notification_id: None,
+            sound: Some(true),
+        });
+        Ok(())
+    }
+
+    fn notify_post(&self, post: &NotificationPost) -> Result<(), NotificationError> {
+        let notification_id = post
+            .identifier
+            .clone()
+            .or_else(|| Some(post.id_prefix.clone()));
+        let _ = self.tx.send(ServerMessage::Notice {
+            level: NoticeLevel::Info,
+            title: Some(post.title.clone()),
+            message: post.body.clone(),
+            notification_id,
+            sound: Some(post.sound_enabled),
+        });
+        Ok(())
+    }
+}
+
+/// Linux D-Bus desktop notification backend backed by `notify-rust` (`zbus` on `tokio`).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxDbusNotifier;
+
+impl LinuxDbusNotifier {
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Notifier for LinuxDbusNotifier {
+    fn notify(&self, title: &str, body: &str) -> Result<(), NotificationError> {
+        self.notify_post(&NotificationPost::new("ariadusage-notice", title, body))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn notify_post(&self, post: &NotificationPost) -> Result<(), NotificationError> {
+        let title = post.title.clone();
+        let body = post.body.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = notify_rust::Notification::new()
+                    .appname("AriadUsage")
+                    .summary(&title)
+                    .body(&body)
+                    .show_async()
+                    .await;
+            });
+            Ok(())
+        } else {
+            notify_rust::Notification::new()
+                .appname("AriadUsage")
+                .summary(&title)
+                .body(&body)
+                .show()
+                .map(|_| ())
+                .map_err(|err| NotificationError::DeliveryFailed(err.to_string()))
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn notify_post(&self, _post: &NotificationPost) -> Result<(), NotificationError> {
+        Err(NotificationError::Unsupported)
+    }
+}
+
+/// Fans out notifications to multiple [`Notifier`] backends.
+#[derive(Default)]
+pub struct CompositeNotifier {
+    backends: Vec<Arc<dyn Notifier>>,
+}
+
+impl std::fmt::Debug for CompositeNotifier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompositeNotifier")
+            .field("backends_len", &self.backends.len())
+            .finish()
+    }
+}
+
+impl CompositeNotifier {
+    pub fn new(backends: Vec<Arc<dyn Notifier>>) -> Self {
+        Self { backends }
+    }
+}
+
+impl Notifier for CompositeNotifier {
+    fn notify(&self, title: &str, body: &str) -> Result<(), NotificationError> {
+        let mut last_err = None;
+        let mut any_ok = false;
+        for backend in &self.backends {
+            match backend.notify(title, body) {
+                Ok(()) => any_ok = true,
+                Err(err) => last_err = Some(err),
+            }
+        }
+        if any_ok || self.backends.is_empty() {
+            Ok(())
+        } else {
+            Err(last_err.unwrap_or(NotificationError::Unsupported))
+        }
+    }
+
+    fn notify_post(&self, post: &NotificationPost) -> Result<(), NotificationError> {
+        let mut last_err = None;
+        let mut any_ok = false;
+        for backend in &self.backends {
+            match backend.notify_post(post) {
+                Ok(()) => any_ok = true,
+                Err(err) => last_err = Some(err),
+            }
+        }
+        if any_ok || self.backends.is_empty() {
+            Ok(())
+        } else {
+            Err(last_err.unwrap_or(NotificationError::Unsupported))
+        }
     }
 }
 
@@ -470,12 +665,28 @@ pub fn build_default_runtime_with_options(
             .map_err(|err| DaemonError::Signal(std::io::Error::other(err.to_string())))?,
     );
     let registry = crate::registry::ProviderRegistry::default();
-    Ok(Arc::new(EngineRuntime::new(
-        config_store,
-        secret_store,
-        net,
-        registry,
-    )))
+    let runtime = EngineRuntime::new(config_store, secret_store, net, registry);
+    let ipc_notifier: Arc<dyn Notifier> = Arc::new(IpcNoticeNotifier::new(runtime.pushes_sender()));
+    let notifier: Arc<dyn Notifier> = {
+        #[cfg(target_os = "linux")]
+        {
+            Arc::new(CompositeNotifier::new(vec![
+                ipc_notifier,
+                Arc::new(LinuxDbusNotifier::new()),
+            ]))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            ipc_notifier
+        }
+    };
+    let mut runtime = runtime
+        .with_notifier(notifier)
+        .with_hook_runner(Arc::new(HookRunner::new_process_broker()));
+    if let Ok(state_dir) = crate::paths::state_dir() {
+        runtime = runtime.with_notification_state_path(state_dir.join("notifications-state.json"));
+    }
+    Ok(Arc::new(runtime))
 }
 
 /// Runs the engine daemon with a custom shutdown future and optional socket path override.
