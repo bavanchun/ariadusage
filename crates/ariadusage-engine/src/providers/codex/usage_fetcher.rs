@@ -968,7 +968,7 @@ impl CodexOAuthUsageFetcher {
         }
     }
 
-    fn resolve_validated_chatgpt_base_url(
+    pub(super) fn resolve_validated_chatgpt_base_url(
         env: &BTreeMap<String, String>,
         home_dir: Option<&Path>,
     ) -> Result<(String, Option<Url>), CodexOAuthFetchError> {
@@ -1342,6 +1342,7 @@ impl CodexOAuthUsageFetcher {
             Url::parse("https://chatgpt.com").expect("valid static origin"),
             Url::parse("https://chat.openai.com").expect("valid static origin"),
             Url::parse("https://api.openai.com").expect("valid static origin"),
+            Url::parse("https://auth.openai.com").expect("valid static origin"),
         ];
         if let Some(override_url) = validated_override {
             urls.push(override_url.clone());
@@ -1349,7 +1350,7 @@ impl CodexOAuthUsageFetcher {
         DeclaredOrigins::from_urls(urls).map_err(|_| CodexOAuthFetchError::InvalidResponse)
     }
 
-    async fn perform_request(
+    pub(super) async fn perform_request(
         net: &NetBroker,
         validated_override: Option<&Url>,
         req: NetRequest,

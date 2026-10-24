@@ -3,8 +3,9 @@
 use ariadusage_core::providers::SourceMode;
 use ariadusage_engine::brokers::net::NetConfig;
 use ariadusage_engine::providers::codex::{
-    CodexCreditLimitSnapshot, CodexOAuthError, CodexOAuthFetchError, CodexOAuthFetchStrategy,
-    CodexOAuthUsageFetcher,
+    CodexCreditLimitSnapshot, CodexOAuthCredentialSource, CodexOAuthError, CodexOAuthFetchError,
+    CodexOAuthFetchStrategy, CodexOAuthUsageFetcher, CodexPATCredentials, CodexPATFetchStrategy,
+    CodexPATUsageFetcher, PAT_WHOAMI_PATH,
 };
 use jiff::Timestamp;
 use std::{collections::BTreeMap, time::Duration};
@@ -13,17 +14,33 @@ use tempfile::TempDir;
 #[path = "support/https.rs"]
 mod https;
 
-// Partial upstream case: CodexOAuthExpiryPipelineTests.swift:166.
-// The PAT whoami/usage rows require the PAT transport, outside this PR.
-// Keep the complete upstream case MISSING in the mechanical inventory.
+// upstream: CodexOAuthExpiryPipelineTests.swift:166 Codex endpoints distinguish authentication failures from permission denials
 #[tokio::test]
-async fn oauth_endpoints_distinguish_authentication_failures_from_permission_denials() {
-    for endpoint in ["reset", "spend"] {
+async fn codex_endpoints_distinguish_authentication_failures_from_permission_denials() {
+    for endpoint in ["reset", "spend", "pat-whoami", "pat-usage"] {
         for status in [401, 403] {
             let server = https::start_server();
+            let whoami_ok_mock = if endpoint == "pat-usage" {
+                Some(
+                    server
+                        .mock_async(|when, then| {
+                            when.method(httpmock::Method::GET).path(PAT_WHOAMI_PATH);
+                            then.status(200)
+                                .body(r#"{"chatgpt_account_id":"fixture-account"}"#);
+                        })
+                        .await,
+                )
+            } else {
+                None
+            };
             let mock = server
                 .mock_async(|when, then| {
-                    when.method(httpmock::Method::GET);
+                    if endpoint == "pat-usage" {
+                        when.method(httpmock::Method::GET)
+                            .path("/backend-api/wham/usage");
+                    } else {
+                        when.method(httpmock::Method::GET);
+                    }
                     then.status(status).body("fixture refusal");
                 })
                 .await;
@@ -38,8 +55,8 @@ async fn oauth_endpoints_distinguish_authentication_failures_from_permission_den
                 home.path().to_string_lossy().into_owned(),
             )]);
             let net = https::broker(NetConfig::default());
-            let error = if endpoint == "reset" {
-                CodexOAuthUsageFetcher::fetch_rate_limit_reset_credits(
+            let error = match endpoint {
+                "reset" => CodexOAuthUsageFetcher::fetch_rate_limit_reset_credits(
                     &net,
                     "fixture-token",
                     Some("fixture-account"),
@@ -49,9 +66,8 @@ async fn oauth_endpoints_distinguish_authentication_failures_from_permission_den
                     Timestamp::now(),
                 )
                 .await
-                .unwrap_err()
-            } else {
-                CodexOAuthUsageFetcher::fetch_spend_controls_monthly_usage(
+                .unwrap_err(),
+                "spend" => CodexOAuthUsageFetcher::fetch_spend_controls_monthly_usage(
                     &net,
                     "fixture-token",
                     "fixture-account",
@@ -60,7 +76,16 @@ async fn oauth_endpoints_distinguish_authentication_failures_from_permission_den
                     Duration::from_secs(4),
                 )
                 .await
-                .unwrap_err()
+                .unwrap_err(),
+                _ => CodexPATUsageFetcher::fetch_usage(
+                    &net,
+                    &CodexPATCredentials::new("at-fixture", CodexOAuthCredentialSource::CodexHome),
+                    Some("1.0.0"),
+                    &env,
+                    Some(home.path()),
+                )
+                .await
+                .unwrap_err(),
             };
             assert_eq!(
                 error,
@@ -71,13 +96,18 @@ async fn oauth_endpoints_distinguish_authentication_failures_from_permission_den
                 },
                 "endpoint={endpoint}, status={status}"
             );
+            let wrapped = CodexOAuthError::Fetch(error);
             assert_eq!(
-                CodexOAuthFetchStrategy::should_fallback_on_error(
-                    &CodexOAuthError::Fetch(error),
-                    SourceMode::Auto
-                ),
+                CodexOAuthFetchStrategy::should_fallback_on_error(&wrapped, SourceMode::Auto),
                 status == 401
             );
+            assert_eq!(
+                CodexPATFetchStrategy::should_fallback_on_error(&wrapped, SourceMode::Auto),
+                status == 401
+            );
+            if let Some(whoami_mock) = whoami_ok_mock {
+                whoami_mock.assert_calls_async(1).await;
+            }
             mock.assert_calls_async(1).await;
         }
     }
