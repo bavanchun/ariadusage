@@ -54,6 +54,7 @@ use tokio::sync::{broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::brokers::call::BrokerCall;
+use crate::brokers::cookie_cache::CookieCache;
 use crate::brokers::net::NetBroker;
 use crate::brokers::secret_store::{SecretId, SecretLookup, SecretStore};
 use crate::config_store::ConfigStore;
@@ -382,6 +383,8 @@ pub struct EngineRuntime {
     config_store: ConfigStore,
     secret_store: Arc<SecretStore>,
     net: Arc<NetBroker>,
+    cookie_cache: Arc<CookieCache>,
+    cost_cache_dir: RwLock<Option<std::path::PathBuf>>,
     status_fetcher: RwLock<ProviderStatusFetcher>,
     registry: RwLock<ProviderRegistry>,
     coordinator: Arc<ProviderRefreshCoordinator<ProviderId>>,
@@ -523,6 +526,8 @@ impl EngineRuntime {
             config_store,
             secret_store,
             net,
+            cookie_cache: Arc::new(CookieCache::new()),
+            cost_cache_dir: RwLock::new(None),
             status_fetcher: RwLock::new(ProviderStatusFetcher::default()),
             registry: RwLock::new(registry),
             coordinator: Arc::new(ProviderRefreshCoordinator::new()),
@@ -554,6 +559,23 @@ impl EngineRuntime {
             timer_task: Mutex::new(None),
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
         }
+    }
+
+    /// Attaches a shared [`CookieCache`] to this runtime.
+    pub fn with_cookie_cache(mut self, cookie_cache: Arc<CookieCache>) -> Self {
+        self.cookie_cache = cookie_cache;
+        self
+    }
+
+    /// Returns a reference to the runtime's [`CookieCache`].
+    pub fn cookie_cache(&self) -> &Arc<CookieCache> {
+        &self.cookie_cache
+    }
+
+    /// Overrides the directory used when clearing cost usage caches (`clearCostCache`).
+    pub fn with_cost_cache_dir(self, dir: impl Into<std::path::PathBuf>) -> Self {
+        *self.cost_cache_dir.write().expect("cost_cache_dir lock") = Some(dir.into());
+        self
     }
 
     /// Replaces the [`ProviderStatusFetcher`] (for example, to configure local test server URLs).
@@ -2521,17 +2543,28 @@ impl EngineRuntime {
     }
 
     /// Executes a [`ClientMessage::RunAction`] intent (`refreshAll`, `refreshProvider.<id>`,
-    /// `menuOpened`, `resetUsage`).
-    pub async fn run_action(&self, id: &ActionId, _confirm: Option<bool>) -> Result<(), IpcError> {
+    /// `menuOpened`, `resetUsage`, `clearCookieCache`, `clearCookieCache.<id>`, `clearCostCache`,
+    /// `diagnose`, `diagnose.<id>`).
+    pub async fn run_action(&self, id: &ActionId, confirm: Option<bool>) -> Result<(), IpcError> {
+        self.run_action_with_payload(id, confirm).await.map(|_| ())
+    }
+
+    /// Executes a [`ClientMessage::RunAction`] intent and returns an optional JSON payload for
+    /// [`ServerMessage::Ok`].
+    pub async fn run_action_with_payload(
+        &self,
+        id: &ActionId,
+        _confirm: Option<bool>,
+    ) -> Result<Option<serde_json::Value>, IpcError> {
         match id.as_str() {
             "refreshAll" => {
                 self.refresh_required(RefreshOptions::user_initiated())
                     .await;
-                Ok(())
+                Ok(None)
             }
             "menuOpened" | "noteMenuOpened" => {
                 self.note_menu_opened(self.now());
-                Ok(())
+                Ok(None)
             }
             "refreshProvider" => Err(IpcError::with_static_message(
                 ErrorCode::InvalidRequest,
@@ -2550,9 +2583,58 @@ impl EngineRuntime {
                     }
                 }
                 self.publish_current_snapshot();
-                Ok(())
+                Ok(None)
+            }
+            "clearCookieCache" => {
+                let summary = self.cookie_cache.clear_all_detailed();
+                Ok(Some(serde_json::json!({
+                    "cleared": summary.cleared_count,
+                    "failed": summary.failed_count,
+                })))
+            }
+            "clearCostCache" => {
+                let (cleared, error) = self.clear_cost_cache();
+                Ok(Some(serde_json::json!({
+                    "cleared": cleared,
+                    "error": error,
+                })))
+            }
+            "diagnose" | "diagnose.all" => {
+                let batch = self.diagnose_all_providers(true).await;
+                let payload = serde_json::to_value(batch)
+                    .map_err(|_| IpcError::new(ErrorCode::InternalError))?;
+                Ok(Some(payload))
             }
             other => {
+                if let Some(pid_str) = other.strip_prefix("clearCookieCache.") {
+                    let pid =
+                        ProviderId::new(pid_str).map_err(|_| IpcError::new(ErrorCode::NotFound))?;
+                    if self
+                        .registry
+                        .read()
+                        .expect("registry lock")
+                        .descriptor(&pid)
+                        .is_none()
+                    {
+                        return Err(IpcError::new(ErrorCode::NotFound));
+                    }
+                    let summary = self.cookie_cache.clear_all_scopes_detailed(&pid);
+                    return Ok(Some(serde_json::json!({
+                        "cleared": summary.cleared_count,
+                        "failed": summary.failed_count,
+                    })));
+                }
+                if let Some(pid_str) = other.strip_prefix("diagnose.") {
+                    let pid =
+                        ProviderId::new(pid_str).map_err(|_| IpcError::new(ErrorCode::NotFound))?;
+                    let export = self
+                        .diagnose_provider(&pid, true)
+                        .await
+                        .ok_or_else(|| IpcError::new(ErrorCode::NotFound))?;
+                    let payload = serde_json::to_value(export)
+                        .map_err(|_| IpcError::new(ErrorCode::InternalError))?;
+                    return Ok(Some(payload));
+                }
                 let target = other.strip_prefix("refreshProvider.").or_else(|| {
                     other
                         .strip_prefix("providers.")
@@ -2572,12 +2654,161 @@ impl EngineRuntime {
                     }
                     self.refresh_provider(pid, RefreshOptions::user_initiated())
                         .await;
-                    Ok(())
+                    Ok(None)
                 } else {
                     Err(IpcError::new(ErrorCode::NotFound))
                 }
             }
         }
+    }
+
+    /// Clears persisted cost usage cache JSON files from the cost cache directory.
+    pub fn clear_cost_cache(&self) -> (usize, Option<String>) {
+        let dir = self
+            .cost_cache_dir
+            .read()
+            .expect("cost_cache_dir lock")
+            .clone()
+            .or_else(|| {
+                crate::paths::state_dir()
+                    .ok()
+                    .map(|d| d.join("ariadusage").join("cost-usage"))
+            });
+        let Some(dir) = dir else {
+            return (0, None);
+        };
+        if !dir.exists() {
+            return (0, None);
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) => return (0, Some(err.to_string())),
+        };
+        let mut cleared = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => cleared += 1,
+                    Err(err) => return (cleared, Some(err.to_string())),
+                }
+            }
+        }
+        (cleared, None)
+    }
+
+    /// Executes a live fetch outcome for `id` without mutating the daemon's cached snapshot state,
+    /// used by `ariadusage diagnose`, `ariadusage cookie refresh`, and standalone CLI `usage`.
+    pub async fn fetch_provider_for_cli(
+        &self,
+        id: &ProviderId,
+        runtime_kind: FetchRuntime,
+        interaction: FetchInteraction,
+    ) -> Option<(
+        ResolvedProviderSpec,
+        ProviderPlanInputs,
+        ariadusage_core::pipeline::FetchOutcome,
+    )> {
+        let config = self.load_config();
+        let prefs = AppPreferences::from_config(&config);
+        let request_state = self.coordinator.begin_replacing_request(id.clone()).state;
+        let inputs = self
+            .resolve_plan_inputs(id, &config, &prefs, interaction, &request_state)
+            .await;
+        let spec = self
+            .registry
+            .read()
+            .expect("registry lock")
+            .resolve_spec(id, &config, &inputs)?;
+        let req_seq = self.next_request_seq.fetch_add(1, Ordering::Relaxed);
+        let cx = FetchContext {
+            provider: id.clone(),
+            runtime: runtime_kind,
+            interaction,
+            phase: FetchPhase::Regular,
+            request_id: format!("cli-{}-{req_seq}", id.as_str()),
+            source_mode: spec.source_mode,
+            env: spec.environment.clone(),
+            include_credits: prefs.show_optional_credits_and_extra_usage,
+            selected_token_account: spec.selected_account.as_ref().map(|a| a.id.clone()),
+            cancel: CancellationToken::new(),
+        };
+        let outcome = fetch_outcome(id, spec.plan.as_ref(), &cx, self.sleeper.as_ref()).await;
+        self.coordinator.complete(&request_state, id, false);
+        Some((spec, inputs, outcome))
+    }
+
+    /// Exports a [`ariadusage_core::pipeline::DiagnosticExport`] for a single provider.
+    ///
+    /// Emails, tokens, cookies, and account identifiers are always redacted in CLI/IPC exports.
+    pub async fn diagnose_provider(
+        &self,
+        id: &ProviderId,
+        _redact: bool,
+    ) -> Option<ariadusage_core::pipeline::DiagnosticExport> {
+        use ariadusage_core::pipeline::{
+            DiagnosticAuthSummary, DiagnosticExportBuilder, DiagnosticExportBuilderInput,
+        };
+        let (spec, inputs, outcome) = self
+            .fetch_provider_for_cli(id, FetchRuntime::Cli, FetchInteraction::UserInitiated)
+            .await?;
+
+        let mut modes = Vec::new();
+        if spec.selected_account.is_some() {
+            modes.push("tokenAccount".to_string());
+        }
+        if inputs.api_key.is_some() {
+            modes.push("api".to_string());
+        }
+        if id.as_str() == "claude" {
+            let has_admin_env = spec
+                .environment
+                .get("ANTHROPIC_ADMIN_API_KEY")
+                .or_else(|| spec.environment.get("ANTHROPIC_ADMIN_KEY"))
+                .is_some_and(|v| !v.expose_secret().trim().is_empty());
+            if has_admin_env && !modes.contains(&"api".to_string()) {
+                modes.push("api".to_string());
+            }
+        }
+        if inputs.manual_cookie_header.is_some() && !modes.contains(&"web".to_string()) {
+            modes.push("web".to_string());
+        }
+
+        let auth = DiagnosticAuthSummary::new(!modes.is_empty(), modes);
+
+        Some(DiagnosticExportBuilder::build(
+            DiagnosticExportBuilderInput {
+                provider: id,
+                descriptor: spec.descriptor,
+                outcome: &outcome,
+                source_mode: spec.source_mode,
+                api_region: None,
+                auth,
+                app_version: Some(self.engine_version.clone()),
+                timestamp: Some(self.now()),
+            },
+        ))
+    }
+
+    /// Exports a [`ariadusage_core::pipeline::DiagnosticBatchExport`] for all first-party providers.
+    pub async fn diagnose_all_providers(
+        &self,
+        redact: bool,
+    ) -> ariadusage_core::pipeline::DiagnosticBatchExport {
+        let descriptors: Vec<&'static ProviderDescriptor> = self
+            .registry
+            .read()
+            .expect("registry lock")
+            .descriptors()
+            .iter()
+            .collect();
+        let mut exports = Vec::with_capacity(descriptors.len());
+        for desc in descriptors {
+            if let Some(export) = self.diagnose_provider(&desc.id, redact).await {
+                exports.push(export);
+            }
+        }
+        ariadusage_core::pipeline::DiagnosticBatchExport::new(self.now(), exports)
     }
 
     /// Dispatches a single [`ClientMessage`] intent and returns the resulting [`ServerMessage`]
@@ -2653,10 +2884,13 @@ impl EngineRuntime {
                 Ok(_) => vec![ServerMessage::ok(None)],
                 Err(err) => vec![ServerMessage::error(None, err)],
             },
-            ClientMessage::RunAction { id, confirm } => match self.run_action(&id, confirm).await {
-                Ok(()) => vec![ServerMessage::ok(None)],
-                Err(err) => vec![ServerMessage::error(None, err)],
-            },
+            ClientMessage::RunAction { id, confirm } => {
+                match self.run_action_with_payload(&id, confirm).await {
+                    Ok(Some(payload)) => vec![ServerMessage::ok_with_payload(None, payload)],
+                    Ok(None) => vec![ServerMessage::ok(None)],
+                    Err(err) => vec![ServerMessage::error(None, err)],
+                }
+            }
             ClientMessage::SetSecret { .. } => vec![ServerMessage::error(
                 None,
                 IpcError::with_static_message(
@@ -2723,7 +2957,7 @@ impl IpcBackend for EngineRuntime {
         confirm: Option<bool>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, IpcError>> + Send + '_>>
     {
-        Box::pin(async move { self.run_action(&id, confirm).await.map(|()| None) })
+        Box::pin(async move { self.run_action_with_payload(&id, confirm).await })
     }
 }
 

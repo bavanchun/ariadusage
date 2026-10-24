@@ -676,8 +676,40 @@ pub fn build_default_runtime_with_options(
         crate::brokers::net::NetBroker::new(crate::brokers::net::NetConfig::default())
             .map_err(|err| DaemonError::Signal(std::io::Error::other(err.to_string())))?,
     );
-    let registry = crate::registry::ProviderRegistry::default();
-    let runtime = EngineRuntime::new(config_store, secret_store, net, registry);
+    let cookie_cache = Arc::new(crate::brokers::cookie_cache::CookieCache::new());
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"));
+    let home_dir = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| working_dir.clone());
+    let claude_config = crate::providers::claude::ClaudeOAuthStrategyConfig::new(
+        Arc::clone(&net),
+        working_dir.clone(),
+        home_dir.clone(),
+    )
+    .with_cookie_cache(Arc::clone(&cookie_cache));
+    let codex_config = crate::providers::codex::CodexStrategyConfig::new(
+        Arc::clone(&net),
+        std::collections::BTreeMap::new(),
+        home_dir.clone(),
+        working_dir.clone(),
+    );
+    let antigravity_config = crate::providers::antigravity::AntigravityStrategyConfig::new(
+        Arc::clone(&net),
+        working_dir,
+        home_dir,
+    );
+    let registry = crate::registry::ProviderRegistry::with_all_first_party_configs(
+        claude_config,
+        codex_config,
+        antigravity_config,
+    );
+    let base_env: std::collections::BTreeMap<String, ariadusage_protocol::secret::SecretString> =
+        std::env::vars()
+            .map(|(k, v)| (k, ariadusage_protocol::secret::SecretString::new(v)))
+            .collect();
+    let runtime = EngineRuntime::new(config_store, secret_store, net, registry)
+        .with_cookie_cache(cookie_cache)
+        .with_base_environment(base_env);
     let ipc_notifier: Arc<dyn Notifier> = Arc::new(IpcNoticeNotifier::new(runtime.pushes_sender()));
     let notifier: Arc<dyn Notifier> = {
         #[cfg(target_os = "linux")]
