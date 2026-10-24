@@ -368,8 +368,8 @@ async fn fetch_strategy_reports_admin_api_source_label() {
 fn workspace_details_preserve_organization_totals_and_default_workspace_cents() {
     let costs = r#"{"data":[
       {"starting_at":"2026-09-23T00:00:00Z","ending_at":"2026-09-24T00:00:00Z","results":[
-        {"currency":"USD","amount":"1250","description":"Input tokens","workspace_id":"wrk_fixture"},
-        {"currency":"USD","amount":"250","description":"Output tokens","workspace_id":"wrk_fixture"},
+        {"currency":"USD","amount":"1250","description":"Input tokens","workspace_id":"ws_fixture"},
+        {"currency":"USD","amount":"250","description":"Output tokens","workspace_id":"ws_fixture"},
         {"currency":"USD","amount":"50","description":"Input tokens","workspace_id":null}]},
       {"starting_at":"2026-09-24T00:00:00Z","ending_at":"2026-09-25T00:00:00Z","results":[
         {"currency":"USD","amount":"75","description":"Input tokens","workspace_id":null}]}]}"#;
@@ -397,7 +397,7 @@ fn workspace_details_preserve_organization_totals_and_default_workspace_cents() 
             let rows = &section.expect("workspace section").rows;
             assert_eq!(
                 rows.iter().map(|r| r.label.as_str()).collect::<Vec<_>>(),
-                vec!["wrk_fixture", "Default"]
+                vec!["ws_fixture", "Default"]
             );
             assert_eq!(
                 rows.iter().map(|r| r.value.as_str()).collect::<Vec<_>>(),
@@ -481,7 +481,7 @@ fn workspace_rows_are_bounded_and_single_workspace_retains_the_organization_view
         let rows = (0..count)
             .map(|i| {
                 format!(
-                    r#"{{"amount":"{}","workspace_id":"wrk_fixture_{i}"}}"#,
+                    r#"{{"amount":"{}","workspace_id":"ws_fixture_{i}"}}"#,
                     i * 100
                 )
             })
@@ -514,11 +514,11 @@ fn workspace_rows_are_bounded_and_single_workspace_retains_the_organization_view
             let section = section.unwrap();
             assert_eq!(
                 section.rows.first().map(|r| r.label.as_str()),
-                Some("wrk_fixture_24")
+                Some("ws_fixture_24")
             );
             assert_eq!(
                 section.rows.last().map(|r| r.label.as_str()),
-                Some("wrk_fixture_5")
+                Some("ws_fixture_5")
             );
         }
     }
@@ -539,7 +539,7 @@ fn workspace_totals_use_the_same_last_thirty_buckets_as_organization_spend() {
                 .unwrap();
             let amount = if offset == 30 { 10000 } else { 100 };
             format!(
-                r#"{{"starting_at":"{}","ending_at":"{}","results":[{{"amount":"{amount}","workspace_id":"wrk_fixture_{}"}}]}}"#,
+                r#"{{"starting_at":"{}","ending_at":"{}","results":[{{"amount":"{amount}","workspace_id":"ws_fixture_{}"}}]}}"#,
                 ClaudeAdminAPIUsageFetcher::iso8601_string(start),
                 ClaudeAdminAPIUsageFetcher::iso8601_string(end),
                 offset % 2
@@ -890,7 +890,7 @@ async fn fetch_usage_sends_pinned_headers_and_query_params_and_parses_reports() 
                             {
                               "amount": "450",
                               "description": "Claude Sonnet 4 Input Tokens",
-                              "workspace_id": "wrk_1"
+                              "workspace_id": "ws_1"
                             }
                           ]
                         }
