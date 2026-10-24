@@ -73,14 +73,14 @@ async fn process_candidates_probe_concurrently_while_preserving_result_order() {
 // upstream: AntigravityDeadlineTests.swift:87 process candidate transport error preserves url error identity
 #[tokio::test]
 async fn process_candidate_transport_error_preserves_url_error_identity() {
-    let socket = tokio::net::TcpSocket::new_v4().unwrap();
-    socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = AntigravityConnectionEndpoint::new(
         "http",
-        socket.local_addr().unwrap().port(),
+        listener.local_addr().unwrap().port(),
         "",
         EndpointSource::LanguageServer,
     );
+    drop(listener);
     let net = NetBroker::new(NetConfig::default()).unwrap();
     let error = AntigravityStatusProbe::send_loopback_request(
         &net,
