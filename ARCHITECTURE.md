@@ -84,7 +84,7 @@ Versions are owned by `Cargo.toml` and `Cargo.lock`. This table records why each
 | Base64 decoding | base64 | Padding-indifferent unverified JWT expiration reader in core |
 | Secret store (Linux) | secret-service (Tokio with DH encryption) | Default login collection, lock-aware reads, and writes restricted to user-initiated calls |
 | Browser cookie crypto and digests | aes, cbc, pbkdf2, sha1, sha2 | Domain-separated digests in core; Chromium's Linux cookie encryption, v24 host hashes and zeroized plaintext in engine, implemented in-house with the RustCrypto traits already used by secret-service |
-| Notifications | notify-rust (zbus on tokio) | One API over D-Bus now and macOS/Windows later |
+| Notifications | notify-rust (zbus on tokio) on Linux; UNUserNotificationCenter via objc2 in ariadusage-macos over IPC v1 Notice | Native D-Bus notifications in the Linux daemon without notify-send subprocesses; on macOS, UNUserNotificationCenter requires an application bundle identity, so the daemon pushes sanitized ServerMessage::Notice events over IPC v1 and the macOS app posts them |
 | Process and port discovery | procfs (Linux), proc_pidinfo, sysinfo and listeners (macOS) | Same-user process identity, descriptor scans, Antigravity language-server discovery, agent sessions and the probe reaper |
 | Paths | etcetera | XDG on Linux and macOS in production wrapper; pure resolver handles test injection |
 | File descriptor and process safety (Unix) | rustix (`fs`, `process`, `pipe`) | `O_NOFOLLOW`, `fstat`, `geteuid`, `fchmod`, pipe and process primitives in Unix engine code without unsafe code under `unsafe_code = "deny"`; other targets use typed unsupported paths |
@@ -139,11 +139,11 @@ The macOS app and the plugin are clients: they never fetch, never hold a secret 
 | Surface | Role |
 |---|---|
 | `ariadusage` CLI | `usage`, `cost`, `status`, `config`, `hooks`, `serve`, `daemon`, plus the other CodexBar commands that apply to the three v1 providers. JSON output schemas and exit codes are documented with the CLI. The binary's `--help` is the authority for flags once it exists |
-| `ariadusage daemon` | Long-running engine behind `ariadusage.service`, a systemd user unit installed by the package under `/usr/lib/systemd/user/` on Linux, or `io.github.bavanchun.ariadusage.daemon`, a per-user launchd LaunchAgent on macOS. It serves the socket, runs the scheduler and sends notifications |
+| `ariadusage daemon` | Long-running engine behind `ariadusage.service`, a systemd user unit installed by the package under `/usr/lib/systemd/user/` on Linux, or `io.github.bavanchun.ariadusage.daemon`, a per-user launchd LaunchAgent on macOS. It serves the socket, runs the scheduler and sends notifications (over D-Bus on Linux, and as IPC v1 `Notice` events to the app on macOS) |
 | Unix socket | `$XDG_RUNTIME_DIR/ariadusage/engine.sock` on Linux, or `<DARWIN_USER_TEMP_DIR>/ariadusage/engine.sock` on macOS (resolved from `confstr(_CS_DARWIN_USER_TEMP_DIR)` when `XDG_RUNTIME_DIR` is unset), owner-only. The only interface frontends use |
 | `serve` and dashboard | Opt-in HTTP server with a web dashboard. Loopback by default; anything else needs a token, matching CodexBar's hardening |
 | Omarchy plugin | Bar glyph plus panel; renders snapshots and descriptor-driven settings |
-| macOS app | Menu-bar status items, the dropdown menu and the Settings window; renders snapshots and descriptor-driven settings |
+| macOS app | Menu-bar status items, the dropdown menu and the Settings window; renders snapshots, descriptor-driven settings, and `UNUserNotificationCenter` user notifications from engine `Notice` events |
 
 ### 4.1 macOS app
 
@@ -431,6 +431,7 @@ The three providers are the hardest part of CodexBar, not the easiest, so the fi
 | Claude OAuth env override | `ARIADUSAGE_CLAUDE_OAUTH_TOKEN` and `_SCOPES` only | Reading `CODEXBAR_*` as a migration fallback | No shared install base; AGENTS.md forbids CodexBar identifiers. |
 | Darwin process inspection | `proc_pidinfo` (`ProcBSDInfo`, `ProcBSDShortInfo`, `ProcFDInfo`, `PipeFdInfo`, `VnodeFdInfo`), `sysinfo` (`system` feature only, `KERN_PROCARGS2` argv/environment and PID enumeration) and `listeners` (per-PID `PROC_PIDFDSOCKETINFO` TCP `LISTEN` port discovery) | `darwin-libproc` (pins `memchr ~2.3`, conflicting with `regex`), `libproc` `SocketFDInfo` (exposes raw C unions requiring `unsafe` field access), `netstat2` (requires `bindgen` at build time), or raw `libc` `unsafe` calls in `ariadusage-engine` | Keeps `ariadusage-engine` under `unsafe_code = "deny"` while providing microsecond start-time identity, zombie state fallback, pipe/vnode descriptor handles for holder teardown, `KERN_PROCARGS2` argv/marker reads, and per-PID listening TCP port discovery on macOS |
 | Engine hosting and socket path on macOS | Separate per-user `ariadusage daemon` managed by launchd as a LaunchAgent (`io.github.bavanchun.ariadusage.daemon`; `SMAppService` registration planned for app-bundle packaging), serving `<DARWIN_USER_TEMP_DIR>/ariadusage/engine.sock` resolved from `confstr(_CS_DARWIN_USER_TEMP_DIR)` (canonicalized, mode 0700, EUID-owned, under the 104-byte `sun_path` limit) | Linking `ariadusage-engine` in-process inside `ariadusage-macos`; a shared `/tmp` socket path | Keeps Principle 1 ("one engine, many frontends"), the one-binary rule, and "the app never holds a secret" intact while reusing the app's existing IPC v1 client |
+| Notification delivery on macOS | Engine evaluates notification policy and pushes sanitized `ServerMessage::Notice` (with `notificationId` and `sound`) on `Topic::Notices`; `ariadusage-macos` posts to `UNUserNotificationCenter` when running in an `.app` bundle | Calling `notify-rust` / `mac-notification-sys` or `UNUserNotificationCenter` from `ariadusage daemon` | `UNUserNotificationCenter` requires an application bundle identity (`NSBundle.mainBundle.bundleIdentifier` inside an `.app` bundle) and throws an Objective-C exception in unbundled daemon/CLI binaries; keeping policy and redaction in the engine while rendering in `ariadusage-macos` preserves Principle 1 and the app bundle identity |
 
 ---
 
