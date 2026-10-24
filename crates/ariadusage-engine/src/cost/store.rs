@@ -323,7 +323,32 @@ pub fn combined_schema_version(base: i32, parser_hash: &str) -> i32 {
     combined as i32
 }
 
-/// Resolves the cache root directory from injected environment, home directory, and optional temp directory.
+fn expand_tilde_path(raw: &str, home: Option<&Path>) -> PathBuf {
+    if raw == "~" {
+        if let Some(h) = home {
+            return h.to_path_buf();
+        }
+        return PathBuf::from(raw);
+    }
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(h) = home {
+            return h.join(rest);
+        }
+        return PathBuf::from(raw);
+    }
+    #[cfg(windows)]
+    if let Some(rest) = raw.strip_prefix(r"~\") {
+        if let Some(h) = home {
+            return h.join(rest);
+        }
+        return PathBuf::from(raw);
+    }
+    PathBuf::from(raw)
+}
+
+/// Resolves the cache root directory from injected environment, home directory, and optional temp directory,
+/// honoring the engine path policy (`XDG_CACHE_HOME` trimmed, tilde-expanded, and required to be absolute;
+/// fallback `$HOME/.cache/ariadusage`).
 #[must_use]
 pub fn resolve_cache_root_with_temp(
     env: &BTreeMap<String, String>,
@@ -333,18 +358,21 @@ pub fn resolve_cache_root_with_temp(
     if let Some(xdg) = env.get("XDG_CACHE_HOME").map(|s| s.trim())
         && !xdg.is_empty()
     {
-        return PathBuf::from(xdg).join("ariadusage");
+        let expanded = expand_tilde_path(xdg, home);
+        if expanded.is_absolute() {
+            return expanded.join("ariadusage");
+        }
     }
-    if let Some(home) = home {
+    if let Some(home) = home.filter(|h| h.is_absolute()) {
         return home.join(".cache").join("ariadusage");
     }
     if let Some(temp_dir) = temp_dir {
         return temp_dir.join("ariadusage");
     }
-    if let Ok(state_dir) = crate::paths::state_dir() {
-        return state_dir.join("ariadusage");
+    if let Some(home) = etcetera::home_dir().ok().filter(|p| p.is_absolute()) {
+        return home.join(".cache").join("ariadusage");
     }
-    PathBuf::from("/var/tmp/ariadusage")
+    PathBuf::new()
 }
 
 /// Resolves the cache root directory from injected environment and home directory.
@@ -353,11 +381,16 @@ pub fn resolve_cache_root(env: &BTreeMap<String, String>, home: Option<&Path>) -
     resolve_cache_root_with_temp(env, home, None)
 }
 
-/// Resolves the default cache root directory when no explicit root is provided.
+/// Resolves the default cache root directory (`$XDG_CACHE_HOME/ariadusage` or `~/.cache/ariadusage`)
+/// using the engine path policy when no explicit root is provided.
 #[must_use]
 pub fn default_cache_root() -> PathBuf {
     let home = etcetera::home_dir().ok().filter(|p| p.is_absolute());
-    resolve_cache_root(&BTreeMap::new(), home.as_deref())
+    let mut env = BTreeMap::new();
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME").and_then(|v| v.into_string().ok()) {
+        env.insert("XDG_CACHE_HOME".to_owned(), xdg);
+    }
+    resolve_cache_root(&env, home.as_deref())
 }
 
 /// Resolves the disk-backed `0700` parent directory beside the cost cache root
@@ -457,8 +490,7 @@ impl CostUsageStore {
         };
         let busy_timeout_milliseconds: i64 =
             conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
-        let foreign_keys_raw: i64 =
-            conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
+        let foreign_keys_raw: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0))?;
         drop(conn);
         self.repair_store_permissions(&open_path);
         Ok(StoreConfiguration {
