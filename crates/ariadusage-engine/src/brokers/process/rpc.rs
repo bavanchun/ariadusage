@@ -76,7 +76,7 @@ impl RpcSession {
                 .await
                 .map_err(|(error, _)| error)
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (method, params, timeout);
             Err(RpcError::Process(ProcessError::Unsupported))
@@ -89,7 +89,7 @@ impl RpcSession {
         params: &RawValue,
         timeout: Duration,
     ) -> Result<Box<RawValue>, (RpcError, Option<zeroize::Zeroizing<String>>)> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.inner.request(method, params, timeout).await
         }
@@ -101,11 +101,11 @@ impl RpcSession {
     }
 
     pub async fn notify(&self, method: &str, params: &RawValue) -> Result<(), RpcError> {
-        #[cfg(target_os = "linux")]
+        #[cfg(unix)]
         {
             self.inner.notify(method, params).await
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(unix))]
         {
             let _ = (method, params);
             Err(RpcError::Process(ProcessError::Unsupported))
