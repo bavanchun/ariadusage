@@ -1982,3 +1982,12 @@ sources = [
     "TestsLinux/HookTransitionDetectorLinuxTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-macos/tests/highest_usage.rs"
+sources = [
+    "Tests/CodexBarTests/CodexCombinedMetricHighestUsageTests.swift",
+    "Tests/CodexBarTests/CodexWeeklyCapSurfaceTests.swift",
+    "Tests/CodexBarTests/UsageStoreHighestUsageTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

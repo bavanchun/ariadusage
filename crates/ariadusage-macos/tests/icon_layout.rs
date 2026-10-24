@@ -20,9 +20,9 @@ use ariadusage_macos::icon::{
     QuotaWarningThresholds, QuotaWarningTracker, RectPt, RectPx, StatusItemAnimationState,
     StatusLevel, StatusOverlay, blink_tick_sleep_duration_ms, effective_provider_tint_rgb,
     fill_width_pixels, icon_render_signature, is_blinking_allowed, layout,
-    loading_animation_has_exceeded_continuous_cap, loading_blink_amount, loading_frame_percents,
-    meets_appearance_contrast, morph_layout, quota_warning_flash_active, select_motion_effect,
-    should_run_blink_task, style_supports_blink,
+    loading_animation_has_exceeded_continuous_cap, loading_blink_amount, meets_appearance_contrast,
+    morph_layout, quota_warning_flash_active, select_motion_effect, should_run_blink_task,
+    style_supports_blink,
 };
 
 const TOP: RectPx = RectPx::new(3, 19, 30, 12);
@@ -926,6 +926,7 @@ mod macos_pixel_tests {
         image_png_bytes, quota_warning_flash_image, render_icon, render_morph_icon,
         render_png_for_appearance,
     };
+    use ariadusage_macos::icon::loading_frame_percents;
     use objc2::AnyThread;
     use objc2::rc::Retained;
     use objc2_app_kit::{NSBitmapImageRep, NSImage};

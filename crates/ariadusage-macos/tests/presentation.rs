@@ -809,30 +809,82 @@ fn litellm_automatic_metric_uses_team_budget_and_prioritizes_exhausted() {
     assert_eq!(exhausted.map(|w| w.used_percent), Some(100.0));
 }
 
+// upstream: MenuBarMetricWindowResolverTests.swift:248 automatic metric prioritizes exhausted default secondary window
 #[test]
-fn default_automatic_metric_prioritizes_exhausted_secondary_or_tertiary_and_highest_usage() {
-    let mut provider = make_provider("codex");
-    provider.windows.primary = Some(metric_ok(rate_window(30.0, Some(300), None)));
-    provider.windows.secondary = Some(metric_ok(rate_window(85.0, Some(10080), None)));
-
-    let win = resolve_menu_bar_metric_window(
+fn automatic_metric_prioritizes_exhausted_default_secondary_window() {
+    let mut provider = make_provider("opencode");
+    let mut primary = rate_window(42.0, Some(300), None);
+    primary.reset_description = Some("Primary".to_string());
+    provider.windows.primary = Some(metric_ok(primary));
+    let mut secondary = rate_window(100.0, Some(10080), None);
+    secondary.reset_description = Some("Secondary".to_string());
+    provider.windows.secondary = Some(metric_ok(secondary));
+    provider.updated_at = Some(Timestamp::now());
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
         &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(85.0));
+    assert_eq!(
+        window.as_ref().and_then(|w| w.reset_description.as_deref()),
+        Some("Secondary")
+    );
+    assert_eq!(window.map(|w| w.used_percent), Some(100.0));
+}
 
-    provider.windows.tertiary = Some(metric_ok(rate_window(100.0, None, None)));
-    let exhausted = resolve_menu_bar_metric_window(
+// upstream: MenuBarMetricWindowResolverTests.swift:265 automatic metric prioritizes exhausted default tertiary window
+#[test]
+fn automatic_metric_prioritizes_exhausted_default_tertiary_window() {
+    let mut provider = make_provider("opencode");
+    let mut primary = rate_window(42.0, Some(300), None);
+    primary.reset_description = Some("Primary".to_string());
+    provider.windows.primary = Some(metric_ok(primary));
+    let mut secondary = rate_window(55.0, Some(10080), None);
+    secondary.reset_description = Some("Secondary".to_string());
+    provider.windows.secondary = Some(metric_ok(secondary));
+    let mut tertiary = rate_window(100.0, Some(43200), None);
+    tertiary.reset_description = Some("Tertiary".to_string());
+    provider.windows.tertiary = Some(metric_ok(tertiary));
+    provider.updated_at = Some(Timestamp::now());
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
         &provider,
         false,
         false,
         None,
     );
-    assert_eq!(exhausted.map(|w| w.used_percent), Some(100.0));
+    assert_eq!(
+        window.as_ref().and_then(|w| w.reset_description.as_deref()),
+        Some("Tertiary")
+    );
+    assert_eq!(window.map(|w| w.used_percent), Some(100.0));
+}
+
+// upstream: MenuBarMetricWindowResolverTests.swift:283 automatic metric chooses highest usage without a forecast
+#[test]
+fn automatic_metric_chooses_highest_usage_without_a_forecast() {
+    let mut provider = make_provider("opencode");
+    let mut primary = rate_window(42.0, Some(300), None);
+    primary.reset_description = Some("Primary".to_string());
+    provider.windows.primary = Some(metric_ok(primary));
+    let mut secondary = rate_window(99.0, Some(10080), None);
+    secondary.reset_description = Some("Secondary".to_string());
+    provider.windows.secondary = Some(metric_ok(secondary));
+    provider.updated_at = Some(Timestamp::now());
+    let window = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &provider,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(
+        window.as_ref().and_then(|w| w.reset_description.as_deref()),
+        Some("Secondary")
+    );
+    assert_eq!(window.map(|w| w.used_percent), Some(99.0));
 }
 
 #[test]
