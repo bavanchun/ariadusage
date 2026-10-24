@@ -668,6 +668,20 @@ pub fn build_default_runtime_with_options(
     config_store: ConfigStore,
     disable_keyring: bool,
 ) -> Result<Arc<EngineRuntime>, DaemonError> {
+    build_default_runtime_with_env(
+        config_store,
+        disable_keyring,
+        std::collections::BTreeMap::new(),
+    )
+}
+
+/// Builds the default [`EngineRuntime`] with an explicit `disable_keyring` toggle and base
+/// environment map injected by the caller.
+pub fn build_default_runtime_with_env(
+    config_store: ConfigStore,
+    disable_keyring: bool,
+    base_env: std::collections::BTreeMap<String, ariadusage_protocol::secret::SecretString>,
+) -> Result<Arc<EngineRuntime>, DaemonError> {
     let config = config_store.load_effective().unwrap_or_else(|_| {
         ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
     });
@@ -693,6 +707,7 @@ pub fn build_default_runtime_with_options(
         }
     };
     let mut runtime = runtime
+        .with_base_environment(base_env)
         .with_notifier(notifier)
         .with_hook_runner(Arc::new(HookRunner::new_process_broker()));
     if let Ok(state_dir) = crate::paths::state_dir() {

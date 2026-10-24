@@ -22,7 +22,7 @@ use ariadusage_core::providers::{ProviderDescriptor, SourceMode, first_party_ord
 use ariadusage_engine::brokers::browser::{Browser, BrowserGate, DEFAULT_IMPORT_ORDER};
 use ariadusage_engine::brokers::cookie_cache::CookieCache;
 use ariadusage_engine::config_store::ConfigStore;
-use ariadusage_engine::daemon::build_default_runtime_with_options;
+use ariadusage_engine::daemon::build_default_runtime_with_env;
 use ariadusage_engine::paths;
 use ariadusage_engine::runtime::EngineRuntime;
 use ariadusage_protocol::ids::ProviderId;
@@ -48,6 +48,19 @@ impl OutputFormat {
     }
 }
 
+/// Resolves the user home directory for CLI runtime construction, failing closed (`None`)
+/// when neither `HOME` nor the OS home directory resolves so the CLI never falls back to the
+/// current working directory.
+pub fn resolve_cli_home_dir(
+    env_home: Option<&std::ffi::OsStr>,
+    fallback_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    env_home
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| fallback_home.filter(|p| !p.as_os_str().is_empty()))
+}
+
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
 /// active or when a command executes directly in the CLI process.
 pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
@@ -58,14 +71,13 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
         .or_else(|_| etcetera::home_dir())
         .or_else(|_| cfg_path.parent().map(Path::to_path_buf).ok_or(()))
         .map_err(|()| "working directory unavailable".to_owned())?;
-    let home_dir = std::env::var_os("HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| etcetera::home_dir().ok())
-        .unwrap_or_else(|| working_dir.clone());
+    let home_dir = resolve_cli_home_dir(
+        std::env::var_os("HOME").as_deref(),
+        etcetera::home_dir().ok(),
+    );
 
     let mut base_env = BTreeMap::new();
-    if let Some(home_str) = home_dir.to_str() {
+    if let Some(home_str) = home_dir.as_deref().and_then(Path::to_str) {
         base_env.insert("HOME".to_owned(), SecretString::new(home_str.to_owned()));
     }
     for key in [
@@ -82,14 +94,11 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
         }
     }
 
-    let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)
-        .map_err(|e| e.to_string())?;
-    let runtime = Arc::new(
-        Arc::into_inner(runtime)
-            .expect("freshly constructed CLI runtime has a single owner")
-            .with_base_environment(base_env),
-    );
-    if let (Ok(agy_id), Ok(net)) = (
+    let runtime =
+        build_default_runtime_with_env(ConfigStore::new(cfg_path), disable_keyring, base_env)
+            .map_err(|e| e.to_string())?;
+    if let (Some(home_dir), Ok(agy_id), Ok(net)) = (
+        home_dir,
         ProviderId::new("antigravity"),
         ariadusage_engine::brokers::net::NetBroker::new(
             ariadusage_engine::brokers::net::NetConfig::default(),
