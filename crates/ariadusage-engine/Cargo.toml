@@ -49,6 +49,7 @@ rusqlite = { workspace = true }
 sha1 = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = { workspace = true }
 procfs = { workspace = true }
 secret-service = { workspace = true }
 

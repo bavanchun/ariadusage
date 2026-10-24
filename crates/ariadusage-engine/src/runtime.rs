@@ -15,6 +15,11 @@ use std::time::Duration;
 
 use ariadusage_core::config::{Config, QuotaWarningWindow, SecretPresence};
 use ariadusage_core::model::{UsageSnapshot, identities_match};
+use ariadusage_core::notifications::{
+    CodexAccountScopedRefreshGuard, CodexActiveSource, CodexIdentity, CodexLimitResetOwnerKey,
+    CodexSessionQuotaOwnerKey, CredentialFetchOutcome, CredentialNotificationAction,
+    NotificationPolicyEngine, NotificationPost, ProviderCredentialError, ProviderFetchErrorKind,
+};
 use ariadusage_core::pace::UsagePace;
 use ariadusage_core::pipeline::{
     BoxFuture, FetchContext, FetchError, FetchInteraction, FetchPhase, FetchRuntime, Sleeper,
@@ -29,7 +34,8 @@ use ariadusage_core::refresh::{
     BackgroundWorkPowerPolicy, FailureGate, FailureInput, HookDispatch, HookProviderObservation,
     HookProviderStatus, HookQuotaLaneKey, HookQuotaLaneObservation, HookTransitionDetector,
     HooksConfig, RefreshFrequency, SessionQuotaTransition, SessionQuotaTransitionDetector,
-    SurfacePolicy, ThermalPressure, failure_decision, is_cancellation, is_preservable_error,
+    SurfacePolicy, ThermalPressure, failure_decision, hook_account_discriminator,
+    hook_account_display_name, is_cancellation, is_preservable_error,
     next_fixed_timer_scheduled_at, on_account_change, should_advance_adaptive_timer,
 };
 use ariadusage_core::status::StatuspageComponentSummary;
@@ -52,6 +58,8 @@ use crate::brokers::net::NetBroker;
 use crate::brokers::secret_store::{SecretId, SecretLookup, SecretStore};
 use crate::config_store::ConfigStore;
 use crate::coordinator::{ProviderRefreshCoordinator, WaitResult};
+use crate::daemon::{NoopNotifier, Notifier};
+use crate::hooks::{FORWARDED_ENVIRONMENT_KEYS, HookRunner};
 use crate::ipc_server::IpcBackend;
 use crate::registry::{ProviderPlanInputs, ProviderRegistry, ResolvedProviderSpec};
 use crate::settings_page::{
@@ -77,9 +85,8 @@ impl Sleeper for TokioSleeper {
 /// Seam for edge-triggered hooks and session quota notifications.
 ///
 /// The first observation for any provider or account only establishes a baseline and never
-/// triggers a hook or notification (`HookTransitionDetector` and `SessionQuotaTransitionDetector`
-/// enforce this invariant). Concrete OS notification delivery and hook command execution plug
-/// into this trait in a later slice.
+/// triggers a hook or notification (`HookTransitionDetector`, `SessionQuotaTransitionDetector`,
+/// and `NotificationPolicyEngine` enforce this invariant).
 pub trait TransitionSink: Send + Sync {
     /// Invoked when a provider state transition matches one or more configured hook events.
     fn on_hook_dispatch(&self, dispatch: &HookDispatch);
@@ -90,6 +97,9 @@ pub trait TransitionSink: Send + Sync {
         provider: &ProviderId,
         transition: SessionQuotaTransition,
     );
+
+    /// Invoked when a structured notification post is emitted by [`NotificationPolicyEngine`].
+    fn on_notification(&self, _post: &NotificationPost) {}
 }
 
 /// Default no-op [`TransitionSink`] used when no external notifier or hook runner is attached.
@@ -107,12 +117,13 @@ impl TransitionSink for NoopTransitionSink {
     }
 }
 
-/// In-memory [`TransitionSink`] that records all edge-triggered hook dispatches and session
-/// quota transitions for inspection in tests and diagnostics.
+/// In-memory [`TransitionSink`] that records all edge-triggered hook dispatches, session
+/// quota transitions, and notification posts for inspection in tests and diagnostics.
 #[derive(Debug, Default)]
 pub struct RecordingTransitionSink {
     hook_dispatches: Mutex<Vec<HookDispatch>>,
     session_transitions: Mutex<Vec<(ProviderId, SessionQuotaTransition)>>,
+    notifications: Mutex<Vec<NotificationPost>>,
 }
 
 impl RecordingTransitionSink {
@@ -129,6 +140,13 @@ impl RecordingTransitionSink {
 
     pub fn session_transitions(&self) -> Vec<(ProviderId, SessionQuotaTransition)> {
         self.session_transitions
+            .lock()
+            .expect("recording sink lock")
+            .clone()
+    }
+
+    pub fn notifications(&self) -> Vec<NotificationPost> {
+        self.notifications
             .lock()
             .expect("recording sink lock")
             .clone()
@@ -152,6 +170,13 @@ impl TransitionSink for RecordingTransitionSink {
             .lock()
             .expect("recording sink lock")
             .push((provider.clone(), transition));
+    }
+
+    fn on_notification(&self, post: &NotificationPost) {
+        self.notifications
+            .lock()
+            .expect("recording sink lock")
+            .push(post.clone());
     }
 }
 
@@ -363,9 +388,11 @@ pub struct EngineRuntime {
     snapshot_store: Arc<SnapshotStore>,
     sleeper: Arc<dyn Sleeper>,
     transition_sink: Arc<dyn TransitionSink>,
+    notifier: Arc<dyn Notifier>,
+    hook_runner: Option<Arc<HookRunner>>,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     base_environment: RwLock<BTreeMap<String, SecretString>>,
-    hooks_config: RwLock<HooksConfig>,
+    hooks_config: RwLock<Option<HooksConfig>>,
     providers: Mutex<HashMap<ProviderId, ProviderRuntimeState>>,
     batch_state: Mutex<BatchRefreshState>,
     batch_idle_tx: watch::Sender<bool>,
@@ -375,6 +402,8 @@ pub struct EngineRuntime {
     adaptive_state: Mutex<AdaptiveRuntimeState>,
     hook_detector: Mutex<HookTransitionDetector>,
     session_detector: Mutex<SessionQuotaTransitionDetector>,
+    notification_policy: Mutex<NotificationPolicyEngine>,
+    notification_state_path: RwLock<Option<std::path::PathBuf>>,
     settings_changed_tx: broadcast::Sender<SettingsScope>,
     pushes_tx: broadcast::Sender<ServerMessage>,
     next_request_seq: AtomicU64,
@@ -500,9 +529,11 @@ impl EngineRuntime {
             snapshot_store: Arc::new(SnapshotStore::new(initial_snapshot)),
             sleeper: Arc::new(TokioSleeper),
             transition_sink: Arc::new(NoopTransitionSink),
+            notifier: Arc::new(NoopNotifier),
+            hook_runner: None,
             clock,
             base_environment: RwLock::new(BTreeMap::new()),
-            hooks_config: RwLock::new(HooksConfig::default()),
+            hooks_config: RwLock::new(None),
             providers: Mutex::new(provider_states),
             batch_state: Mutex::new(BatchRefreshState::default()),
             batch_idle_tx,
@@ -512,6 +543,8 @@ impl EngineRuntime {
             adaptive_state: Mutex::new(AdaptiveRuntimeState::default()),
             hook_detector: Mutex::new(HookTransitionDetector::new()),
             session_detector: Mutex::new(SessionQuotaTransitionDetector::new()),
+            notification_policy: Mutex::new(NotificationPolicyEngine::default()),
+            notification_state_path: RwLock::new(None),
             settings_changed_tx,
             pushes_tx,
             next_request_seq: AtomicU64::new(1),
@@ -535,11 +568,48 @@ impl EngineRuntime {
         self
     }
 
-    /// Attaches a [`TransitionSink`] to receive edge-triggered hook dispatches and session quota
-    /// transitions.
+    /// Attaches a [`TransitionSink`] to receive edge-triggered hook dispatches, session quota
+    /// transitions, and notification posts.
     pub fn with_transition_sink(mut self, sink: Arc<dyn TransitionSink>) -> Self {
         self.transition_sink = sink;
         self
+    }
+
+    /// Attaches a [`Notifier`] backend to deliver emitted [`NotificationPost`]s.
+    pub fn with_notifier(mut self, notifier: Arc<dyn Notifier>) -> Self {
+        self.notifier = notifier;
+        self
+    }
+
+    /// Configures the file path (`$XDG_STATE_HOME/ariadusage/notifications-state.json`, mode `0600`)
+    /// used to load and persist edge-triggered notification state across engine restarts.
+    pub fn with_notification_state_path(self, path: std::path::PathBuf) -> Self {
+        if let Ok(bytes) = std::fs::read(&path)
+            && let Ok(persisted) = serde_json::from_slice::<
+                ariadusage_core::notifications::NotificationPersistedState,
+            >(&bytes)
+        {
+            self.notification_policy
+                .lock()
+                .expect("notification_policy lock")
+                .restore_persisted_state(persisted);
+        }
+        *self
+            .notification_state_path
+            .write()
+            .expect("notification_state_path lock") = Some(path);
+        self
+    }
+
+    /// Attaches a [`HookRunner`] to execute matching hook rules when transitions occur.
+    pub fn with_hook_runner(mut self, hook_runner: Arc<HookRunner>) -> Self {
+        self.hook_runner = Some(hook_runner);
+        self
+    }
+
+    /// Returns a clone of the broadcast sender used for [`ServerMessage`] IPC pushes.
+    pub fn pushes_sender(&self) -> broadcast::Sender<ServerMessage> {
+        self.pushes_tx.clone()
     }
 
     /// Replaces the wall-clock provider used for snapshot timestamps and pace calculation.
@@ -602,7 +672,7 @@ impl EngineRuntime {
 
     /// Sets the [`HooksConfig`] evaluated by the edge-triggered [`HookTransitionDetector`].
     pub fn with_hooks_config(self, hooks_config: HooksConfig) -> Self {
-        *self.hooks_config.write().expect("hooks_config lock") = hooks_config;
+        *self.hooks_config.write().expect("hooks_config lock") = Some(hooks_config);
         self
     }
 
@@ -1215,6 +1285,10 @@ impl EngineRuntime {
                 .lock()
                 .expect("hook_detector lock")
                 .reset_provider(id.as_str());
+            self.notification_policy
+                .lock()
+                .expect("notification_policy lock")
+                .reset_provider_for_account_switch(id);
             rev
         } else {
             self.providers
@@ -1253,6 +1327,10 @@ impl EngineRuntime {
             .lock()
             .expect("hook_detector lock")
             .reset_provider(id.as_str());
+        self.notification_policy
+            .lock()
+            .expect("notification_policy lock")
+            .reset_provider_for_account_switch(id);
         self.publish_current_snapshot();
     }
 
@@ -1324,10 +1402,14 @@ impl EngineRuntime {
                         .lock()
                         .expect("hook_detector lock")
                         .reset_provider(id.as_str());
+                    self.notification_policy
+                        .lock()
+                        .expect("notification_policy lock")
+                        .reset_provider_for_account_switch(id);
                 }
 
                 if should_eval_transitions {
-                    self.evaluate_transitions(id).await;
+                    self.evaluate_transitions_with(id, true, None).await;
                 }
                 false
             }
@@ -1376,7 +1458,7 @@ impl EngineRuntime {
                 };
 
                 if should_eval_transitions {
-                    self.evaluate_transitions(id).await;
+                    self.evaluate_transitions_with(id, false, Some(&err)).await;
                 }
                 false
             }
@@ -1449,7 +1531,7 @@ impl EngineRuntime {
                 };
 
                 if published {
-                    self.evaluate_transitions(&id).await;
+                    self.evaluate_transitions_with(&id, false, None).await;
                     self.publish_current_snapshot();
                     Ok(Some(status))
                 } else {
@@ -1481,9 +1563,19 @@ impl EngineRuntime {
             .unwrap_or_default()
     }
 
-    async fn evaluate_transitions(&self, id: &ProviderId) {
+    async fn evaluate_transitions_with(
+        &self,
+        id: &ProviderId,
+        is_usage_refresh_success: bool,
+        fetch_err: Option<&FetchError>,
+    ) {
         let now = self.now();
-        let (observation, session_remaining) = {
+        let config = self.load_config();
+        let prefs = AppPreferences::from_config(&config);
+        let provider_cfg = config.provider_config(id.as_str()).cloned();
+        let warnings = provider_cfg.as_ref().and_then(|c| c.quota_warnings.clone());
+
+        let (observation, session_remaining, snapshot_opt, account_disc_for_policy, source_label) = {
             let states = self.providers.lock().expect("providers lock");
             let Some(state) = states.get(id) else {
                 return;
@@ -1497,29 +1589,83 @@ impl EngineRuntime {
 
             let mut lanes = Vec::new();
             let mut secondary_window = None;
+            let mut account_display = None;
+            let mut account_discriminator = state.account_key.clone();
+
             if let Some(snap) = &state.snapshot {
-                lanes.push(HookQuotaLaneObservation::new(
-                    HookQuotaLaneKey::new(
-                        id.as_str(),
-                        QuotaWarningWindow::Session,
-                        state.account_key.clone(),
-                        None,
-                    ),
-                    "Session",
-                    snap.primary.clone(),
-                    vec![0.8],
-                ));
-                lanes.push(HookQuotaLaneObservation::new(
-                    HookQuotaLaneKey::new(
-                        id.as_str(),
-                        QuotaWarningWindow::Weekly,
-                        state.account_key.clone(),
-                        None,
-                    ),
-                    "Weekly",
-                    snap.secondary.clone(),
-                    vec![0.8],
-                ));
+                account_display = hook_account_display_name(id, snap, prefs.hide_personal_info);
+                if let Some(disc) = hook_account_discriminator(id, snap) {
+                    account_discriminator = Some(disc);
+                }
+
+                let session_thresholds = warnings
+                    .as_ref()
+                    .map(|w| {
+                        w.thresholds(QuotaWarningWindow::Session, &prefs.quota_warning_thresholds)
+                    })
+                    .unwrap_or_else(|| prefs.quota_warning_thresholds.clone());
+                let session_fallback: Vec<f64> = session_thresholds
+                    .into_iter()
+                    .map(|t| (100.0 - f64::from(t)) / 100.0)
+                    .collect();
+
+                let weekly_thresholds = warnings
+                    .as_ref()
+                    .map(|w| {
+                        w.thresholds(QuotaWarningWindow::Weekly, &prefs.quota_warning_thresholds)
+                    })
+                    .unwrap_or_else(|| prefs.quota_warning_thresholds.clone());
+                let weekly_fallback: Vec<f64> = weekly_thresholds
+                    .into_iter()
+                    .map(|t| (100.0 - f64::from(t)) / 100.0)
+                    .collect();
+
+                lanes.push(
+                    HookQuotaLaneObservation::new(
+                        HookQuotaLaneKey::new(
+                            id.as_str(),
+                            QuotaWarningWindow::Session,
+                            account_discriminator.clone(),
+                            None,
+                        ),
+                        "Session",
+                        snap.primary.clone(),
+                        session_fallback,
+                    )
+                    .with_account_display_name(account_display.clone()),
+                );
+                lanes.push(
+                    HookQuotaLaneObservation::new(
+                        HookQuotaLaneKey::new(
+                            id.as_str(),
+                            QuotaWarningWindow::Weekly,
+                            account_discriminator.clone(),
+                            None,
+                        ),
+                        "Weekly",
+                        snap.secondary.clone(),
+                        weekly_fallback.clone(),
+                    )
+                    .with_account_display_name(account_display.clone()),
+                );
+                if let Some(extra_windows) = &snap.extra_rate_windows {
+                    for named in extra_windows {
+                        lanes.push(
+                            HookQuotaLaneObservation::new(
+                                HookQuotaLaneKey::new(
+                                    id.as_str(),
+                                    QuotaWarningWindow::Weekly,
+                                    account_discriminator.clone(),
+                                    Some(named.id.clone()),
+                                ),
+                                named.title.clone(),
+                                Some(named.window.clone()),
+                                weekly_fallback.clone(),
+                            )
+                            .with_account_display_name(account_display.clone()),
+                        );
+                    }
+                }
                 secondary_window = snap.secondary.clone();
             }
 
@@ -1534,15 +1680,29 @@ impl EngineRuntime {
                 .as_ref()
                 .map(|e| e.category.safe_description().to_string());
 
+            let account_disc_for_policy = account_discriminator.clone();
             let obs = HookProviderObservation::new(
                 id.as_str(),
-                state.account_key.clone(),
+                account_display,
                 lanes,
                 secondary_window,
                 status,
                 refresh_failure_status,
-            );
-            (obs, session_rem)
+            )
+            .with_successful_usage(if is_usage_refresh_success {
+                state.snapshot.clone()
+            } else {
+                None
+            })
+            .with_account_discriminator(account_discriminator);
+
+            (
+                obs,
+                session_rem,
+                state.snapshot.clone(),
+                account_disc_for_policy,
+                state.source_label.clone(),
+            )
         };
 
         let transition = self
@@ -1555,7 +1715,153 @@ impl EngineRuntime {
                 .on_session_quota_transition(id, transition);
         }
 
-        let hooks_cfg = self.hooks_config.read().expect("hooks_config lock").clone();
+        let hooks_cfg = self
+            .hooks_config
+            .read()
+            .expect("hooks_config lock")
+            .clone()
+            .or_else(|| config.hooks_config())
+            .unwrap_or_default();
+
+        // Evaluate NotificationPolicyEngine
+        let mut emitted_posts = Vec::new();
+        {
+            let mut policy = self
+                .notification_policy
+                .lock()
+                .expect("notification_policy lock");
+            let mut notif_prefs = prefs.notification_preferences();
+            if let Some(qw) = &warnings {
+                notif_prefs
+                    .provider_quota_warnings
+                    .insert(id.clone(), qw.clone());
+            }
+            let cred_enabled = notif_prefs.credential_expiry_notifications_enabled;
+            policy.preferences = notif_prefs;
+
+            let cred_account = account_disc_for_policy.as_deref().unwrap_or("default");
+
+            if is_usage_refresh_success {
+                let _ = policy.credential_tracker.handle_outcome(
+                    id,
+                    cred_account,
+                    &CredentialFetchOutcome::fresh_success(source_label),
+                    cred_enabled,
+                );
+                if let Some(snap) = &snapshot_opt {
+                    let codex_guard = (id.as_str() == "codex").then(|| {
+                        let identity_snap = snap.identity_for(id).or(snap.identity.as_ref());
+                        let codex_identity = if let Some(acct_id) =
+                            identity_snap.and_then(|i| i.account_id.as_deref())
+                        {
+                            CodexIdentity::ProviderAccount {
+                                id: acct_id.to_string(),
+                            }
+                        } else if let Some(email) =
+                            identity_snap.and_then(|i| i.account_email.as_deref())
+                        {
+                            CodexIdentity::EmailOnly {
+                                normalized_email: email.to_string(),
+                            }
+                        } else {
+                            CodexIdentity::ProviderAccount {
+                                id: "default".to_string(),
+                            }
+                        };
+                        let email_or_key = identity_snap
+                            .and_then(|i| i.account_email.clone())
+                            .or_else(|| account_disc_for_policy.clone())
+                            .or_else(|| Some("default@codex.local".to_string()));
+                        CodexAccountScopedRefreshGuard::new(
+                            CodexActiveSource::LiveSystem,
+                            codex_identity,
+                            email_or_key,
+                            Some("live".to_string()),
+                        )
+                    });
+                    let codex_session_owner = codex_guard
+                        .as_ref()
+                        .and_then(CodexSessionQuotaOwnerKey::from_refresh_guard);
+                    let codex_reset_owner = codex_guard
+                        .as_ref()
+                        .and_then(CodexLimitResetOwnerKey::from_refresh_guard);
+
+                    let (session_post, session_restored_pending, _) = policy
+                        .handle_session_quota_transition(
+                            id,
+                            snap,
+                            account_disc_for_policy.as_deref(),
+                            codex_session_owner.as_ref(),
+                            hooks_cfg.enabled,
+                            now,
+                        );
+                    if let Some(post) = session_post {
+                        emitted_posts.push(post);
+                    }
+                    let (_, warn_posts) = policy.handle_quota_warning_transitions(
+                        id,
+                        snap,
+                        account_disc_for_policy.as_deref(),
+                        false,
+                    );
+                    emitted_posts.extend(warn_posts);
+                    let reset_posts = policy.handle_limit_reset_transitions(
+                        id,
+                        snap,
+                        account_disc_for_policy.as_deref(),
+                        codex_reset_owner.as_ref(),
+                        session_restored_pending,
+                    );
+                    emitted_posts.extend(reset_posts);
+                }
+            } else if let Some(FetchError::Classified(classified)) = fetch_err {
+                let cred_err = match classified.kind {
+                    ProviderErrorKind::AuthenticationExpired => {
+                        Some(ProviderCredentialError::Classified {
+                            kind: ProviderFetchErrorKind::AuthenticationExpired,
+                            message: classified.message.clone(),
+                        })
+                    }
+                    ProviderErrorKind::MissingCredential => {
+                        Some(ProviderCredentialError::Classified {
+                            kind: ProviderFetchErrorKind::MissingCredential,
+                            message: classified.message.clone(),
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(err) = cred_err
+                    && let CredentialNotificationAction::Post(post) =
+                        policy.credential_tracker.handle_outcome(
+                            id,
+                            cred_account,
+                            &CredentialFetchOutcome::Failure(err),
+                            cred_enabled,
+                        )
+                {
+                    emitted_posts.push(post);
+                }
+            }
+            if let Some(path) = self
+                .notification_state_path
+                .read()
+                .expect("notification_state_path lock")
+                .clone()
+                && let Ok(bytes) = serde_json::to_vec_pretty(&policy.export_persisted_state())
+            {
+                let _ = crate::private_file::write_private(
+                    &path,
+                    &bytes,
+                    &crate::private_file::WriteHooks::default(),
+                );
+            }
+        }
+
+        for post in emitted_posts {
+            self.transition_sink.on_notification(&post);
+            let _ = self.notifier.notify_post(&post);
+        }
+
         let dispatches = self
             .hook_detector
             .lock()
@@ -1563,6 +1869,28 @@ impl EngineRuntime {
             .evaluate(&observation, &hooks_cfg, now);
         for dispatch in &dispatches {
             self.transition_sink.on_hook_dispatch(dispatch);
+        }
+        if let Some(runner) = &self.hook_runner
+            && !dispatches.is_empty()
+        {
+            let forwarded_env: BTreeMap<String, String> = {
+                let base = self.base_environment.read().expect("base_env lock");
+                base.iter()
+                    .filter(|(k, _)| FORWARDED_ENVIRONMENT_KEYS.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.expose_secret().to_string()))
+                    .collect()
+            };
+            for dispatch in &dispatches {
+                let _ = runner
+                    .dispatch(
+                        &dispatch.event,
+                        &hooks_cfg,
+                        dispatch.account_discriminator.as_deref(),
+                        &forwarded_env,
+                        now,
+                    )
+                    .await;
+            }
         }
     }
 

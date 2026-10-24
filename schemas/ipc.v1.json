@@ -2512,13 +2512,31 @@
           "type": "object"
         },
         {
-          "description": "Pushed system notice or transient status warning.",
+          "description": "Pushed system notice or desktop notification event.",
           "properties": {
             "level": {
               "$ref": "#/$defs/NoticeLevel"
             },
             "message": {
               "type": "string"
+            },
+            "notificationId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sound": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "type": {
               "const": "notice",

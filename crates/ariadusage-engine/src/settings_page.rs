@@ -46,6 +46,11 @@ pub struct AppPreferences {
     pub cost_usage_enabled: bool,
     pub hide_personal_info: bool,
     pub notifications_enabled: bool,
+    pub session_quota_notifications_enabled: bool,
+    pub quota_warning_notifications_enabled: bool,
+    pub quota_warning_thresholds: Vec<u32>,
+    pub limit_reset_notifications_enabled: bool,
+    pub credential_notifications_enabled: bool,
     pub source_mode: String,
     pub menu_bar_icon_style: String,
     pub menu_bar_show_used: bool,
@@ -63,6 +68,11 @@ impl Default for AppPreferences {
             cost_usage_enabled: false,
             hide_personal_info: false,
             notifications_enabled: true,
+            session_quota_notifications_enabled: true,
+            quota_warning_notifications_enabled: true,
+            quota_warning_thresholds: vec![50, 20],
+            limit_reset_notifications_enabled: true,
+            credential_notifications_enabled: true,
             source_mode: "auto".to_string(),
             menu_bar_icon_style: "critters".to_string(),
             menu_bar_show_used: false,
@@ -73,6 +83,23 @@ impl Default for AppPreferences {
 }
 
 impl AppPreferences {
+    /// Converts app preferences into [`ariadusage_core::notifications::NotificationPreferences`].
+    pub fn notification_preferences(
+        &self,
+    ) -> ariadusage_core::notifications::NotificationPreferences {
+        let master = self.notifications_enabled;
+        ariadusage_core::notifications::NotificationPreferences {
+            session_quota_notifications_enabled: master && self.session_quota_notifications_enabled,
+            quota_warning_notifications_enabled: master && self.quota_warning_notifications_enabled,
+            quota_warning_thresholds: self.quota_warning_thresholds.clone(),
+            limit_reset_notifications_enabled: master && self.limit_reset_notifications_enabled,
+            credential_expiry_notifications_enabled: master
+                && self.credential_notifications_enabled,
+            hide_personal_info: self.hide_personal_info,
+            ..Default::default()
+        }
+    }
+
     /// Extracts app-level preferences from `config.settings` without losing unknown fields.
     pub fn from_config(config: &Config) -> Self {
         let mut prefs = Self::default();
@@ -123,6 +150,49 @@ impl AppPreferences {
             .and_then(Value::as_bool)
         {
             prefs.notifications_enabled = notif;
+        }
+        if let Some(session_notif) = map
+            .get("sessionQuotaNotificationsEnabled")
+            .or_else(|| map.get("notifications.sessionQuota"))
+            .and_then(Value::as_bool)
+        {
+            prefs.session_quota_notifications_enabled = session_notif;
+        }
+        if let Some(warn_notif) = map
+            .get("quotaWarningNotificationsEnabled")
+            .or_else(|| map.get("notifications.quotaWarning"))
+            .and_then(Value::as_bool)
+        {
+            prefs.quota_warning_notifications_enabled = warn_notif;
+        }
+        if let Some(arr) = map
+            .get("quotaWarningThresholds")
+            .or_else(|| map.get("notifications.quotaWarningThresholds"))
+            .and_then(Value::as_array)
+        {
+            let parsed: Vec<u32> = arr
+                .iter()
+                .filter_map(Value::as_u64)
+                .filter_map(|t| u32::try_from(t).ok())
+                .filter(|&t| (1..=99).contains(&t))
+                .collect();
+            if !parsed.is_empty() {
+                prefs.quota_warning_thresholds = parsed;
+            }
+        }
+        if let Some(reset_notif) = map
+            .get("limitResetNotificationsEnabled")
+            .or_else(|| map.get("notifications.limitReset"))
+            .and_then(Value::as_bool)
+        {
+            prefs.limit_reset_notifications_enabled = reset_notif;
+        }
+        if let Some(cred_notif) = map
+            .get("credentialNotificationsEnabled")
+            .or_else(|| map.get("notifications.credentialExpiry"))
+            .and_then(Value::as_bool)
+        {
+            prefs.credential_notifications_enabled = cred_notif;
         }
         if let Some(mode) = map.get("sourceMode").and_then(Value::as_str)
             && !mode.trim().is_empty()
@@ -331,6 +401,34 @@ fn build_app_settings_page(registry: &ProviderRegistry, config: &Config) -> Sett
             "Desktop Notifications",
             DescriptorKind::Toggle {
                 value: prefs.notifications_enabled,
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("notifications.sessionQuota").expect("valid setting id"),
+            "Session Depleted / Restored Notifications",
+            DescriptorKind::Toggle {
+                value: prefs.session_quota_notifications_enabled,
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("notifications.quotaWarning").expect("valid setting id"),
+            "Quota Threshold Warnings",
+            DescriptorKind::Toggle {
+                value: prefs.quota_warning_notifications_enabled,
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("notifications.limitReset").expect("valid setting id"),
+            "Limit Reset Notifications",
+            DescriptorKind::Toggle {
+                value: prefs.limit_reset_notifications_enabled,
+            },
+        ),
+        SettingDescriptor::new(
+            SettingId::new("notifications.credentialExpiry").expect("valid setting id"),
+            "Credential Expiry Notifications",
+            DescriptorKind::Toggle {
+                value: prefs.credential_notifications_enabled,
             },
         ),
     ];
@@ -683,6 +781,114 @@ pub fn apply_setting_mutation(
                 });
             };
             update_settings_json_field(config, "notificationsEnabled", Value::Bool(enabled));
+            return Ok((SettingsScope::App, None));
+        }
+        "notifications.sessionQuota" | "sessionQuotaNotificationsEnabled" => {
+            let Some(enabled) = value.as_bool() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a boolean value".to_string(),
+                });
+            };
+            update_settings_json_field(
+                config,
+                "sessionQuotaNotificationsEnabled",
+                Value::Bool(enabled),
+            );
+            return Ok((SettingsScope::App, None));
+        }
+        "notifications.quotaWarning" | "quotaWarningNotificationsEnabled" => {
+            let Some(enabled) = value.as_bool() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a boolean value".to_string(),
+                });
+            };
+            update_settings_json_field(
+                config,
+                "quotaWarningNotificationsEnabled",
+                Value::Bool(enabled),
+            );
+            return Ok((SettingsScope::App, None));
+        }
+        "notifications.quotaWarningThresholds" | "quotaWarningThresholds" => {
+            let Some(arr) = value.as_array() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected an array of integer thresholds".to_string(),
+                });
+            };
+            let mut thresholds = Vec::with_capacity(arr.len());
+            for item in arr {
+                let Some(v) = item.as_i64() else {
+                    return Err(SettingsMutationError::InvalidValue {
+                        id: raw_id.to_string(),
+                        reason: "threshold entries must be integers".to_string(),
+                    });
+                };
+                if !(1..=99).contains(&v) {
+                    return Err(SettingsMutationError::InvalidValue {
+                        id: raw_id.to_string(),
+                        reason: "thresholds must be between 1 and 99".to_string(),
+                    });
+                }
+                thresholds.push(Value::from(v));
+            }
+            update_settings_json_field(config, "quotaWarningThresholds", Value::Array(thresholds));
+            return Ok((SettingsScope::App, None));
+        }
+        "notifications.limitReset" | "limitResetNotificationsEnabled" => {
+            let Some(enabled) = value.as_bool() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a boolean value".to_string(),
+                });
+            };
+            update_settings_json_field(
+                config,
+                "limitResetNotificationsEnabled",
+                Value::Bool(enabled),
+            );
+            return Ok((SettingsScope::App, None));
+        }
+        "notifications.credentialExpiry" | "credentialNotificationsEnabled" => {
+            let Some(enabled) = value.as_bool() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a boolean value".to_string(),
+                });
+            };
+            update_settings_json_field(
+                config,
+                "credentialNotificationsEnabled",
+                Value::Bool(enabled),
+            );
+            return Ok((SettingsScope::App, None));
+        }
+        "hooks.enabled" => {
+            let Some(enabled) = value.as_bool() else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected a boolean value".to_string(),
+                });
+            };
+            let mut hooks = config.hooks_config().unwrap_or_default();
+            hooks.enabled = enabled;
+            config.set_hooks_config(Some(hooks));
+            return Ok((SettingsScope::App, None));
+        }
+        "hooks.events" => {
+            let Ok(rules) =
+                serde_json::from_value::<Vec<ariadusage_core::refresh::HookRule>>(value.clone())
+            else {
+                return Err(SettingsMutationError::InvalidValue {
+                    id: raw_id.to_string(),
+                    reason: "expected an array of HookRule objects".to_string(),
+                });
+            };
+            let mut hooks = config.hooks_config().unwrap_or_default();
+            hooks.events = rules;
+            config.set_hooks_config(Some(hooks));
             return Ok((SettingsScope::App, None));
         }
         "sourceMode" => {

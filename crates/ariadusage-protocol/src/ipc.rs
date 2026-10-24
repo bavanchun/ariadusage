@@ -230,12 +230,48 @@ pub enum ServerMessage {
     /// Pushed notification that settings in `scope` have changed.
     #[serde(rename_all = "camelCase")]
     SettingsChanged { scope: SettingsScope },
-    /// Pushed system notice or transient status warning.
+    /// Pushed system notice or desktop notification event.
     #[serde(rename_all = "camelCase")]
-    Notice { level: NoticeLevel, message: String },
+    Notice {
+        level: NoticeLevel,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notification_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sound: Option<bool>,
+    },
 }
 
 impl ServerMessage {
+    /// Construct a simple text notice with no desktop notification metadata.
+    pub fn notice(level: NoticeLevel, message: impl Into<String>) -> Self {
+        Self::Notice {
+            level,
+            title: None,
+            message: message.into(),
+            notification_id: None,
+            sound: None,
+        }
+    }
+
+    /// Construct a desktop notification notice pushed to subscribed frontends.
+    pub fn notification(
+        level: NoticeLevel,
+        notification_id: impl Into<String>,
+        title: impl Into<String>,
+        message: impl Into<String>,
+        sound: bool,
+    ) -> Self {
+        Self::Notice {
+            level,
+            title: Some(title.into()),
+            message: message.into(),
+            notification_id: Some(notification_id.into()),
+            sound: Some(sound),
+        }
+    }
     /// Construct a successful response to a request.
     pub fn ok(id: Option<RequestId>) -> Self {
         Self::Response {
@@ -398,12 +434,35 @@ mod tests {
         let json = r#"{"type":"notice","level":"urgent","message":"test"}"#;
         let msg = serde_json::from_str::<ServerMessage>(json).unwrap();
         match msg {
-            ServerMessage::Notice { level, message } => {
+            ServerMessage::Notice {
+                level,
+                title,
+                message,
+                notification_id,
+                sound,
+            } => {
                 assert_eq!(level, NoticeLevel::Unknown);
+                assert_eq!(title, None);
                 assert_eq!(message, "test");
+                assert_eq!(notification_id, None);
+                assert_eq!(sound, None);
             }
             _ => panic!("unexpected message"),
         }
+    }
+
+    #[test]
+    fn notification_notice_round_trips() {
+        let msg = ServerMessage::notification(
+            NoticeLevel::Info,
+            "ariadusage-session-quota-depleted-claude",
+            "Claude session depleted",
+            "0% left. Will notify when it's available again.",
+            true,
+        );
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded = parse_server_message(&json).unwrap();
+        assert_eq!(decoded, msg);
     }
 
     #[test]

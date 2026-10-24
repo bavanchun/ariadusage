@@ -25,6 +25,7 @@ jiff = { version = "0.2.37", features = ["serde"] }
 jsonschema = { version = "0.58.5", default-features = false }
 listeners = "0.6.1"
 nix = { version = "0.31.3", features = ["signal"] }
+notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
 process-wrap = { version = "10.0.1", default-features = false, features = ["tokio1", "process-group", "process-session", "reset-sigmask"] }
 objc2 = "0.6.5"
 objc2-app-kit = "0.3.2"
