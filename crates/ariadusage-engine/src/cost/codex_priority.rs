@@ -27,6 +27,17 @@ use crate::private_tempdir::{self, PrivateTempDir};
 /// Maximum size for streaming a foreign Codex SQLite database or WAL into a private temp copy (`2 GiB`).
 pub const MAX_CODEX_SQLITE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
+/// Minimum age before an unreferenced `ariadusage-tmp-*` directory under `codex-sqlite-copies`
+/// is treated as an orphan from a crashed process and removed (`24 hours`).
+///
+/// Multiple live processes (for example the CLI and daemon running concurrently, or parallel
+/// test processes) and concurrent threads that have just created a `PrivateTempDir` before
+/// inserting it into this process's `copy_cache()` share the same `codex-sqlite-copies` parent
+/// directory. Requiring `mtime` to be at least 24 hours in the past guarantees that fresh or
+/// in-flight copies from another thread or process are never deleted mid-scan, while still
+/// reclaiming leaked copies left behind by an earlier crash.
+pub const STALE_SQLITE_COPY_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
+
 /// Maximum number of `response.completed` turn->model mappings retained in incremental cursor state (`4096`).
 pub const CODEX_PRIORITY_COMPLETED_MODEL_RETENTION_LIMIT: usize = 4_096;
 
@@ -1225,14 +1236,19 @@ fn copy_regular_file_nofollow(src: &Path, dst: &Path, max_bytes: u64) -> std::io
 
 #[cfg(unix)]
 fn sweep_stale_copy_children(parent: &Path) {
+    use std::time::SystemTime;
+
     let active_paths: BTreeSet<PathBuf> = copy_cache()
         .lock()
         .map(|guard| {
             guard
                 .values()
-                .map(|entry| {
-                    fs::canonicalize(entry.temp_dir.path())
-                        .unwrap_or_else(|_| entry.temp_dir.path().to_path_buf())
+                .flat_map(|entry| {
+                    let raw = entry.temp_dir.path().to_path_buf();
+                    match fs::canonicalize(&raw) {
+                        Ok(canon) => vec![raw, canon],
+                        Err(_) => vec![raw],
+                    }
                 })
                 .collect()
         })
@@ -1241,19 +1257,39 @@ fn sweep_stale_copy_children(parent: &Path) {
     let Ok(entries) = fs::read_dir(parent) else {
         return;
     };
+    let now = SystemTime::now();
     for entry in entries.flatten() {
         let path = entry.path();
-        let is_tmp_dir = path
+        let is_tmp_prefix = path
             .file_name()
             .and_then(|n| n.to_str())
-            .is_some_and(|name| name.starts_with("ariadusage-tmp-"))
-            && entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-        if !is_tmp_dir {
+            .is_some_and(|name| name.starts_with("ariadusage-tmp-"));
+        if !is_tmp_prefix {
+            continue;
+        }
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if !meta.file_type().is_dir() {
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age < STALE_SQLITE_COPY_MAX_AGE {
             continue;
         }
         let canon = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-        if !active_paths.contains(&canon) && !active_paths.contains(&path) {
-            let _ = fs::remove_dir_all(&path);
+        if active_paths.contains(&canon) || active_paths.contains(&path) {
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
         }
     }
 }
@@ -2356,4 +2392,82 @@ fn table_columns(conn: &Connection, table_name: &str) -> Vec<String> {
         return Vec::new();
     };
     rows.flatten().collect()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    #[test]
+    fn sweep_stale_copy_children_keeps_fresh_and_active_dirs_and_removes_aged_dir() {
+        let parent_tmp = tempfile::TempDir::new().expect("tempdir");
+        let copy_parent = parent_tmp.path().join("codex-sqlite-copies");
+        let ensured = ensure_private_0700_dir(&copy_parent).expect("0700 dir");
+
+        let fresh_dir = ensured.join("ariadusage-tmp-fresh");
+        fs::create_dir(&fresh_dir).expect("create fresh child dir");
+        fs::write(fresh_dir.join("snapshot.sqlite"), b"fresh").expect("write fresh file");
+
+        let aged_dir = ensured.join("ariadusage-tmp-aged");
+        fs::create_dir(&aged_dir).expect("create aged child dir");
+        fs::write(aged_dir.join("snapshot.sqlite"), b"aged").expect("write aged file");
+
+        let active_dir =
+            Arc::new(private_tempdir::create_in(&ensured).expect("create active tempdir"));
+        let active_path = active_dir.path().to_path_buf();
+        fs::write(active_path.join("snapshot.sqlite"), b"active").expect("write active file");
+
+        let past_mtime = SystemTime::now()
+            .checked_sub(STALE_SQLITE_COPY_MAX_AGE + Duration::from_secs(3600))
+            .expect("past SystemTime");
+        fs::File::open(&aged_dir)
+            .expect("open aged dir")
+            .set_modified(past_mtime)
+            .expect("set past mtime on aged dir");
+        fs::File::open(&active_path)
+            .expect("open active dir")
+            .set_modified(past_mtime)
+            .expect("set past mtime on active dir");
+
+        let active_cache_key = parent_tmp.path().join("active-test-source.sqlite");
+        copy_cache().lock().expect("lock copy_cache").insert(
+            active_cache_key.clone(),
+            CachedCodexSqliteCopy {
+                fingerprint: CodexSqliteCopyFingerprint {
+                    db: CodexSqliteFileFingerprint {
+                        dev: 1,
+                        ino: 1,
+                        size: 6,
+                        mtime_sec: 1,
+                        mtime_nsec: 0,
+                        header_bytes: [0u8; 32],
+                    },
+                    wal: None,
+                },
+                temp_dir: Arc::clone(&active_dir),
+                copy_count: 1,
+            },
+        );
+
+        let re_ensured = ensure_private_0700_dir(&copy_parent).expect("re-open 0700 dir");
+        copy_cache()
+            .lock()
+            .expect("lock copy_cache")
+            .remove(&active_cache_key);
+
+        assert_eq!(re_ensured, ensured);
+        assert!(
+            fresh_dir.exists(),
+            "fresh ariadusage-tmp-* child dir must survive sweep"
+        );
+        assert!(
+            active_path.exists(),
+            "active ariadusage-tmp-* child dir in copy_cache must survive sweep even if aged"
+        );
+        assert!(
+            !aged_dir.exists(),
+            "aged ariadusage-tmp-* child dir older than STALE_SQLITE_COPY_MAX_AGE must be removed"
+        );
+    }
 }
