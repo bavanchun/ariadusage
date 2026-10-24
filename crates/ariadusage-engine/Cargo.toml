@@ -19,6 +19,7 @@ test-hooks = ["dep:nix"]
 [dependencies]
 ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol", features = ["codec"] }
+base64 = { workspace = true }
 bytes = { workspace = true }
 etcetera = { workspace = true }
 jiff = { workspace = true }

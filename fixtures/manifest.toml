@@ -1728,3 +1728,68 @@ sources = [
     "Tests/CodexBarTests/ClaudeAdminAPIInlineDashboardModelTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/mod.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/descriptor.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderDescriptor.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityUsageDataSource.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityProviderConfig.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/family_visibility.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityQuotaFamilyVisibility.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/quota_summary.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityQuotaSummaryParser.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/status_probe.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+Deadline.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+LocalEndpoints.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+PortDetection.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityStatusProbe+ResponseModels.swift",
+    "Sources/CodexBarCore/Providers/Antigravity/AntigravityLocalhostSession.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/oauth_store.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityOAuthCredentialsStore.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/antigravity/remote_fetcher.rs"
+sources = ["Sources/CodexBarCore/Providers/Antigravity/AntigravityRemoteUsageFetcher.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/antigravity.rs"
+sources = [
+    "Tests/CodexBarTests/AntigravityStatusProbeTests.swift",
+    "Tests/CodexBarTests/AntigravityDeadlineTests.swift",
+    "Tests/CodexBarTests/AntigravityQuotaSummaryTests.swift",
+    "Tests/CodexBarTests/AntigravityQuotaWindowBoundaryTests.swift",
+    "Tests/CodexBarTests/AntigravityQuotaSourceParityTests.swift",
+    "Tests/CodexBarTests/AntigravityOAuthCredentialsStoreTests.swift",
+    "Tests/CodexBarTests/AntigravityRemoteUsageFetcherTests.swift",
+    "Tests/CodexBarTests/AntigravitySourceAccountIsolationTests.swift",
+    "Tests/CodexBarTests/AntigravityModelLabelTests.swift",
+    "Tests/CodexBarTests/AntigravityGeminiRenameTests.swift",
+    "Tests/CodexBarTests/AntigravityCompactFallbackTests.swift",
+    "TestsLinux/AntigravityQuotaRepresentativeTests.swift",
+    "TestsLinux/AntigravityLocalhostSessionLifetimeTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
