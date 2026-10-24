@@ -10,14 +10,16 @@
 
 ### 1.1 Local Unix Domain Socket
 AriadUsage IPC v1 uses newline-delimited UTF-8 JSON streaming over a local Unix domain socket.
-- **Default Socket Path**: `$XDG_RUNTIME_DIR/ariadusage/engine.sock` (the engine socket lives only in the runtime directory; no fallback).
+- **Default Socket Path (Linux)**: `$XDG_RUNTIME_DIR/ariadusage/engine.sock` (on `tmpfs`, mode `0700`, owned by the running user; no fallback).
+- **Default Socket Path (macOS)**: `<runtime_dir>/ariadusage/engine.sock`, where `<runtime_dir>` is `$XDG_RUNTIME_DIR` when set and absolute, or `confstr(_CS_DARWIN_USER_TEMP_DIR)` (canonicalized through `/private/var`, mode `0700`, owned by the running user, with no symlinks). Paths must be strictly shorter than the 104-byte `sun_path` limit (`< 104` bytes); longer paths fail closed.
 - **Development/Fixture Socket Path**: `$XDG_RUNTIME_DIR/ariadusage-dev/engine.sock` (the fixture server falls back to a directory under the system temporary directory when `$XDG_RUNTIME_DIR` is unset; development only, never used by the engine).
 
 ### 1.2 File System Permissions and Security
 The socket exists strictly within user-private space:
-- **Parent Directory**: Mode `0700` (`rwx------`), owned by the running user.
+- **Parent Directory**: Mode `0700` (`rwx------`), owned by the running user, not a symlink.
 - **Socket File**: Mode `0600` (`rw-------`), owned by the running user.
-- The engine rejects connection attempts or binds if directory or file permissions are violated.
+- **Peer Credential Verification**: Every accepted connection is verified via OS peer credentials (`SO_PEERCRED` on Linux, `getpeereid` / `LOCAL_PEEREPID` on macOS), rejecting any peer whose UID does not match the engine's effective UID.
+- The engine rejects connection attempts or binds if directory, file, length, or peer credential invariants are violated.
 
 ---
 

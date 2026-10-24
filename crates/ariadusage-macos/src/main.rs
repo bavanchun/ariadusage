@@ -8,7 +8,7 @@ fn main() {
         match arg.as_str() {
             "--socket" => socket = args.next().map(std::path::PathBuf::from),
             "--help" | "-h" => {
-                println!("Usage: ariadusage-macos --socket <path>");
+                println!("Usage: ariadusage-macos [--socket <path>]");
                 return;
             }
             other => {
@@ -17,11 +17,15 @@ fn main() {
             }
         }
     }
-    let Some(socket) = socket else {
-        eprintln!(
-            "missing --socket <path>: the engine socket location on macOS is not decided yet"
-        );
-        std::process::exit(2);
+    let socket = match socket {
+        Some(path) => path,
+        None => match ariadusage_macos::engine_client::default_socket_path() {
+            Ok(path) => path,
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(2);
+            }
+        },
     };
     if let Err(err) = ariadusage_macos::appkit::run(socket) {
         eprintln!("{err}");
