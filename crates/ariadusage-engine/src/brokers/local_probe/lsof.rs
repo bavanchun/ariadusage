@@ -46,12 +46,14 @@ impl Default for ListenerCommand {
 }
 
 impl ListenerCommand {
+    #[cfg(feature = "test-hooks")]
     pub(super) fn with_candidates(mut self, candidates: Vec<PathBuf>) -> Self {
         self.candidates = candidates;
         self.selected_executable = false;
         self
     }
 
+    #[cfg(feature = "test-hooks")]
     pub(super) fn with_executable(self, executable: Option<PathBuf>) -> Self {
         let mut command = self.with_candidates(executable.into_iter().collect());
         command.selected_executable = true;
