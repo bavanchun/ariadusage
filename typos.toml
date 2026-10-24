@@ -3,6 +3,10 @@ extend-exclude = ["fixtures/**"]
 
 [default]
 locale = "en"
+# Preserve the exact spelling of this pinned upstream test declaration.
+extend-ignore-re = [
+    '(?m)^// upstream: AntigravityWarmAgyReuseTests\.swift:91 ide process ignored not reuseable as warm CLI$',
+]
 
 [default.extend-words]
 # Correct names and acronyms in the public repository files.
