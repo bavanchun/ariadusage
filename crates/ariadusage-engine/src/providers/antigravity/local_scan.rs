@@ -328,7 +328,11 @@ impl AntigravityLocalReader {
                         result.is_complete = false;
                         continue;
                     }
-                    std::fs::canonicalize(root).unwrap_or_else(|_| root.clone())
+                    let Ok(canon) = std::fs::canonicalize(root) else {
+                        result.is_complete = false;
+                        continue;
+                    };
+                    canon
                 }
                 Err(err) => {
                     // ENOENT means absent. Permission errors and invalid roots must block fallback.
@@ -380,10 +384,18 @@ impl AntigravityLocalReader {
                 if result.paths.len() >= budget.limits().databases {
                     return Err(ScanFailure::Exhausted);
                 }
-                match std::fs::metadata(&url) {
-                    Ok(meta) if meta.is_file() => {
-                        result.paths.push(url);
-                    }
+                match std::fs::symlink_metadata(&url) {
+                    Ok(meta) if meta.file_type().is_file() => match std::fs::canonicalize(&url) {
+                        Ok(canonical_entry)
+                            if canonical_entry.starts_with(&resolved_root)
+                                && canonical_entry.parent() == Some(resolved_root.as_path()) =>
+                        {
+                            result.paths.push(url);
+                        }
+                        _ => {
+                            result.is_complete = false;
+                        }
+                    },
                     _ => {
                         result.is_complete = false;
                     }

@@ -62,7 +62,7 @@ impl DailyReportResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Event {
     pub session: String,
     pub row: i64,
@@ -70,6 +70,19 @@ pub struct Event {
     pub cache_write: usize,
     pub input: usize,
     pub total: usize,
+}
+
+impl std::fmt::Debug for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Event")
+            .field("has_session", &!self.session.is_empty())
+            .field("row", &self.row)
+            .field("turn", &self.turn)
+            .field("cache_write", &self.cache_write)
+            .field("input", &self.input)
+            .field("total", &self.total)
+            .finish()
+    }
 }
 
 impl Event {
@@ -128,22 +141,49 @@ impl SourceResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RowIdentity {
     session: String,
     row: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl std::fmt::Debug for RowIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RowIdentity")
+            .field("has_session", &!self.session.is_empty())
+            .field("row", &self.row)
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct ResponseIdentity {
     session: String,
     response: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+impl std::fmt::Debug for ResponseIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResponseIdentity")
+            .field("has_session", &!self.session.is_empty())
+            .field("has_response", &!self.response.is_empty())
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct LabelIdentity {
     session: String,
     label: String,
+}
+
+impl std::fmt::Debug for LabelIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LabelIdentity")
+            .field("has_session", &!self.session.is_empty())
+            .field("has_label", &!self.label.is_empty())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
