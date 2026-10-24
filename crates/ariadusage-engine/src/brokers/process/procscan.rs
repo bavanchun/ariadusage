@@ -150,7 +150,10 @@ pub fn process_state(root: &Path, pid: i32) -> Option<char> {
         if let Some(info) = darwin_bsd_info(pid) {
             return Some(darwin_status_char(info.pbi_status));
         }
-        if darwin_bsd_short_info(pid).is_some() || darwin_is_zombie_child(pid) {
+        if let Some(short) = darwin_bsd_short_info(pid) {
+            return Some(darwin_status_char(short.pbsi_status));
+        }
+        if darwin_is_zombie_child(pid) {
             return Some('Z');
         }
         return None;
@@ -487,18 +490,23 @@ fn darwin_bsd_short_info(pid: i32) -> Option<proc_pidinfo::ProcBSDShortInfo> {
 
 #[cfg(target_os = "macos")]
 fn darwin_is_zombie_child(pid: i32) -> bool {
-    use rustix::process::{Pid, WaitId, WaitIdOptions, waitid};
+    use rustix::process::{Pid, WaitId, WaitIdOptions, test_kill_process, waitid};
 
-    let Some(pid) = Pid::from_raw(pid) else {
+    let Some(raw_pid) = Pid::from_raw(pid) else {
         return false;
     };
-    matches!(
+    if matches!(
         waitid(
-            WaitId::Pid(pid),
+            WaitId::Pid(raw_pid),
             WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
         ),
         Ok(Some(_))
-    )
+    ) {
+        return true;
+    }
+    test_kill_process(raw_pid).is_ok()
+        && darwin_bsd_info(pid).is_none()
+        && darwin_bsd_short_info(pid).is_none()
 }
 
 #[cfg(target_os = "macos")]

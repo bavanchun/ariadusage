@@ -357,6 +357,30 @@ fn darwin_live_procscan_inspects_current_and_child_processes() {
     assert_eq!(process_state(proc_root, short_pid), Some('Z'));
     let status = short_lived.wait().expect("reap short-lived child");
     assert!(status.success());
+
+    for _ in 0..10 {
+        let mut exiting = Command::new(env!("CARGO_BIN_EXE_ariadusage-test-child"))
+            .args(["print", "stdout", "8"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn exiting test child");
+        let exiting_pid = exiting.id() as i32;
+        let spin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while process_identity(proc_root, exiting_pid).is_some()
+            && std::time::Instant::now() < spin_deadline
+        {
+            std::hint::spin_loop();
+        }
+        assert_eq!(
+            process_state(proc_root, exiting_pid),
+            Some('Z'),
+            "unreaped child must report state 'Z' immediately when process_identity becomes None during exit1()"
+        );
+        let status = exiting.wait().expect("reap exiting child");
+        assert!(status.success());
+        assert_eq!(process_state(proc_root, exiting_pid), None);
+    }
 }
 
 fn proc_args_data(arguments: &[&str], environment: &[&str]) -> Vec<u8> {
