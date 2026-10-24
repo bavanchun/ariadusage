@@ -430,7 +430,7 @@ pub fn automatic_selection_prioritizes_exhausted_window(provider_id: &str) -> bo
 /// `StatusItemController+Animation.swift:565-582`, `CodexConsumerProjection.swift:646-657`).
 ///
 /// Only Codex projects credits into the menu-bar icon fallback, and only when `credits.remaining > 0`
-/// and either all rate windows are absent or at least one lane is exhausted (`remaining_percent <= 0`)
+/// and either the projected lane map is empty or at least one lane is exhausted (`remaining_percent <= 0`)
 /// with a reset timestamp still in the future (or absent).
 pub fn menu_bar_credits_remaining_for_icon(
     provider: &ProviderSnapshot,
@@ -448,7 +448,7 @@ pub fn menu_bar_credits_remaining_for_icon(
     }
     let eval_now = now.or(provider.updated_at);
     let lanes = codex_rate_windows_by_lane(provider);
-    let has_no_rate_windows = lanes.is_empty() && !codex_has_any_rate_window(provider);
+    let has_no_rate_windows = lanes.is_empty();
     let has_exhausted_lane = lanes.values().any(|(w, _)| {
         remaining_percent(w) <= 0.0
             && w.resets_at
@@ -672,14 +672,11 @@ fn classify_codex_lane(window: &RateWindow, fallback: CodexLaneKind) -> CodexLan
 }
 
 fn codex_has_any_rate_window(provider: &ProviderSnapshot) -> bool {
-    measured_window(provider.windows.primary.as_ref()).is_some()
-        || measured_window(provider.windows.secondary.as_ref()).is_some()
-        || measured_window(provider.windows.tertiary.as_ref()).is_some()
-        || provider
-            .windows
-            .extra
-            .iter()
-            .any(|named| displayable_value(&named.window).is_some())
+    // UsageFetcher.swift:462-464 counts presence, including unresolved snapshot metrics.
+    provider.windows.primary.is_some()
+        || provider.windows.secondary.is_some()
+        || provider.windows.tertiary.is_some()
+        || !provider.windows.extra.is_empty()
 }
 
 fn codex_rate_windows_by_lane(
@@ -773,12 +770,28 @@ fn codex_visible_rate_candidates(
         .get(&CodexLaneKind::Weekly)
         .and_then(|(w, _)| w.resets_at);
 
-    let mut visible: Vec<(CodexLaneKind, Candidate)> = Vec::with_capacity(3);
-    for kind in [
-        CodexLaneKind::Session,
-        CodexLaneKind::Weekly,
-        CodexLaneKind::Monthly,
+    // CodexConsumerProjection.swift:528-550 preserves source-slot order after classification.
+    let mut displayed_lanes = Vec::with_capacity(2);
+    for (metric, fallback) in [
+        (provider.windows.primary.as_ref(), CodexLaneKind::Session),
+        (provider.windows.secondary.as_ref(), CodexLaneKind::Weekly),
     ] {
+        if let Some(window) = measured_window(metric) {
+            let kind = classify_codex_lane(window, fallback);
+            if lanes.contains_key(&kind) && !displayed_lanes.contains(&kind) {
+                displayed_lanes.push(kind);
+            }
+        }
+    }
+    if displayed_lanes.is_empty()
+        && lanes.contains_key(&CodexLaneKind::Monthly)
+        && !codex_has_any_rate_window(provider)
+    {
+        displayed_lanes.push(CodexLaneKind::Monthly);
+    }
+
+    let mut visible: Vec<(CodexLaneKind, Candidate)> = Vec::with_capacity(2);
+    for kind in displayed_lanes {
         let Some((mut window, slot)) = lanes.get(&kind).cloned() else {
             continue;
         };
@@ -835,47 +848,38 @@ fn codex_menu_bar_metric_window(
     supports_average: bool,
     now: Option<Timestamp>,
 ) -> Option<RateWindow> {
-    let visible = codex_visible_rate_candidates(provider, now);
-    let find_kind = |kind: CodexLaneKind| -> Option<RateWindow> {
-        visible
-            .iter()
-            .find(|(k, _)| *k == kind)
-            .map(|(_, c)| c.window.clone())
-    };
+    // CodexConsumerProjection.swift:722-755 maps preferences over ordered displayed windows.
+    let windows: Vec<RateWindow> = codex_visible_rate_candidates(provider, now)
+        .into_iter()
+        .map(|(_, candidate)| candidate.window)
+        .collect();
+    let first = windows.first().cloned();
+    let second = windows.get(1).cloned();
     match preference {
-        MenuBarMetricPreference::MonthlyPlan => None,
-        MenuBarMetricPreference::ExtraUsage => spend_limit_window(provider),
-        MenuBarMetricPreference::Primary => find_kind(CodexLaneKind::Session)
-            .or_else(|| find_kind(CodexLaneKind::Weekly))
-            .or_else(|| find_kind(CodexLaneKind::Monthly)),
-        MenuBarMetricPreference::Secondary => find_kind(CodexLaneKind::Weekly)
-            .or_else(|| find_kind(CodexLaneKind::Session))
-            .or_else(|| find_kind(CodexLaneKind::Monthly)),
-        MenuBarMetricPreference::Tertiary => find_kind(CodexLaneKind::Monthly)
-            .or_else(|| find_kind(CodexLaneKind::Session))
-            .or_else(|| find_kind(CodexLaneKind::Weekly)),
-        MenuBarMetricPreference::PrimaryAndSecondary => {
-            let candidates: Vec<Option<RateWindow>> =
-                visible.into_iter().map(|(_, c)| Some(c.window)).collect();
-            most_constrained_of(&candidates)
-        }
+        MenuBarMetricPreference::Secondary | MenuBarMetricPreference::Tertiary => second.or(first),
+        MenuBarMetricPreference::ExtraUsage => spend_limit_window(provider).or(first),
         MenuBarMetricPreference::Average => {
-            if supports_average
-                && let (Some(s), Some(w)) = (
-                    find_kind(CodexLaneKind::Session),
-                    find_kind(CodexLaneKind::Weekly),
-                )
-            {
-                Some(RateWindow::new((s.used_percent + w.used_percent) / 2.0))
+            if supports_average && let (Some(primary), Some(secondary)) = (&first, &second) {
+                Some(RateWindow::new(
+                    (primary.used_percent + secondary.used_percent) / 2.0,
+                ))
             } else {
-                find_kind(CodexLaneKind::Session)
-                    .or_else(|| find_kind(CodexLaneKind::Weekly))
-                    .or_else(|| find_kind(CodexLaneKind::Monthly))
+                first
             }
+        }
+        MenuBarMetricPreference::PrimaryAndSecondary => {
+            windows.into_iter().take(2).reduce(|best, candidate| {
+                if candidate.used_percent > best.used_percent {
+                    candidate
+                } else {
+                    best
+                }
+            })
         }
         MenuBarMetricPreference::Automatic => {
             codex_automatic_menu_bar_selection(provider, now).map(|s| s.window)
         }
+        MenuBarMetricPreference::Primary | MenuBarMetricPreference::MonthlyPlan => first,
     }
 }
 
@@ -1277,7 +1281,7 @@ pub fn resolve_menu_bar_metric_window(
 
     // 1. Provider-specific `menuBarWindow` overrides
     match id {
-        "codex" if preference != MenuBarMetricPreference::Automatic || tertiary.is_none() => {
+        "codex" => {
             return codex_menu_bar_metric_window(preference, provider, supports_average, now);
         }
         "claude" => {
