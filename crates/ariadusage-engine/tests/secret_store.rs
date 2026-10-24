@@ -349,9 +349,10 @@ mod macos_tests {
         SafeStorageError, SafeStorageKeySource,
     };
     use ariadusage_engine::brokers::secret_store::service::{
-        MacosKeychainOperations, ServiceBackend, is_macos_user_prompt_active,
-        macos_background_no_ui_skipped_during_prompt_count, os_status,
+        MacosKeychainOperations, MacosKeychainUiControl, ServiceBackend, is_macos_prompt_lock_held,
+        is_macos_user_prompt_active, macos_background_no_ui_skipped_during_prompt_count, os_status,
         read_keychain_item_attributes, with_macos_keychain_interaction,
+        with_macos_keychain_interaction_using,
     };
     use ariadusage_engine::brokers::secret_store::{SecretLookup, SecretStore, SecretStoreError};
     use ariadusage_protocol::ProviderId;
@@ -372,6 +373,18 @@ mod macos_tests {
                     .expect("disable macOS Keychain user interaction for tests"),
             )
         });
+    }
+
+    static SECRET_TEST_SERIAL: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+        std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+    fn serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
+        loop {
+            if let Ok(guard) = SECRET_TEST_SERIAL.try_lock() {
+                return guard;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
 
     struct TempKeychain {
@@ -458,6 +471,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_service_backend_background_and_user_policies_with_injected_operations() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
         let ops = Arc::new(FakeKeychainOps::default());
         let backend = ServiceBackend::with_operations(ops.clone());
         let store = SecretStore::new(backend);
@@ -565,6 +579,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_safe_storage_maps_keychain_statuses() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
         let ops = Arc::new(FakeKeychainOps::default());
         ops.write_generic_password(
             "Chrome Safe Storage",
@@ -610,6 +625,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_temporary_keychain_roundtrip_and_attribute_isolation() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
         let temp_keychain = TempKeychain::create();
         let keychain = temp_keychain.handle();
         let store = SecretStore::new(ServiceBackend::with_keychain(keychain.clone()));
@@ -778,6 +794,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_background_read_while_user_prompt_in_flight_uses_no_ui_and_skips_data_read() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
         ensure_no_keychain_ui();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -818,28 +835,28 @@ mod macos_tests {
 
         // Background secret lookup and Chromium Safe Storage lookup run while the simulated
         // user prompt holds `USER_PROMPT_LOCK`: each decides `allow_interaction == false` from its
-        // own `BrokerCall`, takes the no-UI path, and returns `Locked` before calling the
+        // own `BrokerCall`, takes the no-UI path, and returns transient `Busy` before calling the
         // data-read operation (`ops.read_generic_password`).
         assert_eq!(
             store
                 .background(call(FetchInteraction::Background))
                 .lookup(&id)
                 .await,
-            SecretLookup::Locked
+            SecretLookup::Busy
         );
         assert_eq!(
             store
                 .user(call(FetchInteraction::Background))
                 .lookup(&id)
                 .await,
-            SecretLookup::Locked
+            SecretLookup::Busy
         );
         assert_eq!(
             safe_source
                 .chromium_safe_storage("Google Chrome", &call(FetchInteraction::Background))
                 .await
                 .unwrap_err(),
-            SafeStorageError::Locked
+            SafeStorageError::Busy
         );
 
         assert_eq!(
@@ -880,6 +897,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_unfiltered_attribute_probe_runs_when_no_prompt_is_active_and_caches_locked() {
+        let _serial = SECRET_TEST_SERIAL.lock().await;
         let temp_keychain = TempKeychain::create();
         let keychain = temp_keychain.handle();
         let store = SecretStore::new(ServiceBackend::with_keychain_simulating_authenticated_skip(
@@ -929,6 +947,74 @@ mod macos_tests {
                 .lookup(&api_id)
                 .await,
             SecretLookup::Locked
+        );
+    }
+
+    struct FakeUiControl {
+        allowed: Arc<std::sync::atomic::AtomicBool>,
+        disable_calls: AtomicUsize,
+        lock_held_on_restore: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct FakeUiGuard {
+        allowed: Arc<std::sync::atomic::AtomicBool>,
+        lock_held_on_restore: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Drop for FakeUiGuard {
+        fn drop(&mut self) {
+            self.lock_held_on_restore
+                .store(is_macos_prompt_lock_held(), Ordering::SeqCst);
+            self.allowed.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl MacosKeychainUiControl for FakeUiControl {
+        type Guard = FakeUiGuard;
+
+        fn user_interaction_allowed(&self) -> Result<bool, i32> {
+            Ok(self.allowed.load(Ordering::SeqCst))
+        }
+
+        fn disable_user_interaction(&self) -> Result<Self::Guard, i32> {
+            self.disable_calls.fetch_add(1, Ordering::SeqCst);
+            self.allowed.store(false, Ordering::SeqCst);
+            Ok(FakeUiGuard {
+                allowed: self.allowed.clone(),
+                lock_held_on_restore: self.lock_held_on_restore.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn macos_with_keychain_interaction_using_disables_ui_during_background_and_restores_before_unlock()
+     {
+        let _serial = serial_guard();
+        ensure_no_keychain_ui();
+        let allowed = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let lock_held_on_restore = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ui = FakeUiControl {
+            allowed: allowed.clone(),
+            disable_calls: AtomicUsize::new(0),
+            lock_held_on_restore: lock_held_on_restore.clone(),
+        };
+
+        let observed_inside = with_macos_keychain_interaction_using(&ui, false, || {
+            assert!(is_macos_prompt_lock_held());
+            assert!(!is_macos_user_prompt_active());
+            Ok(allowed.load(Ordering::SeqCst))
+        })
+        .unwrap();
+
+        assert!(!observed_inside, "UI must be disabled inside background f");
+        assert_eq!(ui.disable_calls.load(Ordering::SeqCst), 1);
+        assert!(
+            lock_held_on_restore.load(Ordering::SeqCst),
+            "UI must be restored to true before USER_PROMPT_LOCK is released"
+        );
+        assert!(
+            allowed.load(Ordering::SeqCst),
+            "UI must be restored to true after background call returns"
         );
     }
 }

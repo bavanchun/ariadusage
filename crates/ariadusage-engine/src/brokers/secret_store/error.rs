@@ -5,6 +5,9 @@ use std::fmt;
 pub enum SecretStoreError {
     Unavailable,
     Locked,
+    /// A background non-interactive Keychain operation was skipped because an interactive
+    /// user-initiated prompt is currently holding the process-wide prompt lock.
+    Busy,
     Dismissed,
     /// Operation exceeded its timeout (`120s` for user-initiated prompts, `5s` for background
     /// queries). On macOS, a timed-out blocking Keychain call and its system dialog stay alive on
@@ -22,6 +25,7 @@ impl fmt::Display for SecretStoreError {
         f.write_str(match self {
             Self::Unavailable => "secret service unavailable",
             Self::Locked => "secret store is locked",
+            Self::Busy => "secret store is busy with an active prompt",
             Self::Dismissed => "secret store unlock was dismissed",
             Self::Timeout => "secret store operation timed out",
             Self::Cancelled => "secret store operation was cancelled",
@@ -38,6 +42,7 @@ impl fmt::Debug for SecretStoreError {
         f.write_str(match self {
             Self::Unavailable => "Unavailable",
             Self::Locked => "Locked",
+            Self::Busy => "Busy",
             Self::Dismissed => "Dismissed",
             Self::Timeout => "Timeout",
             Self::Cancelled => "Cancelled",

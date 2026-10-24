@@ -20,6 +20,18 @@ use ariadusage_engine::state_store::BrokerStateStore;
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
+static KEYCHAIN_TEST_SERIAL: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+fn serial_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    loop {
+        if let Ok(guard) = KEYCHAIN_TEST_SERIAL.try_lock() {
+            return guard;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 fn call(interaction: FetchInteraction) -> BrokerCall {
     BrokerCall {
         interaction,
@@ -104,6 +116,7 @@ impl KeychainCredentialReader for FakeKeychainCredentialReader {
 
 #[test]
 fn unconsented_user_initiated_read_returns_without_calling_reader() {
+    let _serial = serial_guard();
     assert_eq!(
         CLAUDE_OAUTH_DIRECT_KEYCHAIN_READ_CONSENT_KEY,
         "claudeOAuthDirectKeychainReadAllowed"
@@ -161,6 +174,7 @@ fn unconsented_user_initiated_read_returns_without_calling_reader() {
 
 #[test]
 fn read_and_probe_fingerprints_agree_and_never_hash_secret_bytes() {
+    let _serial = serial_guard();
     let reader = Arc::new(FakeKeychainCredentialReader::default());
     let secret_payload = b"{\"claudeAiOauth\":{\"accessToken\":\"secret-token-1\"}}".to_vec();
     *reader.payload.lock().unwrap() = Some(secret_payload.clone());
@@ -254,6 +268,7 @@ fn gate_respects_disabled_flag_and_clear_denied_allows_immediate_retry() {
 
 #[test]
 fn background_reads_never_prompt_or_poison_denial_cooldown() {
+    let _serial = serial_guard();
     let reader = Arc::new(FakeKeychainCredentialReader::default());
     *reader.background_error.lock().unwrap() = Some(os_status::ERR_SEC_INTERACTION_NOT_ALLOWED);
     *reader.payload.lock().unwrap() = Some(b"{\"claudeAiOauth\":{}}".to_vec());
@@ -288,6 +303,7 @@ fn background_reads_never_prompt_or_poison_denial_cooldown() {
 
 #[test]
 fn user_initiated_denial_records_six_hour_cooldown_and_blocks_repeat_prompts() {
+    let _serial = serial_guard();
     let temp = tempfile::tempdir().unwrap();
     let state_store = Arc::new(BrokerStateStore::new(temp.path().join("state")));
     let reader = Arc::new(FakeKeychainCredentialReader::default());
@@ -370,6 +386,7 @@ fn prompt_mode_never_disables_prompts_even_on_user_initiated_reads() {
 
 #[test]
 fn keychain_credential_source_enforces_size_limit_and_converts_errors_to_credential_file_error() {
+    let _serial = serial_guard();
     let reader = Arc::new(FakeKeychainCredentialReader::default());
     *reader.payload.lock().unwrap() = Some(vec![b'x'; (1024 * 1024) + 1]);
 
@@ -394,6 +411,7 @@ fn keychain_credential_source_enforces_size_limit_and_converts_errors_to_credent
 
 #[tokio::test]
 async fn async_keychain_read_and_probe_run_in_spawn_blocking_and_observe_cancellation() {
+    let _serial = KEYCHAIN_TEST_SERIAL.lock().await;
     let reader = Arc::new(FakeKeychainCredentialReader::default());
     *reader.payload.lock().unwrap() =
         Some(b"{\"claudeAiOauth\":{\"accessToken\":\"invented\"}}".to_vec());
@@ -496,7 +514,7 @@ mod macos_tests {
     };
     use zeroize::Zeroizing;
 
-    use super::{call, default_fake_fingerprint};
+    use super::{KEYCHAIN_TEST_SERIAL, call, default_fake_fingerprint, serial_guard};
 
     fn ensure_no_keychain_ui() {
         static NO_UI_GUARD: OnceLock<Mutex<KeychainUserInteractionLock>> = OnceLock::new();
@@ -538,6 +556,7 @@ mod macos_tests {
 
     #[test]
     fn macos_temporary_keychain_reads_claude_code_credentials_and_fingerprint_without_prompting() {
+        let _serial = serial_guard();
         let temp_keychain = TempKeychain::create();
         let keychain = temp_keychain.handle();
         let decl = KeychainCredentialDecl::claude_code();
@@ -642,6 +661,7 @@ mod macos_tests {
 
     #[tokio::test]
     async fn macos_background_read_while_user_prompt_in_flight_uses_no_ui_and_skips_reader() {
+        let _serial = KEYCHAIN_TEST_SERIAL.lock().await;
         ensure_no_keychain_ui();
         let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -687,21 +707,21 @@ mod macos_tests {
         let skipped_before = macos_background_no_ui_skipped_during_prompt_count();
 
         // While the simulated user prompt holds `USER_PROMPT_LOCK`, background `read_at_async` and
-        // `probe_fingerprint_async` take the no-UI path, immediately return `InteractionRequired`
+        // `probe_fingerprint_async` take the no-UI path, immediately return transient `Busy`
         // without calling the reader or poisoning the 6-hour denial cooldown.
         assert_eq!(
             source
                 .read_at_async(&decl, &call(FetchInteraction::Background), 1_001)
                 .await
                 .unwrap_err(),
-            KeychainCredentialError::InteractionRequired
+            KeychainCredentialError::Busy
         );
         assert_eq!(
             source
                 .probe_fingerprint_async(&decl, &call(FetchInteraction::Background))
                 .await
                 .unwrap_err(),
-            KeychainCredentialError::InteractionRequired
+            KeychainCredentialError::Busy
         );
         assert_eq!(
             macos_background_no_ui_skipped_during_prompt_count(),
@@ -743,6 +763,7 @@ mod macos_tests {
 
     #[test]
     fn macos_unfiltered_interaction_required_probe_and_cache_work_when_no_prompt_is_active() {
+        let _serial = serial_guard();
         let temp_keychain = TempKeychain::create();
         let keychain = temp_keychain.handle();
         let decl = KeychainCredentialDecl::claude_code();

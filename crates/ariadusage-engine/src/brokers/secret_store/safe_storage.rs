@@ -13,6 +13,9 @@ pub enum SafeStorageError {
     NoSecretService,
     KWalletUnsupported,
     Locked,
+    /// Background lookup was skipped because a user-initiated Keychain prompt is currently in
+    /// flight on another thread.
+    Busy,
     Dismissed,
     Timeout,
     Cancelled,
@@ -27,6 +30,7 @@ impl fmt::Display for SafeStorageError {
             Self::NoSecretService => "secret service unavailable",
             Self::KWalletUnsupported => "KWallet safe-storage entries are unsupported",
             Self::Locked => "safe-storage keyring item is locked",
+            Self::Busy => "safe-storage keyring is busy with an active prompt",
             Self::Dismissed => "safe-storage unlock was dismissed",
             Self::Timeout => "safe-storage lookup timed out",
             Self::Cancelled => "safe-storage lookup was cancelled",
@@ -43,6 +47,7 @@ impl fmt::Debug for SafeStorageError {
             Self::NoSecretService => "NoSecretService",
             Self::KWalletUnsupported => "KWalletUnsupported",
             Self::Locked => "Locked",
+            Self::Busy => "Busy",
             Self::Dismissed => "Dismissed",
             Self::Timeout => "Timeout",
             Self::Cancelled => "Cancelled",
@@ -104,6 +109,7 @@ fn map_error(error: SecretStoreError) -> SafeStorageError {
         SecretStoreError::Unavailable => SafeStorageError::NoSecretService,
         SecretStoreError::Unsupported => SafeStorageError::KWalletUnsupported,
         SecretStoreError::Locked => SafeStorageError::Locked,
+        SecretStoreError::Busy => SafeStorageError::Busy,
         SecretStoreError::Dismissed => SafeStorageError::Dismissed,
         SecretStoreError::Timeout => SafeStorageError::Timeout,
         SecretStoreError::Cancelled => SafeStorageError::Cancelled,

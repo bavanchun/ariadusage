@@ -27,6 +27,9 @@ pub enum SecretLookup {
     Found(SecretString),
     Missing,
     Locked,
+    /// Background lookup was skipped because a user-initiated Keychain prompt is currently in
+    /// flight on another thread; this is transient and does not mean the item itself is locked.
+    Busy,
     Unavailable,
     Invalid,
 }
@@ -37,6 +40,7 @@ impl std::fmt::Debug for SecretLookup {
             Self::Found(secret) => f.debug_tuple("Found").field(secret).finish(),
             Self::Missing => f.write_str("Missing"),
             Self::Locked => f.write_str("Locked"),
+            Self::Busy => f.write_str("Busy"),
             Self::Unavailable => f.write_str("Unavailable"),
             Self::Invalid => f.write_str("Invalid"),
         }
@@ -182,6 +186,7 @@ impl SecretStore {
             }
             Ok(result) => result,
             Err(SecretStoreError::Locked) => SecretLookup::Locked,
+            Err(SecretStoreError::Busy) => SecretLookup::Busy,
             Err(SecretStoreError::Invalid) => SecretLookup::Invalid,
             Err(SecretStoreError::Unavailable | SecretStoreError::Unsupported) => {
                 SecretLookup::Unavailable
@@ -205,6 +210,7 @@ impl SecretStore {
             }
             Ok(result) => result,
             Err(SecretStoreError::Locked) => SecretLookup::Locked,
+            Err(SecretStoreError::Busy) => SecretLookup::Busy,
             Err(SecretStoreError::Invalid) => SecretLookup::Invalid,
             Err(SecretStoreError::Unavailable | SecretStoreError::Unsupported) => {
                 SecretLookup::Unavailable
@@ -287,7 +293,10 @@ impl UserHandle<'_> {
 }
 
 fn lookup_counts_as_set(lookup: SecretLookup) -> bool {
-    matches!(lookup, SecretLookup::Found(_) | SecretLookup::Locked)
+    matches!(
+        lookup,
+        SecretLookup::Found(_) | SecretLookup::Locked | SecretLookup::Busy
+    )
 }
 
 fn make_secret_id(provider: &str, kind: &str, account: Option<&str>) -> Option<SecretId> {

@@ -342,6 +342,11 @@ pub enum KeychainCredentialError {
     #[error("keychain credential item requires user interaction")]
     InteractionRequired,
 
+    /// Background Keychain read or fingerprint probe was skipped because an interactive
+    /// user-initiated Keychain prompt holds the process-wide prompt lock on another thread.
+    #[error("keychain credential read skipped while an interactive prompt is in flight")]
+    Busy,
+
     #[error("keychain credential prompt was dismissed or denied")]
     Dismissed,
 
@@ -376,6 +381,7 @@ impl KeychainCredentialError {
             Self::Cancelled => CredentialFileError::Cancelled,
             Self::ConsentRequired
             | Self::InteractionRequired
+            | Self::Busy
             | Self::Dismissed
             | Self::CooldownActive
             | Self::Disabled
@@ -846,6 +852,9 @@ impl KeychainCredentialSource {
                     Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => {
                         Err(KeychainCredentialError::NotFound)
                     }
+                    Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY) => {
+                        Err(KeychainCredentialError::Busy)
+                    }
                     Err(
                         os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
                         | os_status::ERR_SEC_AUTH_FAILED
@@ -932,6 +941,7 @@ impl KeychainCredentialSource {
         let result = match outcome {
             Ok(fp) => Ok(fp),
             Err(os_status::ERR_SEC_ITEM_NOT_FOUND) => Ok(None),
+            Err(os_status::ERR_SEC_PROMPT_IN_FLIGHT_BUSY) => Err(KeychainCredentialError::Busy),
             Err(
                 os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
                 | os_status::ERR_SEC_AUTH_FAILED
