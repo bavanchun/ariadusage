@@ -3,9 +3,11 @@ extend-exclude = ["fixtures/**"]
 
 [default]
 locale = "en"
-# Preserve the exact spelling of this pinned upstream test declaration.
+# Preserve the exact spelling of these pinned upstream test declarations.
 extend-ignore-re = [
     '(?m)^// upstream: AntigravityWarmAgyReuseTests\.swift:91 ide process ignored not reuseable as warm CLI$',
+    '(?m)^// upstream: AntigravityLocalReaderTests\.swift:824 unparseable generation occurrence cannot shift a later reused step timestamp$',
+    '(?m)^// upstream: AntigravityLocalReaderTests\.swift:843 unparseable step occurrence cannot shift later timestamps$',
 ]
 
 [default.extend-words]
