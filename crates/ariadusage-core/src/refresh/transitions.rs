@@ -1,18 +1,25 @@
 // Ported from CodexBar Sources/CodexBarCore/Hooks/HookTransitionDetector.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Hooks/HookEvent.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Hooks/HookRule.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/Hooks/HookRateLimiter.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Hooks/HookEvent+UsageUpdated.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCLI/CLIHooksCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCLI/CLIHooksWatchCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/SessionQuotaNotifications.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore+SessionQuotaTransition.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore+QuotaWarnings.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+Hooks.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesHooksPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
 
-use ariadusage_protocol::StatusIndicator as ProviderStatusIndicator;
+use ariadusage_protocol::{ProviderId, StatusIndicator as ProviderStatusIndicator};
 use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 
-use crate::config::QuotaWarningWindow;
+use crate::config::{Config, QuotaWarningWindow, QuotaWarnings};
 use crate::model::{RateWindow, UsageSnapshot};
 use crate::providers;
 
@@ -36,6 +43,16 @@ pub enum HookEventType {
 }
 
 impl HookEventType {
+    pub const ALL: [Self; 7] = [
+        Self::QuotaLow,
+        Self::QuotaReached,
+        Self::QuotaReset,
+        Self::UsageUpdated,
+        Self::ProviderUnavailable,
+        Self::ProviderRecovered,
+        Self::RefreshFailed,
+    ];
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::QuotaLow => "quota_low",
@@ -48,12 +65,34 @@ impl HookEventType {
         }
     }
 
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "quota_low" => Some(Self::QuotaLow),
+            "quota_reached" => Some(Self::QuotaReached),
+            "quota_reset" => Some(Self::QuotaReset),
+            "usage_updated" => Some(Self::UsageUpdated),
+            "provider_unavailable" => Some(Self::ProviderUnavailable),
+            "provider_recovered" => Some(Self::ProviderRecovered),
+            "refresh_failed" => Some(Self::RefreshFailed),
+            _ => None,
+        }
+    }
+
     pub fn is_rate_limited(&self) -> bool {
         matches!(
             self,
             Self::UsageUpdated | Self::ProviderUnavailable | Self::RefreshFailed
         )
     }
+}
+
+/// Errors encountered when encoding a [`HookEvent`] JSON stdin payload.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HookPayloadError {
+    #[error("hook payload exceeds the {limit}-byte limit ({size} bytes)")]
+    PayloadTooLarge { size: usize, limit: usize },
+    #[error("failed to encode hook payload: {0}")]
+    EncodingFailed(String),
 }
 
 /// Non-secret metadata for a single quota or provider transition event.
@@ -88,6 +127,9 @@ pub struct HookEvent {
 }
 
 impl HookEvent {
+    /// Maximum JSON payload size written to a hook's stdin (`HookRunner.maxPayloadBytes`).
+    pub const MAX_PAYLOAD_BYTES: usize = 4096;
+
     pub fn usage_updated(
         provider: impl Into<String>,
         snapshot: &UsageSnapshot,
@@ -118,6 +160,21 @@ impl HookEvent {
             status: None,
             timestamp,
         }
+    }
+
+    /// Encodes the event as key-sorted JSON bytes for the hook command's stdin.
+    pub fn json_payload(&self) -> Result<Vec<u8>, HookPayloadError> {
+        let val = serde_json::to_value(self)
+            .map_err(|e| HookPayloadError::EncodingFailed(e.to_string()))?;
+        let bytes = serde_json::to_vec(&val)
+            .map_err(|e| HookPayloadError::EncodingFailed(e.to_string()))?;
+        if bytes.len() > Self::MAX_PAYLOAD_BYTES {
+            return Err(HookPayloadError::PayloadTooLarge {
+                size: bytes.len(),
+                limit: Self::MAX_PAYLOAD_BYTES,
+            });
+        }
+        Ok(bytes)
     }
 
     pub fn environment_variables(&self) -> BTreeMap<String, String> {
@@ -247,6 +304,11 @@ impl HookRule {
         self
     }
 
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
     pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
         self.provider = Some(provider.into());
         self
@@ -254,6 +316,16 @@ impl HookRule {
 
     pub fn with_threshold(mut self, threshold: f64) -> Self {
         self.threshold = Some(threshold);
+        self
+    }
+
+    pub fn with_arguments(mut self, arguments: Vec<String>) -> Self {
+        self.arguments = arguments;
+        self
+    }
+
+    pub fn with_timeout_seconds(mut self, timeout_seconds: f64) -> Self {
+        self.timeout_seconds = timeout_seconds;
         self
     }
 
@@ -388,6 +460,435 @@ pub fn crossed_quota_low_rules(
         .collect()
 }
 
+/// In-memory storm suppression for repeated hook events (`HookRateLimiter.swift`).
+///
+/// Fires a given `(event, provider, account, window)` tuple at most once per `window_seconds`.
+#[derive(Debug, Clone)]
+pub struct HookRateLimiter {
+    pub window_seconds: f64,
+    last_fired: HashMap<String, Timestamp>,
+}
+
+impl Default for HookRateLimiter {
+    fn default() -> Self {
+        Self::new(Self::DEFAULT_WINDOW_SECONDS)
+    }
+}
+
+impl HookRateLimiter {
+    pub const DEFAULT_WINDOW_SECONDS: f64 = 600.0;
+
+    pub fn new(window_seconds: f64) -> Self {
+        Self {
+            window_seconds,
+            last_fired: HashMap::new(),
+        }
+    }
+
+    pub fn allow(
+        &mut self,
+        event: &HookEvent,
+        account_discriminator: Option<&str>,
+        now: Timestamp,
+    ) -> bool {
+        if self.window_seconds <= 0.0 {
+            return true;
+        }
+        let key = Self::key_for(event, account_discriminator);
+        if let Some(previous) = self.last_fired.get(&key)
+            && now.duration_since(*previous).as_secs_f64() < self.window_seconds
+        {
+            return false;
+        }
+        self.last_fired.insert(key, now);
+        true
+    }
+
+    pub fn reset(&mut self) {
+        self.last_fired.clear();
+    }
+
+    pub fn key_for(event: &HookEvent, account_discriminator: Option<&str>) -> String {
+        [
+            event.event.as_str(),
+            event.provider.as_str(),
+            account_discriminator
+                .or(event.account.as_deref())
+                .unwrap_or(""),
+            event.window.as_deref().unwrap_or(""),
+        ]
+        .join("\x1f")
+    }
+}
+
+/// Pure validation helpers for the hook rules editor (`PreferencesHooksPane.swift`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HookEditorValidation;
+
+impl HookEditorValidation {
+    pub const fn can_add_rule(count: usize) -> bool {
+        count < HooksConfig::MAXIMUM_RULE_COUNT
+    }
+
+    pub const fn can_add_argument(count: usize) -> bool {
+        count < HookRule::MAXIMUM_ARGUMENT_COUNT
+    }
+
+    pub fn threshold_fraction(percent: Option<f64>) -> Option<f64> {
+        percent.map(|p| p.clamp(1.0, 100.0) / 100.0)
+    }
+}
+
+/// Structured result of running a single hook rule during `hooks test` (`CLIHooksCommand.swift`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookTestResult {
+    #[serde(rename = "ruleID")]
+    pub rule_id: String,
+    pub executable: String,
+    pub event: String,
+    pub provider: String,
+    pub success: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdout: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Builds a representative sample [`HookEvent`] for `hooks test` (`CLIHooksCommand.swift`).
+pub fn sample_hook_event(
+    event_type: HookEventType,
+    provider: impl Into<String>,
+    now: Timestamp,
+) -> HookEvent {
+    let provider = provider.into();
+    if event_type == HookEventType::UsageUpdated {
+        let primary_reset =
+            Timestamp::from_second(now.as_second().saturating_add(3600)).unwrap_or(now);
+        let secondary_reset =
+            Timestamp::from_second(now.as_second().saturating_add(4 * 86400)).unwrap_or(now);
+        let primary = RateWindow::new(50.0, Some(300), Some(primary_reset), None, None, false).ok();
+        let secondary =
+            RateWindow::new(40.0, Some(10080), Some(secondary_reset), None, None, false).ok();
+        let snapshot = UsageSnapshot::new(
+            primary,
+            secondary,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            now,
+            None,
+            ariadusage_protocol::Confidence::Unknown,
+        )
+        .expect("valid sample usage snapshot");
+        return HookEvent::usage_updated(provider, &snapshot, None, now);
+    }
+
+    let (usage_percent, status) = match event_type {
+        HookEventType::QuotaLow | HookEventType::QuotaReached => (Some(1.0), None),
+        HookEventType::QuotaReset => (Some(0.0), None),
+        HookEventType::UsageUpdated => (None, None),
+        HookEventType::ProviderUnavailable => (None, Some("major".to_string())),
+        HookEventType::ProviderRecovered => (None, Some("none".to_string())),
+        HookEventType::RefreshFailed => (None, Some("error".to_string())),
+    };
+    let window = matches!(
+        event_type,
+        HookEventType::QuotaReached | HookEventType::QuotaLow | HookEventType::QuotaReset
+    )
+    .then(|| "session".to_string());
+
+    HookEvent {
+        event: event_type,
+        provider,
+        account: None,
+        window,
+        usage_percent,
+        window_minutes: None,
+        used: None,
+        limit: None,
+        reset_at: None,
+        secondary_usage_percent: None,
+        secondary_window_minutes: None,
+        secondary_reset_at: None,
+        status,
+        timestamp: now,
+    }
+}
+
+/// Default poll period (in seconds) for `hooks watch`.
+pub const HOOKS_WATCH_DEFAULT_INTERVAL: f64 = 300.0;
+/// Minimum allowed `--interval` (in seconds) for `hooks watch`.
+pub const HOOKS_WATCH_MINIMUM_INTERVAL: f64 = 60.0;
+/// Poll-period tick (in nanoseconds) used by [`sleep_interruptibly`].
+pub const HOOKS_WATCH_SLEEP_TICK_NANOSECONDS: u64 = 200_000_000;
+
+/// Thread-safe stop flag flipped by a termination signal handler (`CLIHooksWatchCommand.swift`).
+#[derive(Debug, Default)]
+pub struct HooksWatchStopSignal {
+    requested: AtomicBool,
+}
+
+impl HooksWatchStopSignal {
+    pub const fn new() -> Self {
+        Self {
+            requested: AtomicBool::new(false),
+        }
+    }
+
+    pub fn request(&self) {
+        self.requested.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_requested(&self) -> bool {
+        self.requested.load(Ordering::SeqCst)
+    }
+}
+
+/// Sleeps up to `interval` seconds in bounded 200ms ticks while checking `stop` before each tick.
+pub async fn sleep_interruptibly<F, Fut>(
+    interval: f64,
+    stop: &HooksWatchStopSignal,
+    mut sleep_fn: F,
+) where
+    F: FnMut(u64) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut remaining_nanoseconds = (interval.max(0.0) * 1_000_000_000.0).round() as u64;
+    while remaining_nanoseconds > 0 && !stop.is_requested() {
+        let sleep_nanoseconds = remaining_nanoseconds.min(HOOKS_WATCH_SLEEP_TICK_NANOSECONDS);
+        sleep_fn(sleep_nanoseconds).await;
+        remaining_nanoseconds -= sleep_nanoseconds;
+    }
+}
+
+/// Argument validation error for `hooks watch` CLI decoding.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{message}")]
+pub struct HooksWatchArgumentError {
+    pub message: String,
+}
+
+impl HooksWatchArgumentError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+/// Rejects `--once` for `hooks watch` because transition baselines must survive between polls.
+pub fn validate_hooks_watch_flags(once: bool) -> Result<(), HooksWatchArgumentError> {
+    if once {
+        return Err(HooksWatchArgumentError::new(
+            "Unknown flag --once: hooks watch requires a continuous loop so transition state survives between polls.",
+        ));
+    }
+    Ok(())
+}
+
+/// Validates and decodes `--interval` without reading the config file.
+pub fn decode_hooks_watch_interval(raw: Option<&str>) -> Result<f64, HooksWatchArgumentError> {
+    let Some(raw) = raw else {
+        return Ok(HOOKS_WATCH_DEFAULT_INTERVAL);
+    };
+    let Ok(parsed) = raw.parse::<f64>() else {
+        return Err(HooksWatchArgumentError::new(format!(
+            "Invalid --interval value: {raw}"
+        )));
+    };
+    if !parsed.is_finite() {
+        return Err(HooksWatchArgumentError::new(format!(
+            "Invalid --interval value: {raw}"
+        )));
+    }
+    if parsed < HOOKS_WATCH_MINIMUM_INTERVAL {
+        return Err(HooksWatchArgumentError::new(format!(
+            "--interval must be at least {} seconds.",
+            HOOKS_WATCH_MINIMUM_INTERVAL as i64
+        )));
+    }
+    Ok(parsed)
+}
+
+/// Validates explicit `--provider` names (`all`, `both`, or concrete provider names) without
+/// reading the config file.
+pub fn decode_hooks_watch_provider_names(
+    raw: &[&str],
+) -> Result<Option<Vec<ProviderId>>, HooksWatchArgumentError> {
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    let mut selected = Vec::new();
+    for &name in raw {
+        let trimmed = name.trim().to_ascii_lowercase();
+        let expanded: Vec<ProviderId> = match trimmed.as_str() {
+            "all" => providers::first_party_order()
+                .iter()
+                .map(|d| d.id.clone())
+                .collect(),
+            "both" => vec![
+                ProviderId::new("codex").expect("valid id"),
+                ProviderId::new("claude").expect("valid id"),
+            ],
+            other => {
+                let Some(desc) = providers::find_by_id_str(other) else {
+                    return Err(HooksWatchArgumentError::new(format!(
+                        "Unknown provider: {name}"
+                    )));
+                };
+                vec![desc.id.clone()]
+            }
+        };
+        for pid in expanded {
+            if !selected.contains(&pid) {
+                selected.push(pid);
+            }
+        }
+    }
+    Ok(Some(selected))
+}
+
+/// Resolves the providers to poll for `hooks watch`, defaulting to enabled providers in `config`.
+pub fn hooks_watch_providers(
+    explicit: Option<Vec<ProviderId>>,
+    config: &Config,
+) -> Result<Vec<ProviderId>, HooksWatchArgumentError> {
+    if let Some(explicit) = explicit {
+        return Ok(explicit);
+    }
+    let enabled: Vec<ProviderId> = config
+        .enabled_providers()
+        .into_iter()
+        .filter_map(|id| providers::find_by_id_str(&id).map(|d| d.id.clone()))
+        .collect();
+    if enabled.is_empty() {
+        return Err(HooksWatchArgumentError::new("No providers are enabled."));
+    }
+    Ok(enabled)
+}
+
+/// Builds the quota lane observations for a `hooks watch` poll (`CLIHooksWatchCommand.swift`).
+pub fn hooks_watch_lanes(
+    provider: &ProviderId,
+    usage: &UsageSnapshot,
+    config: &Config,
+    account_discriminator: Option<&str>,
+    hides_personal_info: bool,
+) -> Vec<HookQuotaLaneObservation> {
+    let account = usage
+        .account_email(provider)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    let warnings = config
+        .provider_config(provider.as_str())
+        .and_then(|c| c.quota_warnings.as_ref());
+    let lanes = [
+        (QuotaWarningWindow::Session, usage.primary.as_ref()),
+        (QuotaWarningWindow::Weekly, usage.secondary.as_ref()),
+    ];
+
+    lanes
+        .into_iter()
+        .filter_map(|(window, rate_window)| {
+            let rate_window = rate_window.filter(|w| !w.is_synthetic_placeholder)?;
+            let thresholds = warnings.map_or_else(
+                || QuotaWarnings::DEFAULTS.to_vec(),
+                |w| w.thresholds(window, &QuotaWarnings::DEFAULTS),
+            );
+            let fallback_thresholds = thresholds
+                .into_iter()
+                .map(|t| (100.0 - f64::from(t)) / 100.0)
+                .collect();
+            let discriminator = account_discriminator
+                .map(ToOwned::to_owned)
+                .or_else(|| account.clone());
+            let display_name = if hides_personal_info {
+                None
+            } else {
+                account.clone()
+            };
+            Some(
+                HookQuotaLaneObservation::new(
+                    HookQuotaLaneKey::new(provider.as_str(), window, discriminator, None),
+                    window.display_name(),
+                    Some(rate_window.clone()),
+                    fallback_thresholds,
+                )
+                .with_account_display_name(display_name),
+            )
+        })
+        .collect()
+}
+
+/// Coarse failure classification for `refresh_failed` hooks (`UsageStore.refreshFailureHookStatus`).
+///
+/// Never forwards raw error strings or HTTP bodies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookTransportErrorKind {
+    Cancelled,
+    TimedOut,
+    Offline,
+    NetworkError,
+    AuthRequired,
+    Other,
+}
+
+pub const fn hook_refresh_failure_status(kind: HookTransportErrorKind) -> &'static str {
+    match kind {
+        HookTransportErrorKind::Cancelled => "cancelled",
+        HookTransportErrorKind::TimedOut => "timeout",
+        HookTransportErrorKind::Offline => "offline",
+        HookTransportErrorKind::NetworkError => "network_error",
+        HookTransportErrorKind::AuthRequired => "auth_required",
+        HookTransportErrorKind::Other => "error",
+    }
+}
+
+/// Account display label for a hook payload, redacted when `hide_personal_info` is enabled.
+pub fn hook_account_display_name(
+    provider: &ProviderId,
+    snapshot: &UsageSnapshot,
+    hide_personal_info: bool,
+) -> Option<String> {
+    if hide_personal_info {
+        return None;
+    }
+    snapshot
+        .account_email(provider)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+/// Private identity used only to keep rate-limit buckets account-scoped (`UsageStore.hookAccountDiscriminator`).
+/// Never serialized into hook payloads or environment variables.
+pub fn hook_account_discriminator(
+    provider: &ProviderId,
+    snapshot: &UsageSnapshot,
+) -> Option<String> {
+    let identity = snapshot.identity_for(provider)?;
+    if let Some(account_id) = identity
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Some(format!("provider-account:{account_id}"));
+    }
+    let email = identity
+        .account_email
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())?
+        .to_ascii_lowercase();
+    Some(format!("email:{email}"))
+}
+
 /// Identifies one tracked quota lane (`provider` + `window` + optional account / window ID).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HookQuotaLaneKey {
@@ -420,6 +921,7 @@ pub struct HookQuotaLaneObservation {
     pub label: String,
     pub rate_window: Option<RateWindow>,
     pub fallback_thresholds: Vec<f64>,
+    pub account_display_name: Option<String>,
 }
 
 impl HookQuotaLaneObservation {
@@ -434,7 +936,13 @@ impl HookQuotaLaneObservation {
             label: label.into(),
             rate_window,
             fallback_thresholds,
+            account_display_name: None,
         }
+    }
+
+    pub fn with_account_display_name(mut self, account_display_name: Option<String>) -> Self {
+        self.account_display_name = account_display_name;
+        self
     }
 }
 
@@ -448,6 +956,19 @@ pub enum HookProviderStatus {
     Maintenance,
     #[default]
     Unknown,
+}
+
+impl HookProviderStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minor => "minor",
+            Self::Major => "major",
+            Self::Critical => "critical",
+            Self::Maintenance => "maintenance",
+            Self::Unknown => "unknown",
+        }
+    }
 }
 
 impl From<ProviderStatusIndicator> for HookProviderStatus {
@@ -472,6 +993,8 @@ pub struct HookProviderObservation {
     pub secondary: Option<RateWindow>,
     pub status: HookProviderStatus,
     pub refresh_failure_status: Option<String>,
+    pub successful_usage: Option<UsageSnapshot>,
+    pub account_discriminator: Option<String>,
 }
 
 impl HookProviderObservation {
@@ -490,15 +1013,43 @@ impl HookProviderObservation {
             secondary,
             status,
             refresh_failure_status,
+            successful_usage: None,
+            account_discriminator: None,
         }
+    }
+
+    pub fn with_successful_usage(mut self, usage: Option<UsageSnapshot>) -> Self {
+        self.successful_usage = usage;
+        self
+    }
+
+    pub fn with_account_discriminator(mut self, discriminator: Option<String>) -> Self {
+        self.account_discriminator = discriminator;
+        self
     }
 }
 
-/// A transition event paired with the specific rules that should execute (when filtered).
+/// A transition event paired with the specific rules that should execute (when filtered)
+/// and the private rate-limit account discriminator.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HookDispatch {
     pub event: HookEvent,
     pub rules: Option<Vec<HookRule>>,
+    pub account_discriminator: Option<String>,
+}
+
+impl HookDispatch {
+    pub fn new(
+        event: HookEvent,
+        rules: Option<Vec<HookRule>>,
+        account_discriminator: Option<String>,
+    ) -> Self {
+        Self {
+            event,
+            rules,
+            account_discriminator,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -511,22 +1062,42 @@ struct WindowObservation {
 ///
 /// The first observation for a lane or provider status only establishes a baseline;
 /// subsequent observations emit transitions only when an edge is crossed.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct HookTransitionDetector {
     window_observation: HashMap<HookQuotaLaneKey, WindowObservation>,
     provider_status_had_issue: HashMap<String, bool>,
     last_config_revision: Option<u64>,
+    reached_threshold: f64,
+    reset_drop_threshold: f64,
+}
+
+impl Default for HookTransitionDetector {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HookTransitionDetector {
-    /// Usage drop (as a `0.0..=1.0` fraction) that counts as a quota reset when the provider
-    /// does not report a `resets_at` timestamp.
-    pub const RESET_DROP_THRESHOLD: f64 = 0.5;
+    /// Default usage fraction at or above which a session lane counts as depleted.
+    pub const DEFAULT_REACHED_THRESHOLD: f64 = 1.0;
+    /// Default usage drop (as a `0.0..=1.0` fraction) that counts as a quota reset when the
+    /// provider does not report a `resets_at` timestamp (`HookTransitionDetector.swift`).
+    pub const RESET_DROP_THRESHOLD: f64 = 0.2;
     /// Tolerance (in seconds) when comparing `resets_at` timestamps across polls.
-    pub const RESET_TIMESTAMP_TOLERANCE_SECS: f64 = 1.0;
+    pub const RESET_TIMESTAMP_TOLERANCE_SECS: f64 = 0.0;
 
     pub fn new() -> Self {
-        Self::default()
+        Self::with_thresholds(Self::DEFAULT_REACHED_THRESHOLD, Self::RESET_DROP_THRESHOLD)
+    }
+
+    pub fn with_thresholds(reached_threshold: f64, reset_drop_threshold: f64) -> Self {
+        Self {
+            window_observation: HashMap::new(),
+            provider_status_had_issue: HashMap::new(),
+            last_config_revision: None,
+            reached_threshold,
+            reset_drop_threshold,
+        }
     }
 
     pub fn reset_if_configuration_changed(&mut self, revision: u64) {
@@ -543,20 +1114,42 @@ impl HookTransitionDetector {
         self.provider_status_had_issue.remove(provider);
     }
 
+    pub fn clear_quota_low_lanes(&mut self, provider: &str) {
+        self.window_observation
+            .retain(|key, _| key.provider != provider);
+    }
+
+    pub fn prune_extra_lanes(
+        &mut self,
+        provider: &str,
+        account_discriminator: Option<&str>,
+        keeping_extra_window_ids: &HashSet<String>,
+    ) {
+        self.window_observation.retain(|key, _| {
+            if key.provider != provider
+                || key.account_discriminator.as_deref() != account_discriminator
+            {
+                return true;
+            }
+            let Some(window_id) = &key.window_id else {
+                return true;
+            };
+            keeping_extra_window_ids.contains(window_id)
+        });
+    }
+
     pub fn evaluate(
         &mut self,
         observation: &HookProviderObservation,
         config: &HooksConfig,
         now: Timestamp,
     ) -> Vec<HookDispatch> {
-        if !config.enabled {
+        if !config.enabled || config.events.len() > HooksConfig::MAXIMUM_RULE_COUNT {
             return Vec::new();
         }
 
-        let mut dispatches = Vec::new();
-
         if let Some(failure_status) = &observation.refresh_failure_status {
-            dispatches.push(HookDispatch {
+            return vec![HookDispatch {
                 event: HookEvent {
                     event: HookEventType::RefreshFailed,
                     provider: observation.provider.clone(),
@@ -574,9 +1167,26 @@ impl HookTransitionDetector {
                     timestamp: now,
                 },
                 rules: None,
-            });
-            dispatches.extend(self.evaluate_status(observation, now));
-            return dispatches;
+                account_discriminator: observation.account_discriminator.clone(),
+            }];
+        }
+
+        let mut dispatches = self.evaluate_status(observation, now);
+
+        if let Some(usage) = &observation.successful_usage {
+            let usage_event = HookEvent::usage_updated(
+                observation.provider.clone(),
+                usage,
+                observation.account.clone(),
+                now,
+            );
+            if config.events.iter().any(|rule| rule.matches(&usage_event)) {
+                dispatches.push(HookDispatch {
+                    event: usage_event,
+                    rules: None,
+                    account_discriminator: observation.account_discriminator.clone(),
+                });
+            }
         }
 
         let observed_keys: HashSet<HookQuotaLaneKey> = observation
@@ -584,8 +1194,6 @@ impl HookTransitionDetector {
             .iter()
             .map(|lane| lane.key.clone())
             .collect();
-        self.window_observation
-            .retain(|key, _| key.provider != observation.provider || observed_keys.contains(key));
 
         for lane in &observation.lanes {
             let Some(rate_window) = &lane.rate_window else {
@@ -597,7 +1205,7 @@ impl HookTransitionDetector {
                 continue;
             }
 
-            let current_usage = (rate_window.used_percent / 100.0).clamp(0.0, 1.0);
+            let current_usage = rate_window.used_percent / 100.0;
             let current = WindowObservation {
                 usage: current_usage,
                 reset_at: rate_window.resets_at,
@@ -608,7 +1216,7 @@ impl HookTransitionDetector {
                 continue;
             };
 
-            let did_reset = Self::window_did_reset(previous, current);
+            let did_reset = self.window_did_reset(previous, current);
             if did_reset {
                 dispatches.push(HookDispatch {
                     event: self.quota_event(
@@ -620,13 +1228,49 @@ impl HookTransitionDetector {
                         now,
                     ),
                     rules: None,
+                    account_discriminator: None,
+                });
+                continue;
+            }
+
+            let candidate = self.quota_event(
+                HookEventType::QuotaLow,
+                observation,
+                lane,
+                rate_window,
+                current_usage,
+                now,
+            );
+            let matching_rules: Vec<HookRule> = config
+                .events
+                .iter()
+                .filter(|rule| {
+                    rule.enabled
+                        && rule.event == HookEventType::QuotaLow
+                        && rule
+                            .provider
+                            .as_ref()
+                            .is_none_or(|p| p == &observation.provider)
+                })
+                .cloned()
+                .collect();
+            let crossed_rules = crossed_quota_low_rules(
+                &matching_rules,
+                previous.usage,
+                current_usage,
+                &lane.fallback_thresholds,
+            );
+            if !crossed_rules.is_empty() {
+                dispatches.push(HookDispatch {
+                    event: candidate,
+                    rules: Some(crossed_rules),
+                    account_discriminator: None,
                 });
             }
 
             if lane.key.window == QuotaWarningWindow::Session
-                && !did_reset
-                && previous.usage < 1.0
-                && current_usage >= 1.0
+                && previous.usage < self.reached_threshold
+                && current_usage >= self.reached_threshold
             {
                 dispatches.push(HookDispatch {
                     event: self.quota_event(
@@ -638,33 +1282,14 @@ impl HookTransitionDetector {
                         now,
                     ),
                     rules: None,
-                });
-            }
-
-            let candidate = self.quota_event(
-                HookEventType::QuotaLow,
-                observation,
-                lane,
-                rate_window,
-                current_usage,
-                now,
-            );
-            let matching_rules = config.matching_rules(&candidate);
-            let crossed_rules = crossed_quota_low_rules(
-                &matching_rules,
-                previous.usage,
-                current_usage,
-                &lane.fallback_thresholds,
-            );
-            if !crossed_rules.is_empty() {
-                dispatches.push(HookDispatch {
-                    event: candidate,
-                    rules: Some(crossed_rules),
+                    account_discriminator: None,
                 });
             }
         }
 
-        dispatches.extend(self.evaluate_status(observation, now));
+        self.window_observation
+            .retain(|key, _| key.provider != observation.provider || observed_keys.contains(key));
+
         dispatches
     }
 
@@ -695,16 +1320,10 @@ impl HookTransitionDetector {
             return Vec::new();
         }
 
-        let (event_type, status_label) = if has_issue {
-            let label = match observation.status {
-                HookProviderStatus::Minor => "minor",
-                HookProviderStatus::Major => "major",
-                HookProviderStatus::Critical => "critical",
-                _ => "unavailable",
-            };
-            (HookEventType::ProviderUnavailable, label)
+        let event_type = if has_issue {
+            HookEventType::ProviderUnavailable
         } else {
-            (HookEventType::ProviderRecovered, "operational")
+            HookEventType::ProviderRecovered
         };
 
         vec![HookDispatch {
@@ -721,19 +1340,20 @@ impl HookTransitionDetector {
                 secondary_usage_percent: None,
                 secondary_window_minutes: None,
                 secondary_reset_at: None,
-                status: Some(status_label.to_string()),
+                status: Some(observation.status.as_str().to_string()),
                 timestamp: now,
             },
             rules: None,
+            account_discriminator: None,
         }]
     }
 
-    fn window_did_reset(previous: WindowObservation, current: WindowObservation) -> bool {
+    fn window_did_reset(&self, previous: WindowObservation, current: WindowObservation) -> bool {
         if let (Some(prev_reset), Some(curr_reset)) = (previous.reset_at, current.reset_at) {
             return curr_reset.duration_since(prev_reset).as_secs_f64()
                 > Self::RESET_TIMESTAMP_TOLERANCE_SECS;
         }
-        (previous.usage - current.usage) >= Self::RESET_DROP_THRESHOLD
+        (previous.usage - current.usage) >= self.reset_drop_threshold
     }
 
     fn quota_event(
@@ -752,7 +1372,10 @@ impl HookTransitionDetector {
         HookEvent {
             event,
             provider: observation.provider.clone(),
-            account: observation.account.clone(),
+            account: lane
+                .account_display_name
+                .clone()
+                .or_else(|| observation.account.clone()),
             window: Some(lane.label.clone()),
             usage_percent: Some(usage_percent),
             window_minutes: rate_window.window_minutes,
@@ -839,6 +1462,8 @@ impl SessionQuotaTransitionDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{ProviderConfig, ProviderEntry, decode, encode};
+    use crate::model::ProviderIdentitySnapshot;
 
     const PROVIDER: &str = "codex";
 
@@ -934,6 +1559,302 @@ mod tests {
             }),
         )
     }
+
+    fn make_event(
+        event: HookEventType,
+        provider: &str,
+        usage_percent: Option<f64>,
+        account: Option<&str>,
+        window: Option<&str>,
+    ) -> HookEvent {
+        HookEvent {
+            event,
+            provider: provider.to_string(),
+            account: account.map(ToOwned::to_owned),
+            window: window.map(ToOwned::to_owned),
+            usage_percent,
+            window_minutes: None,
+            used: None,
+            limit: None,
+            reset_at: Some(Timestamp::from_second(1_700_000_000).expect("ts")),
+            secondary_usage_percent: None,
+            secondary_window_minutes: None,
+            secondary_reset_at: None,
+            status: None,
+            timestamp: Timestamp::from_second(1_700_000_100).expect("ts"),
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TestsLinux/HooksTests.swift (pure logic)
+    // -------------------------------------------------------------------------
+
+    // upstream: TestsLinux/HooksTests.swift:25 rule matches on event and provider
+    #[test]
+    fn rule_matches_on_event_and_provider() {
+        let rule = HookRule::new(HookEventType::QuotaReached, "/bin/echo").with_provider("codex");
+        assert!(rule.matches(&make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session")
+        )));
+        assert!(!rule.matches(&make_event(
+            HookEventType::QuotaReached,
+            "claude",
+            Some(0.95),
+            None,
+            Some("session")
+        )));
+        assert!(!rule.matches(&make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session")
+        )));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:33 nil provider matches any provider
+    #[test]
+    fn nil_provider_matches_any_provider() {
+        let rule = HookRule::new(HookEventType::QuotaReached, "/bin/echo");
+        assert!(rule.matches(&make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session")
+        )));
+        assert!(rule.matches(&make_event(
+            HookEventType::QuotaReached,
+            "claude",
+            Some(0.95),
+            None,
+            Some("session")
+        )));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:40 quotaLow threshold gates on usage percent
+    #[test]
+    fn quota_low_threshold_gates_on_usage_percent() {
+        let rule = HookRule::new(HookEventType::QuotaLow, "/bin/echo").with_threshold(0.90);
+        assert!(rule.matches(&make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            Some(0.92),
+            None,
+            Some("session")
+        )));
+        assert!(rule.matches(&make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            Some(0.90),
+            None,
+            Some("session")
+        )));
+        assert!(!rule.matches(&make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            Some(0.80),
+            None,
+            Some("session")
+        )));
+        assert!(!rule.matches(&make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            None,
+            None,
+            Some("session")
+        )));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:49 disabled rule and relative path never match
+    #[test]
+    fn disabled_rule_and_relative_path_never_match() {
+        let disabled = HookRule::new(HookEventType::QuotaReached, "/bin/echo").with_enabled(false);
+        let ev = make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session"),
+        );
+        assert!(!disabled.matches(&ev));
+
+        let relative = HookRule::new(HookEventType::QuotaReached, "my-command");
+        assert!(!relative.matches(&ev));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:58 disabled config yields no matching rules
+    #[test]
+    fn disabled_config_yields_no_matching_rules() {
+        let rule = HookRule::new(HookEventType::QuotaReached, "/bin/echo");
+        let enabled = HooksConfig::new(true, vec![rule.clone()]);
+        let disabled = HooksConfig::new(false, vec![rule]);
+        let ev = make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session"),
+        );
+        assert_eq!(enabled.matching_rules(&ev).len(), 1);
+        assert!(disabled.matching_rules(&ev).is_empty());
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:69 quotaLow rule fires only when its own threshold is crossed upward
+    #[test]
+    fn quota_low_rule_fires_only_when_its_own_threshold_is_crossed_upward() {
+        let rule = HookRule::new(HookEventType::QuotaLow, "/bin/echo").with_threshold(0.90);
+        let fallback = [0.50, 0.80];
+
+        assert!(
+            !crossed_quota_low_rules(std::slice::from_ref(&rule), 0.85, 0.95, &fallback).is_empty()
+        );
+        assert!(
+            crossed_quota_low_rules(std::slice::from_ref(&rule), 0.92, 0.97, &fallback).is_empty()
+        );
+        assert!(crossed_quota_low_rules(&[rule], 0.40, 0.85, &fallback).is_empty());
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:87 thresholdless quotaLow rule falls back to notification thresholds
+    #[test]
+    fn thresholdless_quota_low_rule_falls_back_to_notification_thresholds() {
+        let rule = HookRule::new(HookEventType::QuotaLow, "/bin/echo");
+        let fallback = [0.50, 0.80];
+        assert!(
+            !crossed_quota_low_rules(std::slice::from_ref(&rule), 0.40, 0.55, &fallback).is_empty()
+        );
+        assert!(crossed_quota_low_rules(&[rule], 0.55, 0.60, &fallback).is_empty());
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:97 only the crossed rule is selected among several
+    #[test]
+    fn only_the_crossed_rule_is_selected_among_several() {
+        let low = HookRule::new(HookEventType::QuotaLow, "/bin/echo")
+            .with_id("low")
+            .with_threshold(0.50);
+        let high = HookRule::new(HookEventType::QuotaLow, "/bin/echo")
+            .with_id("high")
+            .with_threshold(0.90);
+        let crossed = crossed_quota_low_rules(&[low, high], 0.85, 0.95, &[]);
+        assert_eq!(
+            crossed.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["high"]
+        );
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:109 environment variables include set fields and omit nil
+    #[test]
+    fn environment_variables_include_set_fields_and_omit_nil() {
+        let env = make_event(
+            HookEventType::QuotaLow,
+            "codex",
+            Some(0.5),
+            None,
+            Some("weekly"),
+        )
+        .environment_variables();
+        assert_eq!(
+            env.get("CODEXBAR_EVENT").map(String::as_str),
+            Some("quota_low")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_PROVIDER").map(String::as_str),
+            Some("codex")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_WINDOW").map(String::as_str),
+            Some("weekly")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_USAGE_PERCENT").map(String::as_str),
+            Some("0.5")
+        );
+        assert_eq!(
+            env.get("CODEXBAR_RESET_AT").map(String::as_str),
+            Some("2023-11-14T22:13:20Z")
+        );
+        assert!(env.contains_key("CODEXBAR_TIMESTAMP"));
+        assert!(!env.contains_key("CODEXBAR_ACCOUNT"));
+        assert!(!env.contains_key("CODEXBAR_STATUS"));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:123 json payload round-trips
+    #[test]
+    fn json_payload_round_trips() {
+        let original = make_event(
+            HookEventType::QuotaReached,
+            "claude",
+            Some(0.42),
+            None,
+            Some("session"),
+        );
+        let data = original.json_payload().expect("json payload");
+        let decoded: HookEvent = serde_json::from_slice(&data).expect("decode hook event");
+        assert_eq!(decoded.event, HookEventType::QuotaReached);
+        assert_eq!(decoded.provider, "claude");
+        assert_eq!(decoded.usage_percent, Some(0.42));
+        assert_eq!(decoded.window.as_deref(), Some("session"));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:138 rate limiter suppresses same key within window
+    #[test]
+    fn rate_limiter_suppresses_same_key_within_window() {
+        let mut limiter = HookRateLimiter::new(600.0);
+        let base = Timestamp::from_second(1_000_000).expect("ts");
+        let ev = make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session"),
+        );
+        assert!(limiter.allow(&ev, None, base));
+        assert!(!limiter.allow(&ev, None, Timestamp::from_second(1_000_300).expect("ts")));
+        assert!(limiter.allow(&ev, None, Timestamp::from_second(1_000_601).expect("ts")));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:147 rate limiter treats distinct keys independently
+    #[test]
+    fn rate_limiter_treats_distinct_keys_independently() {
+        let mut limiter = HookRateLimiter::new(600.0);
+        let now = Timestamp::from_second(1_000_000).expect("ts");
+        let codex = make_event(
+            HookEventType::QuotaReached,
+            "codex",
+            Some(0.95),
+            None,
+            Some("session"),
+        );
+        let claude = make_event(
+            HookEventType::QuotaReached,
+            "claude",
+            Some(0.95),
+            None,
+            Some("session"),
+        );
+        assert!(limiter.allow(&codex, None, now));
+        assert!(limiter.allow(&claude, None, now));
+    }
+
+    // upstream: TestsLinux/HooksTests.swift:157 only storm-prone events are rate limited
+    #[test]
+    fn only_storm_prone_events_are_rate_limited() {
+        assert!(HookEventType::RefreshFailed.is_rate_limited());
+        assert!(HookEventType::ProviderUnavailable.is_rate_limited());
+        assert!(HookEventType::UsageUpdated.is_rate_limited());
+        assert!(!HookEventType::QuotaLow.is_rate_limited());
+        assert!(!HookEventType::QuotaReached.is_rate_limited());
+        assert!(!HookEventType::QuotaReset.is_rate_limited());
+        assert!(!HookEventType::ProviderRecovered.is_rate_limited());
+    }
+
+    // -------------------------------------------------------------------------
+    // TestsLinux/HookTransitionDetectorLinuxTests.swift
+    // -------------------------------------------------------------------------
 
     // upstream: TestsLinux/HookTransitionDetectorLinuxTests.swift:79 first sample establishes baseline without firing
     #[test]
@@ -1486,7 +2407,6 @@ mod tests {
             now,
         );
 
-        // Disappearing lane resets baseline.
         let _ = detector.evaluate(
             &observation(vec![], HookProviderStatus::Unknown, None),
             &cfg,
@@ -1625,20 +2545,838 @@ mod tests {
         assert!(dispatches.is_empty());
     }
 
+    // -------------------------------------------------------------------------
+    // TestsLinux/UsageUpdatedHookMappingTests.swift (pure logic)
+    // -------------------------------------------------------------------------
+
+    // upstream: TestsLinux/UsageUpdatedHookMappingTests.swift:19 shared mapping preserves genuine zero and omits synthetic windows
     #[test]
-    fn session_quota_transition_requires_baseline_before_firing() {
-        let mut detector = SessionQuotaTransitionDetector::new();
+    fn shared_mapping_preserves_genuine_zero_and_omits_synthetic_windows() {
+        let now = Timestamp::from_second(1_800_000_000).expect("ts");
+        let snapshot = UsageSnapshot {
+            primary: Some(
+                RateWindow::new(0.0, Some(300), Some(now), None, None, false).expect("rw"),
+            ),
+            secondary: Some(
+                RateWindow::new(40.0, Some(10080), Some(now), None, None, false).expect("rw"),
+            ),
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: None,
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let zero = HookEvent::usage_updated("codex", &snapshot, None, now);
+        assert_eq!(zero.usage_percent, Some(0.0));
+        assert_eq!(zero.secondary_usage_percent, Some(0.4));
+        assert_eq!(zero.window_minutes, Some(300));
+
+        let placeholder = UsageSnapshot {
+            primary: Some(RateWindow::new(0.0, None, None, None, None, true).expect("rw")),
+            secondary: None,
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: None,
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let event = HookEvent::usage_updated("codex", &placeholder, None, now);
+        let payload: serde_json::Value =
+            serde_json::from_slice(&event.json_payload().expect("payload")).expect("json");
+        assert_eq!(event.usage_percent, None);
+        assert!(payload.get("usagePercent").is_none());
+        assert!(payload.get("windowMinutes").is_none());
+        assert!(
+            !event
+                .environment_variables()
+                .contains_key("CODEXBAR_SECONDARY_USAGE_PERCENT")
+        );
+    }
+
+    // upstream: TestsLinux/UsageUpdatedHookMappingTests.swift:42 watch offers successful first and unchanged polls with private routing state
+    #[test]
+    fn watch_offers_successful_first_and_unchanged_polls_with_private_routing_state() {
+        let now = Timestamp::from_second(1_800_000_000).expect("ts");
+        let snapshot = UsageSnapshot {
+            primary: Some(
+                RateWindow::new(0.0, Some(300), Some(now), None, None, false).expect("rw"),
+            ),
+            secondary: Some(
+                RateWindow::new(40.0, Some(10080), Some(now), None, None, false).expect("rw"),
+            ),
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: None,
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let mut detector = HookTransitionDetector::new();
+        let obs = HookProviderObservation::new(
+            "codex",
+            None,
+            Vec::new(),
+            None,
+            HookProviderStatus::Unknown,
+            None,
+        )
+        .with_successful_usage(Some(snapshot.clone()))
+        .with_account_discriminator(Some("private-owner".to_string()));
+        let cfg = HooksConfig::new(
+            true,
+            vec![HookRule::new(HookEventType::UsageUpdated, "/usr/bin/true")],
+        );
+        for instant in [now, Timestamp::from_second(1_800_000_060).expect("ts")] {
+            let dispatches = detector.evaluate(&obs, &cfg, instant);
+            assert_eq!(dispatches.len(), 1);
+            let dispatch = &dispatches[0];
+            assert_eq!(
+                dispatch.event,
+                HookEvent::usage_updated("codex", &snapshot, None, instant)
+            );
+            assert_eq!(
+                dispatch.account_discriminator.as_deref(),
+                Some("private-owner")
+            );
+            let payload =
+                String::from_utf8(dispatch.event.json_payload().expect("payload")).expect("utf8");
+            assert!(!payload.contains("private-owner"));
+            assert!(
+                !dispatch
+                    .event
+                    .environment_variables()
+                    .contains_key("CODEXBAR_ACCOUNT")
+            );
+        }
+    }
+
+    // upstream: TestsLinux/UsageUpdatedHookMappingTests.swift:63 failed and status only observations cannot emit usage updates
+    #[test]
+    fn failed_and_status_only_observations_cannot_emit_usage_updates() {
+        let now = Timestamp::from_second(1_800_000_000).expect("ts");
+        let snapshot = UsageSnapshot {
+            primary: Some(
+                RateWindow::new(0.0, Some(300), Some(now), None, None, false).expect("rw"),
+            ),
+            secondary: None,
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: None,
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let mut detector = HookTransitionDetector::new();
+        let cfg = HooksConfig::new(
+            true,
+            vec![HookRule::new(HookEventType::UsageUpdated, "/usr/bin/true")],
+        );
+        let failure = HookProviderObservation::new(
+            "codex",
+            None,
+            Vec::new(),
+            None,
+            HookProviderStatus::Unknown,
+            Some("offline".to_string()),
+        )
+        .with_successful_usage(Some(snapshot));
         assert_eq!(
-            detector.evaluate("claude", Some(0.0)),
-            SessionQuotaTransition::None
+            detector
+                .evaluate(&failure, &cfg, now)
+                .into_iter()
+                .map(|d| d.event.event)
+                .collect::<Vec<_>>(),
+            vec![HookEventType::RefreshFailed]
+        );
+
+        let status_only = HookProviderObservation::new(
+            "codex",
+            None,
+            Vec::new(),
+            None,
+            HookProviderStatus::None,
+            None,
+        );
+        assert!(detector.evaluate(&status_only, &cfg, now).is_empty());
+    }
+
+    // upstream: TestsLinux/UsageUpdatedHookMappingTests.swift:75 private account throttles open at exactly 600 seconds and reset on restart
+    #[test]
+    fn private_account_throttles_open_at_exactly_600_seconds_and_reset_on_restart() {
+        let now = Timestamp::from_second(1_800_000_000).expect("ts");
+        let snapshot = UsageSnapshot {
+            primary: Some(
+                RateWindow::new(0.0, Some(300), Some(now), None, None, false).expect("rw"),
+            ),
+            secondary: None,
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: None,
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let event = HookEvent::usage_updated("codex", &snapshot, None, now);
+        let mut limiter = HookRateLimiter::default();
+        assert!(limiter.allow(&event, Some("A"), now));
+        assert!(!limiter.allow(
+            &event,
+            Some("A"),
+            Timestamp::from_second(1_800_000_599).expect("ts")
+        ));
+        assert!(limiter.allow(
+            &event,
+            Some("B"),
+            Timestamp::from_second(1_800_000_599).expect("ts")
+        ));
+        assert!(limiter.allow(
+            &event,
+            Some("A"),
+            Timestamp::from_second(1_800_000_600).expect("ts")
+        ));
+        assert!(HookRateLimiter::default().allow(&event, Some("A"), now));
+    }
+
+    // -------------------------------------------------------------------------
+    // TestsLinux/CLIHooksWatchSleepLinuxTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:7 already requested stop skips every sleep tick
+    #[tokio::test]
+    async fn already_requested_stop_skips_every_sleep_tick() {
+        let stop = HooksWatchStopSignal::new();
+        stop.request();
+
+        sleep_interruptibly(30.0, &stop, |_| async {
+            panic!("An already requested stop must not sleep");
+        })
+        .await;
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:17 stop requested during a tick prevents the next sleep
+    #[tokio::test]
+    async fn stop_requested_during_a_tick_prevents_the_next_sleep() {
+        let stop = HooksWatchStopSignal::new();
+        let mut ticks = Vec::new();
+        sleep_interruptibly(10.0, &stop, |ns| {
+            ticks.push(ns);
+            stop.request();
+            async {}
+        })
+        .await;
+
+        assert_eq!(ticks, vec![200_000_000]);
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchSleepLinuxTests.swift:31 unsignaled sleep requests the full interval in bounded ticks
+    #[tokio::test]
+    async fn unsignaled_sleep_requests_the_full_interval_in_bounded_ticks() {
+        for interval in [0.0, -1.0, 0.05, 0.4, 0.45] {
+            let stop = HooksWatchStopSignal::new();
+            let mut ticks = Vec::new();
+            sleep_interruptibly(interval, &stop, |ns| {
+                ticks.push(ns);
+                async {}
+            })
+            .await;
+
+            let expected = (interval.max(0.0) * 1_000_000_000.0).round() as u64;
+            assert_eq!(ticks.iter().copied().sum::<u64>(), expected);
+            assert!(ticks.iter().all(|&t| t > 0 && t <= 200_000_000));
+            assert_eq!(ticks.len(), expected.div_ceil(200_000_000) as usize);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:23 once mode is rejected because watch state must survive between polls
+    #[test]
+    fn once_mode_is_rejected_because_watch_state_must_survive_between_polls() {
+        let err = validate_hooks_watch_flags(true).expect_err("expected --once to be rejected");
+        assert!(err.message.contains("--once"));
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:35 interval below the floor is rejected without reading config
+    #[test]
+    fn interval_below_the_floor_is_rejected_without_reading_config() {
+        let err = decode_hooks_watch_interval(Some("5")).expect_err("expected failure");
+        assert!(err.message.contains("at least 60"));
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:45 non numeric interval is rejected without reading config
+    #[test]
+    fn non_numeric_interval_is_rejected_without_reading_config() {
+        let err = decode_hooks_watch_interval(Some("abc")).expect_err("expected failure");
+        assert!(err.message.contains("Invalid --interval"));
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:55 interval defaults when absent
+    #[test]
+    fn interval_defaults_when_absent() {
+        assert_eq!(
+            decode_hooks_watch_interval(None).expect("default interval"),
+            HOOKS_WATCH_DEFAULT_INTERVAL
+        );
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:65 interval at the floor is accepted
+    #[test]
+    fn interval_at_the_floor_is_accepted() {
+        assert_eq!(
+            decode_hooks_watch_interval(Some("60")).expect("floor accepted"),
+            60.0
+        );
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:77 unknown provider name is rejected without reading config
+    #[test]
+    fn unknown_provider_name_is_rejected_without_reading_config() {
+        let err =
+            decode_hooks_watch_provider_names(&["nosuchprovider"]).expect_err("expected failure");
+        assert!(err.message.contains("Unknown provider"));
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:88 absent provider option defers to config
+    #[test]
+    fn absent_provider_option_defers_to_config() {
+        assert_eq!(decode_hooks_watch_provider_names(&[]).expect("ok"), None);
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:99 explicit providers resolve without consulting config
+    #[test]
+    fn explicit_providers_resolve_without_consulting_config() {
+        let resolved = decode_hooks_watch_provider_names(&["codex", "codex"]).expect("ok");
+        assert_eq!(resolved, Some(vec![ProviderId::new("codex").expect("id")]));
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:113 explicit providers win over the enabled set
+    #[test]
+    fn explicit_providers_win_over_the_enabled_set() {
+        let config = Config::new(Config::CURRENT_VERSION, Vec::new());
+        let codex = ProviderId::new("codex").expect("id");
+        let resolved =
+            hooks_watch_providers(Some(vec![codex.clone()]), &config).expect("explicit wins");
+        assert_eq!(resolved, vec![codex]);
+    }
+
+    // upstream: TestsLinux/CLIHooksWatchArgumentPrecedenceLinuxTests.swift:124 empty enabled set reports no providers
+    #[test]
+    fn empty_enabled_set_reports_no_providers() {
+        let mut claude = ProviderConfig::new(ProviderId::new("claude").expect("id"));
+        claude.enabled = Some(false);
+        let config = Config::new(Config::CURRENT_VERSION, vec![ProviderEntry::Typed(claude)]);
+        let err = hooks_watch_providers(None, &config).expect_err("expected empty failure");
+        assert!(err.message.contains("No providers are enabled"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests/CodexBarTests/CLIHooksTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:8 watch provider option accepts all both and deduplicates concrete names
+    #[test]
+    fn watch_provider_option_accepts_all_both_and_deduplicates_concrete_names() {
+        let all = decode_hooks_watch_provider_names(&["all"])
+            .expect("all")
+            .expect("some");
+        let expected_all: Vec<ProviderId> = providers::first_party_order()
+            .iter()
+            .map(|d| d.id.clone())
+            .collect();
+        assert_eq!(all, expected_all);
+
+        let both = decode_hooks_watch_provider_names(&["both", "codex", "codex"])
+            .expect("both")
+            .expect("some");
+        assert_eq!(
+            both,
+            vec![
+                ProviderId::new("codex").expect("id"),
+                ProviderId::new("claude").expect("id"),
+            ]
+        );
+
+        assert!(decode_hooks_watch_provider_names(&["bogus"]).is_err());
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:27 watch privacy keeps account routing private and skips synthetic lanes
+    #[test]
+    fn watch_privacy_keeps_account_routing_private_and_skips_synthetic_lanes() {
+        let now = sample_now();
+        let codex = ProviderId::new("codex").expect("id");
+        let usage = UsageSnapshot {
+            primary: Some(RateWindow::new(0.0, Some(300), None, None, None, false).expect("rw")),
+            secondary: Some(RateWindow::new(0.0, None, None, None, None, true).expect("rw")),
+            tertiary: None,
+            extra_rate_windows: None,
+            provider_cost: None,
+            details: Vec::new(),
+            subscription_expires_at: None,
+            subscription_renews_at: None,
+            subscription_renews_at_is_date_only: false,
+            subscription_expires_at_is_date_only: false,
+            updated_at: now,
+            identity: Some(ProviderIdentitySnapshot {
+                provider_id: Some(codex.clone()),
+                account_id: None,
+                account_email: Some("fixture@example.invalid".to_string()),
+                account_organization: None,
+                login_method: None,
+            }),
+            data_confidence: ariadusage_protocol::Confidence::Unknown,
+        };
+        let config = Config::new(Config::CURRENT_VERSION, Vec::new());
+        let lanes = hooks_watch_lanes(&codex, &usage, &config, Some("private-owner"), true);
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].account_display_name, None);
+        assert_eq!(
+            lanes[0].key.account_discriminator.as_deref(),
+            Some("private-owner")
         );
         assert_eq!(
-            detector.evaluate("claude", Some(50.0)),
-            SessionQuotaTransition::Restored
+            lanes[0].rate_window.as_ref().map(|w| w.used_percent),
+            Some(0.0)
+        );
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:55 sample quota-low event matches maximum threshold
+    #[test]
+    fn sample_quota_low_event_matches_maximum_threshold() {
+        let event = sample_hook_event(HookEventType::QuotaLow, "codex", sample_now());
+        let rule = HookRule::new(HookEventType::QuotaLow, "/bin/echo").with_threshold(1.0);
+        assert_eq!(event.usage_percent, Some(1.0));
+        assert!(rule.matches(&event));
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:64 sample refresh failure uses production status
+    #[test]
+    fn sample_refresh_failure_uses_production_status() {
+        let event = sample_hook_event(HookEventType::RefreshFailed, "codex", sample_now());
+        assert_eq!(event.status.as_deref(), Some("error"));
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:71 sample usage update represents session and weekly windows
+    #[test]
+    fn sample_usage_update_represents_session_and_weekly_windows() {
+        let event = sample_hook_event(HookEventType::UsageUpdated, "codex", sample_now());
+        assert_eq!(event.usage_percent, Some(0.5));
+        assert_eq!(event.window_minutes, Some(300));
+        assert!(event.reset_at.is_some());
+        assert_eq!(event.secondary_usage_percent, Some(0.4));
+        assert_eq!(event.secondary_window_minutes, Some(10080));
+        assert!(event.secondary_reset_at.is_some());
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:83 usage updated event carries primary and secondary quota windows
+    #[test]
+    fn usage_updated_event_carries_primary_and_secondary_quota_windows() {
+        let primary_reset: Timestamp = "2026-09-08T12:00:00Z".parse().expect("ts");
+        let secondary_reset: Timestamp = "2026-09-10T12:00:00Z".parse().expect("ts");
+        let event = HookEvent {
+            event: HookEventType::UsageUpdated,
+            provider: "codex".to_string(),
+            account: None,
+            window: Some("Session".to_string()),
+            usage_percent: Some(0.2),
+            window_minutes: None,
+            used: None,
+            limit: None,
+            reset_at: Some(primary_reset),
+            secondary_usage_percent: Some(0.6),
+            secondary_window_minutes: None,
+            secondary_reset_at: Some(secondary_reset),
+            status: None,
+            timestamp: primary_reset,
+        };
+        let data = event.json_payload().expect("payload");
+        let decoded: HookEvent = serde_json::from_slice(&data).expect("decode");
+        assert_eq!(decoded.event, HookEventType::UsageUpdated);
+        assert_eq!(decoded.usage_percent, Some(0.2));
+        assert_eq!(decoded.secondary_usage_percent, Some(0.6));
+        assert_eq!(decoded.secondary_reset_at, Some(secondary_reset));
+    }
+
+    // upstream: Tests/CodexBarTests/CLIHooksTests.swift:108 hook test JSON result is structured
+    #[test]
+    fn hook_test_json_result_is_structured() {
+        let result = HookTestResult {
+            rule_id: "fixture".to_string(),
+            executable: "/bin/echo".to_string(),
+            event: "quota_reached".to_string(),
+            provider: "codex".to_string(),
+            success: true,
+            stdout: Some("ok".to_string()),
+            error: None,
+        };
+        let encoded = serde_json::to_string(&vec![result.clone()]).expect("encode");
+        let decoded: Vec<HookTestResult> = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, vec![result]);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests/CodexBarTests/HookEditorValidationTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: Tests/CodexBarTests/HookEditorValidationTests.swift:6 rule creation stops at runtime limit
+    #[test]
+    fn rule_creation_stops_at_runtime_limit() {
+        assert!(HookEditorValidation::can_add_rule(
+            HooksConfig::MAXIMUM_RULE_COUNT - 1
+        ));
+        assert!(!HookEditorValidation::can_add_rule(
+            HooksConfig::MAXIMUM_RULE_COUNT
+        ));
+    }
+
+    // upstream: Tests/CodexBarTests/HookEditorValidationTests.swift:12 argument creation stops at runtime limit
+    #[test]
+    fn argument_creation_stops_at_runtime_limit() {
+        assert!(HookEditorValidation::can_add_argument(
+            HookRule::MAXIMUM_ARGUMENT_COUNT - 1
+        ));
+        assert!(!HookEditorValidation::can_add_argument(
+            HookRule::MAXIMUM_ARGUMENT_COUNT
+        ));
+    }
+
+    // upstream: Tests/CodexBarTests/HookEditorValidationTests.swift:18 quota threshold stays in runtime valid range
+    #[test]
+    fn quota_threshold_stays_in_runtime_valid_range() {
+        assert_eq!(HookEditorValidation::threshold_fraction(None), None);
+        assert_eq!(
+            HookEditorValidation::threshold_fraction(Some(0.0)),
+            Some(0.01)
         );
         assert_eq!(
-            detector.evaluate("claude", Some(0.0)),
-            SessionQuotaTransition::Depleted
+            HookEditorValidation::threshold_fraction(Some(-5.0)),
+            Some(0.01)
         );
+        assert_eq!(
+            HookEditorValidation::threshold_fraction(Some(50.0)),
+            Some(0.5)
+        );
+        assert_eq!(
+            HookEditorValidation::threshold_fraction(Some(120.0)),
+            Some(1.0)
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests/CodexBarTests/CodexBarConfigHooksTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: Tests/CodexBarTests/CodexBarConfigHooksTests.swift:6 hooks survive config round trip
+    #[test]
+    fn hooks_survive_config_round_trip() {
+        let hooks = HooksConfig::new(
+            true,
+            vec![
+                HookRule::new(HookEventType::QuotaLow, "/usr/bin/true")
+                    .with_id("quota-low")
+                    .with_provider("codex")
+                    .with_threshold(0.9)
+                    .with_timeout_seconds(30.0),
+            ],
+        );
+        let mut codex = ProviderConfig::new(ProviderId::new("codex").expect("id"));
+        codex.enabled = Some(true);
+        let config = Config::new(Config::CURRENT_VERSION, vec![ProviderEntry::Typed(codex)])
+            .with_hooks_config(Some(hooks.clone()));
+
+        let data = encode(&config);
+        let decoded = decode(&data).expect("decode").expect("some");
+        assert_eq!(decoded.hooks_config(), Some(hooks));
+    }
+
+    // upstream: Tests/CodexBarTests/CodexBarConfigHooksTests.swift:33 sharing is opt in and legacy configs omit the flag on round trip
+    #[test]
+    fn sharing_is_opt_in_and_legacy_configs_omit_the_flag_on_round_trip() {
+        let legacy_json = br#"{"version":1,"providers":[{"id":"codex","enabled":true}]}"#;
+        let mut config = decode(legacy_json).expect("decode").expect("some");
+        assert!(!config.share_usage_with_cli);
+        assert!(config.providers.first().is_some_and(|p| p.is_enabled()));
+        for enabled in [false, true, false] {
+            config.share_usage_with_cli = enabled;
+            let data = encode(&config);
+            let text = String::from_utf8(data.clone()).expect("utf8");
+            assert_eq!(text.contains("shareUsageWithCLI"), enabled);
+            assert_eq!(
+                decode(&data)
+                    .expect("decode")
+                    .expect("some")
+                    .share_usage_with_cli,
+                enabled
+            );
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests/CodexBarTests/RefreshFailureHookStatusTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: Tests/CodexBarTests/RefreshFailureHookStatusTests.swift:6 maps URL errors to coarse categories
+    #[test]
+    fn maps_url_errors_to_coarse_categories() {
+        assert_eq!(
+            hook_refresh_failure_status(HookTransportErrorKind::TimedOut),
+            "timeout"
+        );
+        assert_eq!(
+            hook_refresh_failure_status(HookTransportErrorKind::Offline),
+            "offline"
+        );
+        assert_eq!(
+            hook_refresh_failure_status(HookTransportErrorKind::Cancelled),
+            "cancelled"
+        );
+    }
+
+    // upstream: Tests/CodexBarTests/RefreshFailureHookStatusTests.swift:20 never forwards the raw error description
+    #[test]
+    fn never_forwards_the_raw_error_description() {
+        let status = hook_refresh_failure_status(HookTransportErrorKind::Other);
+        assert_eq!(status, "error");
+        assert!(!status.contains("secret-token"));
+        assert!(!status.contains("500"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift
+    // -------------------------------------------------------------------------
+
+    // upstream: Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift:8 quota_low crossing history is scoped per account
+    #[test]
+    fn quota_low_crossing_history_is_scoped_per_account() {
+        let account_a = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Session,
+            Some("a@example.com".to_string()),
+            None,
+        );
+        let account_b = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Session,
+            Some("b@example.com".to_string()),
+            None,
+        );
+        assert_ne!(account_a, account_b);
+
+        let mut usage = HashMap::new();
+        usage.insert(account_a.clone(), 0.40_f64);
+        usage.insert(account_b.clone(), 0.95_f64);
+        assert_eq!(usage.get(&account_a), Some(&0.40));
+        assert_eq!(usage.get(&account_b), Some(&0.95));
+    }
+
+    // upstream: Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift:26 distinct windows and lanes stay independent for one account
+    #[test]
+    fn distinct_windows_and_lanes_stay_independent_for_one_account() {
+        let session = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Session,
+            Some("a@example.com".to_string()),
+            None,
+        );
+        let weekly = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Weekly,
+            Some("a@example.com".to_string()),
+            None,
+        );
+        let scoped = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Weekly,
+            Some("a@example.com".to_string()),
+            Some("claude-weekly-scoped-fable".to_string()),
+        );
+        let set: HashSet<HookQuotaLaneKey> = [session, weekly, scoped].into_iter().collect();
+        assert_eq!(set.len(), 3);
+    }
+
+    // upstream: Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift:40 inactive hooks discard quota-low baselines
+    #[test]
+    fn inactive_hooks_discard_quota_low_baselines() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+        let claude = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Session,
+            Some("account".to_string()),
+            None,
+        );
+        let codex = HookQuotaLaneKey::new(
+            "codex",
+            QuotaWarningWindow::Session,
+            Some("account".to_string()),
+            None,
+        );
+        let _ = detector.evaluate(
+            &HookProviderObservation::new(
+                "claude",
+                None,
+                vec![lane(Some(40.0), claude, None, vec![0.8], false)],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        let _ = detector.evaluate(
+            &HookProviderObservation::new(
+                "codex",
+                None,
+                vec![lane(Some(50.0), codex.clone(), None, vec![0.8], false)],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+
+        detector.clear_quota_low_lanes("claude");
+
+        let codex_crossing = detector.evaluate(
+            &HookProviderObservation::new(
+                "codex",
+                None,
+                vec![lane(Some(85.0), codex, None, vec![0.8], false)],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert_eq!(codex_crossing.len(), 1);
+    }
+
+    // upstream: Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift:55 configuration revision discards quota-low baselines
+    #[test]
+    fn configuration_revision_discards_quota_low_baselines() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+        let key = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Session,
+            Some("account".to_string()),
+            None,
+        );
+        detector.reset_if_configuration_changed(1);
+        let _ = detector.evaluate(
+            &HookProviderObservation::new(
+                "claude",
+                None,
+                vec![lane(Some(40.0), key.clone(), None, vec![0.8], false)],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+
+        detector.reset_if_configuration_changed(2);
+        let after = detector.evaluate(
+            &HookProviderObservation::new(
+                "claude",
+                None,
+                vec![lane(Some(90.0), key, None, vec![0.8], false)],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        assert!(after.is_empty());
+    }
+
+    // upstream: Tests/CodexBarTests/QuotaLowHookAccountScopingTests.swift:70 vanished extra lanes discard quota-low baselines
+    #[test]
+    fn vanished_extra_lanes_discard_quota_low_baselines() {
+        let mut detector = HookTransitionDetector::new();
+        let cfg = default_config(true, None);
+        let now = sample_now();
+        let retained = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Weekly,
+            Some("account".to_string()),
+            Some("retained".to_string()),
+        );
+        let vanished = HookQuotaLaneKey::new(
+            "claude",
+            QuotaWarningWindow::Weekly,
+            Some("account".to_string()),
+            Some("vanished".to_string()),
+        );
+        let _ = detector.evaluate(
+            &HookProviderObservation::new(
+                "claude",
+                None,
+                vec![
+                    lane(Some(40.0), retained.clone(), None, vec![0.8], false),
+                    lane(Some(50.0), vanished.clone(), None, vec![0.8], false),
+                ],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+
+        let keeping: HashSet<String> = ["retained".to_string()].into_iter().collect();
+        detector.prune_extra_lanes("claude", Some("account"), &keeping);
+
+        let dispatches = detector.evaluate(
+            &HookProviderObservation::new(
+                "claude",
+                None,
+                vec![
+                    lane(Some(85.0), retained, None, vec![0.8], false),
+                    lane(Some(85.0), vanished, None, vec![0.8], false),
+                ],
+                None,
+                HookProviderStatus::Unknown,
+                None,
+            ),
+            &cfg,
+            now,
+        );
+        // Only `retained` had a prior baseline, so only `retained` crosses.
+        assert_eq!(dispatches.len(), 1);
     }
 }

@@ -482,6 +482,25 @@ impl Config {
             self.providers.push(ProviderEntry::Typed(config));
         }
     }
+
+    pub fn hooks_config(&self) -> Option<crate::refresh::HooksConfig> {
+        self.hooks
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw.get()).ok())
+    }
+
+    pub fn set_hooks_config(&mut self, hooks: Option<crate::refresh::HooksConfig>) {
+        self.hooks = hooks.and_then(|cfg| {
+            serde_json::to_string(&cfg)
+                .ok()
+                .and_then(|s| RawValue::from_string(s).ok())
+        });
+    }
+
+    pub fn with_hooks_config(mut self, hooks: Option<crate::refresh::HooksConfig>) -> Self {
+        self.set_hooks_config(hooks);
+        self
+    }
 }
 
 impl fmt::Debug for Config {
