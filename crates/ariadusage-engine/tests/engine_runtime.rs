@@ -2461,3 +2461,101 @@ async fn runtime_persists_notification_state_and_dispatches_injected_notifier_an
         "restarted runtime must reload persisted notification state and suppress duplicate quota warnings"
     );
 }
+
+// Rust-added: smoke test verifying host power, thermal, and coding-activity observers feed EngineRuntime setters.
+#[tokio::test]
+async fn host_power_thermal_and_coding_activity_observers_feed_engine_runtime() {
+    use ariadusage_engine::brokers::local_probe::LocalProbe;
+    use ariadusage_engine::{
+        AgentProcessSnapshot, AgentSessionProvider, DefaultHostPowerThermalProbe,
+        LocalAgentSessionScanner, SessionScanConfig,
+    };
+    use ariadusage_protocol::ids::ActionId;
+    use ariadusage_protocol::secret::SecretString;
+
+    let tmp = TempDir::new().unwrap();
+    let t0 = Timestamp::now();
+    let (runtime, _) = test_runtime(&tmp, ProviderRegistry::empty(), t0);
+
+    // 1. Configure adaptiveAgentAware cadence.
+    runtime
+        .set_setting(
+            &SettingId::new("app.refresh.cadence").unwrap(),
+            &json!("adaptiveAgentAware"),
+        )
+        .await
+        .unwrap();
+
+    // 2. Inject a fake coding session + transcript and verify refresh_coding_activity_once feeds note_coding_activity_observed_at.
+    let home = tmp.path().join("home");
+    let project_cwd = "/Users/alex/work/observer-smoke";
+    let escaped =
+        ariadusage_engine::ClaudeSessionProjectMapper::escaped_directory_name(project_cwd);
+    let claude_dir = home.join(".claude").join("projects").join(escaped);
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    std::fs::write(claude_dir.join("session.jsonl"), "{}\n").unwrap();
+
+    let mut env = std::collections::BTreeMap::new();
+    env.insert(
+        "HOME".to_string(),
+        SecretString::new(home.to_string_lossy().into_owned()),
+    );
+    let mut cwds = std::collections::BTreeMap::new();
+    cwds.insert(7777, project_cwd.to_string());
+    let scanner = LocalAgentSessionScanner::new(
+        SessionScanConfig::default(),
+        LocalProbe::new(),
+        env,
+        Some(home.clone()),
+    )
+    .with_injected_processes(
+        vec![AgentProcessSnapshot {
+            pid: 7777,
+            provider: AgentSessionProvider::Claude,
+            command: "claude".to_string(),
+            executable_name: Some("claude".to_string()),
+        }],
+        cwds,
+    );
+    runtime.set_session_scanner_for_testing(Some(scanner));
+
+    assert!(runtime.refresh_coding_activity_once().await);
+    assert!(runtime.last_coding_activity_at().is_some());
+
+    // 3. Verify IPC actions for power and thermal state feed set_low_power_mode / set_thermal_pressure
+    // and gate local coding-activity scanning (`should_scan_coding_activity_locally`).
+    runtime
+        .run_action(&ActionId::new("setLowPowerMode.on").unwrap(), None)
+        .await
+        .unwrap();
+    assert!(runtime.is_low_power_mode());
+    assert!(!runtime.should_scan_coding_activity_locally());
+    assert!(!runtime.refresh_coding_activity_once().await);
+
+    runtime
+        .run_action(&ActionId::new("setLowPowerMode.off").unwrap(), None)
+        .await
+        .unwrap();
+    assert!(!runtime.is_low_power_mode());
+    assert!(runtime.should_scan_coding_activity_locally());
+
+    // 4. Verify thermal sysfs probe feeds set_thermal_pressure on EngineRuntime.
+    let sysfs_dir = tmp.path().join("sysfs-thermal");
+    let zone0 = sysfs_dir.join("thermal_zone0");
+    std::fs::create_dir_all(&zone0).unwrap();
+    std::fs::write(zone0.join("temp"), "90000\n").unwrap();
+    std::fs::write(zone0.join("trip_point_0_type"), "critical\n").unwrap();
+    std::fs::write(zone0.join("trip_point_0_temp"), "85000\n").unwrap();
+    runtime.set_power_thermal_probe(Arc::new(
+        DefaultHostPowerThermalProbe::with_sysfs_thermal_root(sysfs_dir),
+    ));
+    runtime.poll_host_power_and_thermal_once().await;
+    assert_eq!(runtime.thermal_pressure(), ThermalPressure::Constrained);
+    assert!(!runtime.should_scan_coding_activity_locally());
+
+    runtime
+        .run_action(&ActionId::new("setThermalPressure.nominal").unwrap(), None)
+        .await
+        .unwrap();
+    assert_eq!(runtime.thermal_pressure(), ThermalPressure::Nominal);
+}

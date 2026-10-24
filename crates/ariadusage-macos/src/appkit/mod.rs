@@ -1,6 +1,8 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+StatusItemVending.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/AdaptiveRefreshPolicy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/SettingsStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! AppKit bridge: the application, its status item and its menu.
 //!
@@ -90,6 +92,16 @@ define_class!(
         fn flash_timer_fired(&self, _timer: &NSTimer) {
             on_flash_timer_tick();
         }
+
+        #[unsafe(method(powerStateDidChange:))]
+        fn power_state_did_change(&self, _notification: &NSObject) {
+            on_power_or_thermal_state_changed();
+        }
+
+        #[unsafe(method(thermalStateDidChange:))]
+        fn thermal_state_did_change(&self, _notification: &NSObject) {
+            on_power_or_thermal_state_changed();
+        }
     }
 );
 
@@ -101,7 +113,103 @@ impl StatusItemTimerTarget {
     }
 }
 
+/// Maps a boolean low-power flag to its IPC action ID.
+pub const fn low_power_mode_action_id(enabled: bool) -> &'static str {
+    if enabled {
+        "setLowPowerMode.on"
+    } else {
+        "setLowPowerMode.off"
+    }
+}
+
+/// Maps `NSProcessInfoThermalState` (`0 = nominal`, `1 = fair`, `2 = serious`, `3 = critical`)
+/// to its IPC action ID (`AdaptiveRefreshSignalCollector.currentThermalPressure`,
+/// `AdaptiveRefreshPolicy.swift:31-37`).
+pub const fn thermal_pressure_action_id(raw_state: isize) -> &'static str {
+    match raw_state {
+        0 | 1 => "setThermalPressure.nominal",
+        _ => "setThermalPressure.constrained",
+    }
+}
+
+/// Reads `NSProcessInfo.processInfo.isLowPowerModeEnabled` (`SettingsStore.swift:771-790`,
+/// `AdaptiveRefreshPolicy.swift:26`).
+pub fn current_low_power_mode_enabled() -> bool {
+    // SAFETY: `[NSProcessInfo processInfo]` is a thread-safe singleton accessor and
+    // `isLowPowerModeEnabled` returns a `BOOL` without side effects.
+    unsafe {
+        let info: Retained<NSObject> = msg_send![objc2::class!(NSProcessInfo), processInfo];
+        msg_send![&*info, isLowPowerModeEnabled]
+    }
+}
+
+/// Reads `NSProcessInfo.processInfo.thermalState` (`AdaptiveRefreshPolicy.swift:34`).
+pub fn current_thermal_state_raw() -> isize {
+    // SAFETY: `[NSProcessInfo processInfo]` is a thread-safe singleton accessor and
+    // `thermalState` returns an `NSInteger` (`NSProcessInfoThermalState`) without side effects.
+    unsafe {
+        let info: Retained<NSObject> = msg_send![objc2::class!(NSProcessInfo), processInfo];
+        msg_send![&*info, thermalState]
+    }
+}
+
+/// Forwards the current macOS low-power mode and thermal pressure state to the engine daemon
+/// over IPC (`setLowPowerMode.on`/`off`, `setThermalPressure.nominal`/`constrained`).
+pub fn forward_power_and_thermal_state(client: &EngineClient) {
+    if let Ok(low_power_id) = ariadusage_protocol::ids::ActionId::new(low_power_mode_action_id(
+        current_low_power_mode_enabled(),
+    )) {
+        client.run_action(low_power_id, None);
+    }
+    if let Ok(thermal_id) = ariadusage_protocol::ids::ActionId::new(thermal_pressure_action_id(
+        current_thermal_state_raw(),
+    )) {
+        client.run_action(thermal_id, None);
+    }
+}
+
+fn register_power_and_thermal_observers(target: &StatusItemTimerTarget) {
+    let power_name = NSString::from_str("NSProcessInfoPowerStateDidChangeNotification");
+    let thermal_name = NSString::from_str("NSProcessInfoThermalStateDidChangeNotification");
+    // SAFETY: `[NSNotificationCenter defaultCenter]` returns the process-wide notification center;
+    // `target` lives in `STATE` for the lifetime of the application and both selectors take a
+    // single `NSNotification *` argument.
+    unsafe {
+        let center: Retained<NSObject> =
+            msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
+        let null_obj: Option<&NSObject> = None;
+        let _: () = msg_send![
+            &*center,
+            addObserver: target,
+            selector: sel!(powerStateDidChange:),
+            name: &*power_name,
+            object: null_obj
+        ];
+        let _: () = msg_send![
+            &*center,
+            addObserver: target,
+            selector: sel!(thermalStateDidChange:),
+            name: &*thermal_name,
+            object: null_obj
+        ];
+    }
+}
+
+fn on_power_or_thermal_state_changed() {
+    let client = STATE.with(|cell| {
+        let Ok(guard) = cell.try_borrow() else {
+            return None;
+        };
+        let state = guard.as_ref()?;
+        state.connected.then(|| state.client.clone())
+    });
+    if let Some(client) = client {
+        forward_power_and_thermal_state(&client);
+    }
+}
+
 struct AppState {
+    client: EngineClient,
     status_item: Retained<NSStatusItem>,
     timer_target: Retained<StatusItemTimerTarget>,
     loading_timer: Option<Retained<NSTimer>>,
@@ -183,13 +291,20 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
 
     let status_item = make_status_item(mtm);
     let timer_target = StatusItemTimerTarget::new(mtm);
+    register_power_and_thermal_observers(&timer_target);
     let settings_window = SettingsWindowController::new(mtm, Some(client.clone()));
     settings_window
         .view()
         .set_on_setting_changed(Rc::new(|setting_id, value| {
             apply_local_setting_change(setting_id.clone(), value);
         }));
-    let menu = menu::MenuController::new(mtm, client, refresh_ui, select_tab, open_settings_window);
+    let menu = menu::MenuController::new(
+        mtm,
+        client.clone(),
+        refresh_ui,
+        select_tab,
+        open_settings_window,
+    );
     menu.set_on_refresh(|provider_id| {
         trigger_user_refresh(provider_id);
     });
@@ -203,6 +318,7 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
             ..IconPreferences::default()
         };
         *cell.borrow_mut() = Some(AppState {
+            client,
             status_item,
             timer_target,
             loading_timer: None,
@@ -457,6 +573,7 @@ fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapsho
 pub fn handle_event(event: EngineEvent) {
     match event {
         EngineEvent::Connected { engine_version } => {
+            let mut connected_client = None;
             let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
                     return true;
@@ -465,6 +582,7 @@ pub fn handle_event(event: EngineEvent) {
                     return false;
                 };
                 state.connected = true;
+                connected_client = Some(state.client.clone());
                 false
             });
             if contended {
@@ -472,6 +590,9 @@ pub fn handle_event(event: EngineEvent) {
                     handle_event(EngineEvent::Connected { engine_version });
                 });
                 return;
+            }
+            if let Some(client) = connected_client {
+                forward_power_and_thermal_state(&client);
             }
             refresh_ui();
         }
@@ -994,5 +1115,31 @@ fn refresh_ui() {
     });
     if contended {
         DispatchQueue::main().exec_async(refresh_ui);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Rust-added: smoke test for macOS NSProcessInfo power and thermal state readers and IPC action mapping.
+    #[test]
+    fn macos_process_info_power_and_thermal_actions_map_cleanly() {
+        assert_eq!(low_power_mode_action_id(true), "setLowPowerMode.on");
+        assert_eq!(low_power_mode_action_id(false), "setLowPowerMode.off");
+        assert_eq!(thermal_pressure_action_id(0), "setThermalPressure.nominal");
+        assert_eq!(thermal_pressure_action_id(1), "setThermalPressure.nominal");
+        assert_eq!(
+            thermal_pressure_action_id(2),
+            "setThermalPressure.constrained"
+        );
+        assert_eq!(
+            thermal_pressure_action_id(3),
+            "setThermalPressure.constrained"
+        );
+
+        let _ = current_low_power_mode_enabled();
+        let raw_thermal = current_thermal_state_raw();
+        assert!((0..=3).contains(&raw_thermal));
     }
 }

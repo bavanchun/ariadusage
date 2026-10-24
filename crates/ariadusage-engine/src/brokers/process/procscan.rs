@@ -108,6 +108,17 @@ pub fn fd_targets(root: &Path, pid: i32) -> Vec<PathBuf> {
     fd_targets_from_proc_fs(root, pid)
 }
 
+pub fn process_cwd(root: &Path, pid: i32) -> Option<PathBuf> {
+    if pid <= 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_process_cwd(pid);
+    }
+    std::fs::read_link(root.join(pid.to_string()).join("cwd")).ok()
+}
+
 fn fd_targets_from_proc_fs(root: &Path, pid: i32) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(root.join(pid.to_string()).join("fd")) else {
         return Vec::new();
@@ -338,6 +349,33 @@ pub fn read_marker_environment(root: &Path, pid: i32, key: &str) -> Option<Zeroi
         .read_to_end(&mut bytes)
         .ok()?;
     parse_marker_environment(&bytes, key)
+}
+
+pub fn read_selected_environment(
+    root: &Path,
+    pid: i32,
+    names: &[&str],
+) -> BTreeMap<String, String> {
+    if pid <= 0 || names.is_empty() {
+        return BTreeMap::new();
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        return darwin_read_selected_environment(pid, names);
+    }
+    let path = root.join(pid.to_string()).join("environ");
+    let Ok(file) = std::fs::File::open(path) else {
+        return BTreeMap::new();
+    };
+    let mut bytes = Zeroizing::new(Vec::with_capacity(4096));
+    if file
+        .take((MAX_ENVIRONMENT_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        return BTreeMap::new();
+    }
+    parse_nul_environment(&bytes, names).unwrap_or_default()
 }
 
 pub fn parse_marker_environment(bytes: &[u8], key: &str) -> Option<Zeroizing<Vec<u8>>> {
@@ -696,6 +734,93 @@ fn darwin_fd_targets(pid: i32) -> Vec<PathBuf> {
     targets.sort();
     targets.dedup();
     targets
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_process_cwd(pid: i32) -> Option<PathBuf> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+
+    let pid_u32 = u32::try_from(pid).ok()?;
+    if pid_u32 == 0 {
+        return None;
+    }
+    let before_info = darwin_bsd_info(pid)?;
+    let before_identity = darwin_identity_from_bsd(pid, &before_info);
+    let sys_pid = Pid::from_u32(pid_u32);
+    let cwd = {
+        let mut system = DARWIN_ARGV_SYSTEM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing().with_cwd(UpdateKind::Always),
+        );
+        let resolved = system
+            .process(sys_pid)
+            .and_then(|process| process.cwd().map(Path::to_path_buf));
+        *system = sysinfo::System::new();
+        resolved
+    }?;
+    let after_info = darwin_bsd_info(pid)?;
+    if darwin_identity_from_bsd(pid, &after_info) != before_identity {
+        return None;
+    }
+    (!cwd.as_os_str().is_empty()).then_some(cwd)
+}
+
+#[cfg(target_os = "macos")]
+fn darwin_read_selected_environment(pid: i32, names: &[&str]) -> BTreeMap<String, String> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
+
+    let Ok(pid_u32) = u32::try_from(pid) else {
+        return BTreeMap::new();
+    };
+    if pid_u32 == 0 {
+        return BTreeMap::new();
+    }
+    let Some(before_info) = darwin_bsd_info(pid) else {
+        return BTreeMap::new();
+    };
+    let before_identity = darwin_identity_from_bsd(pid, &before_info);
+    let sys_pid = Pid::from_u32(pid_u32);
+    let selected = {
+        let mut system = DARWIN_ENVIRON_SYSTEM
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[sys_pid]),
+            true,
+            ProcessRefreshKind::nothing().with_environ(UpdateKind::Always),
+        );
+        let result = system
+            .process(sys_pid)
+            .map(|process| {
+                let mut map = BTreeMap::new();
+                for entry in process.environ() {
+                    let Some(record) = entry.to_str() else {
+                        continue;
+                    };
+                    let Some((name, value)) = record.split_once('=') else {
+                        continue;
+                    };
+                    if names.contains(&name) {
+                        map.insert(name.to_owned(), value.to_owned());
+                    }
+                }
+                map
+            })
+            .unwrap_or_default();
+        *system = sysinfo::System::new();
+        result
+    };
+    let Some(after_info) = darwin_bsd_info(pid) else {
+        return BTreeMap::new();
+    };
+    if darwin_identity_from_bsd(pid, &after_info) != before_identity {
+        return BTreeMap::new();
+    }
+    selected
 }
 
 #[cfg(target_os = "macos")]

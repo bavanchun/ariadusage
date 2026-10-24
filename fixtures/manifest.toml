@@ -989,7 +989,13 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
 path = "crates/ariadusage-macos/src/appkit/mod.rs"
-sources = ["Sources/CodexBar/StatusItemController+StatusItemVending.swift", "Sources/CodexBar/StatusItemController.swift", "Sources/CodexBar/StatusItemController+Animation.swift"]
+sources = [
+    "Sources/CodexBar/StatusItemController+StatusItemVending.swift",
+    "Sources/CodexBar/StatusItemController.swift",
+    "Sources/CodexBar/StatusItemController+Animation.swift",
+    "Sources/CodexBar/AdaptiveRefreshPolicy.swift",
+    "Sources/CodexBar/SettingsStore.swift",
+]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
 [[ported]]
@@ -2579,3 +2585,17 @@ sources = [
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
+[[ported]]
+path = "crates/ariadusage-engine/src/host_observers.rs"
+sources = [
+    "Sources/CodexBar/AgentSessionsStore.swift",
+    "Sources/CodexBar/StatusItemController+AgentSessions.swift",
+    "Sources/CodexBar/AdaptiveRefreshPolicy.swift",
+    "Sources/CodexBar/SettingsStore.swift",
+    "Sources/CodexBarCore/LocalAgentSessionScanner.swift",
+    "Sources/CodexBarCore/AgentSession.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
+    "Sources/CodexBarCore/PiFamilySessionScanner.swift",
+    "Sources/CodexBarCore/PiFamilySessionRootResolver.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
