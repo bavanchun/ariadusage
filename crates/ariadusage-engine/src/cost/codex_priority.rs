@@ -222,10 +222,10 @@ impl CodexPriorityTurnsMemoState {
         database_path: &Path,
     ) -> Option<CodexPriorityTurnsPersistedCursor> {
         let key = normalize_source_path_key(database_path);
-        let source = self
-            .sources
-            .get(&key)
-            .or_else(|| self.sources.get(&database_path.to_string_lossy().into_owned()))?;
+        let source = self.sources.get(&key).or_else(|| {
+            self.sources
+                .get(&database_path.to_string_lossy().into_owned())
+        })?;
         if !source.validated_against_disk {
             return None;
         }
@@ -1110,7 +1110,7 @@ fn inspect_regular_file_fingerprint(path: &Path) -> std::io::Result<CodexSqliteF
         let dur = meta
             .modified()
             .ok()
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .unwrap_or_default();
         let header_bytes = fs::File::open(path)
             .ok()
@@ -1127,7 +1127,9 @@ fn inspect_regular_file_fingerprint(path: &Path) -> std::io::Result<CodexSqliteF
     }
 }
 
-fn inspect_sqlite_source_fingerprint(db_path: &Path) -> std::io::Result<CodexSqliteCopyFingerprint> {
+fn inspect_sqlite_source_fingerprint(
+    db_path: &Path,
+) -> std::io::Result<CodexSqliteCopyFingerprint> {
     let db = inspect_regular_file_fingerprint(db_path)?;
     let mut wal_os = db_path.as_os_str().to_os_string();
     wal_os.push("-wal");
@@ -1668,7 +1670,8 @@ fn prune_deleted_codex_priority_sources(
         if retained_sources.is_empty() {
             state.request_sources_by_turn_id.remove(&turn_id);
             state.turns.remove(&turn_id);
-            if let Some(completed_models) = state.priority_completed_models_by_turn_id.remove(&turn_id)
+            if let Some(completed_models) =
+                state.priority_completed_models_by_turn_id.remove(&turn_id)
             {
                 store_pending_codex_completed_models(state, &turn_id, completed_models);
             }
@@ -1950,7 +1953,9 @@ fn compute_cursor_anchors(
             .ok()
         };
         if let Some(row_id) = target_id
-            && (anchors.iter().all(|a: &CodexPriorityCursorAnchor| a.row_id != row_id))
+            && (anchors
+                .iter()
+                .all(|a: &CodexPriorityCursorAnchor| a.row_id != row_id))
             && let Some(digest) = query_row_digest(conn, ts_col, body_col, row_id)?
         {
             anchors.push(CodexPriorityCursorAnchor { row_id, digest });
@@ -1966,7 +1971,8 @@ fn query_row_digest(
     row_id: i64,
 ) -> rusqlite::Result<Option<String>> {
     let ts_expr = ts_col.unwrap_or("NULL");
-    let sql = format!("SELECT {ts_expr}, CAST({body_col} AS BLOB) FROM logs WHERE rowid = ?1 LIMIT 1");
+    let sql =
+        format!("SELECT {ts_expr}, CAST({body_col} AS BLOB) FROM logs WHERE rowid = ?1 LIMIT 1");
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params![row_id])?;
     let Some(row) = rows.next()? else {
