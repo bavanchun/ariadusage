@@ -1555,6 +1555,71 @@ sources = [
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexUsageDataSource.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexPAT/CodexPATFetchStrategy.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexWebDashboardStrategy.swift",
+    "Sources/CodexBarCLI/CLIHelpers.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/dashboard_authority.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Codex/CodexDashboardAuthority.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexCLIDashboardAuthorityContext.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexOpenAIWorkspaceResolver.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexOpenAIWorkspaceIdentityCache.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/openai_dashboard_models.rs"
+sources = [
+    "Sources/CodexBarCore/OpenAIDashboardModels.swift",
+    "Sources/CodexBarCore/OpenAISubscriptionMetadataModels.swift",
+    "Sources/CodexBarCore/OpenAIWeb/OpenAISubscriptionMetadata.swift",
+    "Sources/CodexBar/UsageStore+OpenAISubscriptionMetadata.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/openai_dashboard_parser.rs"
+sources = [
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardParser.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/openai_dashboard_fetcher.rs"
+sources = [
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardFetcher.swift",
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardFetcher+SessionAuthorization.swift",
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardFetcher+ReturnableData.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/providers/codex/openai_dashboard_cookie_importer.rs"
+sources = [
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardBrowserCookieImporter.swift",
+    "Sources/CodexBarCore/OpenAIWeb/OpenAIDashboardBrowserCookieImporter+Deadline.swift",
+    "Sources/CodexBar/UsageStore+OpenAIWeb.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/codex_web_dashboard.rs"
+sources = [
+    "Tests/CodexBarTests/CodexDashboardAuthorityTests.swift",
+    "Tests/CodexBarTests/CodexWebDashboardStrategyAuthorityTests.swift",
+    "Tests/CodexBarTests/CLIOpenAIDashboardCacheTests.swift",
+    "Tests/CodexBarTests/CodexOpenAIWorkspaceResolverTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardParserTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardBrowserCookieImporterTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardSessionAuthorizationTests.swift",
+    "Tests/CodexBarTests/OpenAIWebRefreshGateTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardModelsTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardIdentityMergeTests.swift",
+    "Tests/CodexBarTests/CodexWorkspaceBalanceDashboardTests.swift",
+    "Tests/CodexBarTests/OpenAISubscriptionMetadataTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
