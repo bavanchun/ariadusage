@@ -1,3 +1,4 @@
+// Ported from CodexBar Tests/CodexBarTests/OpenAIDashboardFetcherCreditsWaitTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexDashboardAuthorityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexWebDashboardStrategyAuthorityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CLIOpenAIDashboardCacheTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -3616,7 +3617,7 @@ fn manual_startup_refresh_still_forces_open_ai_web_refreshes() {
     assert!(should_run_openai_web_refresh(
         OpenAIWebRefreshPolicyContext {
             access_enabled: true,
-            battery_saver_enabled: false,
+            battery_saver_enabled: true,
             force: true,
             refresh_phase: FetchPhase::Startup,
         }
@@ -3638,8 +3639,8 @@ fn normal_stale_submenu_refresh_still_forces_when_battery_saver_is_off() {
 // upstream: OpenAIWebRefreshGateTests.swift:94 Recent successful dashboard refresh stays throttled
 #[test]
 fn recent_successful_dashboard_refresh_stays_throttled() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let recent = Timestamp::from_second(800).unwrap();
+    let now = Timestamp::now();
+    let recent = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: false,
         account_did_change: false,
@@ -3656,12 +3657,12 @@ fn recent_successful_dashboard_refresh_stays_throttled() {
 // upstream: OpenAIWebRefreshGateTests.swift:110 Recent failed dashboard refresh also stays throttled
 #[test]
 fn recent_failed_dashboard_refresh_also_stays_throttled() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let recent = Timestamp::from_second(850).unwrap();
+    let now = Timestamp::now();
+    let recent = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: false,
         account_did_change: false,
-        last_error: Some("Codex web dashboard request timed out.".to_owned()),
+        last_error: Some("login required".to_owned()),
         last_snapshot_at: None,
         last_attempt_at: Some(recent),
         now,
@@ -3674,12 +3675,12 @@ fn recent_failed_dashboard_refresh_also_stays_throttled() {
 // upstream: OpenAIWebRefreshGateTests.swift:126 Force refresh bypasses throttle after failures
 #[test]
 fn force_refresh_bypasses_throttle_after_failures() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let recent = Timestamp::from_second(995).unwrap();
+    let now = Timestamp::now();
+    let recent = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: true,
         account_did_change: false,
-        last_error: Some("Codex web dashboard request timed out.".to_owned()),
+        last_error: Some("login required".to_owned()),
         last_snapshot_at: None,
         last_attempt_at: Some(recent),
         now,
@@ -3692,12 +3693,12 @@ fn force_refresh_bypasses_throttle_after_failures() {
 // upstream: OpenAIWebRefreshGateTests.swift:142 Account switches bypass the prior-attempt cooldown
 #[test]
 fn account_switches_bypass_the_prior_attempt_cooldown() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let recent = Timestamp::from_second(995).unwrap();
+    let now = Timestamp::now();
+    let recent = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: false,
         account_did_change: true,
-        last_error: Some("No matching OpenAI web session found.".to_owned()),
+        last_error: Some("mismatch".to_owned()),
         last_snapshot_at: None,
         last_attempt_at: Some(recent),
         now,
@@ -3710,9 +3711,9 @@ fn account_switches_bypass_the_prior_attempt_cooldown() {
 // upstream: OpenAIWebRefreshGateTests.swift:158 Empty dashboard history retry is throttled after a recent attempt
 #[test]
 fn empty_dashboard_history_retry_is_throttled_after_a_recent_attempt() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let snapshot_at = Timestamp::from_second(900).unwrap();
-    let attempt_at = Timestamp::from_second(920).unwrap();
+    let now = Timestamp::now();
+    let snapshot_at = now - Duration::from_secs(120);
+    let attempt_at = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: false,
         account_did_change: false,
@@ -3732,7 +3733,7 @@ fn code_review_alone_is_not_dashboard_page_history() {
     let snapshot = OpenAIDashboardSnapshot {
         signed_in_email: Some("user@example.com".to_owned()),
         code_review_remaining_percent: Some(80.0),
-        updated_at: Timestamp::from_second(1_000).unwrap(),
+        updated_at: Timestamp::now(),
         ..Default::default()
     };
 
@@ -3742,13 +3743,14 @@ fn code_review_alone_is_not_dashboard_page_history() {
 // upstream: OpenAIWebRefreshGateTests.swift:188 cached history without an in memory scrape stamp does not scrape
 #[test]
 fn cached_history_without_an_in_memory_scrape_stamp_does_not_scrape() {
+    let now = Timestamp::now();
     let gate = OpenAIDashboardPageScrapeGate {
         force: false,
         user_initiated: false,
         has_history: true,
         last_page_scrape_at: None,
-        history_updated_at: Some(Timestamp::from_second(900).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        history_updated_at: Some(now - Duration::from_secs(60)),
+        now,
         refresh_interval_seconds: 300.0,
     };
 
@@ -3762,9 +3764,9 @@ fn page_scrape_stays_on_when_history_has_never_been_collected() {
         force: false,
         user_initiated: false,
         has_history: false,
-        last_page_scrape_at: Some(Timestamp::from_second(995).unwrap()),
-        history_updated_at: Some(Timestamp::from_second(995).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        last_page_scrape_at: None,
+        history_updated_at: None,
+        now: Timestamp::now(),
         refresh_interval_seconds: 300.0,
     };
 
@@ -3774,13 +3776,14 @@ fn page_scrape_stays_on_when_history_has_never_been_collected() {
 // upstream: OpenAIWebRefreshGateTests.swift:217 page scrape is skipped when recent history already exists
 #[test]
 fn page_scrape_is_skipped_when_recent_history_already_exists() {
+    let now = Timestamp::now();
     let gate = OpenAIDashboardPageScrapeGate {
         force: false,
         user_initiated: false,
         has_history: true,
-        last_page_scrape_at: Some(Timestamp::from_second(900).unwrap()),
-        history_updated_at: Some(Timestamp::from_second(900).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        last_page_scrape_at: Some(now - Duration::from_secs(60)),
+        history_updated_at: Some(now - Duration::from_secs(60)),
+        now,
         refresh_interval_seconds: 300.0,
     };
 
@@ -3790,13 +3793,14 @@ fn page_scrape_is_skipped_when_recent_history_already_exists() {
 // upstream: OpenAIWebRefreshGateTests.swift:232 user initiated force refresh still scrapes recent history
 #[test]
 fn user_initiated_force_refresh_still_scrapes_recent_history() {
+    let now = Timestamp::now();
     let gate = OpenAIDashboardPageScrapeGate {
         force: true,
         user_initiated: true,
         has_history: true,
-        last_page_scrape_at: Some(Timestamp::from_second(995).unwrap()),
-        history_updated_at: Some(Timestamp::from_second(995).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        last_page_scrape_at: Some(now - Duration::from_secs(60)),
+        history_updated_at: Some(now - Duration::from_secs(60)),
+        now,
         refresh_interval_seconds: 300.0,
     };
 
@@ -3806,13 +3810,14 @@ fn user_initiated_force_refresh_still_scrapes_recent_history() {
 // upstream: OpenAIWebRefreshGateTests.swift:247 background force refresh does not scrape recent history
 #[test]
 fn background_force_refresh_does_not_scrape_recent_history() {
+    let now = Timestamp::now();
     let gate = OpenAIDashboardPageScrapeGate {
         force: true,
         user_initiated: false,
         has_history: true,
-        last_page_scrape_at: Some(Timestamp::from_second(995).unwrap()),
-        history_updated_at: Some(Timestamp::from_second(995).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        last_page_scrape_at: Some(now - Duration::from_secs(60)),
+        history_updated_at: Some(now - Duration::from_secs(60)),
+        now,
         refresh_interval_seconds: 300.0,
     };
 
@@ -3822,13 +3827,14 @@ fn background_force_refresh_does_not_scrape_recent_history() {
 // upstream: OpenAIWebRefreshGateTests.swift:262 page scrape returns after the dashboard interval
 #[test]
 fn page_scrape_returns_after_the_dashboard_interval() {
+    let now = Timestamp::now();
     let gate = OpenAIDashboardPageScrapeGate {
         force: false,
         user_initiated: false,
         has_history: true,
-        last_page_scrape_at: Some(Timestamp::from_second(600).unwrap()),
-        history_updated_at: Some(Timestamp::from_second(600).unwrap()),
-        now: Timestamp::from_second(1_000).unwrap(),
+        last_page_scrape_at: Some(now - Duration::from_secs(301)),
+        history_updated_at: Some(now - Duration::from_secs(301)),
+        now,
         refresh_interval_seconds: 300.0,
     };
 
@@ -3838,9 +3844,9 @@ fn page_scrape_returns_after_the_dashboard_interval() {
 // upstream: OpenAIWebRefreshGateTests.swift:277 Empty dashboard history retry runs once for a newer empty snapshot
 #[test]
 fn empty_dashboard_history_retry_runs_once_for_a_newer_empty_snapshot() {
-    let now = Timestamp::from_second(1_000).unwrap();
-    let attempt_at = Timestamp::from_second(800).unwrap();
-    let newer_snapshot_at = Timestamp::from_second(850).unwrap();
+    let now = Timestamp::now();
+    let attempt_at = now - Duration::from_secs(120);
+    let newer_snapshot_at = now - Duration::from_secs(60);
     let context = OpenAIWebRefreshGateContext {
         force: false,
         account_did_change: false,
@@ -3858,78 +3864,105 @@ fn empty_dashboard_history_retry_runs_once_for_a_newer_empty_snapshot() {
 // Suite 9: OpenAIDashboardModelsTests.swift
 // ============================================================================
 
+fn models_day(
+    day: &str,
+    services: Vec<OpenAIDashboardServiceUsage>,
+    total: f64,
+) -> OpenAIDashboardDailyBreakdown {
+    OpenAIDashboardDailyBreakdown::new(day, services, total)
+}
+
+fn models_snapshot(
+    usage: Vec<OpenAIDashboardDailyBreakdown>,
+    updated_at: Timestamp,
+    primary: Option<RateWindow>,
+    renewal: Option<Timestamp>,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardSnapshot::new(
+        Some("codex@example.com".into()),
+        None,
+        None,
+        None,
+        vec![],
+        vec![],
+        usage,
+        None,
+        primary,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        renewal,
+        updated_at,
+    )
+}
+
+fn models_now() -> Timestamp {
+    "2026-06-30T12:00:00Z".parse().unwrap()
+}
+
+fn models_days(summary: &OpenAIDashboardUsageBreakdownSummary) -> Vec<&str> {
+    summary.daily.iter().map(|day| day.day.as_str()).collect()
+}
+
 // upstream: OpenAIDashboardModelsTests.swift:16 removes skill usage services from usage breakdown
 #[test]
 fn removes_skill_usage_services_from_usage_breakdown() {
     let breakdown = vec![
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-06",
+        models_day(
+            "2026-04-30",
             vec![
-                OpenAIDashboardServiceUsage::new("CLI", 86.24),
-                OpenAIDashboardServiceUsage::new("skillUsage:create-plan", 1.0),
-                OpenAIDashboardServiceUsage::new("SKILLUSAGE:gh-fix-ci", 2.0),
+                OpenAIDashboardServiceUsage::new("Desktop App", 10.0),
+                OpenAIDashboardServiceUsage::new("Skillusage:imagegen", 7.0),
+                OpenAIDashboardServiceUsage::new(" skillusage:github:github ", 2.0),
             ],
-            89.24,
+            19.0,
         ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-05",
+        models_day(
+            "2026-04-29",
             vec![OpenAIDashboardServiceUsage::new(
-                "skillUsage:only-skill",
-                1.0,
+                "Skillusage:deep Research",
+                3.0,
             )],
-            1.0,
+            3.0,
         ),
     ];
-
-    let sanitized = OpenAIDashboardSnapshot::removing_skill_usage_services(&breakdown);
-
-    assert_eq!(sanitized.len(), 1);
-    assert_eq!(sanitized[0].day, "2026-04-06");
     assert_eq!(
-        sanitized[0].services,
-        vec![OpenAIDashboardServiceUsage::new("CLI", 86.24)]
+        OpenAIDashboardSnapshot::removing_skill_usage_services(&breakdown),
+        [models_day(
+            "2026-04-30",
+            vec![OpenAIDashboardServiceUsage::new("Desktop App", 10.0)],
+            10.0
+        )]
     );
-    assert!((sanitized[0].total_credits_used - 86.24).abs() < 0.0001);
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:47 snapshot initializer sanitizes usage breakdown
 #[test]
 fn snapshot_initializer_sanitizes_usage_breakdown() {
-    let snapshot = OpenAIDashboardSnapshot::new(
-        Some("user@example.com".to_owned()),
-        None,
-        Some(100.0),
-        None,
-        Vec::new(),
-        Vec::new(),
-        vec![OpenAIDashboardDailyBreakdown::new(
-            "2026-04-06",
+    let snapshot = models_snapshot(
+        vec![models_day(
+            "2026-04-30",
             vec![
-                OpenAIDashboardServiceUsage::new("CLI", 12.5),
-                OpenAIDashboardServiceUsage::new("skillUsage:yeet", 1.0),
+                OpenAIDashboardServiceUsage::new("CLI", 4.0),
+                OpenAIDashboardServiceUsage::new("Skillusage:pdf Renderer", 6.0),
             ],
-            13.5,
+            10.0,
         )],
+        Timestamp::from_second(1_700_000_000).unwrap(),
         None,
         None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Timestamp::from_second(1_775_433_600).unwrap(),
     );
-
     assert_eq!(
         snapshot.usage_breakdown,
-        vec![OpenAIDashboardDailyBreakdown::new(
-            "2026-04-06",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 12.5)],
-            12.5,
+        [models_day(
+            "2026-04-30",
+            vec![OpenAIDashboardServiceUsage::new("CLI", 4.0)],
+            4.0
         )]
     );
 }
@@ -3937,261 +3970,177 @@ fn snapshot_initializer_sanitizes_usage_breakdown() {
 // upstream: OpenAIDashboardModelsTests.swift:76 subscription renewal survives snapshot encoding and Codex projection
 #[test]
 fn subscription_renewal_survives_snapshot_encoding_and_codex_projection() {
-    let renews_at = Timestamp::from_second(1_776_754_510).unwrap();
-    let snapshot = OpenAIDashboardSnapshot::new(
-        Some("user@example.com".to_owned()),
-        None,
-        None,
-        None,
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        None,
+    let renewal: Timestamp = "2026-08-20T12:00:00Z".parse().unwrap();
+    let snapshot = models_snapshot(
+        vec![],
+        renewal,
         Some(RateWindow {
-            used_percent: 25.0,
+            used_percent: 10.0,
             window_minutes: Some(300),
-            resets_at: None,
+            resets_at: Some(renewal),
             reset_description: None,
             next_regen_percent: None,
             is_synthetic_placeholder: false,
         }),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("plus".to_owned()),
-        None,
-        Some(renews_at),
-        Timestamp::from_second(1_775_433_600).unwrap(),
+        Some(renewal),
     );
-
-    let data = serde_json::to_vec(&snapshot).unwrap();
-    let decoded: OpenAIDashboardSnapshot = serde_json::from_slice(&data).unwrap();
-    let codex_id = ProviderId::new("codex").unwrap();
-    let usage = decoded.to_usage_snapshot(codex_id, None, None).unwrap();
-
-    assert_eq!(decoded.subscription_renews_at, Some(renews_at));
-    assert_eq!(usage.subscription_renews_at, Some(renews_at));
-    assert_eq!(usage.subscription_expires_at, None);
+    assert_eq!(
+        snapshot
+            .to_usage_snapshot(ProviderId::new("codex").unwrap(), None, None)
+            .unwrap()
+            .subscription_renews_at,
+        Some(renewal)
+    );
+    let decoded: OpenAIDashboardSnapshot =
+        serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+    assert_eq!(decoded.subscription_renews_at, Some(renewal));
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:106 snapshot decoder drops empty zero usage buckets
 #[test]
 fn snapshot_decoder_drops_empty_zero_usage_buckets() {
     let json = r#"{
-      "creditEvents": [],
-      "dailyBreakdown": [],
-      "usageBreakdown": [
-        {
-          "day": "2026-04-06",
-          "services": [
-            { "service": "skillUsage:yeet", "creditsUsed": 1 }
-          ],
-          "totalCreditsUsed": 0
-        },
-        {
-          "day": "2026-04-05",
-          "services": [],
-          "totalCreditsUsed": 14.5
-        }
-      ],
-      "updatedAt": "2026-04-06T00:00:00Z"
+        "signedInEmail":"codex@example.com", "codeReviewRemainingPercent":null,
+        "creditEvents":[], "dailyBreakdown":[],
+        "usageBreakdown":[
+            {"day":"2026-04-30","services":[],"totalCreditsUsed":0},
+            {"day":"2026-04-29","services":[],"totalCreditsUsed":4}
+        ],
+        "creditsPurchaseURL":null,"updatedAt":"2026-04-30T19:27:07Z"
     }"#;
-
-    let decoded: OpenAIDashboardSnapshot = serde_json::from_str(json).unwrap();
-
+    let snapshot: OpenAIDashboardSnapshot = serde_json::from_str(json).unwrap();
     assert_eq!(
-        decoded.usage_breakdown,
-        vec![OpenAIDashboardDailyBreakdown::new(
-            "2026-04-05",
-            Vec::new(),
-            14.5
-        )]
+        snapshot.usage_breakdown,
+        [models_day("2026-04-29", vec![], 4.0)]
     );
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:135 recent credit totals use calendar days and exclude future rows
 #[test]
 fn recent_credit_totals_use_calendar_days_and_exclude_future_rows() {
-    let now: Timestamp = "2026-04-12T15:30:00Z".parse().unwrap();
-    let breakdown = vec![
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-13",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 999.0)],
-            999.0,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-12",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 12.5)],
-            12.5,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-03-14",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 20.0)],
-            20.0,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-03-13",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 50.0)],
-            50.0,
-        ),
-    ];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &TimeZone::UTC);
-
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[
+            models_day("2026-05-31", vec![], 100.0),
+            models_day("2026-06-01", vec![], 1.0),
+            models_day("2026-06-29", vec![], 2.0),
+            models_day("2026-06-30", vec![], 3.0),
+            models_day("2026-07-01", vec![], 200.0),
+        ],
+        30,
+        models_now(),
+        &TimeZone::UTC,
+    );
     assert_eq!(summary.history_days, 30);
-    assert_eq!(summary.today_credits, Some(12.5));
-    assert_eq!(summary.total_credits, Some(32.5));
+    assert_eq!(summary.today_credits, Some(3.0));
+    assert_eq!(summary.total_credits, Some(6.0));
     assert_eq!(
-        summary
-            .daily
-            .iter()
-            .map(|d| d.day.as_str())
-            .collect::<Vec<_>>(),
-        vec!["2026-03-14", "2026-04-12"]
+        models_days(&summary),
+        ["2026-06-01", "2026-06-29", "2026-06-30"]
     );
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:155 recent credit totals preserve gaps and sanitize invalid values
 #[test]
 fn recent_credit_totals_preserve_gaps_and_sanitize_invalid_values() {
-    let now: Timestamp = "2026-04-12T15:30:00Z".parse().unwrap();
-    let breakdown = vec![
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-12",
-            vec![
-                OpenAIDashboardServiceUsage::new("CLI", 10.0),
-                OpenAIDashboardServiceUsage::new("Bad", f64::NAN),
-                OpenAIDashboardServiceUsage::new("skillUsage:plan", 5.0),
-            ],
-            999.0,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-10",
-            vec![OpenAIDashboardServiceUsage::new("Web", 4.5)],
-            4.5,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "not-a-day",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 100.0)],
-            100.0,
-        ),
-        OpenAIDashboardDailyBreakdown::new("2026-04-09", Vec::new(), f64::INFINITY),
-    ];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &TimeZone::UTC);
-
-    assert_eq!(summary.today_credits, Some(10.0));
-    assert_eq!(summary.total_credits, Some(14.5));
-    assert_eq!(summary.daily.len(), 2);
-    assert_eq!(summary.daily[0].day, "2026-04-10");
-    assert_eq!(summary.daily[1].day, "2026-04-12");
-    assert_eq!(summary.daily[1].total_credits_used, 10.0);
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[
+            models_day(
+                "2026-06-20",
+                vec![
+                    OpenAIDashboardServiceUsage::new("CLI", 4.0),
+                    OpenAIDashboardServiceUsage::new("bad", f64::NAN),
+                    OpenAIDashboardServiceUsage::new("negative", -2.0),
+                ],
+                999.0,
+            ),
+            models_day("2026-06-31", vec![], 9.0),
+            models_day("2026-06-30", vec![], f64::INFINITY),
+        ],
+        30,
+        models_now(),
+        &TimeZone::UTC,
+    );
+    assert_eq!(summary.today_credits, Some(0.0));
+    assert_eq!(summary.total_credits, Some(4.0));
+    let day = summary.daily.first().unwrap();
+    assert_eq!(day.day, "2026-06-20");
+    assert_eq!(day.total_credits_used, 4.0);
+    assert_eq!(
+        day.services
+            .iter()
+            .map(|s| s.service.as_str())
+            .collect::<Vec<_>>(),
+        ["CLI"]
+    );
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:181 recent credit totals report zero when history has no row for today
 #[test]
 fn recent_credit_totals_report_zero_when_history_has_no_row_for_today() {
-    let now: Timestamp = "2026-04-12T15:30:00Z".parse().unwrap();
-    let breakdown = vec![OpenAIDashboardDailyBreakdown::new(
-        "2026-04-11",
-        vec![OpenAIDashboardServiceUsage::new("CLI", 7.25)],
-        7.25,
-    )];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &TimeZone::UTC);
-
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[models_day("2026-06-29", vec![], 4.0)],
+        30,
+        models_now(),
+        &TimeZone::UTC,
+    );
     assert_eq!(summary.today_credits, Some(0.0));
-    assert_eq!(summary.total_credits, Some(7.25));
+    assert_eq!(summary.total_credits, Some(4.0));
+    assert_eq!(models_days(&summary), ["2026-06-29"]);
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:195 recent credit totals fail closed on overflow
 #[test]
 fn recent_credit_totals_fail_closed_on_overflow() {
-    let now: Timestamp = "2026-04-12T15:30:00Z".parse().unwrap();
-    let breakdown = vec![
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-12",
-            vec![OpenAIDashboardServiceUsage::new("CLI", f64::MAX)],
-            f64::MAX,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-11",
-            vec![OpenAIDashboardServiceUsage::new("CLI", f64::MAX)],
-            f64::MAX,
-        ),
-    ];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &TimeZone::UTC);
-
-    assert_eq!(summary.today_credits, Some(f64::MAX));
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[models_day(
+            "2026-06-30",
+            vec![
+                OpenAIDashboardServiceUsage::new("CLI", f64::MAX),
+                OpenAIDashboardServiceUsage::new("Desktop App", f64::MAX),
+            ],
+            1.0,
+        )],
+        30,
+        models_now(),
+        &TimeZone::UTC,
+    );
+    assert!(summary.daily.is_empty());
+    assert_eq!(summary.today_credits, None);
     assert_eq!(summary.total_credits, None);
-    assert_eq!(summary.daily.len(), 2);
 }
 
 // upstream: OpenAIDashboardModelsTests.swift:215 recent credit totals respect the selected timezone
 #[test]
 fn recent_credit_totals_respect_the_selected_timezone() {
-    // 2026-04-12 03:30 UTC is still 2026-04-11 20:30 in UTC-7.
-    let now: Timestamp = "2026-04-12T03:30:00Z".parse().unwrap();
-    let pacific = TimeZone::fixed(jiff::tz::Offset::from_hours(-7).unwrap());
-    let breakdown = vec![
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-12",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 90.0)],
-            90.0,
-        ),
-        OpenAIDashboardDailyBreakdown::new(
-            "2026-04-11",
-            vec![OpenAIDashboardServiceUsage::new("CLI", 15.0)],
-            15.0,
-        ),
-    ];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &pacific);
-
-    assert_eq!(summary.today_credits, Some(15.0));
-    assert_eq!(summary.total_credits, Some(15.0));
-    assert_eq!(
-        summary
-            .daily
-            .iter()
-            .map(|d| d.day.as_str())
-            .collect::<Vec<_>>(),
-        vec!["2026-04-11"]
+    let pacific = TimeZone::get("America/Los_Angeles").unwrap();
+    let now: Timestamp = "2026-07-01T06:30:00Z".parse().unwrap();
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[
+            models_day("2026-06-30", vec![], 7.0),
+            models_day("2026-07-01", vec![], 11.0),
+        ],
+        30,
+        now,
+        &pacific,
     );
+    assert_eq!(summary.today_credits, Some(7.0));
+    assert_eq!(summary.total_credits, Some(7.0));
+    assert_eq!(models_days(&summary), ["2026-06-30"]);
 }
 
-// upstream: OpenAIDashboardModelsTests.swift:234 recent credit totals keep Gregorian dashboard keys with a non Gregorian system calendar
+// partial-upstream: OpenAIDashboardModelsTests.swift:234 recent credit totals keep Gregorian dashboard keys with a non Gregorian system calendar
 #[test]
-fn recent_credit_totals_keep_gregorian_dashboard_keys_with_a_non_gregorian_system_calendar() {
-    let now: Timestamp = "2026-04-12T15:30:00Z".parse().unwrap();
-    let breakdown = vec![OpenAIDashboardDailyBreakdown::new(
-        "2026-04-12",
-        vec![OpenAIDashboardServiceUsage::new("CLI", 21.0)],
-        21.0,
-    )];
-
-    let summary =
-        OpenAIDashboardDailyBreakdown::recent_usage_summary(&breakdown, 30, now, &TimeZone::UTC);
-
-    assert_eq!(summary.today_credits, Some(21.0));
-    assert_eq!(summary.total_credits, Some(21.0));
-    assert_eq!(
-        summary
-            .daily
-            .iter()
-            .map(|d| d.day.as_str())
-            .collect::<Vec<_>>(),
-        vec!["2026-04-12"]
+fn local_recent_credit_totals_use_gregorian_dashboard_keys() {
+    // Partial: Jiff accepts a timezone and always uses the Gregorian civil
+    // calendar; there is no Buddhist system-calendar argument to exercise.
+    let summary = OpenAIDashboardDailyBreakdown::recent_usage_summary(
+        &[models_day("2026-06-30", vec![], 7.0)],
+        30,
+        models_now(),
+        &TimeZone::UTC,
     );
+    assert_eq!(summary.today_credits, Some(7.0));
+    assert_eq!(summary.total_credits, Some(7.0));
 }
 
 // ============================================================================
@@ -5251,4 +5200,216 @@ async fn error_strings_and_debug_redact_bodies_tokens_cookies_and_emails_across_
         }
     );
     assert!(!mismatch_err_debug.contains(EMAIL_SENTINEL));
+
+    // The same invented address must remain absent at every policy/import
+    // boundary, including the classified error published in snapshots.
+    let policy = OpenAIWebCodexError::PolicyRejected(CodexDashboardAuthorityDecision::new(
+        CodexDashboardDisposition::FailClosed,
+        CodexDashboardDecisionReason::WrongEmail {
+            expected: Some(EMAIL_SENTINEL.to_owned()),
+            actual: Some(EMAIL_SENTINEL.to_owned()),
+        },
+        BTreeSet::new(),
+        BTreeSet::new(),
+    ));
+    let cookie_error = OpenAIDashboardCookieImportError::NoMatchingAccount {
+        found: vec![FoundAccount::new("Chrome", EMAIL_SENTINEL)],
+    };
+    let concise =
+        concise_openai_cookie_mismatch_status(&[EMAIL_SENTINEL.to_owned()], Some(EMAIL_SENTINEL));
+    let web_wrapper = CodexWebDashboardError::Web(policy.clone());
+    let cookie_wrapper = CodexWebDashboardError::CookieImport(cookie_error.to_string());
+    let mut diagnostics = vec![
+        policy.to_string(),
+        format!("{policy:?}"),
+        cookie_error.to_string(),
+        format!("{cookie_error:?}"),
+        concise.to_string(),
+        format!("{concise:?}"),
+        web_wrapper.to_string(),
+        format!("{web_wrapper:?}"),
+        cookie_wrapper.to_string(),
+        format!("{cookie_wrapper:?}"),
+    ];
+    for wrapper in [web_wrapper, cookie_wrapper] {
+        let error = wrapper.into_fetch_error();
+        let ariadusage_core::pipeline::FetchError::Classified(classified) = error else {
+            panic!("expected classified error")
+        };
+        diagnostics.push(classified.to_string());
+        diagnostics.push(format!("{classified:?}"));
+    }
+    for diagnostic in diagnostics {
+        assert!(
+            !diagnostic.contains(EMAIL_SENTINEL),
+            "identifier leaked in {diagnostic}"
+        );
+    }
+}
+
+// ============================================================================
+// OpenAIDashboardFetcherCreditsWaitTests.swift: pure merge and metadata cases
+// ============================================================================
+
+fn credits_wait_previous() -> OpenAIDashboardSnapshot {
+    OpenAIDashboardSnapshot {
+        signed_in_email: Some("user@example.com".into()),
+        account_id: Some("workspace-fixture".into()),
+        updated_at: Timestamp::from_second(1).unwrap(),
+        ..Default::default()
+    }
+}
+
+fn credits_wait_api(
+    primary: Option<RateWindow>,
+    balance: Option<f64>,
+    plan: Option<&str>,
+) -> DashboardAPIData {
+    DashboardAPIData {
+        account_id: Some("workspace-fixture".into()),
+        primary_limit: primary,
+        secondary_limit: None,
+        extra_rate_windows: Some(vec![]),
+        credits_remaining: balance,
+        credits_available: None,
+        balance_is_workspace: None,
+        codex_credit_limit: None,
+        account_plan: plan.map(str::to_owned),
+    }
+}
+
+fn credits_wait_merge(
+    api: &DashboardAPIData,
+    previous: &OpenAIDashboardSnapshot,
+    subscription: &OpenAISubscriptionFetchResult,
+) -> OpenAIDashboardSnapshot {
+    OpenAIDashboardFetcher::snapshot_by_merging_api(
+        api,
+        Some(previous),
+        Some("user@example.com"),
+        subscription.clone(),
+        Timestamp::from_second(2).unwrap(),
+    )
+}
+
+// upstream: OpenAIDashboardFetcherCreditsWaitTests.swift:6 subscription enrichment changes only subscription metadata
+#[test]
+fn subscription_enrichment_changes_only_subscription_metadata() {
+    let snapshot = OpenAIDashboardSnapshot {
+        signed_in_email: Some("user@example.com".into()),
+        code_review_remaining_percent: Some(90.0),
+        credits_remaining: Some(10.0),
+        account_plan: Some("Pro".into()),
+        updated_at: Timestamp::from_second(1000).unwrap(),
+        ..Default::default()
+    };
+    let renewal = Timestamp::from_second(2000).unwrap();
+    let enriched = snapshot
+        .clone()
+        .with_subscription_metadata(Some(OpenAISubscriptionMetadata::new(None, Some(renewal))));
+    assert_eq!(enriched.signed_in_email, snapshot.signed_in_email);
+    assert_eq!(enriched.credits_remaining, snapshot.credits_remaining);
+    assert_eq!(enriched.account_plan, snapshot.account_plan);
+    assert_eq!(enriched.updated_at, snapshot.updated_at);
+    assert_eq!(enriched.subscription_renews_at, Some(renewal));
+    assert_eq!(enriched.subscription_expires_at, None);
+}
+
+// upstream: OpenAIDashboardFetcherCreditsWaitTests.swift:375 api merge prefers the page derived plan over the generic api plan
+#[test]
+fn api_merge_prefers_the_page_derived_plan_over_the_generic_api_plan() {
+    let previous = OpenAIDashboardSnapshot {
+        account_plan: Some("Pro 5x".into()),
+        ..credits_wait_previous()
+    };
+    let api = credits_wait_api(Some(identity_window(12.0)), None, Some("pro"));
+    let snapshot = credits_wait_merge(&api, &previous, &OpenAISubscriptionFetchResult::Unavailable);
+    assert_eq!(snapshot.account_plan.as_deref(), Some("Pro 5x"));
+}
+
+// upstream: OpenAIDashboardFetcherCreditsWaitTests.swift:443 api snapshot keeps previous credits history and overwrites live usage
+#[test]
+fn api_snapshot_keeps_previous_credits_history_and_overwrites_live_usage() {
+    let history = vec![OpenAIDashboardDailyBreakdown::new(
+        "2026-04-19",
+        vec![OpenAIDashboardServiceUsage::new("Codex", 2.0)],
+        2.0,
+    )];
+    let previous = OpenAIDashboardSnapshot {
+        code_review_remaining_percent: Some(81.0),
+        credit_events: vec![CreditEvent::new(
+            Timestamp::from_second(1_700_000_000).unwrap(),
+            "Codex",
+            2.0,
+        )],
+        daily_breakdown: history.clone(),
+        usage_breakdown: history,
+        credits_purchase_url: Some("https://chatgpt.com/checkout".into()),
+        primary_limit: Some(identity_window(10.0)),
+        credits_remaining: Some(10.0),
+        ..credits_wait_previous()
+    };
+    let api = credits_wait_api(Some(identity_window(44.0)), Some(7.5), Some("pro"));
+    let subscription =
+        OpenAISubscriptionMetadata::parse_fields(Some("2026-08-20T14:30:07Z"), Some(true));
+    let snapshot = credits_wait_merge(
+        &api,
+        &previous,
+        &OpenAISubscriptionFetchResult::Resolved(subscription.unwrap()),
+    );
+    assert_eq!(
+        snapshot.signed_in_email.as_deref(),
+        Some("user@example.com")
+    );
+    assert_eq!(
+        snapshot.primary_limit.as_ref().map(|w| w.used_percent),
+        Some(44.0)
+    );
+    assert_eq!(snapshot.credits_remaining, Some(7.5));
+    assert_eq!(snapshot.account_plan.as_deref(), Some("pro"));
+    assert_eq!(snapshot.credit_events.len(), 1);
+    assert_eq!(snapshot.daily_breakdown.len(), 1);
+    assert_eq!(snapshot.usage_breakdown.len(), 1);
+    assert_eq!(snapshot.code_review_remaining_percent, Some(81.0));
+    assert_eq!(
+        snapshot.credits_purchase_url.as_deref(),
+        Some("https://chatgpt.com/checkout")
+    );
+    assert!(snapshot.subscription_renews_at.is_some());
+}
+
+// upstream: OpenAIDashboardFetcherCreditsWaitTests.swift:499 subscription replacement clears the mutually exclusive previous date
+#[test]
+fn subscription_replacement_clears_the_mutually_exclusive_previous_date() {
+    let previous = OpenAIDashboardSnapshot {
+        subscription_renews_at: Some(Timestamp::from_second(1_800_000_000).unwrap()),
+        ..credits_wait_previous()
+    };
+    let api = credits_wait_api(None, None, None);
+    let subscription =
+        OpenAISubscriptionMetadata::parse_fields(Some("2026-08-20T14:30:07Z"), Some(false));
+    let snapshot = credits_wait_merge(
+        &api,
+        &previous,
+        &OpenAISubscriptionFetchResult::Resolved(subscription.unwrap()),
+    );
+    assert!(snapshot.subscription_expires_at.is_some());
+    assert_eq!(snapshot.subscription_renews_at, None);
+}
+
+// upstream: OpenAIDashboardFetcherCreditsWaitTests.swift:569 successful empty subscription response clears stale dates
+#[test]
+fn successful_empty_subscription_response_clears_stale_dates() {
+    let previous = OpenAIDashboardSnapshot {
+        subscription_renews_at: Some(Timestamp::from_second(1_800_000_000).unwrap()),
+        ..credits_wait_previous()
+    };
+    let api = credits_wait_api(None, None, None);
+    let snapshot = credits_wait_merge(
+        &api,
+        &previous,
+        &OpenAISubscriptionFetchResult::ConfirmedAbsent,
+    );
+    assert_eq!(snapshot.subscription_expires_at, None);
+    assert_eq!(snapshot.subscription_renews_at, None);
 }

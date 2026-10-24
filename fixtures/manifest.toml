@@ -1620,6 +1620,7 @@ sources = [
     "Tests/CodexBarTests/OpenAIDashboardIdentityMergeTests.swift",
     "Tests/CodexBarTests/CodexWorkspaceBalanceDashboardTests.swift",
     "Tests/CodexBarTests/OpenAISubscriptionMetadataTests.swift",
+    "Tests/CodexBarTests/OpenAIDashboardFetcherCreditsWaitTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
