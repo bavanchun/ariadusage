@@ -1482,47 +1482,69 @@ pub fn normalize_codex_service_tier(raw: Option<&str>) -> Option<CodexServiceTie
     }
 }
 
-/// Computes the Codex USD cost for `(non_cached_input_tokens, cached_input_tokens, output_tokens)`
+/// Computes the Codex USD cost for `(input_tokens, cached_input_tokens, output_tokens)`
 /// and an optional `service_tier`.
 #[must_use]
 pub fn codex_cost_usd_with_tier(
     model: &str,
-    non_cached_input_tokens: i64,
+    input_tokens: i64,
     cached_input_tokens: i64,
     output_tokens: i64,
     service_tier: Option<CodexServiceTier>,
+    catalog: Option<&ModelsDevCatalog>,
+) -> Option<f64> {
+    codex_cost_usd_with_tier_and_epoch(
+        model,
+        input_tokens,
+        cached_input_tokens,
+        output_tokens,
+        service_tier,
+        None,
+        catalog,
+    )
+}
+
+/// Computes the Codex USD cost for `(input_tokens, cached_input_tokens, output_tokens)`,
+/// an optional `service_tier`, and an optional `pricing_epoch_secs` timestamp.
+#[must_use]
+pub fn codex_cost_usd_with_tier_and_epoch(
+    model: &str,
+    input_tokens: i64,
+    cached_input_tokens: i64,
+    output_tokens: i64,
+    service_tier: Option<CodexServiceTier>,
+    pricing_epoch_secs: Option<i64>,
     catalog: Option<&ModelsDevCatalog>,
 ) -> Option<f64> {
     let norm = normalize_codex_model(model);
     if norm == "gpt-5.3-codex-spark" || norm == CODEX_UNATTRIBUTED_MODEL {
         return None;
     }
-    let total_input = non_cached_input_tokens
-        .max(0)
-        .saturating_add(cached_input_tokens.max(0));
-    let base = codex_cost_usd(
-        model,
-        total_input,
-        cached_input_tokens.max(0),
-        output_tokens.max(0),
-        0,
-        None,
-        catalog,
-        None,
-        None,
-        false,
-    )?;
+    let total_input = input_tokens.max(0);
     match service_tier {
-        Some(CodexServiceTier::Priority | CodexServiceTier::Fast) => {
-            if total_input > CODEX_PRIORITY_INPUT_TOKEN_LIMIT
-                && !codex_api_fast_allows_long_context(model)
-            {
-                return None;
-            }
-            let mult = codex_api_fast_multiplier(model).unwrap_or(2.0);
-            Some(base * mult)
-        }
-        _ => Some(base),
+        Some(CodexServiceTier::Priority | CodexServiceTier::Fast) => codex_priority_cost_usd(
+            model,
+            total_input,
+            cached_input_tokens.max(0),
+            0,
+            output_tokens.max(0),
+            pricing_epoch_secs,
+            catalog,
+            None,
+            None,
+        ),
+        _ => codex_cost_usd(
+            model,
+            total_input,
+            cached_input_tokens.max(0),
+            output_tokens.max(0),
+            0,
+            pricing_epoch_secs,
+            catalog,
+            None,
+            None,
+            false,
+        ),
     }
 }
 
