@@ -64,6 +64,9 @@ use crate::settings_layout::{
 /// Callback invoked when the user changes a setting or triggers an action.
 pub type SettingChangeCallback = Rc<dyn Fn(&SettingId, serde_json::Value)>;
 
+/// Callback invoked when the user clicks "Set in Terminal" for a secret setting.
+pub type TerminalLauncherCallback = Rc<dyn Fn(&[String])>;
+
 /// Action binding registered for a dynamic control tag inside the detail pane.
 #[derive(Clone)]
 enum ControlBinding {
@@ -443,6 +446,7 @@ pub struct SettingsViewState {
     pub appearance_dark_override: Option<bool>,
     pub engine_client: Option<EngineClient>,
     pub on_setting_changed: Option<SettingChangeCallback>,
+    pub terminal_launcher: TerminalLauncherCallback,
     pub layout: Option<SettingsWindowLayout>,
     pub last_secret_terminal_command: Option<Vec<String>>,
     pub last_refreshed_provider: Option<Option<String>>,
@@ -476,6 +480,11 @@ impl Default for SettingsViewState {
             appearance_dark_override: None,
             engine_client: None,
             on_setting_changed: None,
+            terminal_launcher: Rc::new(|_args| {
+                let _ = std::process::Command::new("/usr/bin/open")
+                    .args(["-a", "Terminal"])
+                    .spawn();
+            }),
             layout: None,
             last_secret_terminal_command: None,
             last_refreshed_provider: None,
@@ -1348,6 +1357,10 @@ impl SettingsView {
             }
         }
         self.rebuild_sidebar_only();
+    }
+
+    pub fn set_terminal_launcher(&self, launcher: TerminalLauncherCallback) {
+        self.ivars().borrow_mut().terminal_launcher = launcher;
     }
 
     pub fn search_field(&self) -> Option<Retained<NSSearchField>> {
@@ -3247,17 +3260,15 @@ impl SettingsView {
                 }
             }
             FormButtonAction::LaunchSecretSetInTerminal { setting_id } => {
-                let args = secret_set_command_args(&setting_id);
+                let args = secret_set_command_args(&setting_id).to_vec();
                 let cmd_line = secret_set_terminal_command(&setting_id);
-                self.ivars().borrow_mut().last_secret_terminal_command = Some(args.to_vec());
+                let launcher = {
+                    let mut state = self.ivars().borrow_mut();
+                    state.last_secret_terminal_command = Some(args.clone());
+                    state.terminal_launcher.clone()
+                };
                 copy_to_pasteboard(&cmd_line);
-                if std::env::var_os("NEXTEST").is_none()
-                    && std::env::var_os("ARIADUSAGE_DISABLE_TERMINAL_LAUNCH").is_none()
-                {
-                    let _ = std::process::Command::new("/usr/bin/open")
-                        .args(["-a", "Terminal"])
-                        .spawn();
-                }
+                launcher(&args);
             }
             FormButtonAction::RunEngineAction { action_id } => {
                 let client = self.ivars().borrow().engine_client.clone();

@@ -316,7 +316,6 @@ pub fn provider_display_name(id: &str) -> String {
         "codex" => "Codex".to_string(),
         "claude" => "Claude".to_string(),
         "antigravity" => "Antigravity".to_string(),
-        "cursor" => "Cursor".to_string(),
         "openai" => "OpenAI".to_string(),
         "azure-openai" => "Azure OpenAI".to_string(),
         "gemini" => "Gemini".to_string(),
@@ -704,7 +703,7 @@ impl SidebarModel {
         snapshot: Option<&EngineSnapshot>,
         status_checks_enabled: bool,
     ) -> Self {
-        let mut inputs: Vec<SidebarProviderInput> = match snapshot {
+        let inputs: Vec<SidebarProviderInput> = match snapshot {
             Some(snap) if !snap.providers.is_empty() => snap
                 .providers
                 .iter()
@@ -712,16 +711,14 @@ impl SidebarModel {
                 .collect(),
             _ => default_provider_inputs(),
         };
-        if !inputs.iter().any(|p| p.id == "cursor") {
-            inputs.push(SidebarProviderInput {
-                id: "cursor".to_string(),
-                display_name: "Cursor".to_string(),
-                enabled: false,
-                refreshing: false,
-                status_indicator: None,
-            });
-        }
         Self::build(filter, &inputs, status_checks_enabled)
+    }
+}
+
+fn displayable_metric<T>(metric: &ariadusage_protocol::metric::Metric<T>) -> Option<&T> {
+    match metric.state {
+        MetricState::Value | MetricState::Stale => metric.value.as_ref(),
+        MetricState::Loading | MetricState::Unknown | MetricState::Error => None,
     }
 }
 
@@ -729,7 +726,7 @@ fn provider_input_from_snapshot(p: &ProviderSnapshot) -> SidebarProviderInput {
     let status_indicator = p
         .status
         .as_ref()
-        .and_then(|m| m.value.as_ref())
+        .and_then(displayable_metric)
         .map(|s| s.indicator);
     let refreshing = p
         .windows
@@ -756,26 +753,19 @@ fn default_provider_inputs() -> Vec<SidebarProviderInput> {
             display_name: "Codex".to_string(),
             enabled: true,
             refreshing: false,
-            status_indicator: Some(StatusIndicator::None),
+            status_indicator: None,
         },
         SidebarProviderInput {
             id: "claude".to_string(),
             display_name: "Claude".to_string(),
             enabled: true,
             refreshing: false,
-            status_indicator: Some(StatusIndicator::None),
+            status_indicator: None,
         },
         SidebarProviderInput {
             id: "antigravity".to_string(),
             display_name: "Antigravity".to_string(),
             enabled: true,
-            refreshing: false,
-            status_indicator: Some(StatusIndicator::None),
-        },
-        SidebarProviderInput {
-            id: "cursor".to_string(),
-            display_name: "Cursor".to_string(),
-            enabled: false,
             refreshing: false,
             status_indicator: None,
         },
@@ -829,13 +819,11 @@ impl Default for SettingsState {
         provider_enabled.insert("codex".to_string(), true);
         provider_enabled.insert("claude".to_string(), true);
         provider_enabled.insert("antigravity".to_string(), true);
-        provider_enabled.insert("cursor".to_string(), false);
 
         let mut provider_source_mode = HashMap::new();
         provider_source_mode.insert("codex".to_string(), "auto".to_string());
         provider_source_mode.insert("claude".to_string(), "auto".to_string());
         provider_source_mode.insert("antigravity".to_string(), "auto".to_string());
-        provider_source_mode.insert("cursor".to_string(), "auto".to_string());
 
         Self {
             available_ids: HashSet::new(),
@@ -1586,11 +1574,7 @@ fn menu_bar_pane_model(settings: &SettingsState, snapshot: Option<&EngineSnapsho
             .take(MERGED_OVERVIEW_PROVIDER_LIMIT)
             .map(|p| p.display_name.clone())
             .collect(),
-        None => vec![
-            "Codex".to_string(),
-            "Claude".to_string(),
-            "Antigravity".to_string(),
-        ],
+        None => Vec::new(),
     };
 
     let overview_subtitle = if !settings.menu_bar_merge_icons {
@@ -2263,20 +2247,13 @@ fn menu_pane_model(settings: &SettingsState, snapshot: Option<&EngineSnapshot>) 
 
 fn cost_status_lines(snapshot: Option<&EngineSnapshot>) -> Vec<String> {
     let Some(snap) = snapshot else {
-        return vec![
-            "Claude: no data yet".to_string(),
-            "Codex: no data yet".to_string(),
-        ];
+        return Vec::new();
     };
     snap.providers
         .iter()
         .map(|provider| {
             let name = &provider.display_name;
-            if let Some(history) = provider
-                .cost_history
-                .as_ref()
-                .and_then(|m| m.value.as_ref())
-            {
+            if let Some(history) = provider.cost_history.as_ref().and_then(displayable_metric) {
                 let currency = history.currency_code.as_deref().unwrap_or("USD");
                 let cost = history
                     .last_30_days_cost_usd
@@ -2520,48 +2497,148 @@ fn usage_spend_pane_model(
     snapshot: Option<&EngineSnapshot>,
 ) -> PaneModel {
     let mut total_spend = 0.0_f64;
-    let mut total_tokens = 0_u64;
     let mut has_cost = false;
-    let mut codex_spend_text = "$285.81 · 72.0M tokens".to_string();
-    let mut claude_spend_text = "$254.09 · 61.0M tokens".to_string();
+    let mut total_tokens = 0_u64;
+    let mut has_tokens = false;
+    let mut total_requests = 0_u64;
+    let mut has_requests = false;
+    let mut currency_code: Option<String> = None;
+    let mut max_covered_days = 0_usize;
+    let mut max_window_days = 0_u32;
+    let mut highest_daily_spend: Option<f64> = None;
+    let mut subscription_count = 0_usize;
+    let mut provider_breakdown_rows: Vec<FormRowModel> = Vec::new();
 
     if let Some(snap) = snapshot {
         for p in &snap.providers {
-            if let Some(history) = p.cost_history.as_ref().and_then(|m| m.value.as_ref()) {
+            let has_sub_dates = p
+                .subscription
+                .as_ref()
+                .and_then(displayable_metric)
+                .is_some_and(|s| s.renews.is_some() || s.expires.is_some());
+            let has_plan = p
+                .identity
+                .as_ref()
+                .and_then(displayable_metric)
+                .is_some_and(|id| id.plan.as_deref().is_some_and(|s| !s.trim().is_empty()));
+            if has_sub_dates || has_plan {
+                subscription_count += 1;
+            }
+
+            if let Some(history) = p.cost_history.as_ref().and_then(displayable_metric) {
+                if currency_code.is_none()
+                    && let Some(code) = history
+                        .currency_code
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                {
+                    currency_code = Some(code.to_string());
+                }
                 if let Some(cost) = history.last_30_days_cost_usd {
                     total_spend += cost;
                     has_cost = true;
                 }
                 if let Some(tokens) = history.last_30_days_tokens {
                     total_tokens += tokens;
+                    has_tokens = true;
                 }
-                let formatted_cost = history
-                    .last_30_days_cost_usd
-                    .map(|c| format!("${c:.2}"))
-                    .unwrap_or_else(|| "—".to_string());
-                let formatted_tokens = history
-                    .last_30_days_tokens
-                    .map(format_compact_tokens)
-                    .unwrap_or_else(|| "—".to_string());
-                let summary = format!("{formatted_cost} · {formatted_tokens} tokens");
-                if p.id.as_str() == "codex" {
-                    codex_spend_text = summary;
-                } else if p.id.as_str() == "claude" {
-                    claude_spend_text = summary;
+                if let Some(reqs) = history.last_30_days_requests {
+                    total_requests += reqs;
+                    has_requests = true;
+                }
+                max_covered_days = max_covered_days.max(history.daily.len());
+                if let Some(days) = history.history_days {
+                    max_window_days = max_window_days.max(days);
+                }
+
+                let mut models: Vec<String> = Vec::new();
+                for entry in &history.daily {
+                    if let Some(day_cost) = entry.cost_usd {
+                        highest_daily_spend =
+                            Some(highest_daily_spend.map_or(day_cost, |prev| prev.max(day_cost)));
+                    }
+                    for model in &entry.models_used {
+                        if !models.contains(model) {
+                            models.push(model.clone());
+                        }
+                    }
+                }
+                if models.is_empty()
+                    && let Some(top) = &history.top_model
+                    && !top.model_name.trim().is_empty()
+                {
+                    models.push(top.model_name.clone());
+                }
+
+                if history.last_30_days_cost_usd.is_some() || history.last_30_days_tokens.is_some()
+                {
+                    let curr = history.currency_code.as_deref().unwrap_or("USD");
+                    let formatted_cost = history
+                        .last_30_days_cost_usd
+                        .map(|c| format_currency_amount(c, curr))
+                        .unwrap_or_else(|| "—".to_string());
+                    let summary = match history.last_30_days_tokens {
+                        Some(tokens) => {
+                            format!(
+                                "{formatted_cost} · {} tokens",
+                                format_compact_tokens(tokens)
+                            )
+                        }
+                        None => formatted_cost,
+                    };
+                    let subtitle =
+                        (!models.is_empty()).then(|| format!("Models: {}", models.join(", ")));
+                    provider_breakdown_rows.push(FormRowModel {
+                        title: p.display_name.clone(),
+                        subtitle,
+                        row_enabled: true,
+                        control: FormControl::ReadOnlyValue { value: summary },
+                    });
                 }
             }
         }
     }
 
+    let active_currency = currency_code.as_deref().unwrap_or("USD");
     let estimated_spend = if has_cost {
-        format!("${total_spend:.2}")
+        format_currency_amount(total_spend, active_currency)
     } else {
-        "$539.90".to_string()
+        "—".to_string()
     };
-    let tracked_tokens = if total_tokens > 0 {
+    let recorded_spend_subtitle = highest_daily_spend.map(|high| {
+        format!(
+            "Highest recorded spend: {}",
+            format_currency_amount(high, active_currency)
+        )
+    });
+    let tracked_tokens = if has_tokens {
         format_compact_tokens(total_tokens)
     } else {
-        "133.0M".to_string()
+        "—".to_string()
+    };
+    let subscriptions = if snapshot.is_some() && (has_cost || has_tokens || subscription_count > 0)
+    {
+        subscription_count.to_string()
+    } else {
+        "—".to_string()
+    };
+    let coverage_text = if max_window_days > 0 || max_covered_days > 0 {
+        let window = if max_window_days > 0 {
+            max_window_days as usize
+        } else {
+            max_covered_days
+        };
+        format!("Local estimated history · Coverage: {max_covered_days} / {window}")
+    } else {
+        "No cost history yet".to_string()
+    };
+    let provenance_text = if has_requests {
+        format!("Requests: {total_requests}")
+    } else if has_cost || has_tokens {
+        "Local estimated history".to_string()
+    } else {
+        "No cost history yet".to_string()
     };
 
     let header_section = FormSectionModel {
@@ -2627,60 +2704,54 @@ fn usage_spend_pane_model(
             subtitle: None,
             row_enabled: true,
             control: FormControl::SpendSummaryGrid {
-                currency_code: "USD".to_string(),
-                coverage_text: "Local estimated history · Coverage: 30 / 30".to_string(),
+                currency_code: currency_code.unwrap_or_else(|| "—".to_string()),
+                coverage_text,
                 estimated_spend: estimated_spend.clone(),
                 tracked_tokens,
-                subscriptions: "2".to_string(),
-                input_tokens: "18.4M".to_string(),
-                output_tokens: "4.2M".to_string(),
-                cache_read_tokens: "98.1M".to_string(),
-                cache_write_tokens: "12.3M".to_string(),
-                reasoning_tokens: "1.1M".to_string(),
-                provenance_text:
-                    "Priced 428 · Unpriced 0 · Unmetered 0 · Estimated 428 · List-price equivalent"
-                        .to_string(),
+                subscriptions,
+                input_tokens: "—".to_string(),
+                output_tokens: "—".to_string(),
+                cache_read_tokens: "—".to_string(),
+                cache_write_tokens: "—".to_string(),
+                reasoning_tokens: "—".to_string(),
+                provenance_text,
             },
         }],
         footer_lines: Vec::new(),
     };
 
+    let mut breakdown_rows = vec![FormRowModel {
+        title: "View".to_string(),
+        subtitle: None,
+        row_enabled: true,
+        control: FormControl::Segmented {
+            segments: vec![
+                "Providers".to_string(),
+                "Projects".to_string(),
+                "Independent chats".to_string(),
+                "Sessions".to_string(),
+            ],
+            selected_index: 0,
+            trailing_note: None,
+            enabled: false,
+        },
+    }];
+    if provider_breakdown_rows.is_empty() {
+        breakdown_rows.push(FormRowModel {
+            title: "No cost history yet".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue {
+                value: String::new(),
+            },
+        });
+    } else {
+        breakdown_rows.extend(provider_breakdown_rows);
+    }
+
     let breakdown_section = FormSectionModel {
         title: Some("Breakdown".to_string()),
-        rows: vec![
-            FormRowModel {
-                title: "View".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::Segmented {
-                    segments: vec![
-                        "Providers".to_string(),
-                        "Projects".to_string(),
-                        "Independent chats".to_string(),
-                        "Sessions".to_string(),
-                    ],
-                    selected_index: 0,
-                    trailing_note: None,
-                    enabled: false,
-                },
-            },
-            FormRowModel {
-                title: "Codex".to_string(),
-                subtitle: Some("Models: gpt-5-codex, o3".to_string()),
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: codex_spend_text,
-                },
-            },
-            FormRowModel {
-                title: "Claude".to_string(),
-                subtitle: Some("Models: claude-sonnet-4-5, claude-opus-4-6".to_string()),
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: claude_spend_text,
-                },
-            },
-        ],
+        rows: breakdown_rows,
         footer_lines: Vec::new(),
     };
 
@@ -2700,7 +2771,7 @@ fn usage_spend_pane_model(
             },
             FormRowModel {
                 title: "Recorded spend".to_string(),
-                subtitle: Some("Highest recorded spend: $42.10".to_string()),
+                subtitle: recorded_spend_subtitle,
                 row_enabled: true,
                 control: FormControl::ReadOnlyValue {
                     value: estimated_spend,
@@ -3332,14 +3403,6 @@ fn provider_accent_defaults(provider_id: &str) -> (&'static str, Rgb) {
                 b: 94,
             },
         ),
-        "cursor" => (
-            "#F54E00",
-            Rgb {
-                r: 245,
-                g: 78,
-                b: 0,
-            },
-        ),
         "antigravity" => (
             "#60BA7E",
             Rgb {
@@ -3390,15 +3453,77 @@ fn source_mode_options() -> Vec<ChoiceItem> {
     ]
 }
 
+fn format_provider_updated(updated_at: jiff::Timestamp, now: jiff::Timestamp) -> (String, String) {
+    let elapsed = crate::format::seconds_between(updated_at, now).trunc();
+    if elapsed > -60.0 && elapsed < 60.0 {
+        ("Updated just now".to_string(), "just now".to_string())
+    } else if (60.0..3600.0).contains(&elapsed) {
+        let mins = (elapsed / 60.0).trunc() as i64;
+        let rel = format!("{mins}m ago");
+        (format!("Updated {rel}"), rel)
+    } else if (3600.0..86_400.0).contains(&elapsed) {
+        let hours = (elapsed / 3600.0).trunc() as i64;
+        let rel = format!("{hours}h ago");
+        (format!("Updated {rel}"), rel)
+    } else {
+        let zdt = updated_at.to_zoned(jiff::tz::TimeZone::UTC);
+        let rel = zdt.strftime("%b %-d").to_string();
+        (format!("Updated {rel}"), rel)
+    }
+}
+
+fn build_usage_window_row(
+    title: String,
+    window: &ariadusage_protocol::usage::RateWindow,
+    show_used: bool,
+    accent_rgb: Rgb,
+) -> FormRowModel {
+    let used = window.used_percent.clamp(0.0, 100.0);
+    let remaining = (100.0 - used).clamp(0.0, 100.0);
+    let fill_fraction = if show_used {
+        used / 100.0
+    } else {
+        remaining / 100.0
+    };
+    let percent_text = crate::format::usage_line(remaining, used, show_used);
+    let reset_text = window
+        .reset_description
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let pace_text = window
+        .pace
+        .as_ref()
+        .map(|pace| pace.summary.trim().to_string())
+        .filter(|s| !s.is_empty());
+    FormRowModel {
+        title: title.clone(),
+        subtitle: None,
+        row_enabled: true,
+        control: FormControl::UsageWindowBar {
+            title,
+            percent_text,
+            fill_fraction,
+            accent_rgb,
+            reset_text,
+            pace_text,
+        },
+    }
+}
+
 fn provider_pane_model(
     provider_id: &str,
     settings: &SettingsState,
     snapshot: Option<&EngineSnapshot>,
 ) -> PaneModel {
-    let display_name = provider_display_name(provider_id);
-    let is_supported = matches!(provider_id, "codex" | "claude" | "antigravity");
     let snap_provider =
         snapshot.and_then(|s| s.providers.iter().find(|p| p.id.as_str() == provider_id));
+    let display_name = snap_provider
+        .map(|p| p.display_name.clone())
+        .unwrap_or_else(|| provider_display_name(provider_id));
+    let is_supported = matches!(provider_id, "codex" | "claude" | "antigravity");
 
     let enabled = settings
         .provider_enabled
@@ -3430,38 +3555,44 @@ fn provider_pane_model(
                 .primary
                 .as_ref()
                 .and_then(|m| m.source.as_ref())
+                .or_else(|| p.windows.secondary.as_ref().and_then(|m| m.source.as_ref()))
                 .or_else(|| p.identity.as_ref().and_then(|m| m.source.as_ref()))
                 .map(|s| s.label.clone())
         })
-        .unwrap_or_else(|| match provider_id {
-            "codex" | "claude" => "oauth".to_string(),
-            "antigravity" => "local".to_string(),
-            _ => "web".to_string(),
-        });
+        .unwrap_or_else(|| "—".to_string());
 
-    let updated_text = if enabled && is_supported {
-        "Updated just now".to_string()
+    let updated_pair = snap_provider.and_then(|p| p.updated_at).map(|updated| {
+        let now = snapshot.map(|s| s.generated_at).unwrap_or(updated);
+        format_provider_updated(updated, now)
+    });
+    let updated_text = updated_pair
+        .as_ref()
+        .map(|(full, _)| full.clone())
+        .unwrap_or_else(|| "Not fetched yet".to_string());
+    let header_subtitle = if !enabled {
+        "disabled".to_string()
+    } else if let Some(err) = snap_provider.and_then(|p| p.last_error.as_ref()) {
+        truncate_single_line(&err.message, 120)
+    } else if let Some((_, rel)) = updated_pair.as_ref() {
+        if source_label != "—" {
+            format!("{source_label} • {rel}")
+        } else {
+            updated_text.clone()
+        }
     } else {
         "Not fetched yet".to_string()
-    };
-    let header_subtitle = if enabled && is_supported {
-        format!("{source_label} • just now")
-    } else if provider_id == "cursor" {
-        "web • last fetch failed".to_string()
-    } else {
-        "disabled • not configured".to_string()
     };
 
     // 1. Overview card (ProviderHeader + key-value info rows)
     let mut overview_rows = vec![
         FormRowModel {
             title: display_name.clone(),
-            subtitle: Some(header_subtitle),
+            subtitle: Some(header_subtitle.clone()),
             row_enabled: true,
             control: FormControl::ProviderHeader {
                 provider_id: provider_id.to_string(),
                 display_name: display_name.clone(),
-                subtitle: format!("{source_label} • {updated_text}"),
+                subtitle: header_subtitle,
                 enabled,
                 enable_toggle_supported,
                 enable_setting_id,
@@ -3501,49 +3632,60 @@ fn provider_pane_model(
         },
     });
 
-    if is_supported || provider_id == "cursor" {
-        let status_text = snap_provider
-            .and_then(|p| p.status.as_ref())
-            .and_then(|m| m.value.as_ref())
-            .and_then(|s| s.description.clone())
-            .unwrap_or_else(|| "All Systems Operational".to_string());
+    if let Some(status_text) = snap_provider
+        .and_then(|p| p.status.as_ref())
+        .and_then(displayable_metric)
+        .and_then(|s| s.description.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         overview_rows.push(FormRowModel {
             title: "Status".to_string(),
             subtitle: None,
             row_enabled: true,
-            control: FormControl::ReadOnlyValue { value: status_text },
+            control: FormControl::ReadOnlyValue {
+                value: status_text.to_string(),
+            },
         });
     }
 
-    if is_supported {
-        let email = snap_provider
-            .and_then(|p| p.identity.as_ref())
-            .and_then(|m| m.value.as_ref())
-            .and_then(|id| id.account_email.clone())
-            .unwrap_or_else(|| "alex@example.invalid".to_string());
-        let plan = snap_provider
-            .and_then(|p| p.identity.as_ref())
-            .and_then(|m| m.value.as_ref())
-            .and_then(|id| id.plan.clone().or_else(|| id.login_method.clone()))
-            .unwrap_or_else(|| {
-                if provider_id == "claude" {
-                    "Max".to_string()
-                } else {
-                    "Pro".to_string()
-                }
-            });
+    if let Some(email) = snap_provider
+        .and_then(|p| p.identity.as_ref())
+        .and_then(displayable_metric)
+        .and_then(|id| id.account_email.as_deref())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         overview_rows.push(FormRowModel {
             title: "Account".to_string(),
             subtitle: None,
             row_enabled: true,
-            control: FormControl::ReadOnlyValue { value: email },
+            control: FormControl::ReadOnlyValue {
+                value: email.to_string(),
+            },
         });
-        overview_rows.push(FormRowModel {
-            title: "Plan".to_string(),
-            subtitle: None,
-            row_enabled: true,
-            control: FormControl::ReadOnlyValue { value: plan },
-        });
+    }
+
+    if let Some(raw_plan) = snap_provider
+        .and_then(|p| p.identity.as_ref())
+        .and_then(displayable_metric)
+        .and_then(|id| {
+            id.login_method
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| id.plan.as_deref().map(str::trim).filter(|s| !s.is_empty()))
+        })
+    {
+        let plan_label = crate::format::plan_display(provider_id, raw_plan);
+        if !plan_label.is_empty() {
+            overview_rows.push(FormRowModel {
+                title: "Plan".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue { value: plan_label },
+            });
+        }
     }
 
     let overview_section = FormSectionModel {
@@ -3554,187 +3696,171 @@ fn provider_pane_model(
 
     let (default_hex, accent_rgb) = provider_accent_defaults(provider_id);
 
-    // 2. Usage section
-    let usage_rows = match provider_id {
-        "codex" => vec![
-            FormRowModel {
-                title: "Session".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Session".to_string(),
-                    percent_text: "58% left".to_string(),
-                    fill_fraction: 0.58,
+    // 2. Usage section (populated strictly from snapshot metrics; hidden when absent)
+    let mut usage_rows: Vec<FormRowModel> = Vec::new();
+    if let Some(p) = snap_provider {
+        let titles = crate::card::card_presentation(p).titles;
+        let show_used = settings.menu_bar_show_used;
+
+        if let Some(w) = p.windows.primary.as_ref().and_then(displayable_metric) {
+            usage_rows.push(build_usage_window_row(
+                titles.session,
+                w,
+                show_used,
+                accent_rgb,
+            ));
+        }
+        if let Some(w) = p.windows.secondary.as_ref().and_then(displayable_metric) {
+            usage_rows.push(build_usage_window_row(
+                titles.weekly,
+                w,
+                show_used,
+                accent_rgb,
+            ));
+        }
+        if let Some(tert_title) = titles.tertiary
+            && let Some(w) = p.windows.tertiary.as_ref().and_then(displayable_metric)
+        {
+            usage_rows.push(build_usage_window_row(tert_title, w, show_used, accent_rgb));
+        }
+        for named in &p.windows.extra {
+            if let Some(w) = displayable_metric(&named.window) {
+                usage_rows.push(build_usage_window_row(
+                    named.title.clone(),
+                    w,
+                    show_used,
                     accent_rgb,
-                    reset_text: "Resets in 5 hours".to_string(),
-                    pace_text: Some("6% in reserve · Lasts until reset".to_string()),
-                },
+                ));
+            }
+        }
+
+        if let Some(sub) = p.subscription.as_ref().and_then(displayable_metric) {
+            if let Some(renews) = &sub.renews {
+                let zdt = renews.at.to_zoned(jiff::tz::TimeZone::UTC);
+                usage_rows.push(FormRowModel {
+                    title: "Plan renews".to_string(),
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue {
+                        value: zdt.strftime("%b %-d").to_string(),
+                    },
+                });
+            } else if let Some(expires) = &sub.expires {
+                let zdt = expires.at.to_zoned(jiff::tz::TimeZone::UTC);
+                usage_rows.push(FormRowModel {
+                    title: "Plan expires".to_string(),
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue {
+                        value: zdt.strftime("%b %-d").to_string(),
+                    },
+                });
+            }
+        }
+
+        if settings.show_optional_credits
+            && let Some(credits) = p.credits.as_ref().and_then(displayable_metric)
+        {
+            if let Some(rc) = &credits.reset_credits
+                && rc.available_count > 0
+            {
+                usage_rows.push(FormRowModel {
+                    title: "Limit Reset Credits".to_string(),
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue {
+                        value: format!("{} available", rc.available_count),
+                    },
+                });
+            }
+            if credits.remaining.is_finite() {
+                let is_cloud_usd = credits.balance_is_workspace == Some(true)
+                    || credits
+                        .unit
+                        .as_deref()
+                        .is_some_and(|u| u.eq_ignore_ascii_case("USD"));
+                let (cred_title, cred_val) = if is_cloud_usd {
+                    (
+                        "Cloud credits".to_string(),
+                        crate::format::currency_string(credits.remaining, "USD"),
+                    )
+                } else {
+                    (
+                        "Credits".to_string(),
+                        crate::format::credits_string(credits.remaining),
+                    )
+                };
+                usage_rows.push(FormRowModel {
+                    title: cred_title,
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue { value: cred_val },
+                });
+            }
+        }
+
+        if let Some(history) = p.cost_history.as_ref().and_then(displayable_metric) {
+            let currency = history.currency_code.as_deref().unwrap_or("USD");
+            let mut parts = Vec::new();
+            if let Some(today_cost) = history.session_cost_usd {
+                let c = crate::format::currency_string(today_cost, currency);
+                if let Some(today_tokens) = history.session_tokens {
+                    parts.push(format!(
+                        "Today: {c} · {} tokens",
+                        format_compact_tokens(today_tokens)
+                    ));
+                } else {
+                    parts.push(format!("Today: {c}"));
+                }
+            }
+            if let Some(month_cost) = history.last_30_days_cost_usd {
+                let c = crate::format::currency_string(month_cost, currency);
+                let days = history.history_days.unwrap_or(30);
+                if let Some(month_tokens) = history.last_30_days_tokens {
+                    parts.push(format!(
+                        "{days}d: {c} · {} tokens",
+                        format_compact_tokens(month_tokens)
+                    ));
+                } else {
+                    parts.push(format!("{days}d: {c}"));
+                }
+            }
+            if !parts.is_empty() {
+                usage_rows.push(FormRowModel {
+                    title: "Cost".to_string(),
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue {
+                        value: parts.join("  |  "),
+                    },
+                });
+            }
+        }
+    }
+
+    if usage_rows.is_empty() {
+        usage_rows.push(FormRowModel {
+            title: "No usage yet".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue {
+                value: String::new(),
             },
-            FormRowModel {
-                title: "Weekly".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Weekly".to_string(),
-                    percent_text: "81% left".to_string(),
-                    fill_fraction: 0.81,
-                    accent_rgb,
-                    reset_text: "Resets in 4 days".to_string(),
-                    pace_text: Some("4% in reserve · Lasts until reset".to_string()),
-                },
-            },
-            FormRowModel {
-                title: "Limit Reset Credits".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "2 available".to_string(),
-                },
-            },
-            FormRowModel {
-                title: "Credits".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "184.5 left".to_string(),
-                },
-            },
-            FormRowModel {
-                title: "Cost".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "Today: $0.18 · 460K tokens  |  30d: $285.81 · 72.0M tokens".to_string(),
-                },
-            },
-        ],
-        "claude" => vec![
-            FormRowModel {
-                title: "Session".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Session".to_string(),
-                    percent_text: "76% left".to_string(),
-                    fill_fraction: 0.76,
-                    accent_rgb,
-                    reset_text: "Resets in 3 hours".to_string(),
-                    pace_text: Some("13% in reserve · Lasts until reset".to_string()),
-                },
-            },
-            FormRowModel {
-                title: "Weekly".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Weekly".to_string(),
-                    percent_text: "69% left".to_string(),
-                    fill_fraction: 0.69,
-                    accent_rgb,
-                    reset_text: "Resets in 5 days".to_string(),
-                    pace_text: Some("8% in reserve · Lasts until reset".to_string()),
-                },
-            },
-            FormRowModel {
-                title: "Sonnet".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Sonnet".to_string(),
-                    percent_text: "91% left".to_string(),
-                    fill_fraction: 0.91,
-                    accent_rgb,
-                    reset_text: "Resets in 5 days".to_string(),
-                    pace_text: None,
-                },
-            },
-            FormRowModel {
-                title: "Plan renews".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "May 1".to_string(),
-                },
-            },
-            FormRowModel {
-                title: "Cloud credits".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "$38.20".to_string(),
-                },
-            },
-            FormRowModel {
-                title: "Cost".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: "Today: $1.42 · 890K tokens  |  30d: $254.09 · 61.0M tokens".to_string(),
-                },
-            },
-        ],
-        "antigravity" => vec![
-            FormRowModel {
-                title: "Gemini Models".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Gemini Models".to_string(),
-                    percent_text: "100% left".to_string(),
-                    fill_fraction: 1.0,
-                    accent_rgb,
-                    reset_text: "Resets in 4 hours".to_string(),
-                    pace_text: None,
-                },
-            },
-            FormRowModel {
-                title: "Claude and GPT".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Claude and GPT".to_string(),
-                    percent_text: "80% left".to_string(),
-                    fill_fraction: 0.80,
-                    accent_rgb,
-                    reset_text: "Resets in 4 hours".to_string(),
-                    pace_text: None,
-                },
-            },
-            FormRowModel {
-                title: "Gemini 2.5 Flash".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::UsageWindowBar {
-                    title: "Gemini 2.5 Flash".to_string(),
-                    percent_text: "100% left".to_string(),
-                    fill_fraction: 1.0,
-                    accent_rgb,
-                    reset_text: "Resets in 4 hours".to_string(),
-                    pace_text: None,
-                },
-            },
-        ],
-        _ => vec![
-            FormRowModel {
-                title: "No usage yet".to_string(),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: String::new(),
-                },
-            },
-            FormRowModel {
-                title: format!(
-                    "Last {display_name} fetch failed: No {display_name} session found. Sign in in your browser or configure a session cookie."
-                ),
-                subtitle: None,
-                row_enabled: true,
-                control: FormControl::ReadOnlyValue {
-                    value: String::new(),
-                },
-            },
-        ],
-    };
+        });
+        if let Some(err) = snap_provider.and_then(|p| p.last_error.as_ref()) {
+            let msg = truncate_single_line(&err.message, 160);
+            if !msg.is_empty() {
+                usage_rows.push(FormRowModel {
+                    title: msg,
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::ReadOnlyValue {
+                        value: String::new(),
+                    },
+                });
+            }
+        }
+    }
 
     let mut sections = vec![
         overview_section,
@@ -3957,42 +4083,43 @@ fn provider_pane_model(
 
         match provider_id {
             "codex" => {
-                cred_rows.push(FormRowModel {
-                    title: "AriadUsage follows".to_string(),
-                    subtitle: Some(
-                        "Choose which Codex account AriadUsage should follow.".to_string(),
-                    ),
-                    row_enabled: true,
-                    control: FormControl::BorderedChoice {
-                        selected_label: "Work Account".to_string(),
-                        options: vec![
-                            ChoiceItem::Text {
-                                label: "Work Account".to_string(),
-                                value: "acc-1".to_string(),
-                            },
-                            ChoiceItem::Text {
-                                label: "Personal Account".to_string(),
-                                value: "acc-2".to_string(),
-                            },
-                        ],
-                        enabled: false,
-                        setting_id: None,
-                    },
-                });
-                cred_rows.push(FormRowModel {
-                    title: "System".to_string(),
-                    subtitle: Some("The default Codex account on this Mac.".to_string()),
-                    row_enabled: true,
-                    control: FormControl::BorderedChoice {
-                        selected_label: "Work Account".to_string(),
-                        options: vec![ChoiceItem::Text {
-                            label: "Work Account".to_string(),
-                            value: "acc-1".to_string(),
-                        }],
-                        enabled: false,
-                        setting_id: None,
-                    },
-                });
+                if let Some(accounts) = snap_provider
+                    .map(|p| p.accounts.as_slice())
+                    .filter(|a| !a.is_empty())
+                {
+                    let active_acc = accounts.iter().find(|a| a.active).unwrap_or(&accounts[0]);
+                    let options: Vec<ChoiceItem> = accounts
+                        .iter()
+                        .map(|a| ChoiceItem::Text {
+                            label: a.label.clone(),
+                            value: a.id.clone(),
+                        })
+                        .collect();
+                    cred_rows.push(FormRowModel {
+                        title: "AriadUsage follows".to_string(),
+                        subtitle: Some(
+                            "Choose which Codex account AriadUsage should follow.".to_string(),
+                        ),
+                        row_enabled: true,
+                        control: FormControl::BorderedChoice {
+                            selected_label: active_acc.label.clone(),
+                            options: options.clone(),
+                            enabled: false,
+                            setting_id: None,
+                        },
+                    });
+                    cred_rows.push(FormRowModel {
+                        title: "System".to_string(),
+                        subtitle: Some("The default Codex account on this Mac.".to_string()),
+                        row_enabled: true,
+                        control: FormControl::BorderedChoice {
+                            selected_label: active_acc.label.clone(),
+                            options,
+                            enabled: false,
+                            setting_id: None,
+                        },
+                    });
+                }
                 cred_rows.push(FormRowModel {
                     title: String::new(),
                     subtitle: None,
@@ -4008,9 +4135,26 @@ fn provider_pane_model(
                 });
             }
             "antigravity" => {
+                let accounts_subtitle = snap_provider
+                    .map(|p| p.accounts.as_slice())
+                    .filter(|a| !a.is_empty())
+                    .map(|accounts| {
+                        accounts
+                            .iter()
+                            .map(|a| {
+                                if a.active {
+                                    format!("{} (Active)", a.label)
+                                } else {
+                                    a.label.clone()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" · ")
+                    })
+                    .unwrap_or_else(|| "No Google accounts configured.".to_string());
                 cred_rows.push(FormRowModel {
                     title: "Google accounts".to_string(),
-                    subtitle: Some("Work Account (Active) · Personal Account".to_string()),
+                    subtitle: Some(accounts_subtitle),
                     row_enabled: true,
                     control: FormControl::Buttons {
                         buttons: vec![FormButton {
@@ -4108,7 +4252,7 @@ fn provider_pane_model(
         ],
     });
 
-    // 8. Options section (for supported providers)
+    // 8. Options section (for supported providers; uses FormControl::Checkbox to match CodexBar's AXCheckBox rows)
     let option_items: &[(&str, &str, bool)] = match provider_id {
         "codex" => &[
             (
@@ -4182,9 +4326,10 @@ fn provider_pane_model(
             .map(|(title, sub, val)| FormRowModel {
                 title: (*title).to_string(),
                 subtitle: Some((*sub).to_string()),
-                row_enabled: true,
-                control: FormControl::Toggle {
-                    value: *val,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: *val,
+                    indent: 0.0,
                     enabled: false,
                     setting_id: None,
                 },

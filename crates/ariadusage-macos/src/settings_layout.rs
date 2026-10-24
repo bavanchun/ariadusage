@@ -711,7 +711,7 @@ fn measure_row_height(content_w: f64, row: &FormRowModel) -> f64 {
         }
         FormControl::EmptyStateCard { .. } => 148.0,
         FormControl::SpendSummaryGrid { .. } => 176.0,
-        FormControl::Checkbox { .. } => 32.0,
+        FormControl::Checkbox { .. } if row.subtitle.is_none() => 32.0,
         FormControl::Segmented { .. } => 36.0,
         FormControl::ColorHex { .. } => 42.0,
         FormControl::StatusNote { command, .. } => {
@@ -1077,9 +1077,14 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
             enabled,
             setting_id,
         } => {
+            let cy = if row.subtitle.is_some() {
+                row_rect.y + 6.0
+            } else {
+                row_rect.y + (row_rect.h - 20.0) / 2.0
+            };
             let rect = Rect::new(
                 inner_x + *indent,
-                row_rect.y + (row_rect.h - 20.0) / 2.0,
+                cy,
                 (inner_w - 8.0 - *indent).max(160.0),
                 20.0,
             );
@@ -1453,7 +1458,17 @@ fn layout_row(row_rect: Rect, row: &FormRowModel, show_bottom_divider: bool) -> 
     };
     let text_w = (inner_w - right_reserved_w - if is_external_link { 24.0 } else { 0.0 }).max(60.0);
 
-    let (title_rect, subtitle_rect) = if row.title.is_empty() || owns_own_title {
+    let (title_rect, subtitle_rect) = if let FormControl::Checkbox { indent, .. } = &row.control {
+        let sr = row.subtitle.as_ref().map(|_| {
+            Rect::new(
+                inner_x + *indent + 20.0,
+                row_rect.y + 26.0,
+                (inner_w - *indent - 20.0).max(60.0),
+                (row_rect.h - 32.0).max(16.0),
+            )
+        });
+        (None, sr)
+    } else if row.title.is_empty() || owns_own_title {
         (None, None)
     } else if is_slider {
         let tr = Rect::new(text_x, row_rect.y + 8.0, text_w, 17.0);
