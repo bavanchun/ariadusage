@@ -1,3 +1,6 @@
+// Ported from CodexBar Sources/CodexBarCLI/CLIPayloads.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCLI/CLIConfigCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 //! CLI JSON payload types for `ariadusage cost` and `ariadusage config`.
 
 use schemars::JsonSchema;

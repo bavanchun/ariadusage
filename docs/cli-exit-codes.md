@@ -7,8 +7,8 @@ setting ID or secret value in its error text.
 | Code | Meaning |
 |---:|---|
 | 0 | Command succeeded (or secret saved) |
-| 1 | `hooks` command argument, configuration, or hook rule execution failure |
-| 2 | Invalid setting ID or command-line syntax |
+| 1 | `hooks`, `config`, or `cost` command validation, configuration, or execution failure |
+| 2 | Invalid setting ID, CLI option value, or command-line syntax |
 | 3 | Secret or consent input could not be read |
 | 4 | Secret input exceeded 64 KiB |
 | 5 | Empty, invalid UTF-8 or invalid secret |
@@ -22,6 +22,8 @@ setting ID or secret value in its error text.
 | 17 | Secret operation is unsupported on this platform |
 | 18 | Process hardening failed |
 | 19 | Daemon, LaunchAgent or status operation is unsupported on this platform |
+| 20 | `config` operation is unsupported (`set-api-key`, `dump --show-secrets`, `preferences`) |
+| 21 | `cost` flag or mode is unsupported (`--remote`, `--summary-only`, `--identified-only`, `--identified-end`) |
 
 When the keyring is unavailable, a terminal call asks whether to store the
 secret in the private file fallback. The first non-interactive fallback use
@@ -49,3 +51,8 @@ must pass `--allow-file-fallback`; later calls honor the saved
 Argument-validation and flag errors across `diagnose`, `cache clear`, and
 `cookie refresh` return exit code `2` (matching AriadUsage's CLI convention for
 invalid command-line syntax, whereas upstream returns `1`).
+
+## `ariadusage config` and `ariadusage cost`
+
+- `ariadusage config` (`validate`, `dump`, `providers`, `enable`, `disable`, `set-source`) reads and writes through `ConfigStore`. `config dump` always redacts legacy credentials as `[REDACTED]`, and `config dump --show-secrets`, `config set-api-key`, and `config preferences` exit with code `20` without reading, storing, or printing any secret value.
+- `ariadusage cost` scans local Claude, Codex, and Antigravity usage history via `ariadusage-engine` and emits human text or JSON (`schemas/cli-cost.v1.json`). Invalid flag values exit with code `2`, providers without local cost support exit with code `1`, and unsupported remote/identified flags (`--remote`, `--summary-only`, `--identified-only`, `--identified-end`) exit with code `21`.

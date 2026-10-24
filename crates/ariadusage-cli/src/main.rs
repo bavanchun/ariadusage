@@ -1,10 +1,8 @@
-pub mod hooks;
-
 #[cfg(target_os = "macos")]
 use ariadusage_cli::launch_agent;
 use ariadusage_cli::{
-    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, execute_cache_clear,
-    execute_cookie_refresh, execute_diagnose, execute_usage,
+    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, config, cost,
+    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_usage, hooks,
 };
 
 use std::io::{self, IsTerminal, Read};
@@ -73,6 +71,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Print local token cost usage without refreshing web/CLI sources
+    Cost(cost::CostCommandArgs),
+
+    /// Validate or inspect the configuration file
+    Config(config::ConfigCommandArgs),
 
     /// Run external commands on quota/provider events
     #[command(long_about = hooks::HOOKS_LONG_ABOUT)]
@@ -263,6 +267,20 @@ fn main() {
         Some(Commands::Status { socket, json }) => {
             if let Err(error) = run_status_command(socket, json) {
                 report(error);
+            }
+        }
+        Some(Commands::Cost(args)) => {
+            let code = cost::run_cost_command(&args);
+            if code != 0 {
+                std::process::exit(code);
+            }
+        }
+        Some(Commands::Config(args)) => {
+            if let Err(error) = config::run_config_command(args) {
+                let mut stdout = io::stdout();
+                let mut stderr = io::stderr();
+                hooks::write_hooks_cli_error(&error, &mut stdout, &mut stderr);
+                std::process::exit(i32::from(error.code));
             }
         }
         Some(Commands::Hooks(args)) => {
