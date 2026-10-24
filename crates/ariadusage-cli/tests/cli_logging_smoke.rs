@@ -2,7 +2,6 @@
 // Minimal smoke tests for CLI logging (`-v`/`--verbose`, `--log-level`, `--json-output`),
 // `LogRedactor`, and `ProviderLogging`.
 
-
 use std::collections::BTreeMap;
 
 use ariadusage_cli::{
