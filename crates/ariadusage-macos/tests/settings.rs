@@ -734,31 +734,34 @@ fn panes_with_empty_snapshot_contain_no_invented_data_and_hide_empty_rows() {
     }
 
     // With the protocol fixture snapshot, provider detail and Usage & Spend panes populate from snapshot data.
-    let populated_snap = ariadusage_protocol::fixture::generate_scenario_snapshot(0);
-    let claude_populated = pane_model(
-        &SettingsPane::Provider("claude".to_string()),
-        &state,
-        Some(&populated_snap),
-    );
-    let claude_overview_titles: Vec<&str> = claude_populated.sections[0]
-        .rows
-        .iter()
-        .map(|r| r.title.as_str())
-        .collect();
-    assert!(claude_overview_titles.contains(&"Status"));
-    assert!(claude_overview_titles.contains(&"Account"));
-    assert!(claude_overview_titles.contains(&"Plan"));
-    let claude_usage_titles: Vec<&str> = claude_populated.sections[1]
-        .rows
-        .iter()
-        .map(|r| r.title.as_str())
-        .collect();
-    assert!(claude_usage_titles.contains(&"Session"));
-    assert!(claude_usage_titles.contains(&"Weekly"));
-    assert!(claude_usage_titles.contains(&"Sonnet"));
-    assert!(claude_usage_titles.contains(&"Plan renews"));
-    assert!(claude_usage_titles.contains(&"Cloud credits"));
-    assert!(claude_usage_titles.contains(&"Cost"));
+    #[cfg(unix)]
+    {
+        let populated_snap = ariadusage_protocol::fixture::generate_scenario_snapshot(0);
+        let claude_populated = pane_model(
+            &SettingsPane::Provider("claude".to_string()),
+            &state,
+            Some(&populated_snap),
+        );
+        let claude_overview_titles: Vec<&str> = claude_populated.sections[0]
+            .rows
+            .iter()
+            .map(|r| r.title.as_str())
+            .collect();
+        assert!(claude_overview_titles.contains(&"Status"));
+        assert!(claude_overview_titles.contains(&"Account"));
+        assert!(claude_overview_titles.contains(&"Plan"));
+        let claude_usage_titles: Vec<&str> = claude_populated.sections[1]
+            .rows
+            .iter()
+            .map(|r| r.title.as_str())
+            .collect();
+        assert!(claude_usage_titles.contains(&"Session"));
+        assert!(claude_usage_titles.contains(&"Weekly"));
+        assert!(claude_usage_titles.contains(&"Sonnet"));
+        assert!(claude_usage_titles.contains(&"Plan renews"));
+        assert!(claude_usage_titles.contains(&"Cloud credits"));
+        assert!(claude_usage_titles.contains(&"Cost"));
+    }
 }
 
 #[test]
