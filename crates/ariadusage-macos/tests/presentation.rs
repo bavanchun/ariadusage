@@ -1339,55 +1339,61 @@ fn make_snapshot_with_providers(providers: Vec<ProviderSnapshot>) -> EngineSnaps
     )
 }
 
-#[test]
-fn merged_render_signature_changes_when_unified_icon_style_changes() {
-    use ariadusage_macos::icon::{LoadingPattern, StatusItemAnimationState};
-
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
-    let mut synthetic = make_provider("synthetic");
-    synthetic.enabled = true;
-
-    let two_enabled = make_snapshot_with_providers(vec![codex.clone(), synthetic.clone()]);
-    let (_, combined_input) = status_item_icon_input(
-        Some(&two_enabled),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-    let combined_sig = icon_render_signature(
-        &combined_input,
+fn render_signature(input: &IconInput) -> u64 {
+    icon_render_signature(
+        input,
         false,
         false,
         None,
-        LoadingPattern::KnightRider,
+        ariadusage_macos::icon::LoadingPattern::KnightRider,
         false,
-    );
-
-    let mut anim = StatusItemAnimationState::default();
-    assert!(!anim.should_skip_merged_icon_render(combined_sig, true));
-    assert!(anim.should_skip_merged_icon_render(combined_sig, true));
-
-    synthetic.enabled = false;
-    let one_enabled = make_snapshot_with_providers(vec![codex, synthetic]);
-    let (_, codex_input) = status_item_icon_input(
-        Some(&one_enabled),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-    let codex_sig = icon_render_signature(
-        &codex_input,
-        false,
-        false,
-        None,
-        LoadingPattern::KnightRider,
-        false,
-    );
-    assert_ne!(combined_sig, codex_sig);
-    assert!(!anim.should_skip_merged_icon_render(codex_sig, true));
+    )
 }
 
+// Swift's render signatures are strings; Rust hashes the same typed icon fields into u64.
+// Assertions on provider/style/primary/weekly/status therefore inspect those fields directly.
+// upstream: StatusItemAnimationSignatureTests.swift:9 merged render signature changes when unified icon style changes
+#[test]
+fn merged_render_signature_changes_when_unified_icon_style_changes() {
+    let mut codex = make_provider("codex");
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let synthetic = make_provider("synthetic");
+    let mut snapshot = make_snapshot_with_providers(vec![codex, synthetic]);
+    let enabled = |snapshot: &EngineSnapshot| {
+        snapshot
+            .providers
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    // The wire snapshot has one enabled list for display and fetching.
+    assert_eq!(enabled(&snapshot), ["codex", "synthetic"]);
+    assert_eq!(store_icon_style(Some(&snapshot)), IconStyle::Combined);
+    let (_, combined) = status_item_icon_input(
+        Some(&snapshot),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    let combined_signature = render_signature(&combined);
+
+    snapshot.providers[1].enabled = false;
+    assert_eq!(enabled(&snapshot), ["codex"]);
+    assert_eq!(store_icon_style(Some(&snapshot)), IconStyle::Codex);
+    let (_, codex) = status_item_icon_input(
+        Some(&snapshot),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    let codex_signature = render_signature(&codex);
+    // Rust signatures are u64, not optional strings: assert their typed fields directly.
+    assert_ne!(combined_signature, codex_signature);
+    assert_eq!(codex.style, IconStyle::Codex);
+}
+
+// upstream: StatusItemAnimationSignatureTests.swift:68 merged antigravity icon resolves quota summary with provider style
 #[test]
 fn merged_antigravity_icon_resolves_quota_summary_with_provider_style() {
     let mut antigravity = make_provider("antigravity");
@@ -1426,171 +1432,220 @@ fn merged_antigravity_icon_resolves_quota_summary_with_provider_style() {
     let mut synthetic = make_provider("synthetic");
     synthetic.enabled = true;
     let snap = make_snapshot_with_providers(vec![antigravity, synthetic]);
-    let (_, input) = status_item_icon_input(
+    let (provider, input) = status_item_icon_input(
         Some(&snap),
         Some("antigravity"),
         true,
         IconPreferences::default(),
     );
+    assert_eq!(store_icon_style(Some(&snap)), IconStyle::Combined);
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("antigravity"));
     assert_eq!(input.style, IconStyle::Combined);
     assert_eq!(input.primary, Some(98.0));
     assert_eq!(input.secondary, Some(1.0));
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:145 merged mistral icon uses monthly plan metric when selected
 #[test]
 fn merged_mistral_icon_uses_monthly_plan_metric_when_selected() {
     let mut mistral = make_provider("mistral");
     mistral.windows.extra = vec![extra_window(
         "mistral-monthly-plan",
-        "Monthly plan",
-        48.0,
+        "Monthly Plan",
+        42.0,
         None,
         None,
     )];
-    let mut synthetic = make_provider("synthetic");
-    synthetic.enabled = true;
-    let snap = make_snapshot_with_providers(vec![mistral, synthetic]);
-    let (_, input) = status_item_icon_input(
-        Some(&snap),
+    let snapshot = make_snapshot_with_providers(vec![mistral, make_provider("synthetic")]);
+    assert_eq!(store_icon_style(Some(&snapshot)), IconStyle::Combined);
+    let (provider, input) = status_item_icon_input(
+        Some(&snapshot),
         Some("mistral"),
         true,
         IconPreferences {
+            show_used: true,
             metric_preference: MenuBarMetricPreference::MonthlyPlan,
             ..IconPreferences::default()
         },
     );
-    assert_eq!(input.style, IconStyle::Combined);
-    assert_eq!(input.primary, Some(52.0));
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("mistral"));
+    assert_eq!(input.primary, Some(42.0));
     assert_eq!(input.secondary, None);
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:201 mistral pay as you go icon ignores balance primary percent
 #[test]
 fn mistral_pay_as_you_go_icon_ignores_balance_primary_percent() {
     let mut mistral = make_provider("mistral");
-    mistral.windows.primary = Some(metric_ok(rate_window(25.0, None, None)));
-    mistral.cost = Some(metric_ok(make_cost(25.0, Some(100.0), None)));
-    let input = icon_input(&mistral, IconPreferences::default());
+    let mut primary = rate_window(0.0, None, None);
+    primary.reset_description = Some("$12.50".to_string());
+    mistral.windows.primary = Some(metric_ok(primary));
+    let input = icon_input(
+        &mistral,
+        IconPreferences {
+            show_used: true,
+            ..IconPreferences::default()
+        },
+    );
     assert_eq!(input.primary, None);
     assert_eq!(input.secondary, None);
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:540 merged fallback provider follows enabled provider order
 #[test]
 fn merged_fallback_provider_follows_enabled_provider_order() {
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    let mut synthetic = make_provider("synthetic");
+    synthetic.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
     let mut codex = make_provider("codex");
     codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![claude, codex]);
-
-    // When selected provider is not enabled / not found, falls back to first enabled provider in order ("claude").
-    let resolved = primary_provider_for_unified_icon(
-        &snap,
-        Some("cursor"),
+    let snapshot = make_snapshot_with_providers(vec![synthetic, codex]);
+    assert_eq!(
+        snapshot
+            .providers
+            .iter()
+            .filter(|p| p.enabled)
+            .take(2)
+            .map(|p| p.id.as_str())
+            .collect::<Vec<_>>(),
+        ["synthetic", "codex"]
+    );
+    let provider = primary_provider_for_unified_icon(
+        &snapshot,
+        None,
         UnifiedIconSource::CurrentSelection,
         None,
         false,
         false,
         None,
     );
-    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("synthetic"));
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:583 merged icon status indicator follows rendered provider
 #[test]
 fn merged_icon_status_indicator_follows_rendered_provider() {
     let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(30.0, None, None)));
-    codex.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::None,
-        description: None,
-        updated_at: None,
-        page_url: Some("https://status.openai.com".to_string()),
-        components: Vec::new(),
-    }));
-
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
     let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(80.0, None, None)));
+    claude.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
     claude.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::Minor,
-        description: Some("Elevated errors".to_string()),
-        updated_at: None,
-        page_url: Some("https://status.anthropic.com".to_string()),
+        indicator: StatusIndicator::Major,
+        description: Some("Claude status issue".to_string()),
+        updated_at: Some(Timestamp::from_second(20).unwrap()),
+        page_url: None,
         components: Vec::new(),
     }));
-
-    let snap = make_snapshot_with_providers(vec![codex, claude]);
-    let (rendered_prov, input) = status_item_icon_input(
-        Some(&snap),
+    let snapshot = make_snapshot_with_providers(vec![codex, claude]);
+    let (provider, input) = status_item_icon_input(
+        Some(&snapshot),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    );
+    assert_eq!(
+        primary_provider_for_unified_icon(
+            &snapshot,
+            Some("codex"),
+            UnifiedIconSource::CurrentSelection,
+            None,
+            false,
+            false,
+            None
+        )
+        .map(|p| p.id.as_str()),
+        Some("codex")
+    );
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("codex"));
+    assert_eq!(input.status, StatusLevel::None);
+    let (provider, input) = status_item_icon_input(
+        Some(&snapshot),
         Some("claude"),
         true,
         IconPreferences::default(),
     );
-    assert_eq!(rendered_prov.map(|p| p.id.as_str()), Some("claude"));
-    assert_eq!(input.status, StatusLevel::Minor);
+    assert_eq!(
+        primary_provider_for_unified_icon(
+            &snapshot,
+            Some("claude"),
+            UnifiedIconSource::CurrentSelection,
+            None,
+            false,
+            false,
+            None
+        )
+        .map(|p| p.id.as_str()),
+        Some("claude")
+    );
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("claude"));
+    assert_eq!(input.status, StatusLevel::Major);
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:635 highest usage icon ranks only overview providers
 #[test]
 fn highest_usage_icon_ranks_only_overview_providers() {
+    use ariadusage_macos::presentation::provider_with_highest_usage;
     let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(90.0, None, None)));
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(75.0, None, None)));
-    let mut cursor = make_provider("cursor");
-    cursor.windows.primary = Some(metric_ok(rate_window(40.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![codex, claude, cursor]);
-
-    // Overview only includes claude and cursor (excluding codex at 90%):
-    let overview = ["claude", "cursor"];
-    let resolved = primary_provider_for_unified_icon_with_overview(
-        &snap,
-        Some("cursor"),
-        Some(&overview),
-        false,
-        UnifiedIconSource::HighestUsage,
-        None,
-        false,
-        false,
-        None,
-    );
-    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
-}
-
-#[test]
-fn highest_usage_icon_keeps_nonempty_overview_authoritative_when_unrankable() {
-    // Overview provider is exhausted (100% used -> remaining 0%, unrankable by providerWithHighestUsage),
-    // while a non-overview provider has 50% used. Non-empty overview stays authoritative and falls back to overview.first!
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![codex, claude]);
-
-    let overview = ["claude"];
-    let resolved = primary_provider_for_unified_icon_with_overview(
-        &snap,
-        Some("codex"),
-        Some(&overview),
-        false,
-        UnifiedIconSource::HighestUsage,
-        None,
-        false,
-        false,
-        None,
-    );
-    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
-}
-
-#[test]
-fn highest_usage_icon_allows_broad_fallback_for_explicit_empty_overview() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    codex.windows.primary = Some(metric_ok(rate_window(25.0, None, None)));
     let mut claude = make_provider("claude");
     claude.windows.primary = Some(metric_ok(rate_window(80.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![codex, claude]);
+    let snapshot = make_snapshot_with_providers(vec![codex, claude]);
+    assert_eq!(
+        provider_with_highest_usage(&snapshot.providers.iter().collect::<Vec<_>>(), None)
+            .map(|p| p.id.as_str()),
+        Some("claude")
+    );
+    let provider = primary_provider_for_unified_icon_with_overview(
+        &snapshot,
+        None,
+        Some(&["codex"]),
+        false,
+        UnifiedIconSource::HighestUsage,
+        None,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("codex"));
+}
 
+// upstream: StatusItemAnimationSignatureTests.swift:685 highest usage icon keeps nonempty overview authoritative when unrankable
+#[test]
+fn highest_usage_icon_keeps_nonempty_overview_authoritative_when_unrankable() {
+    use ariadusage_macos::presentation::provider_with_highest_usage;
+    for overview_used_percent in [None, Some(100.0)] {
+        let mut codex = make_provider("codex");
+        if let Some(used_percent) = overview_used_percent {
+            codex.windows.primary = Some(metric_ok(rate_window(used_percent, None, None)));
+        }
+        let mut claude = make_provider("claude");
+        claude.windows.primary = Some(metric_ok(rate_window(80.0, None, None)));
+        let snapshot = make_snapshot_with_providers(vec![codex, claude]);
+        assert!(provider_with_highest_usage(&[&snapshot.providers[0]], None).is_none());
+        let provider = primary_provider_for_unified_icon_with_overview(
+            &snapshot,
+            Some("claude"),
+            Some(&["codex"]),
+            false,
+            UnifiedIconSource::HighestUsage,
+            None,
+            false,
+            false,
+            None,
+        );
+        assert_eq!(provider.map(|p| p.id.as_str()), Some("codex"));
+    }
+}
+
+// upstream: StatusItemAnimationSignatureTests.swift:745 highest usage icon allows broad fallback for explicit empty overview
+#[test]
+fn highest_usage_icon_allows_broad_fallback_for_explicit_empty_overview() {
+    let snapshot =
+        make_snapshot_with_providers(vec![make_provider("codex"), make_provider("claude")]);
     let empty_overview: [&str; 0] = [];
-    let resolved = primary_provider_for_unified_icon_with_overview(
-        &snap,
-        Some("codex"),
+    // Snapshot v1 has no persisted overview-selection model; pass upstream's resolved empty list at the resolver boundary.
+    let provider = primary_provider_for_unified_icon_with_overview(
+        &snapshot,
+        Some("claude"),
         Some(&empty_overview),
         false,
         UnifiedIconSource::HighestUsage,
@@ -1599,22 +1654,30 @@ fn highest_usage_icon_allows_broad_fallback_for_explicit_empty_overview() {
         false,
         None,
     );
-    assert_eq!(resolved.map(|p| p.id.as_str()), Some("codex"));
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("claude"));
 }
 
+// upstream: StatusItemAnimationSignatureTests.swift:789 merged icon follows overview provider order when first overview provider is loading
 #[test]
 fn merged_icon_follows_overview_provider_order_when_first_overview_provider_is_loading() {
-    // Claude is first in overview and still loading (no windows yet); Codex is second in overview with data.
-    // When `last_selected_was_overview` is true, `defaultProviderForUnifiedIcon` picks `overview.first` ("claude").
-    let claude = make_provider("claude");
+    let cursor = make_provider("cursor");
     let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(45.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![codex, claude]);
-
-    let overview = ["claude", "codex"];
-    let resolved = primary_provider_for_unified_icon_with_overview(
-        &snap,
-        None,
+    codex.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let mut claude = make_provider("claude");
+    claude.windows.primary = Some(metric_ok(rate_window(50.0, None, None)));
+    let snapshot = make_snapshot_with_providers(vec![cursor, codex, claude]);
+    let overview = ["cursor", "codex", "claude"];
+    let enabled = snapshot
+        .providers
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(enabled, overview);
+    // Snapshot v1 has no separate persisted overview selection; pass the resolved upstream order.
+    let provider = primary_provider_for_unified_icon_with_overview(
+        &snapshot,
+        Some("codex"),
         Some(&overview),
         true,
         UnifiedIconSource::CurrentSelection,
@@ -1623,526 +1686,456 @@ fn merged_icon_follows_overview_provider_order_when_first_overview_provider_is_l
         false,
         None,
     );
-    assert_eq!(resolved.map(|p| p.id.as_str()), Some("claude"));
+    assert_eq!(provider.map(|p| p.id.as_str()), Some("cursor"));
 }
 
-// --- Ported from StatusItemIconObservationSignatureTests.swift ---
+// --- Literal observation-signature cases ---
 
+// Port of makeSnapshot: defaults are 10 / 20, 300 / 10080 minutes, epoch 100, and "plus".
+fn observation_provider(id: &str, email: &str) -> ProviderSnapshot {
+    let mut provider = make_provider(id);
+    provider.windows.primary = Some(metric_ok(rate_window(10.0, Some(300), None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(20.0, Some(10080), None)));
+    provider.updated_at = Some(Timestamp::from_second(100).unwrap());
+    provider.identity = Some(metric_ok(Identity {
+        provider_id: ProviderId::new(id).unwrap(),
+        account_email: Some(email.to_string()),
+        account_organization: None,
+        login_method: Some("plus".to_string()),
+        account_id: None,
+        plan: None,
+    }));
+    provider
+}
+
+fn observation_signature(snapshot: &EngineSnapshot) -> u64 {
+    store_icon_observation_signature(
+        Some(snapshot),
+        Some("codex"),
+        true,
+        IconPreferences::default(),
+    )
+}
+
+fn observation_status(
+    indicator: StatusIndicator,
+    description: &str,
+    updated_at: i64,
+) -> Metric<ProviderStatus> {
+    metric_ok(ProviderStatus {
+        indicator,
+        description: Some(description.to_string()),
+        updated_at: Some(Timestamp::from_second(updated_at).unwrap()),
+        page_url: None,
+        components: Vec::new(),
+    })
+}
+
+// upstream: StatusItemIconObservationSignatureTests.swift:63 store icon observation signature ignores refresh and status metadata churn
 #[test]
 fn store_icon_observation_signature_ignores_refresh_and_status_metadata_churn() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
-    codex.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::Minor,
-        description: Some("Initial description".to_string()),
-        updated_at: Some("2026-04-06T12:00:00Z".parse().unwrap()),
-        page_url: Some("https://status.openai.com".to_string()),
-        components: Vec::new(),
-    }));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::Minor,
-        description: Some("Updated description".to_string()),
-        updated_at: Some("2026-04-06T12:15:00Z".parse().unwrap()),
-        page_url: Some("https://status.openai.com".to_string()),
-        components: Vec::new(),
-    }));
-    let mut snap2 = make_snapshot_with_providers(vec![codex]);
-    snap2.engine.refreshing = true;
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_eq!(sig1, sig2);
+    let mut codex = observation_provider("codex", "icon@example.com");
+    codex.status = Some(observation_status(StatusIndicator::None, "initial", 10));
+    let mut snapshot = make_snapshot_with_providers(vec![codex]);
+    let baseline = observation_signature(&snapshot);
+    snapshot.engine.refreshing = true;
+    snapshot.providers[0].status = Some(observation_status(
+        StatusIndicator::None,
+        "same indicator, newer timestamp",
+        20,
+    ));
+    assert_eq!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:96 store icon observation signature ignores non visual snapshot churn
 #[test]
 fn store_icon_observation_signature_ignores_non_visual_snapshot_churn() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
-    codex.updated_at = Some("2026-04-06T12:00:00Z".parse().unwrap());
-    codex.identity = Some(metric_ok(Identity {
-        provider_id: ProviderId::new("codex").unwrap(),
-        account_email: Some("one@example.com".to_string()),
-        account_organization: None,
-        login_method: Some("Plus".to_string()),
-        account_id: None,
-        plan: None,
-    }));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.updated_at = Some("2026-04-06T12:10:00Z".parse().unwrap());
-    codex.identity = Some(metric_ok(Identity {
-        provider_id: ProviderId::new("codex").unwrap(),
-        account_email: Some("two@example.com".to_string()),
-        account_organization: None,
-        login_method: Some("Pro".to_string()),
-        account_id: None,
-        plan: None,
-    }));
-    let snap2 = make_snapshot_with_providers(vec![codex]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_eq!(sig1, sig2);
+    let mut snapshot =
+        make_snapshot_with_providers(vec![observation_provider("codex", "icon@example.com")]);
+    let baseline = observation_signature(&snapshot);
+    // Rust's signature is an opaque u64 and cannot contain account text; there is no string signature to inspect.
+    let mut rotated = observation_provider("codex", "rotated-account@example.com");
+    rotated.updated_at = Some(Timestamp::from_second(200).unwrap());
+    snapshot.providers[0] = rotated;
+    let signature = observation_signature(&snapshot);
+    assert_eq!(signature, baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:163 merged store icon observation signature ignores non primary snapshot churn
 #[test]
 fn merged_store_icon_observation_signature_ignores_non_primary_snapshot_churn() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
-
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-
-    let snap1 = make_snapshot_with_providers(vec![codex.clone(), claude.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-
-    claude.windows.primary = Some(metric_ok(rate_window(85.0, None, None)));
-    let snap2 = make_snapshot_with_providers(vec![codex, claude]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-    assert_eq!(sig1, sig2);
+    let mut snapshot = make_snapshot_with_providers(vec![
+        observation_provider("codex", "icon@example.com"),
+        observation_provider("claude", "claude@example.com"),
+    ]);
+    let baseline = observation_signature(&snapshot);
+    let mut changed = observation_provider("claude", "changed@example.com");
+    changed.windows.primary = Some(metric_ok(rate_window(99.0, Some(300), None)));
+    changed.windows.secondary = Some(metric_ok(rate_window(88.0, Some(10080), None)));
+    changed.updated_at = Some(Timestamp::from_second(300).unwrap());
+    snapshot.providers[1] = changed;
+    assert_eq!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:190 store icon observation signature changes when icon percentages change
 #[test]
 fn store_icon_observation_signature_changes_when_icon_percentages_change() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.windows.primary = Some(metric_ok(rate_window(61.0, None, None)));
-    let snap2 = make_snapshot_with_providers(vec![codex]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_ne!(sig1, sig2);
+    let mut snapshot =
+        make_snapshot_with_providers(vec![observation_provider("codex", "icon@example.com")]);
+    let baseline = observation_signature(&snapshot);
+    snapshot.providers[0].windows.primary = Some(metric_ok(rate_window(42.0, Some(300), None)));
+    snapshot.providers[0].windows.secondary = Some(metric_ok(rate_window(63.0, Some(10080), None)));
+    assert_ne!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:209 store icon observation signature tracks selected copilot budget
 #[test]
 fn store_icon_observation_signature_tracks_selected_copilot_budget() {
-    let mut copilot = make_provider("copilot");
-    copilot.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    copilot.windows.secondary = Some(metric_ok(rate_window(35.0, None, None)));
-    copilot.windows.extra = vec![
-        extra_window(
-            "copilot-premium-shared-1",
-            "Premium shared budget 1",
-            45.0,
-            None,
-            None,
-        ),
-        extra_window(
-            "copilot-premium-shared-2",
-            "Premium shared budget 2",
-            80.0,
-            None,
-            None,
-        ),
-    ];
-    let snap = make_snapshot_with_providers(vec![copilot]);
-    let sig1 = store_icon_observation_signature_with_override(
-        Some(&snap),
+    let mut copilot = observation_provider("copilot", "copilot@example.com");
+    copilot.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    copilot.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
+    copilot
+        .identity
+        .as_mut()
+        .unwrap()
+        .value
+        .as_mut()
+        .unwrap()
+        .login_method = Some("individual".to_string());
+    copilot.windows.extra = vec![extra_window(
+        "copilot-budget-agent",
+        "Budget - Copilot Agent Premium Requests",
+        25.0,
+        None,
+        None,
+    )];
+    let mut snapshot = make_snapshot_with_providers(vec![copilot]);
+    let baseline = store_icon_observation_signature_with_override(
+        Some(&snapshot),
         Some("copilot"),
-        false,
+        true,
         IconPreferences::default(),
-        Some("copilot-premium-shared-1"),
+        Some("copilot-budget-agent"),
     );
-    let sig2 = store_icon_observation_signature_with_override(
-        Some(&snap),
-        Some("copilot"),
-        false,
-        IconPreferences::default(),
-        Some("copilot-premium-shared-2"),
+    snapshot.providers[0].windows.extra[0].window = metric_ok(rate_window(75.0, None, None));
+    assert_ne!(
+        store_icon_observation_signature_with_override(
+            Some(&snapshot),
+            Some("copilot"),
+            true,
+            IconPreferences::default(),
+            Some("copilot-budget-agent")
+        ),
+        baseline
     );
-    assert_ne!(sig1, sig2);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:236 store icon observation signature changes when credit fallback changes
 #[test]
 fn store_icon_observation_signature_changes_when_credit_fallback_changes() {
-    // Primary is exhausted (100% used -> 0% remaining), so credits fallback is active.
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
-    codex.credits = Some(metric_ok(Credits::new(42.0)));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.credits = Some(metric_ok(Credits::new(15.0)));
-    let snap2 = make_snapshot_with_providers(vec![codex]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_ne!(sig1, sig2);
+    let mut codex = observation_provider("codex", "icon@example.com");
+    codex.windows.primary = Some(metric_ok(rate_window(100.0, Some(300), None)));
+    let mut credits = Credits::new(80.0);
+    credits.updated_at = Some(Timestamp::from_second(100).unwrap());
+    codex.credits = Some(metric_ok(credits));
+    let mut snapshot = make_snapshot_with_providers(vec![codex]);
+    let baseline = observation_signature(&snapshot);
+    let mut credits = Credits::new(42.0);
+    credits.updated_at = Some(Timestamp::from_second(200).unwrap());
+    snapshot.providers[0].credits = Some(metric_ok(credits));
+    assert_ne!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:257 store icon observation signature ignores unused credit balance
 #[test]
 fn store_icon_observation_signature_ignores_unused_credit_balance() {
-    // Neither primary (28% used) nor secondary (54% used) is exhausted, so credits fallback is NOT used.
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(54.0, None, None)));
-    codex.credits = Some(metric_ok(Credits::new(42.0)));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.credits = Some(metric_ok(Credits::new(99.0)));
-    let snap2 = make_snapshot_with_providers(vec![codex]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_eq!(sig1, sig2);
+    let mut codex = observation_provider("codex", "icon@example.com");
+    let mut credits = Credits::new(80.0);
+    credits.updated_at = Some(Timestamp::from_second(100).unwrap());
+    codex.credits = Some(metric_ok(credits));
+    let mut snapshot = make_snapshot_with_providers(vec![codex]);
+    let baseline = observation_signature(&snapshot);
+    let mut credits = Credits::new(42.0);
+    credits.updated_at = Some(Timestamp::from_second(200).unwrap());
+    snapshot.providers[0].credits = Some(metric_ok(credits));
+    assert_eq!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:271 merged store icon observation signature ignores non primary status changes
 #[test]
 fn merged_store_icon_observation_signature_ignores_non_primary_status_changes() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(40.0, None, None)));
-    claude.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::None,
-        description: None,
-        updated_at: None,
-        page_url: Some("https://status.anthropic.com".to_string()),
-        components: Vec::new(),
-    }));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone(), claude.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-
-    claude.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::Major,
-        description: Some("Outage".to_string()),
-        updated_at: None,
-        page_url: Some("https://status.anthropic.com".to_string()),
-        components: Vec::new(),
-    }));
-    let snap2 = make_snapshot_with_providers(vec![codex, claude]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        true,
-        IconPreferences::default(),
-    );
-    assert_eq!(sig1, sig2);
+    let mut snapshot = make_snapshot_with_providers(vec![
+        observation_provider("codex", "icon@example.com"),
+        make_provider("claude"),
+    ]);
+    let baseline = observation_signature(&snapshot);
+    snapshot.providers[1].status = Some(observation_status(
+        StatusIndicator::Major,
+        "Claude status issue",
+        20,
+    ));
+    assert_eq!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:290 store icon observation signature changes when status indicator changes
 #[test]
 fn store_icon_observation_signature_changes_when_status_indicator_changes() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    codex.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::None,
-        description: None,
-        updated_at: None,
-        page_url: Some("https://status.openai.com".to_string()),
-        components: Vec::new(),
-    }));
-    let snap1 = make_snapshot_with_providers(vec![codex.clone()]);
-    let sig1 = store_icon_observation_signature(
-        Some(&snap1),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-
-    codex.status = Some(metric_ok(ProviderStatus {
-        indicator: StatusIndicator::Major,
-        description: None,
-        updated_at: None,
-        page_url: Some("https://status.openai.com".to_string()),
-        components: Vec::new(),
-    }));
-    let snap2 = make_snapshot_with_providers(vec![codex]);
-    let sig2 = store_icon_observation_signature(
-        Some(&snap2),
-        Some("codex"),
-        false,
-        IconPreferences::default(),
-    );
-    assert_ne!(sig1, sig2);
+    let mut codex = observation_provider("codex", "icon@example.com");
+    codex.status = Some(observation_status(StatusIndicator::None, "initial", 10));
+    let mut snapshot = make_snapshot_with_providers(vec![codex]);
+    let baseline = observation_signature(&snapshot);
+    snapshot.providers[0].status = Some(observation_status(
+        StatusIndicator::Major,
+        "major outage",
+        20,
+    ));
+    assert_ne!(observation_signature(&snapshot), baseline);
 }
 
+// upstream: StatusItemIconObservationSignatureTests.swift:310 store icon observation signature changes when hide critters toggles
 #[test]
 fn store_icon_observation_signature_changes_when_hide_critters_toggles() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(28.0, None, None)));
-    let snap = make_snapshot_with_providers(vec![codex]);
-    let sig_critters = store_icon_observation_signature(
-        Some(&snap),
+    let snapshot =
+        make_snapshot_with_providers(vec![observation_provider("codex", "icon@example.com")]);
+    let baseline = store_icon_observation_signature(
+        Some(&snapshot),
         Some("codex"),
-        false,
+        true,
         IconPreferences {
             hide_critters: false,
             ..IconPreferences::default()
         },
     );
-    let sig_bars = store_icon_observation_signature(
-        Some(&snap),
-        Some("codex"),
-        false,
-        IconPreferences {
-            hide_critters: true,
-            ..IconPreferences::default()
-        },
+    assert_ne!(
+        store_icon_observation_signature(
+            Some(&snapshot),
+            Some("codex"),
+            true,
+            IconPreferences {
+                hide_critters: true,
+                ..IconPreferences::default()
+            }
+        ),
+        baseline
     );
-    assert_ne!(sig_critters, sig_bars);
 }
 
-// --- Ported from StatusItemAnimationTests.swift (MenuBarMetricWindowResolver cases) ---
+// --- Literal menu-bar metric cases from StatusItemAnimationTests.swift ---
 
+// upstream: StatusItemAnimationTests.swift:415 menu bar percent uses configured metric
 #[test]
 fn menu_bar_percent_uses_configured_metric() {
-    let mut claude = make_provider("claude");
-    claude.windows.primary = Some(metric_ok(rate_window(20.0, Some(300), None)));
-    claude.windows.secondary = Some(metric_ok(rate_window(60.0, Some(10080), None)));
-
-    let sec = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("codex");
+    provider.windows.primary = Some(metric_ok(rate_window(12.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(42.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Secondary,
-        &claude,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(sec.map(|w| w.used_percent), Some(60.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(42.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:455 combined codex menu bar metric window uses most constrained visible lane
 #[test]
 fn combined_codex_menu_bar_metric_window_uses_most_constrained_visible_lane() {
-    let mut codex = make_provider("codex");
-    codex.windows.primary = Some(metric_ok(rate_window(25.0, Some(300), None)));
-    codex.windows.secondary = Some(metric_ok(rate_window(75.0, Some(10080), None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("codex");
+    provider.windows.primary = Some(metric_ok(rate_window(12.0, Some(300), None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(91.0, Some(7 * 24 * 60), None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::PrimaryAndSecondary,
-        &codex,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(75.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(91.0));
+    assert_eq!(
+        window.as_ref().and_then(|w| w.window_minutes),
+        Some(7 * 24 * 60)
+    );
 }
 
+// upstream: StatusItemAnimationTests.swift:496 menu bar percent automatic prefers rate limit for kimi
+#[test]
+fn menu_bar_percent_automatic_prefers_rate_limit_for_kimi() {
+    let mut provider = make_provider("kimi");
+    provider.windows.primary = Some(metric_ok(rate_window(12.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(42.0, Some(300), None)));
+    let window = resolve_menu_bar_metric_window(
+        MenuBarMetricPreference::Automatic,
+        &provider,
+        false,
+        false,
+        None,
+    );
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(42.0));
+}
+
+// upstream: StatusItemAnimationTests.swift:535 menu bar percent uses average for gemini
 #[test]
 fn menu_bar_percent_uses_average_for_gemini() {
-    let mut gemini = make_provider("gemini");
-    gemini.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    gemini.windows.secondary = Some(metric_ok(rate_window(60.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("gemini");
+    provider.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(60.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Average,
-        &gemini,
+        &provider,
         true,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(40.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(40.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:575 menu bar percent automatic keeps gemini primary over higher tertiary
 #[test]
 fn menu_bar_percent_automatic_keeps_gemini_primary_over_higher_tertiary() {
-    let mut gemini = make_provider("gemini");
-    gemini.windows.primary = Some(metric_ok(rate_window(25.0, None, None)));
-    gemini.windows.tertiary = Some(metric_ok(rate_window(80.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("gemini");
+    provider.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(40.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(95.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
-        &gemini,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(25.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(20.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:615 menu bar percent automatic picks highest cursor lane including api
 #[test]
 fn menu_bar_percent_automatic_picks_highest_cursor_lane_including_api() {
-    let mut cursor = make_provider("cursor");
-    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    cursor.windows.secondary = Some(metric_ok(rate_window(45.0, None, None)));
-    cursor.windows.tertiary = Some(metric_ok(rate_window(70.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("cursor");
+    provider.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(25.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(90.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
-        &cursor,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(70.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(90.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:655 menu bar percent automatic falls back to purchased perplexity lane when bonus is exhausted
 #[test]
 fn menu_bar_percent_automatic_falls_back_to_purchased_perplexity_lane_when_bonus_is_exhausted() {
-    let mut perplexity = make_provider("perplexity");
-    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    perplexity.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
-    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("perplexity");
+    provider.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(20.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
-        &perplexity,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(35.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(20.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:695 menu bar percent automatic falls through after recurring perplexity credits are exhausted
 #[test]
 fn menu_bar_percent_automatic_falls_through_after_recurring_perplexity_credits_are_exhausted() {
-    let mut perplexity = make_provider("perplexity");
-    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    perplexity.windows.secondary = Some(metric_ok(rate_window(25.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("perplexity");
+    provider.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(32.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
-        &perplexity,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(25.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(32.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:736 menu bar percent automatic prefers purchased perplexity credits before bonus
 #[test]
 fn menu_bar_percent_automatic_prefers_purchased_perplexity_credits_before_bonus() {
-    let mut perplexity = make_provider("perplexity");
-    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    perplexity.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
-    perplexity.windows.tertiary = Some(metric_ok(rate_window(45.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("perplexity");
+    provider.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(45.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Automatic,
-        &perplexity,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(45.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(45.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:777 menu bar percent primary preference stays on recurring perplexity credits
 #[test]
 fn menu_bar_percent_primary_preference_stays_on_recurring_perplexity_credits() {
-    let mut perplexity = make_provider("perplexity");
-    perplexity.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
-    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("perplexity");
+    provider.windows.primary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(32.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Primary,
-        &perplexity,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(100.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(100.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:818 menu bar percent tertiary preference uses purchased perplexity lane
 #[test]
 fn menu_bar_percent_tertiary_preference_uses_purchased_perplexity_lane() {
-    let mut perplexity = make_provider("perplexity");
-    perplexity.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    perplexity.windows.tertiary = Some(metric_ok(rate_window(35.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("perplexity");
+    provider.windows.secondary = Some(metric_ok(rate_window(100.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(28.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Tertiary,
-        &perplexity,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(35.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(28.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:858 menu bar percent tertiary preference uses api lane for cursor
 #[test]
 fn menu_bar_percent_tertiary_preference_uses_api_lane_for_cursor() {
-    let mut cursor = make_provider("cursor");
-    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    cursor.windows.tertiary = Some(metric_ok(rate_window(65.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("cursor");
+    provider.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(20.0, None, None)));
+    provider.windows.tertiary = Some(metric_ok(rate_window(72.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Tertiary,
-        &cursor,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(65.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(72.0));
 }
 
+// upstream: StatusItemAnimationTests.swift:898 menu bar tertiary preference falls back to automatic when cursor api lane is missing
 #[test]
 fn menu_bar_tertiary_preference_falls_back_to_automatic_when_cursor_api_lane_is_missing() {
-    let mut cursor = make_provider("cursor");
-    cursor.windows.primary = Some(metric_ok(rate_window(20.0, None, None)));
-    cursor.windows.secondary = Some(metric_ok(rate_window(55.0, None, None)));
-
-    let win = resolve_menu_bar_metric_window(
+    let mut provider = make_provider("cursor");
+    provider.windows.primary = Some(metric_ok(rate_window(10.0, None, None)));
+    provider.windows.secondary = Some(metric_ok(rate_window(72.0, None, None)));
+    let window = resolve_menu_bar_metric_window(
         MenuBarMetricPreference::Tertiary,
-        &cursor,
+        &provider,
         false,
         false,
         None,
     );
-    assert_eq!(win.map(|w| w.used_percent), Some(55.0));
+    assert_eq!(window.as_ref().map(|w| w.used_percent), Some(72.0));
 }
