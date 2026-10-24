@@ -1013,7 +1013,7 @@ mod unix {
         }
     }
 
-    #[cfg(feature = "test-hooks")]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(super) async fn drain_bounded_for_test(
         source: Vec<u8>,
     ) -> Result<(Vec<u8>, usize), PtyError> {
@@ -1147,47 +1147,14 @@ mod unix {
     }
     #[cfg(test)]
     mod drain_tests {
-        use super::{DrainClassification, DrainReader, PtyError, drain_bounded};
-
-        struct Fixture {
-            source: Vec<u8>,
-            offset: usize,
-        }
-
-        impl DrainReader for Fixture {
-            fn read_chunk<'a>(
-                &'a mut self,
-                chunk: &'a mut [u8],
-            ) -> std::pin::Pin<
-                Box<
-                    dyn std::future::Future<Output = Result<DrainClassification, PtyError>>
-                        + Send
-                        + 'a,
-                >,
-            > {
-                let count = (self.source.len() - self.offset).min(chunk.len());
-                chunk[..count].copy_from_slice(&self.source[self.offset..self.offset + count]);
-                self.offset += count;
-                Box::pin(async move {
-                    if count == 0 {
-                        Ok(DrainClassification::Closed)
-                    } else {
-                        Ok(DrainClassification::Data(count))
-                    }
-                })
-            }
-        }
+        use super::drain_bounded_for_test;
 
         #[tokio::test]
         async fn bounded_drain_preserves_exact_bytes_and_source_offset() {
             let source = vec![1_u8; 8192 * 65];
-            let mut reader = Fixture {
-                source: source.clone(),
-                offset: 0,
-            };
-            let output = drain_bounded(&mut reader).await.unwrap();
+            let (output, offset) = drain_bounded_for_test(source.clone()).await.unwrap();
             assert_eq!(output, source[..8192 * 64]);
-            assert_eq!(reader.offset, 8192 * 64);
+            assert_eq!(offset, 8192 * 64);
         }
     }
 }
