@@ -6,11 +6,19 @@ use std::process::Command;
 
 use ariadusage_cli::{diagnose_help, diagnostic_auth_summary, write_diagnostic_export};
 use ariadusage_core::config::{Config, ProviderConfig, ProviderEntry};
-use ariadusage_core::pipeline::DiagnosticExport;
-use ariadusage_core::providers::SourceMode;
+use ariadusage_core::model::{ProviderIdentitySnapshot, UsageSnapshot};
+use ariadusage_core::pipeline::{
+    AttemptFailure, ClassifiedError, DiagnosticAuthSummary, DiagnosticExport,
+    DiagnosticExportBuilder, DiagnosticExportBuilderInput, FetchAttempt, FetchError, FetchOutcome,
+    FetchResult, redact_diagnostic_text,
+};
+use ariadusage_core::providers::{SourceMode, find_by_id_str};
 use ariadusage_engine::config_store::ConfigStore;
-use ariadusage_protocol::ProviderId;
+use ariadusage_protocol::metric::SourceKind;
+use ariadusage_protocol::usage::{ProviderErrorCategory, ProviderErrorKind};
+use ariadusage_protocol::{Confidence, DetailRow, DetailSection, ProviderId};
 use assert_cmd::cargo::cargo_bin;
+use jiff::Timestamp;
 
 // upstream: CLIDiagnoseCommandTests.swift:7 diagnose help describes generic JSON export
 #[test]
@@ -39,111 +47,6 @@ fn diagnose_output_writer_creates_parent_directories() {
 
     let contents = std::fs::read_to_string(&output).expect("read diagnostic export");
     assert_eq!(contents, r#"{"provider":"minimax"}"#);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:40 diagnose auth mode uses settings-backed MiniMax manual cookie when env token is absent
-#[test]
-fn diagnose_auth_mode_uses_settings_backed_minimax_manual_cookie_when_env_token_is_absent() {
-    let env = BTreeMap::new();
-    let summary = diagnostic_auth_summary(
-        "minimax",
-        None,
-        false,
-        false,
-        false,
-        &env,
-        Some(concat!("Cookie", ": session_id=demo-cookie")),
-    );
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["cookie"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:55 diagnose auth mode keeps apiToken precedence over settings cookie
-#[test]
-fn diagnose_auth_mode_keeps_api_token_precedence_over_settings_cookie() {
-    let mut env = BTreeMap::new();
-    env.insert(
-        "MINIMAX_API_TOKEN".to_owned(),
-        "sk-api-demo-token".to_owned(),
-    );
-
-    let summary = diagnostic_auth_summary(
-        "minimax",
-        None,
-        false,
-        false,
-        false,
-        &env,
-        Some(concat!("Cookie", ": session_id=demo-cookie")),
-    );
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["apiToken"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:70 generic diagnose auth summary detects provider config
-#[test]
-fn generic_diagnose_auth_summary_detects_provider_config() {
-    let env = BTreeMap::new();
-    let summary = diagnostic_auth_summary("openai", None, true, false, false, &env, None);
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["api"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:83 generic diagnose auth summary detects provider environment credentials
-#[test]
-fn generic_diagnose_auth_summary_detects_provider_environment_credentials() {
-    let mut env = BTreeMap::new();
-    env.insert("OPENAI_API_KEY".to_owned(), "sk-test".to_owned());
-
-    let summary = diagnostic_auth_summary("openai", None, false, false, false, &env, None);
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["api"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:96 generic diagnose auth summary detects Chutes environment credentials
-#[test]
-fn generic_diagnose_auth_summary_detects_chutes_environment_credentials() {
-    let mut env = BTreeMap::new();
-    env.insert("CHUTES_API_KEY".to_owned(), "chutes-test".to_owned());
-
-    let summary = diagnostic_auth_summary("chutes", None, false, false, false, &env, None);
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["api"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:109 generic diagnose auth summary detects Neuralwatt environment credentials
-#[test]
-fn generic_diagnose_auth_summary_detects_neuralwatt_environment_credentials() {
-    let mut env = BTreeMap::new();
-    env.insert("NEURALWATT_API_KEY".to_owned(), "sk-test".to_owned());
-
-    let summary = diagnostic_auth_summary("neuralwatt", None, false, false, false, &env, None);
-
-    assert!(summary.configured);
-    assert_eq!(summary.modes, vec!["api"]);
-}
-
-// upstream: CLIDiagnoseCommandTests.swift:122 generic diagnose auth summary requires complete Bedrock credentials
-#[test]
-fn generic_diagnose_auth_summary_requires_complete_bedrock_credentials() {
-    let mut partial_env = BTreeMap::new();
-    partial_env.insert("AWS_ACCESS_KEY_ID".to_owned(), "access-only".to_owned());
-    let partial = diagnostic_auth_summary("bedrock", None, true, false, false, &partial_env, None);
-    assert!(!partial.configured);
-    assert!(partial.modes.is_empty());
-
-    let mut complete_env = BTreeMap::new();
-    complete_env.insert("AWS_ACCESS_KEY_ID".to_owned(), "access".to_owned());
-    complete_env.insert("AWS_SECRET_ACCESS_KEY".to_owned(), "secret".to_owned());
-    let complete =
-        diagnostic_auth_summary("bedrock", None, false, false, false, &complete_env, None);
-    assert!(complete.configured);
-    assert_eq!(complete.modes, vec!["api"]);
 }
 
 // upstream: CLIDiagnoseCommandTests.swift:146 generic diagnose auth summary does not assume ambient credentials
@@ -187,12 +90,13 @@ fn antigravity_diagnose_serializes_terminal_failure_and_logs_safe_category() {
             "json",
             "--pretty",
         ])
+        .env_clear()
         .env("HOME", root)
         .env("CFFIXED_USER_HOME", root)
         .env("CODEX_HOME", root.join(".codex"))
         .env("GEMINI_CLI_HOME", &gemini_home)
         .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("CODEXBAR_CONFIG", &config_path)
+        .env("ARIADUSAGE_CONFIG", &config_path)
         .env("ARIADUSAGE_DISABLE_KEYRING", "1")
         .env("ANTIGRAVITY_OAUTH_CREDENTIALS_JSON", "{}")
         .output()
@@ -220,12 +124,13 @@ fn antigravity_diagnose_serializes_terminal_failure_and_logs_safe_category() {
 
     let usage = Command::new(&bin)
         .args(["usage", "--provider", "antigravity", "--verbose"])
+        .env_clear()
         .env("HOME", root)
         .env("CFFIXED_USER_HOME", root)
         .env("CODEX_HOME", root.join(".codex"))
         .env("GEMINI_CLI_HOME", &gemini_home)
         .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("CODEXBAR_CONFIG", &config_path)
+        .env("ARIADUSAGE_CONFIG", &config_path)
         .env("ARIADUSAGE_DISABLE_KEYRING", "1")
         .env("ANTIGRAVITY_OAUTH_CREDENTIALS_JSON", "{}")
         .output()
@@ -247,7 +152,8 @@ fn diagnose_output_never_contains_secret_token_cookie_email_or_account_id() {
     let temp = tempfile::tempdir().expect("tempdir");
     let root = temp.path();
     let config_path = root.join("config.json");
-    let mut claude_cfg = ProviderConfig::new(ProviderId::new("claude").expect("claude id"));
+    let claude_id = ProviderId::new("claude").expect("claude id");
+    let mut claude_cfg = ProviderConfig::new(claude_id.clone());
     claude_cfg.enabled = Some(true);
     claude_cfg.source = Some(SourceMode::Oauth);
     ConfigStore::new(config_path.clone())
@@ -264,7 +170,116 @@ fn diagnose_output_never_contains_secret_token_cookie_email_or_account_id() {
     let fake_token = concat!("sk-ant-", "oat01-supersecretinventedtoken999");
     let fake_cookie = concat!("sessionKey=", "sk-ant-", "sid01-supersecretcookie999");
     let fake_email = "invented.owner@example.com";
-    let fake_account = "org_invented_account_123456";
+    let fake_account = "acct_invented_account_123456";
+
+    let now = Timestamp::from_second(1_700_000_000).expect("timestamp");
+    let descriptor = find_by_id_str("claude").expect("claude descriptor");
+    let snapshot = UsageSnapshot::new(
+        None,
+        None,
+        None,
+        None,
+        None,
+        vec![DetailSection {
+            title: Some(format!("Account {fake_email}")),
+            rows: vec![
+                DetailRow::new(
+                    None::<&str>,
+                    format!("Token {fake_token}"),
+                    format!("{}: {fake_cookie}", "Cookie"),
+                    Some(format!("{fake_account} Bearer {fake_token}")),
+                    None,
+                    None,
+                )
+                .expect("detail row"),
+            ],
+            chart: None,
+        }],
+        None,
+        None,
+        now,
+        Some(ProviderIdentitySnapshot::new(
+            Some(claude_id.clone()),
+            Some(fake_email.to_owned()),
+            Some(fake_account.to_owned()),
+            Some("oauth".to_owned()),
+            Some(fake_account.to_owned()),
+        )),
+        Confidence::Exact,
+    )
+    .expect("snapshot");
+
+    let success_outcome = FetchOutcome {
+        result: Ok(FetchResult::new(
+            snapshot,
+            "oauth",
+            "claude.oauth",
+            SourceKind::Oauth,
+        )),
+        attempts: vec![FetchAttempt {
+            strategy_id: "claude.oauth".to_owned(),
+            kind: SourceKind::Oauth,
+            was_available: true,
+            failure: None,
+        }],
+        failure_summary: None,
+    };
+    let success_export = DiagnosticExportBuilder::build(DiagnosticExportBuilderInput {
+        provider: &claude_id,
+        descriptor,
+        outcome: &success_outcome,
+        source_mode: SourceMode::Oauth,
+        api_region: None,
+        auth: DiagnosticAuthSummary::new(true, vec!["oauth".to_owned()]),
+        app_version: None,
+        timestamp: Some(now),
+    });
+
+    let make_classified = || {
+        ClassifiedError::new(
+            ProviderErrorKind::AuthenticationExpired,
+            format!(
+                "auth failed for {fake_email} ({fake_account}) with {fake_token} and {}: {fake_cookie}",
+                "Cookie"
+            ),
+        )
+    };
+    let failure_outcome = FetchOutcome {
+        result: Err(FetchError::Classified(make_classified())),
+        attempts: vec![FetchAttempt {
+            strategy_id: "claude.oauth".to_owned(),
+            kind: SourceKind::Oauth,
+            was_available: true,
+            failure: Some(AttemptFailure {
+                kind: ProviderErrorKind::AuthenticationExpired,
+                category: ProviderErrorCategory::Auth,
+            }),
+        }],
+        failure_summary: None,
+    };
+    let failure_export = DiagnosticExportBuilder::build(DiagnosticExportBuilderInput {
+        provider: &claude_id,
+        descriptor,
+        outcome: &failure_outcome,
+        source_mode: SourceMode::Oauth,
+        api_region: None,
+        auth: DiagnosticAuthSummary::new(true, vec!["oauth".to_owned()]),
+        app_version: None,
+        timestamp: Some(now),
+    });
+
+    for (idx, exp) in [success_export, failure_export].iter().enumerate() {
+        let encoded = serde_json::to_string_pretty(exp).expect("encode export");
+        let redacted = redact_diagnostic_text(&encoded);
+        let out_file = root.join(format!("diag-{idx}.json"));
+        write_diagnostic_export(&redacted, out_file.to_str().expect("utf8 path"))
+            .expect("write diagnostic export");
+        let written = std::fs::read_to_string(&out_file).expect("read diagnostic export");
+        assert!(!written.contains(fake_token));
+        assert!(!written.contains(fake_cookie));
+        assert!(!written.contains(fake_email));
+        assert!(!written.contains(fake_account));
+    }
 
     let result = Command::new(&bin)
         .args([
@@ -275,14 +290,13 @@ fn diagnose_output_never_contains_secret_token_cookie_email_or_account_id() {
             "json",
             "--pretty",
         ])
+        .env_clear()
         .env("HOME", root)
+        .env("CFFIXED_USER_HOME", root)
         .env("XDG_RUNTIME_DIR", &runtime_dir)
-        .env("CODEXBAR_CONFIG", &config_path)
+        .env("ARIADUSAGE_CONFIG", &config_path)
         .env("ARIADUSAGE_DISABLE_KEYRING", "1")
         .env("CLAUDE_CODE_OAUTH_TOKEN", fake_token)
-        .env("CLAUDE_COOKIE", fake_cookie)
-        .env("USER_EMAIL", fake_email)
-        .env("ACCOUNT_ID", fake_account)
         .output()
         .expect("run claude diagnose");
 

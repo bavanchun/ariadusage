@@ -48,7 +48,10 @@ must pass `--allow-file-fallback`; later calls honor the saved
 | `sessions` / `sessions list` | 0 | Session table or JSON array (`--json` v1 / `--json-v2`) printed |
 | `sessions` / `sessions list` | 2 | Invalid command-line flags |
 | `sessions` / `sessions list` | 18 | Process hardening failed |
-| `sessions focus` | 0 | Target session window or application focused |
 | `sessions focus` | 1 | Missing session ID or unknown session ID |
-| `sessions focus` | 2 | Target session window could not be focused or platform does not support window focus |
+| `sessions focus` | 2 | Session focus is unsupported on this frontend |
 | `sessions focus` | 18 | Process hardening failed |
+
+Argument-validation and flag errors across `diagnose`, `cache clear`,
+`cookie refresh`, and `sessions` return exit code `2` (matching AriadUsage's
+CLI convention for invalid command-line syntax, whereas upstream returns `1`).

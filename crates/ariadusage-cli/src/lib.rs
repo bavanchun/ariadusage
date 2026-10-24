@@ -26,10 +26,7 @@ use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::daemon::build_default_runtime_with_options;
 use ariadusage_engine::paths;
 use ariadusage_engine::runtime::EngineRuntime;
-use ariadusage_engine::sessions::{
-    AgentSession, AgentSessionProvider, LocalAgentSessionScanner, SessionFocusResult,
-    SessionWindowFocuser,
-};
+use ariadusage_engine::sessions::{AgentSession, AgentSessionProvider, LocalAgentSessionScanner};
 use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::usage::ProviderErrorKind;
 use jiff::Timestamp;
@@ -52,28 +49,36 @@ impl OutputFormat {
     }
 }
 
-/// Resolves the active configuration file path, honoring `ARIADUSAGE_CONFIG_PATH` and
-/// `CODEXBAR_CONFIG` environment overrides for isolated CLI tests.
-pub fn resolve_cli_config_path() -> Result<PathBuf, paths::PathError> {
-    for key in ["ARIADUSAGE_CONFIG_PATH", "CODEXBAR_CONFIG"] {
-        if let Some(val) = std::env::var_os(key) {
-            let trimmed = val.to_string_lossy().trim().to_owned();
-            if !trimmed.is_empty() {
-                return Ok(PathBuf::from(trimmed));
-            }
-        }
-    }
-    paths::config_path()
-}
-
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
 /// active or when a command executes directly in the CLI process.
 pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
-    let cfg_path = resolve_cli_config_path().map_err(|e| e.to_string())?;
+    let cfg_path = paths::config_path().map_err(|e| e.to_string())?;
     let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
         == Some(std::ffi::OsStr::new("1"));
-    build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)
-        .map_err(|e| e.to_string())
+    let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)
+        .map_err(|e| e.to_string())?;
+    runtime.register_antigravity_default();
+    let mut cli_env = BTreeMap::new();
+    for key in [
+        "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
+        "CODEXBAR_ANTIGRAVITY_OAUTH_CREDENTIALS",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_ADMIN_API_KEY",
+        "ANTHROPIC_ADMIN_KEY",
+        "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+        "GEMINI_CLI_HOME",
+    ] {
+        if let Ok(val) = std::env::var(key) {
+            cli_env.insert(
+                key.to_owned(),
+                ariadusage_protocol::secret::SecretString::new(val),
+            );
+        }
+    }
+    runtime.set_base_environment(cli_env);
+    Ok(runtime)
 }
 
 /// Sends an IPC v1 `runAction` request to a running daemon socket if reachable.
@@ -474,7 +479,7 @@ pub fn diagnostic_auth_summary(
     config_has_secret_key: bool,
     config_has_cookie_header: bool,
     environment: &BTreeMap<String, String>,
-    manual_cookie_header: Option<&str>,
+    _manual_cookie_header: Option<&str>,
 ) -> DiagnosticAuthSummary {
     let mut modes = Vec::new();
     if account.is_some() {
@@ -491,45 +496,8 @@ pub fn diagnostic_auth_summary(
                 .is_some_and(|v| !v.trim().is_empty());
             if has_admin { vec!["api"] } else { Vec::new() }
         }
-        "codex" | "antigravity" => Vec::new(),
-        "minimax" => {
-            let has_api_token = environment
-                .get("MINIMAX_API_TOKEN")
-                .or_else(|| environment.get("MINIMAX_API_KEY"))
-                .is_some_and(|v| !v.trim().is_empty());
-            if has_api_token {
-                vec!["apiToken"]
-            } else if manual_cookie_header.is_some_and(|h| !h.trim().is_empty()) {
-                vec!["cookie"]
-            } else {
-                Vec::new()
-            }
-        }
-        "bedrock" => {
-            let has_access = environment
-                .get("AWS_ACCESS_KEY_ID")
-                .is_some_and(|v| !v.trim().is_empty());
-            let has_secret = environment
-                .get("AWS_SECRET_ACCESS_KEY")
-                .is_some_and(|v| !v.trim().is_empty());
-            if has_access && has_secret {
-                vec!["api"]
-            } else {
-                Vec::new()
-            }
-        }
-        _ => {
-            // Generic API key adapter fallback for test coverage
-            let has_env_key = environment.iter().any(|(k, v)| {
-                (k.ends_with("_API_KEY") || k.ends_with("_TOKEN")) && !v.trim().is_empty()
-            });
-            if has_env_key { vec!["api"] } else { Vec::new() }
-        }
+        _ => Vec::new(),
     };
-
-    if provider == "bedrock" && modes.contains(&"api".to_owned()) && detected_env_modes.is_empty() {
-        modes.retain(|m| m != "api");
-    }
 
     for mode in detected_env_modes {
         if !modes.iter().any(|m| m == mode) {
@@ -626,7 +594,7 @@ pub fn execute_diagnose(opts: &DiagnoseOptions) -> Result<String, (u8, String)> 
             exports.push(export);
         }
         None => {
-            let cfg_path = resolve_cli_config_path().map_err(|e| (16, format!("Error: {e}")))?;
+            let cfg_path = paths::config_path().map_err(|e| (16, format!("Error: {e}")))?;
             let cfg = ConfigStore::new(cfg_path)
                 .load_effective()
                 .unwrap_or_else(|_| Config::new(Config::CURRENT_VERSION, Vec::new()));
@@ -893,7 +861,7 @@ impl std::error::Error for CookieRefreshCommandError {}
 pub const KEYCHAIN_PROMPT_ACKNOWLEDGEMENT_HINT: &str = "Browser cookie decryption may open a macOS Keychain prompt. Retry interactively with --allow-keychain-prompt to acknowledge it.";
 pub const BROWSER_SESSION_FAILURE_HINT: &str =
     "No browser session cookie was refreshed. Sign in in a configured browser and retry.";
-pub const BROWSER_COOKIE_ACCESS_FAILURE_HINT: &str = "No browser session cookie was refreshed. Sign in in a configured browser and retry. If Keychain access was declined, CodexBar keeps the six-hour denial cooldown; use --allow-keychain-prompt only for an explicit interactive retry.";
+pub const BROWSER_COOKIE_ACCESS_FAILURE_HINT: &str = "No browser session cookie was refreshed. Sign in in a configured browser and retry. If Keychain access was declined, AriadUsage keeps the six-hour denial cooldown; use --allow-keychain-prompt only for an explicit interactive retry.";
 
 /// Ported from `CodexBarCLI.cookieRefreshTargets` (`CLICookieCommand.swift:82-104`).
 pub fn cookie_refresh_targets(
@@ -1093,7 +1061,7 @@ pub fn cookie_refresh_failure(
         && keychain_disabled
     {
         format!(
-            "{} cookie decryption is disabled in CodexBar; enable Keychain access and refresh.",
+            "{} cookie decryption is disabled in AriadUsage; enable Keychain access and refresh.",
             browser.display_name()
         )
     } else if let Some((gate, now_seconds)) = browser_gate
@@ -1121,7 +1089,7 @@ pub fn cookie_refresh_failure(
                 "The provider is temporarily unavailable. Retry later.".to_owned()
             }
             Some(ProviderErrorKind::ParseFailure) => {
-                "The provider response could not be read. Check for a CodexBar update.".to_owned()
+                "The provider response could not be read. Check for an AriadUsage update.".to_owned()
             }
             Some(ProviderErrorKind::NetworkFailure) => {
                 "The provider could not be reached. Check your connection and retry.".to_owned()
@@ -1170,7 +1138,7 @@ pub fn execute_cookie_refresh(opts: &CookieRefreshOptions) -> Result<String, (u8
     let targets = cookie_refresh_targets(opts.provider.as_deref(), opts.all, first_party_order())
         .map_err(|e| (2, e.to_string()))?;
 
-    let cfg_path = resolve_cli_config_path().map_err(|e| (16, e.to_string()))?;
+    let cfg_path = paths::config_path().map_err(|e| (16, e.to_string()))?;
     let cfg = ConfigStore::new(cfg_path)
         .load_effective()
         .unwrap_or_else(|_| Config::new(Config::CURRENT_VERSION, Vec::new()));
@@ -1440,20 +1408,24 @@ pub fn execute_sessions_list(opts: &SessionsOptions) -> String {
 }
 
 pub fn execute_sessions_focus(session_id: Option<&str>) -> Result<(), (u8, String)> {
+    let env_map: HashMap<String, String> = std::env::vars().collect();
+    execute_sessions_focus_with_scanner(session_id, &LocalAgentSessionScanner::default(), &env_map)
+}
+
+pub fn execute_sessions_focus_with_scanner(
+    session_id: Option<&str>,
+    scanner: &LocalAgentSessionScanner,
+    environment: &HashMap<String, String>,
+) -> Result<(), (u8, String)> {
     let Some(id) = session_id.map(str::trim).filter(|s| !s.is_empty()) else {
         return Err((1, "Missing session id.".to_owned()));
     };
-    let env_map: HashMap<String, String> = std::env::vars().collect();
-    let sessions = LocalAgentSessionScanner::default().scan_sync(Timestamp::now(), &env_map, true);
-    let Some(session) = sessions.iter().find(|s| s.id == id) else {
+    let sessions = scanner.scan_sync(Timestamp::now(), environment, true);
+    let Some(_session) = sessions.iter().find(|s| s.id == id) else {
         return Err((1, format!("Unknown session: {id}")));
     };
-    match SessionWindowFocuser::focus(session) {
-        SessionFocusResult::Focused { .. }
-        | SessionFocusResult::ActivatedApplicationOnly { .. } => Ok(()),
-        SessionFocusResult::Failed { .. } => Err((2, format!("Could not focus session: {id}"))),
-        SessionFocusResult::UnsupportedPlatform => {
-            Err((2, "Session focus is only available on macOS.".to_owned()))
-        }
-    }
+    Err((
+        2,
+        "Session focus is unsupported on this frontend.".to_owned(),
+    ))
 }

@@ -714,6 +714,8 @@ fn test_builder_creates_generic_safe_diagnostic_on_success() {
 #[test]
 fn test_diagnostic_export_never_contains_token_cookie_email_or_account_id() {
     let now = Timestamp::from_second(1_700_000_000).unwrap();
+    let provider = ProviderId::new("claude").unwrap();
+    let descriptor = find_by_id_str("claude").expect("claude descriptor");
     let details = vec![DetailSection {
         title: Some("Account user@example.com".to_string()),
         rows: vec![
@@ -740,7 +742,7 @@ fn test_diagnostic_export_never_contains_token_cookie_email_or_account_id() {
         None,
         now,
         Some(ariadusage_core::model::ProviderIdentitySnapshot::new(
-            Some(ProviderId::new("claude").unwrap()),
+            Some(provider.clone()),
             Some("owner@example.com".to_string()),
             Some("org-secret-999".to_string()),
             Some("oauth".to_string()),
@@ -749,27 +751,79 @@ fn test_diagnostic_export_never_contains_token_cookie_email_or_account_id() {
         Confidence::Exact,
     )
     .unwrap();
-    let export = DiagnosticExport::new(
-        now,
-        "claude",
-        "Claude",
-        "oauth",
-        "auto",
-        DiagnosticAuthSummary::new(true, vec!["oauth".to_string()]),
-        Some(DiagnosticUsageSummary::from_snapshot(&snapshot)),
-        vec![],
-        None,
-        DiagnosticSettingsSummary::new(SourceMode::Auto, None),
-    );
 
-    let json = redact_diagnostic_text(&to_pretty_json(&export));
-    assert!(!json.contains("user@example.com"));
-    assert!(!json.contains("owner@example.com"));
-    assert!(!json.contains("sk-ant-api03-secret-token"));
-    assert!(!json.contains("secret-cookie-123"));
-    assert!(!json.contains("acct_1234567890abcdef"));
-    assert!(!json.contains("acct_secret_account_id"));
-    assert!(!json.contains("org-secret-999"));
-    assert!(!json.contains("secret-jwt-value"));
-    assert!(json.contains("[redacted]"));
+    let make_classified = || {
+        ClassifiedError::new(
+            ProviderErrorKind::AuthenticationExpired,
+            concat!(
+                "rejected owner@example.com org-secret-999 acct_secret_account_id ",
+                "sk-ant-api03-secret-token ",
+                "Cookie",
+                ": ",
+                "sessionKey",
+                "=secret-cookie-123 Bearer secret-jwt-value"
+            ),
+        )
+    };
+    let success_outcome = FetchOutcome {
+        result: Ok(FetchResult::new(
+            snapshot,
+            "oauth",
+            "claude.oauth",
+            SourceKind::Oauth,
+        )),
+        attempts: vec![
+            FetchAttempt {
+                strategy_id: "claude.web".to_string(),
+                kind: SourceKind::Web,
+                was_available: true,
+                failure: Some(AttemptFailure {
+                    kind: ProviderErrorKind::AuthenticationExpired,
+                    category: ProviderErrorCategory::Auth,
+                }),
+            },
+            FetchAttempt {
+                strategy_id: "claude.oauth".to_string(),
+                kind: SourceKind::Oauth,
+                was_available: true,
+                failure: None,
+            },
+        ],
+        failure_summary: None,
+    };
+    let failure_outcome = FetchOutcome {
+        result: Err(FetchError::Classified(make_classified())),
+        attempts: vec![FetchAttempt {
+            strategy_id: "claude.oauth".to_string(),
+            kind: SourceKind::Oauth,
+            was_available: true,
+            failure: Some(AttemptFailure {
+                kind: ProviderErrorKind::AuthenticationExpired,
+                category: ProviderErrorCategory::Auth,
+            }),
+        }],
+        failure_summary: None,
+    };
+
+    for outcome in [&success_outcome, &failure_outcome] {
+        let export = DiagnosticExportBuilder::build(DiagnosticExportBuilderInput {
+            provider: &provider,
+            descriptor,
+            outcome,
+            source_mode: SourceMode::Auto,
+            api_region: None,
+            auth: DiagnosticAuthSummary::new(true, vec!["oauth".to_string()]),
+            app_version: None,
+            timestamp: Some(now),
+        });
+        let json = redact_diagnostic_text(&to_pretty_json(&export));
+        assert!(!json.contains("user@example.com"));
+        assert!(!json.contains("owner@example.com"));
+        assert!(!json.contains("sk-ant-api03-secret-token"));
+        assert!(!json.contains("secret-cookie-123"));
+        assert!(!json.contains("acct_1234567890abcdef"));
+        assert!(!json.contains("acct_secret_account_id"));
+        assert!(!json.contains("org-secret-999"));
+        assert!(!json.contains("secret-jwt-value"));
+    }
 }

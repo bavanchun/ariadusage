@@ -643,7 +643,7 @@ impl EngineRuntime {
 
     /// Sets the base environment map passed into provider plan resolution and updates initial
     /// provider account keys accordingly.
-    pub fn with_base_environment(self, env: BTreeMap<String, SecretString>) -> Self {
+    pub fn set_base_environment(&self, env: BTreeMap<String, SecretString>) {
         *self.base_environment.write().expect("base_env lock") = env.clone();
         let config = self.load_config();
         let registry = self.registry.read().expect("registry lock").clone();
@@ -672,7 +672,11 @@ impl EngineRuntime {
                 state.account_key = account_key;
             }
         }
-        drop(states);
+    }
+
+    /// Builder variant of [`EngineRuntime::set_base_environment`].
+    pub fn with_base_environment(self, env: BTreeMap<String, SecretString>) -> Self {
+        self.set_base_environment(env);
         self
     }
 
@@ -713,6 +717,14 @@ impl EngineRuntime {
             .write()
             .expect("registry lock")
             .register_plan(id, plan);
+    }
+
+    /// Registers the default [`crate::registry::AntigravityProviderPlanFactory`] on the runtime's registry.
+    pub fn register_antigravity_default(&self) {
+        self.registry
+            .write()
+            .expect("registry lock")
+            .register_antigravity_default(Arc::clone(&self.net));
     }
 
     /// Returns a reference to the underlying [`SnapshotStore`].
