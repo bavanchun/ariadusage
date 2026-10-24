@@ -32,6 +32,7 @@ use super::credits::{
     CodexRateLimitResetCreditsSnapshot,
 };
 use super::normalizer::{AdditionalRateLimit, WindowSnapshot};
+use super::reconciled::is_valid_header_value_str;
 
 pub const DEFAULT_CHATGPT_BASE_URL: &str = "https://chatgpt.com/backend-api/";
 pub const CHATGPT_USAGE_PATH: &str = "/wham/usage";
@@ -1154,11 +1155,7 @@ impl CodexOAuthUsageFetcher {
         headers: HeaderMap,
         timeout: Duration,
     ) -> Result<NetRequest, CodexOAuthFetchError> {
-        if access_token.is_empty()
-            || !access_token
-                .bytes()
-                .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
-        {
+        if !is_valid_header_value_str(access_token) {
             return Err(CodexOAuthFetchError::InvalidResponse);
         }
         let bearer = SecretString::new(format!("Bearer {access_token}"));

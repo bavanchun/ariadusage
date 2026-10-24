@@ -395,3 +395,10 @@ pub fn icon_windows(
 pub fn plan_utilization_series(snapshot: &UsageSnapshot) -> BTreeSet<CodexUsageLane> {
     windows_by_lane(snapshot).into_keys().collect()
 }
+
+pub(crate) fn is_valid_header_value_str(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
+}

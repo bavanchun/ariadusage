@@ -35,6 +35,7 @@ use super::openai_dashboard_models::{
     OpenAISubscriptionMetadataParser,
 };
 use super::openai_dashboard_parser::OpenAIDashboardParser;
+use super::reconciled::is_valid_header_value_str;
 use super::usage_fetcher::{
     CodexOAuthUsageFetcher, CodexSpendControlsMonthlyUsageGate,
     CodexSpendControlsMonthlyUsageResponse, CodexUsageResponse,
@@ -46,13 +47,6 @@ pub const DEFAULT_CREDITS_PURCHASE_URL: &str = "https://chatgpt.com/codex/settin
 pub const DEFAULT_DASHBOARD_API_TIMEOUT: Duration = Duration::from_secs(4);
 pub const DEFAULT_SESSION_AUTH_TIMEOUT: Duration = Duration::from_secs(2);
 pub const DEFAULT_SUBSCRIPTIONS_API_TIMEOUT: Duration = Duration::from_secs(6);
-
-fn is_valid_header_value_str(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| b == b'\t' || (0x20..=0x7E).contains(&b) || b >= 0x80)
-}
 
 #[derive(Debug, Clone)]
 pub struct OpenAIDashboardEndpointConfig {
@@ -1449,7 +1443,7 @@ impl OpenAIDashboardFetcher {
             call
         } else {
             default_call = BrokerCall {
-                interaction: FetchInteraction::UserInitiated,
+                interaction: FetchInteraction::Background,
                 cancel: CancellationToken::new(),
                 request_id: "codex.web.dashboard".to_owned(),
             };
