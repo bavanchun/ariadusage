@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use ariadusage_core::config::{
     Config, CookieSource, ProviderConfig, SecretPresence, set_provider_enabled,
 };
+use ariadusage_core::cookie as cookie_core;
 use ariadusage_core::providers::{ProviderDescriptor, SourceMode};
 use ariadusage_core::refresh::RefreshFrequency;
 use ariadusage_core::settings_value::SettingsValue;
@@ -49,7 +50,7 @@ pub struct AppPreferences {
     pub menu_bar_icon_style: String,
     pub menu_bar_show_used: bool,
     pub menu_bar_merge_icons: bool,
-    pub accent_color: String,
+    pub menu_bar_color_by_provider: bool,
 }
 
 impl Default for AppPreferences {
@@ -66,7 +67,7 @@ impl Default for AppPreferences {
             menu_bar_icon_style: "bars".to_string(),
             menu_bar_show_used: false,
             menu_bar_merge_icons: false,
-            accent_color: "#CACCCC".to_string(),
+            menu_bar_color_by_provider: false,
         }
     }
 }
@@ -150,10 +151,12 @@ impl AppPreferences {
         {
             prefs.menu_bar_merge_icons = merge;
         }
-        if let Some(color) = map.get("accentColor").and_then(Value::as_str)
-            && !color.trim().is_empty()
+        if let Some(color_by_provider) = map
+            .get("menuBarColorByProvider")
+            .or_else(|| map.get("menuBar.colorByProvider"))
+            .and_then(Value::as_bool)
         {
-            prefs.accent_color = color.trim().to_string();
+            prefs.menu_bar_color_by_provider = color_by_provider;
         }
 
         prefs
@@ -307,11 +310,10 @@ fn build_app_settings_page(registry: &ProviderRegistry, config: &Config) -> Sett
             },
         ),
         SettingDescriptor::new(
-            SettingId::new("accentColor").expect("valid setting id"),
-            "Custom Accent Color",
-            DescriptorKind::Color {
-                value: prefs.accent_color,
-                default: "#CACCCC".to_string(),
+            SettingId::new("menuBar.colorByProvider").expect("valid setting id"),
+            "Color by provider",
+            DescriptorKind::Toggle {
+                value: prefs.menu_bar_color_by_provider,
             },
         ),
     ];
@@ -495,9 +497,16 @@ fn build_provider_settings_page(
     }
 
     if descriptor.source_modes.contains(&SourceMode::Web) {
-        let cookie_source = provider_config
-            .and_then(|c| c.cookie_source)
-            .unwrap_or(CookieSource::Auto);
+        let cookie_source = match cookie_core::resolve_cookie_source(
+            provider_config.and_then(|c| c.cookie_source),
+            false,
+            None,
+            presence.cookie_headers.contains(&descriptor.id),
+        ) {
+            cookie_core::CookieResolution::Manual => CookieSource::Manual,
+            cookie_core::CookieResolution::Import(_) => CookieSource::Auto,
+            cookie_core::CookieResolution::None => CookieSource::Off,
+        };
         credential_descriptors.push(SettingDescriptor::new(
             SettingId::new(format!("providers.{id_str}.cookieSource")).expect("valid id"),
             "Cookie Source",
@@ -730,17 +739,17 @@ pub fn apply_setting_mutation(
             update_settings_json_field(config, "menuBarMergeIcons", Value::Bool(merge));
             return Ok((SettingsScope::App, None));
         }
-        "accentColor" => {
-            let Some(color) = value.as_str() else {
+        "menuBar.colorByProvider" => {
+            let Some(color_by_provider) = value.as_bool() else {
                 return Err(SettingsMutationError::InvalidValue {
                     id: raw_id.to_string(),
-                    reason: "expected a color string".to_string(),
+                    reason: "expected a boolean value".to_string(),
                 });
             };
             update_settings_json_field(
                 config,
-                "accentColor",
-                Value::String(color.trim().to_string()),
+                "menuBarColorByProvider",
+                Value::Bool(color_by_provider),
             );
             return Ok((SettingsScope::App, None));
         }

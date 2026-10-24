@@ -32,8 +32,8 @@ pub use paths::{
 pub use private_file::{WriteHooks, repair_permissions, write_private};
 pub use private_tempdir::{PrivateTempDir, TempDirError};
 pub use registry::{
-    ClaudeProviderPlanFactory, ProviderPlanFactory, ProviderPlanInputs, ProviderRegistry,
-    ResolvedProviderSpec, UnregisteredProviderPlan,
+    ClaudeProviderPlanFactory, CodexProviderPlanFactory, ProviderPlanFactory, ProviderPlanInputs,
+    ProviderRegistry, ResolvedProviderSpec, UnregisteredProviderPlan,
 };
 pub use runtime::{
     DEFAULT_STALE_AFTER_SECONDS, EngineRuntime, NoopTransitionSink, RecordingTransitionSink,

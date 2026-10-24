@@ -1,7 +1,7 @@
 // Ported from CodexBar Sources/CodexBar/UsageStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore+Refresh.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore+ProviderStatus.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBar/AdaptiveRefreshController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+AdaptiveRefresh.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Engine runtime core: snapshot store, refresh coordinator orchestration, status feed polling,
 //! adaptive cadence controller, edge-triggered transition seam, and IPC v1 intent entry points.
@@ -25,12 +25,12 @@ use ariadusage_core::projection::{
 };
 use ariadusage_core::providers::{ProviderDescriptor, SourceMode};
 use ariadusage_core::refresh::{
-    AdaptiveRefreshDecision, AdaptiveRefreshInput, AdaptiveRefreshPolicyCore, FailureGate,
-    FailureInput, HookDispatch, HookProviderObservation, HookProviderStatus, HookQuotaLaneKey,
-    HookQuotaLaneObservation, HookTransitionDetector, HooksConfig, RefreshFrequency,
-    SessionQuotaTransition, SessionQuotaTransitionDetector, SurfacePolicy, ThermalPressure,
-    failure_decision, is_cancellation, is_preservable_error, on_account_change,
-    should_advance_adaptive_timer,
+    AdaptiveRefreshDecision, AdaptiveRefreshInput, AdaptiveRefreshPolicyCore,
+    BackgroundWorkPowerPolicy, FailureGate, FailureInput, HookDispatch, HookProviderObservation,
+    HookProviderStatus, HookQuotaLaneKey, HookQuotaLaneObservation, HookTransitionDetector,
+    HooksConfig, RefreshFrequency, SessionQuotaTransition, SessionQuotaTransitionDetector,
+    SurfacePolicy, ThermalPressure, failure_decision, is_cancellation, is_preservable_error,
+    next_fixed_timer_scheduled_at, on_account_change, should_advance_adaptive_timer,
 };
 use ariadusage_core::status::StatuspageComponentSummary;
 use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
@@ -314,6 +314,10 @@ struct AdaptiveRuntimeState {
     is_low_power_mode: bool,
     thermal_pressure: ThermalPressure,
     scheduled_fire_at: Option<Timestamp>,
+    fixed_refresh_interval: Option<Duration>,
+    adaptive_computed_interval: Option<Duration>,
+    sleep_override: Option<Duration>,
+    timer_active: bool,
 }
 
 impl Default for AdaptiveRuntimeState {
@@ -324,6 +328,10 @@ impl Default for AdaptiveRuntimeState {
             is_low_power_mode: false,
             thermal_pressure: ThermalPressure::Nominal,
             scheduled_fire_at: None,
+            fixed_refresh_interval: None,
+            adaptive_computed_interval: None,
+            sleep_override: None,
+            timer_active: false,
         }
     }
 }
@@ -370,7 +378,22 @@ pub struct EngineRuntime {
     settings_changed_tx: broadcast::Sender<SettingsScope>,
     pushes_tx: broadcast::Sender<ServerMessage>,
     next_request_seq: AtomicU64,
+    completed_refresh_count: AtomicU64,
+    weak_self: Mutex<Option<std::sync::Weak<Self>>>,
+    timer_cancel: Mutex<Option<CancellationToken>>,
+    timer_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     engine_version: String,
+}
+
+impl Drop for EngineRuntime {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
+            cancel.cancel();
+        }
+        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
+            handle.abort();
+        }
+    }
 }
 
 impl EngineRuntime {
@@ -405,18 +428,19 @@ impl EngineRuntime {
         let (settings_changed_tx, _) = broadcast::channel(32);
         let (pushes_tx, _) = broadcast::channel(64);
 
+        let empty_env = BTreeMap::new();
+        let default_inputs = ProviderPlanInputs::default();
         let mut provider_states = HashMap::new();
         for descriptor in registry.descriptors() {
             let provider_cfg = config.provider_config(descriptor.id.as_str());
             let selected = ProviderRegistry::selected_account(provider_cfg);
-            let account_key = selected
-                .as_ref()
-                .map(|acct| format!("token-account:{}", acct.id))
-                .or_else(|| {
-                    provider_cfg
-                        .and_then(|c| c.sanitized_workspace_id())
-                        .map(|ws| format!("workspace:{ws}"))
-                });
+            let account_key = registry.compute_account_key(
+                &descriptor.id,
+                provider_cfg,
+                selected.as_ref(),
+                &empty_env,
+                &default_inputs,
+            );
             provider_states.insert(
                 descriptor.id.clone(),
                 ProviderRuntimeState {
@@ -451,6 +475,10 @@ impl EngineRuntime {
             settings_changed_tx,
             pushes_tx,
             next_request_seq: AtomicU64::new(1),
+            completed_refresh_count: AtomicU64::new(0),
+            weak_self: Mutex::new(None),
+            timer_cancel: Mutex::new(None),
+            timer_task: Mutex::new(None),
             engine_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -481,10 +509,55 @@ impl EngineRuntime {
         self
     }
 
-    /// Sets the base environment map passed into provider plan resolution.
+    /// Sets the base environment map passed into provider plan resolution and updates initial
+    /// provider account keys accordingly.
     pub fn with_base_environment(self, env: BTreeMap<String, SecretString>) -> Self {
-        *self.base_environment.write().expect("base_env lock") = env;
+        *self.base_environment.write().expect("base_env lock") = env.clone();
+        let config = self.load_config();
+        let registry = self.registry.read().expect("registry lock").clone();
+        let inputs = ProviderPlanInputs {
+            base_environment: env,
+            ..ProviderPlanInputs::default()
+        };
+        let mut states = self.providers.lock().expect("providers lock");
+        for descriptor in registry.descriptors() {
+            let provider_cfg = config.provider_config(descriptor.id.as_str());
+            let selected = ProviderRegistry::selected_account(provider_cfg);
+            let projected_env = ProviderRegistry::resolve_environment(
+                descriptor,
+                provider_cfg,
+                selected.as_ref(),
+                &inputs,
+            );
+            let account_key = registry.compute_account_key(
+                &descriptor.id,
+                provider_cfg,
+                selected.as_ref(),
+                &projected_env,
+                &inputs,
+            );
+            if let Some(state) = states.get_mut(&descriptor.id) {
+                state.account_key = account_key;
+            }
+        }
+        drop(states);
         self
+    }
+
+    /// Seeds a cached [`UsageSnapshot`] and reset-backfill snapshot for `id` (mirrors upstream
+    /// `_setSnapshotForTesting`).
+    pub fn seed_provider_snapshot(&self, id: ProviderId, snapshot: UsageSnapshot) {
+        {
+            let mut states = self.providers.lock().expect("providers lock");
+            let state = states.entry(id.clone()).or_default();
+            let scoped = snapshot.scoped_to(id);
+            state.snapshot = Some(scoped.clone());
+            state.last_known_reset_snapshot = Some(scoped);
+            state.last_error = None;
+            state.refresh_state = RefreshState::Fresh;
+            state.kept_snapshot = false;
+        }
+        self.publish_current_snapshot();
     }
 
     /// Sets the [`HooksConfig`] evaluated by the edge-triggered [`HookTransitionDetector`].
@@ -670,7 +743,7 @@ impl EngineRuntime {
                     now,
                     resolved.window_minutes,
                     None,
-                    &TimeZone::UTC,
+                    &TimeZone::system(),
                 )
             });
 
@@ -759,8 +832,9 @@ impl EngineRuntime {
         true
     }
 
-    /// Runs a required batch refresh (for example after a settings mutation), coalescing
-    /// concurrent callers into at most one queued follow-up pass after the current pass finishes.
+    /// Runs a required batch refresh (for example on user manual refresh or settings mutation),
+    /// coalescing concurrent callers into at most one queued follow-up pass after the current
+    /// batch finishes.
     ///
     /// Ported from `UsageStore+Refresh.swift` (`performRequiredRefresh`).
     pub async fn refresh_required(&self, options: RefreshOptions) {
@@ -795,13 +869,12 @@ impl EngineRuntime {
                 batch.required_request_generation
             };
 
-            // Wait if an opportunistic batch is currently running, unless we are replacing in-flight work.
-            if options.coalesce_if_refreshing {
-                let mut idle_rx = self.batch_idle_rx.clone();
-                while !*idle_rx.borrow() {
-                    if idle_rx.changed().await.is_err() {
-                        break;
-                    }
+            // Enforce §6.4 ("One refresh batch at a time"): always wait for any running batch
+            // to complete before starting the required pass.
+            let mut idle_rx = self.batch_idle_rx.clone();
+            while !*idle_rx.borrow() {
+                if idle_rx.changed().await.is_err() {
+                    break;
                 }
             }
 
@@ -835,13 +908,6 @@ impl EngineRuntime {
         }
     }
 
-    /// Triggers a required batch refresh that cancels and supersedes any in-flight provider
-    /// requests so updated settings take effect immediately.
-    pub async fn refresh_for_settings_change(&self) {
-        self.refresh_required(RefreshOptions::settings_change())
-            .await;
-    }
-
     async fn execute_batch_pass(&self, options: RefreshOptions) {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
@@ -862,6 +928,7 @@ impl EngineRuntime {
             .map(|id| Box::pin(self.refresh_provider(id, provider_options)) as BoxFuture<'_, ()>)
             .collect();
         join_all_futures(futures).await;
+        self.completed_refresh_count.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Refreshes a single provider while enforcing per-provider coalescing, replacement ordering,
@@ -939,6 +1006,23 @@ impl EngineRuntime {
             let outcome = fetch_outcome(&id, spec.plan.as_ref(), &cx, self.sleeper.as_ref()).await;
 
             self.coordinator.end_activity(&id);
+
+            let post_account_key = self
+                .registry
+                .read()
+                .expect("registry lock")
+                .compute_account_key(
+                    &id,
+                    config.provider_config(id.as_str()),
+                    spec.selected_account.as_ref(),
+                    &spec.environment,
+                    &inputs,
+                );
+            let expected_revision = if post_account_key != spec.account_key {
+                self.reconcile_account_key(&id, post_account_key).await
+            } else {
+                expected_revision
+            };
 
             let retry_required = self
                 .apply_fetch_outcome(
@@ -1443,8 +1527,92 @@ impl EngineRuntime {
     }
 
     // -------------------------------------------------------------------------
-    // Adaptive refresh cadence controller (`AdaptiveRefreshController.swift`)
+    // Adaptive & fixed refresh timer scheduler (`UsageStore+AdaptiveRefresh.swift`)
     // -------------------------------------------------------------------------
+
+    /// Returns the number of completed batch refreshes since runtime creation.
+    pub fn completed_refresh_count(&self) -> u64 {
+        self.completed_refresh_count.load(Ordering::SeqCst)
+    }
+
+    /// Returns whether a batch refresh is currently in flight.
+    pub fn is_refreshing(&self) -> bool {
+        self.batch_state
+            .lock()
+            .expect("batch_state lock")
+            .is_refreshing
+    }
+
+    /// Overrides the in-flight batch flag for testing opportunistic timer coalescing.
+    pub fn set_refreshing_for_testing(&self, refreshing: bool) {
+        let mut batch = self.batch_state.lock().expect("batch_state lock");
+        batch.is_refreshing = refreshing;
+        let _ = self.batch_idle_tx.send(!refreshing);
+    }
+
+    /// Returns the last recorded menu-open timestamp, if any.
+    pub fn last_menu_opened_at(&self) -> Option<Timestamp> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .last_menu_opened_at
+    }
+
+    /// Returns the last recorded coding-activity timestamp, if any.
+    pub fn last_coding_activity_at(&self) -> Option<Timestamp> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .last_coding_activity_at
+    }
+
+    /// Returns the currently scheduled background refresh fire timestamp, if any.
+    pub fn scheduled_fire_at(&self) -> Option<Timestamp> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .scheduled_fire_at
+    }
+
+    /// Overrides the scheduled fire timestamp for deterministic adaptive-timer tests.
+    pub fn set_scheduled_fire_at_for_testing(&self, fire_at: Option<Timestamp>) {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .scheduled_fire_at = fire_at;
+    }
+
+    /// Returns the effective fixed refresh interval computed when starting a fixed timer.
+    pub fn fixed_refresh_interval(&self) -> Option<Duration> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .fixed_refresh_interval
+    }
+
+    /// Returns the effective adaptive refresh interval computed on the latest adaptive tick.
+    pub fn adaptive_computed_interval(&self) -> Option<Duration> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .adaptive_computed_interval
+    }
+
+    /// Returns the active timer sleep override duration, if configured.
+    pub fn timer_sleep_override(&self) -> Option<Duration> {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .sleep_override
+    }
+
+    /// Sets the timer sleep override duration for deterministic timer tests.
+    pub fn set_timer_sleep_override(&self, sleep_override: Option<Duration>) {
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .sleep_override = sleep_override;
+    }
 
     /// Evaluates the adaptive refresh decision at `now` if the current cadence is adaptive,
     /// returning `None` when the configured cadence is manual or a fixed interval.
@@ -1470,15 +1638,22 @@ impl EngineRuntime {
         Some(AdaptiveRefreshPolicyCore.next_delay(&input))
     }
 
-    /// Computes the next background timer delay from `now` for both fixed and adaptive cadences,
-    /// returning `None` when cadence is `Manual`.
+    /// Computes the next background timer delay from `now` for both fixed and adaptive cadences
+    /// (clamped by [`BackgroundWorkPowerPolicy`] when low-power mode is active), returning `None`
+    /// when cadence is `Manual`.
     pub fn next_refresh_delay(&self, now: Timestamp) -> Option<Duration> {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
         if let Some(fixed) = prefs.refresh_frequency.duration() {
             let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-            adaptive.scheduled_fire_at = Some(add_duration(now, fixed));
-            return Some(fixed);
+            let effective = BackgroundWorkPowerPolicy::automatic_interval(
+                Some(fixed),
+                adaptive.is_low_power_mode,
+            )
+            .unwrap_or(fixed);
+            adaptive.fixed_refresh_interval = Some(effective);
+            adaptive.scheduled_fire_at = Some(add_duration(now, effective));
+            return Some(effective);
         }
         if !prefs.refresh_frequency.uses_adaptive_policy() {
             return None;
@@ -1497,28 +1672,100 @@ impl EngineRuntime {
             adaptive.thermal_pressure,
         );
         let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
-        adaptive.scheduled_fire_at = Some(add_duration(now, decision.delay));
-        Some(decision.delay)
+        let effective = BackgroundWorkPowerPolicy::automatic_interval(
+            Some(decision.delay),
+            adaptive.is_low_power_mode,
+        )
+        .unwrap_or(decision.delay);
+        adaptive.adaptive_computed_interval = Some(effective);
+        adaptive.scheduled_fire_at = Some(add_duration(now, effective));
+        Some(effective)
+    }
+
+    /// Computes this tick's adaptive sleep duration, updating `adaptive_computed_interval` and
+    /// `scheduled_fire_at` while honoring any configured test sleep override (`UsageStore.nextAdaptiveTimerSleepDuration`).
+    pub fn next_adaptive_timer_sleep_duration(&self) -> Option<Duration> {
+        let config = self.load_config();
+        let prefs = AppPreferences::from_config(&config);
+        if !prefs.refresh_frequency.uses_adaptive_policy() {
+            return None;
+        }
+        let now = self.now();
+        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+        let coding_activity = if prefs.refresh_frequency.uses_coding_activity() {
+            adaptive.last_coding_activity_at
+        } else {
+            None
+        };
+        let input = AdaptiveRefreshInput::new(
+            now,
+            adaptive.last_menu_opened_at,
+            coding_activity,
+            adaptive.is_low_power_mode,
+            adaptive.thermal_pressure,
+        );
+        let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
+        let effective = BackgroundWorkPowerPolicy::automatic_interval(
+            Some(decision.delay),
+            adaptive.is_low_power_mode,
+        )
+        .unwrap_or(decision.delay);
+        adaptive.adaptive_computed_interval = Some(effective);
+        adaptive.scheduled_fire_at = Some(add_duration(now, effective));
+        Some(adaptive.sleep_override.unwrap_or(effective))
     }
 
     /// Records that the user opened the menu or panel at `now`. Returns `true` if an adaptive
-    /// timer should be rescheduled to fire sooner.
+    /// timer was advanced to fire sooner.
     pub fn note_menu_opened(&self, now: Timestamp) -> bool {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
-        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-        adaptive.last_menu_opened_at = Some(now);
-        Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now)
+        let (advanced, restart) = {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            adaptive.last_menu_opened_at = Some(now);
+            let adv =
+                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            (adv, adv && adaptive.timer_active)
+        };
+        if restart {
+            self.restart_timer_internal();
+        }
+        advanced
     }
 
-    /// Records observed local coding activity at `now` for `AdaptiveAgentAware` mode.
-    /// Returns `true` if an adaptive timer should be rescheduled to fire sooner.
-    pub fn note_coding_activity_observed(&self, now: Timestamp) -> bool {
+    /// Records observed local coding activity at `observed_at` (using `observed_at` as `now`)
+    /// for `AdaptiveAgentAware` mode. Returns `true` if the adaptive timer was advanced to fire sooner.
+    pub fn note_coding_activity_observed(&self, observed_at: Timestamp) -> bool {
+        self.note_coding_activity_observed_at(observed_at, observed_at)
+    }
+
+    /// Records observed local coding activity at `observed_at` evaluated against `now`
+    /// (`UsageStore.noteCodingActivityObserved(at:now:)`).
+    ///
+    /// Ignored unless the configured cadence uses coding activity (`AdaptiveAgentAware`), and
+    /// retains `observed_at` only if it is newer than the previously recorded observation.
+    pub fn note_coding_activity_observed_at(&self, observed_at: Timestamp, now: Timestamp) -> bool {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
-        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-        adaptive.last_coding_activity_at = Some(now);
-        Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now)
+        if !prefs.refresh_frequency.uses_coding_activity() {
+            return false;
+        }
+        let (advanced, restart) = {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            if adaptive
+                .last_coding_activity_at
+                .is_none_or(|prev| observed_at > prev)
+            {
+                adaptive.last_coding_activity_at = Some(observed_at);
+            }
+            let adv =
+                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            (adv, adv && adaptive.timer_active)
+        };
+        if restart {
+            self.restart_timer_internal();
+        }
+        advanced
     }
 
     /// Clears the coding activity observation timestamp.
@@ -1531,18 +1778,36 @@ impl EngineRuntime {
     pub fn set_low_power_mode(&self, enabled: bool, now: Timestamp) -> bool {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
-        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-        adaptive.is_low_power_mode = enabled;
-        Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now)
+        let (advanced, restart) = {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            adaptive.is_low_power_mode = enabled;
+            let adv =
+                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            let needs_fixed_restart =
+                adaptive.timer_active && prefs.refresh_frequency.duration().is_some();
+            (adv, (adv && adaptive.timer_active) || needs_fixed_restart)
+        };
+        if restart {
+            self.restart_timer_internal();
+        }
+        advanced
     }
 
     /// Updates system thermal pressure at `now`.
     pub fn set_thermal_pressure(&self, pressure: ThermalPressure, now: Timestamp) -> bool {
         let config = self.load_config();
         let prefs = AppPreferences::from_config(&config);
-        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
-        adaptive.thermal_pressure = pressure;
-        Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now)
+        let (advanced, restart) = {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            adaptive.thermal_pressure = pressure;
+            let adv =
+                Self::recompute_adaptive_schedule(&mut adaptive, prefs.refresh_frequency, now);
+            (adv, adv && adaptive.timer_active)
+        };
+        if restart {
+            self.restart_timer_internal();
+        }
+        advanced
     }
 
     fn recompute_adaptive_schedule(
@@ -1566,12 +1831,204 @@ impl EngineRuntime {
             adaptive.thermal_pressure,
         );
         let decision = AdaptiveRefreshPolicyCore.next_delay(&input);
-        let candidate = add_duration(now, decision.delay);
+        let effective = BackgroundWorkPowerPolicy::automatic_interval(
+            Some(decision.delay),
+            adaptive.is_low_power_mode,
+        )
+        .unwrap_or(decision.delay);
+        let candidate = add_duration(now, effective);
         if should_advance_adaptive_timer(adaptive.scheduled_fire_at, candidate) {
+            adaptive.adaptive_computed_interval = Some(effective);
             adaptive.scheduled_fire_at = Some(candidate);
             true
         } else {
             false
+        }
+    }
+
+    /// Starts (or restarts) the background refresh timer according to the current `RefreshFrequency`
+    /// (`UsageStore.startTimer()`).
+    ///
+    /// - `Manual`: stops any running timer and does not schedule recurring ticks.
+    /// - Fixed intervals (`1m`, `2m`, `5m`, `15m`, `30m`): clamps the interval via
+    ///   [`BackgroundWorkPowerPolicy::automatic_interval`] when low-power mode is active and runs
+    ///   an interval-aligned loop (`run_fixed_refresh_timer`).
+    /// - Adaptive modes (`Adaptive`, `AdaptiveAgentAware`): recomputes the delay before each tick
+    ///   from live menu-open, coding-activity, low-power, and thermal signals.
+    pub fn start_timer(self: &Arc<Self>) {
+        *self.weak_self.lock().expect("weak_self lock") = Some(Arc::downgrade(self));
+        self.restart_timer_internal();
+    }
+
+    /// Sets the instance-scoped timer sleep override and restarts the background refresh timer
+    /// (`UsageStore.restartTimerWithSleepOverrideForTesting`).
+    pub fn restart_timer_with_sleep_override(self: &Arc<Self>, sleep_override: Option<Duration>) {
+        *self.weak_self.lock().expect("weak_self lock") = Some(Arc::downgrade(self));
+        self.adaptive_state
+            .lock()
+            .expect("adaptive_state lock")
+            .sleep_override = sleep_override;
+        self.restart_timer_internal();
+    }
+
+    /// Stops any active background refresh timer.
+    pub fn stop_timer(&self) {
+        if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
+            cancel.cancel();
+        }
+        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
+            handle.abort();
+        }
+        let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+        adaptive.timer_active = false;
+        adaptive.scheduled_fire_at = None;
+        adaptive.fixed_refresh_interval = None;
+        adaptive.adaptive_computed_interval = None;
+    }
+
+    fn restart_timer_internal(&self) {
+        if let Some(cancel) = self.timer_cancel.lock().expect("timer_cancel lock").take() {
+            cancel.cancel();
+        }
+        if let Some(handle) = self.timer_task.lock().expect("timer_task lock").take() {
+            handle.abort();
+        }
+
+        let config = self.load_config();
+        let prefs = AppPreferences::from_config(&config);
+        {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            adaptive.scheduled_fire_at = None;
+            adaptive.fixed_refresh_interval = None;
+            adaptive.adaptive_computed_interval = None;
+            if prefs.refresh_frequency == RefreshFrequency::Manual {
+                adaptive.timer_active = false;
+                return;
+            }
+            adaptive.timer_active = true;
+        }
+
+        let Some(weak) = self.weak_self.lock().expect("weak_self lock").clone() else {
+            return;
+        };
+
+        let cancel = CancellationToken::new();
+        if prefs.refresh_frequency.uses_adaptive_policy() {
+            let Some(first_sleep) = self.next_adaptive_timer_sleep_duration() else {
+                return;
+            };
+            let task_cancel = cancel.clone();
+            let handle = tokio::spawn(async move {
+                let mut next_sleep = first_sleep;
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = task_cancel.cancelled() => return,
+                        () = tokio::time::sleep(next_sleep) => {}
+                    }
+                    if task_cancel.is_cancelled() {
+                        return;
+                    }
+                    let Some(runtime) = weak.upgrade() else {
+                        return;
+                    };
+                    let _ = runtime.refresh_batch(RefreshOptions::background()).await;
+                    if task_cancel.is_cancelled() {
+                        return;
+                    }
+                    let Some(sleep_dur) = runtime.next_adaptive_timer_sleep_duration() else {
+                        return;
+                    };
+                    next_sleep = sleep_dur;
+                    drop(runtime);
+                }
+            });
+            *self.timer_cancel.lock().expect("timer_cancel lock") = Some(cancel);
+            *self.timer_task.lock().expect("timer_task lock") = Some(handle);
+            return;
+        }
+
+        let Some(raw_interval) = prefs.refresh_frequency.duration() else {
+            return;
+        };
+        let now = self.now();
+        let (interval, sleep_override) = {
+            let mut adaptive = self.adaptive_state.lock().expect("adaptive_state lock");
+            let effective = BackgroundWorkPowerPolicy::automatic_interval(
+                Some(raw_interval),
+                adaptive.is_low_power_mode,
+            )
+            .unwrap_or(raw_interval);
+            adaptive.fixed_refresh_interval = Some(effective);
+            adaptive.scheduled_fire_at = Some(add_duration(now, effective));
+            (effective, adaptive.sleep_override)
+        };
+
+        let task_cancel = cancel.clone();
+        let start_instant = std::time::Instant::now();
+        let handle = tokio::spawn(async move {
+            Self::run_fixed_refresh_timer(
+                interval,
+                sleep_override,
+                task_cancel,
+                move || start_instant.elapsed(),
+                |dur| async move {
+                    tokio::time::sleep(dur).await;
+                    true
+                },
+                move || {
+                    let weak_inner = weak.clone();
+                    async move {
+                        if let Some(runtime) = weak_inner.upgrade() {
+                            let _ = runtime.refresh_batch(RefreshOptions::background()).await;
+                        }
+                    }
+                },
+            )
+            .await;
+        });
+        *self.timer_cancel.lock().expect("timer_cancel lock") = Some(cancel);
+        *self.timer_task.lock().expect("timer_task lock") = Some(handle);
+    }
+
+    /// Runs an interval-aligned fixed refresh timer loop (`UsageStore.runFixedRefreshTimer`),
+    /// advancing each tick from the previous scheduled tick time via [`next_fixed_timer_scheduled_at`]
+    /// so slow refreshes skip missed ticks rather than drifting or overlapping.
+    pub async fn run_fixed_refresh_timer<NowFn, SleepFn, SleepFut, RefreshFn, RefreshFut>(
+        interval: Duration,
+        sleep_override: Option<Duration>,
+        cancel: CancellationToken,
+        mut now_fn: NowFn,
+        mut sleep_fn: SleepFn,
+        mut refresh_fn: RefreshFn,
+    ) where
+        NowFn: FnMut() -> Duration,
+        SleepFn: FnMut(Duration) -> SleepFut,
+        SleepFut: Future<Output = bool>,
+        RefreshFn: FnMut() -> RefreshFut,
+        RefreshFut: Future<Output = ()>,
+    {
+        if interval.is_zero() {
+            return;
+        }
+        let mut scheduled_at = now_fn().saturating_add(interval);
+        while !cancel.is_cancelled() {
+            let current = now_fn();
+            let computed_sleep = scheduled_at.checked_sub(current).unwrap_or(Duration::ZERO);
+            let sleep_dur = sleep_override.unwrap_or(computed_sleep);
+            let completed = tokio::select! {
+                biased;
+                () = cancel.cancelled() => false,
+                ok = sleep_fn(sleep_dur) => ok,
+            };
+            if !completed || cancel.is_cancelled() {
+                return;
+            }
+            refresh_fn().await;
+            if cancel.is_cancelled() {
+                return;
+            }
+            scheduled_at = next_fixed_timer_scheduled_at(scheduled_at, now_fn(), interval);
         }
     }
 
@@ -1606,23 +2063,39 @@ impl EngineRuntime {
         value: &serde_json::Value,
     ) -> Result<SettingsScope, IpcError> {
         let registry = self.registry.read().expect("registry lock").clone();
-        let mut probe_cfg = self.load_config();
-        let (scope, affected_provider) =
-            apply_setting_mutation(&registry, &mut probe_cfg, id, value)
-                .map_err(map_settings_error)?;
-
         let id_clone = id.clone();
         let value_clone = value.clone();
+        let mutation_outcome = Mutex::new(None);
+
         self.config_store
             .update(|cfg| {
-                let _ = apply_setting_mutation(&registry, cfg, &id_clone, &value_clone);
+                let mut draft = cfg.clone();
+                let res = apply_setting_mutation(&registry, &mut draft, &id_clone, &value_clone);
+                if res.is_ok() {
+                    *cfg = draft;
+                }
+                *mutation_outcome.lock().expect("mutation_outcome lock") = Some(res);
             })
             .map_err(|_| IpcError::new(ErrorCode::InternalError))?;
+
+        let (scope, affected_provider) = mutation_outcome
+            .into_inner()
+            .expect("mutation_outcome lock")
+            .expect("update closure executed")
+            .map_err(map_settings_error)?;
 
         let _ = self.settings_changed_tx.send(scope.clone());
         let _ = self.pushes_tx.send(ServerMessage::SettingsChanged {
             scope: scope.clone(),
         });
+
+        if matches!(
+            id.as_str(),
+            "app.refresh.cadence" | "refreshCadence" | "refreshInterval" | "refreshIntervalSeconds"
+        ) && self.weak_self.lock().expect("weak_self lock").is_some()
+        {
+            self.restart_timer_internal();
+        }
 
         if let Some(pid) = affected_provider {
             let config = self.load_config();
@@ -1640,14 +2113,23 @@ impl EngineRuntime {
         Ok(scope)
     }
 
-    /// Executes a [`ClientMessage::RunAction`] intent (`refreshAll`, `refreshProvider`, `resetUsage`).
+    /// Executes a [`ClientMessage::RunAction`] intent (`refreshAll`, `refreshProvider.<id>`,
+    /// `menuOpened`, `resetUsage`).
     pub async fn run_action(&self, id: &ActionId, _confirm: Option<bool>) -> Result<(), IpcError> {
         match id.as_str() {
-            "refreshAll" | "refreshProvider" => {
+            "refreshAll" => {
                 self.refresh_required(RefreshOptions::user_initiated())
                     .await;
                 Ok(())
             }
+            "menuOpened" | "noteMenuOpened" => {
+                self.note_menu_opened(self.now());
+                Ok(())
+            }
+            "refreshProvider" => Err(IpcError::with_static_message(
+                ErrorCode::InvalidRequest,
+                "refreshProvider requires a target provider id",
+            )),
             "resetUsage" => {
                 {
                     let mut states = self.providers.lock().expect("providers lock");
@@ -1663,7 +2145,31 @@ impl EngineRuntime {
                 self.publish_current_snapshot();
                 Ok(())
             }
-            _ => Err(IpcError::new(ErrorCode::NotFound)),
+            other => {
+                let target = other.strip_prefix("refreshProvider.").or_else(|| {
+                    other
+                        .strip_prefix("providers.")
+                        .and_then(|rest| rest.strip_suffix(".refresh"))
+                });
+                if let Some(pid_str) = target {
+                    let pid =
+                        ProviderId::new(pid_str).map_err(|_| IpcError::new(ErrorCode::NotFound))?;
+                    if self
+                        .registry
+                        .read()
+                        .expect("registry lock")
+                        .descriptor(&pid)
+                        .is_none()
+                    {
+                        return Err(IpcError::new(ErrorCode::NotFound));
+                    }
+                    self.refresh_provider(pid, RefreshOptions::user_initiated())
+                        .await;
+                    Ok(())
+                } else {
+                    Err(IpcError::new(ErrorCode::NotFound))
+                }
+            }
         }
     }
 
@@ -1716,7 +2222,8 @@ impl EngineRuntime {
                     self.refresh_provider(pid, RefreshOptions::user_initiated())
                         .await;
                 } else {
-                    let _ = self.refresh_batch(RefreshOptions::user_initiated()).await;
+                    self.refresh_required(RefreshOptions::user_initiated())
+                        .await;
                 }
                 vec![
                     ServerMessage::ok(id),
@@ -1781,7 +2288,8 @@ impl IpcBackend for EngineRuntime {
                 self.refresh_provider(pid, RefreshOptions::user_initiated())
                     .await;
             } else {
-                let _ = self.refresh_batch(RefreshOptions::user_initiated()).await;
+                self.refresh_required(RefreshOptions::user_initiated())
+                    .await;
             }
             Ok(self.get_snapshot())
         })

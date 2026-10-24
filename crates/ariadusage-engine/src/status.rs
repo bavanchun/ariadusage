@@ -3,10 +3,12 @@
 // Ported from CodexBar Sources/CodexBar/UsageStore+ProviderStatus.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::HashMap;
+use std::fmt;
+use std::sync::Arc;
 use std::time::Duration;
 
 use ariadusage_core::hosts::ProviderHosts;
-use ariadusage_core::pipeline::TransportClass;
+use ariadusage_core::pipeline::{BoxFuture, TransportClass};
 use ariadusage_core::providers::ProviderDescriptor;
 pub use ariadusage_core::status::{
     ProviderStatusSummary, StatusParseError, StatuspageComponentSummary,
@@ -15,7 +17,7 @@ pub use ariadusage_core::status::{
     parse_statuspage_status, status_indicator_has_issue, status_indicator_label,
     status_indicator_rank, workspace_summary,
 };
-use ariadusage_protocol::ProviderStatus;
+use ariadusage_protocol::{ProviderId, ProviderStatus};
 use reqwest::header::{ACCEPT, HeaderValue};
 use reqwest::{Method, Url};
 use thiserror::Error;
@@ -80,15 +82,38 @@ fn map_net_error(err: NetError) -> StatusFetchError {
     }
 }
 
+/// Optional async override for status fetches in tests (`UsageStore._test_providerStatusFetchOverride`).
+pub type StatusFetchOverrideFn = Arc<
+    dyn Fn(
+            ProviderId,
+        ) -> BoxFuture<'static, Result<Option<ProviderStatusSummary>, StatusFetchError>>
+        + Send
+        + Sync,
+>;
+
 /// Configuration and fetcher for Statuspage / incident.io and Google Workspace status feeds,
 /// routed exclusively through `NetBroker` with declared origins.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderStatusFetcher {
     declared_origins: DeclaredOrigins,
     workspace_incidents_url: Url,
     timeout: Duration,
     base_url_overrides: HashMap<String, Url>,
     proxy_host_overrides: HashMap<String, String>,
+    fetch_override: Option<StatusFetchOverrideFn>,
+}
+
+impl fmt::Debug for ProviderStatusFetcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderStatusFetcher")
+            .field("declared_origins", &self.declared_origins)
+            .field("workspace_incidents_url", &self.workspace_incidents_url)
+            .field("timeout", &self.timeout)
+            .field("base_url_overrides", &self.base_url_overrides)
+            .field("proxy_host_overrides", &self.proxy_host_overrides)
+            .field("has_fetch_override", &self.fetch_override.is_some())
+            .finish()
+    }
 }
 
 impl Default for ProviderStatusFetcher {
@@ -100,6 +125,7 @@ impl Default for ProviderStatusFetcher {
             timeout: DEFAULT_STATUS_TIMEOUT,
             base_url_overrides: HashMap::new(),
             proxy_host_overrides: HashMap::new(),
+            fetch_override: None,
         }
     }
 }
@@ -107,6 +133,11 @@ impl Default for ProviderStatusFetcher {
 impl ProviderStatusFetcher {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_fetch_override(mut self, fetch_override: StatusFetchOverrideFn) -> Self {
+        self.fetch_override = Some(fetch_override);
+        self
     }
 
     pub fn with_declared_origins(mut self, declared_origins: DeclaredOrigins) -> Self {
@@ -150,13 +181,22 @@ impl ProviderStatusFetcher {
         call: &BrokerCall,
         descriptor: &ProviderDescriptor,
     ) -> Result<Option<ProviderStatusSummary>, StatusFetchError> {
-        let provider_id = descriptor.id.as_str();
         let default_page_url = descriptor
             .status_page_url
             .or(descriptor.status_link_url)
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string);
+        if let Some(override_fn) = &self.fetch_override {
+            let mut summary = override_fn(descriptor.id.clone()).await?;
+            if let Some(ref mut s) = summary
+                && s.status.page_url.is_none()
+            {
+                s.status.page_url = default_page_url;
+            }
+            return Ok(summary);
+        }
+        let provider_id = descriptor.id.as_str();
         if let Some(override_url) = self.base_url_overrides.get(provider_id) {
             let proxy_host = self
                 .proxy_host_overrides

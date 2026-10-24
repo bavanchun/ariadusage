@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBarCore/ProviderStatus.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/ProviderStatusFetcher.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatuspageSummaryTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/GoogleWorkspaceStatusTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::HashMap;
 use std::sync::LazyLock;
@@ -208,7 +209,15 @@ pub fn parse_statuspage_components(
     let mut visible: Vec<(usize, StatuspageComponentPayload)> = decoded
         .components
         .into_iter()
-        .filter(|component| !component.name.trim().is_empty())
+        .filter_map(|mut component| {
+            let trimmed = component.name.trim().to_string();
+            if trimmed.is_empty() {
+                None
+            } else {
+                component.name = trimmed;
+                Some(component)
+            }
+        })
         .enumerate()
         .collect();
     visible.sort_by_key(|(idx, component)| (component.position.unwrap_or(0), *idx));
@@ -758,5 +767,105 @@ mod tests {
             parse_google_workspace_status(json, "other-product-id").expect("valid workspace");
         assert_eq!(unaffected.indicator, ProviderStatusIndicator::None);
         assert!(unaffected.description.is_none());
+    }
+
+    #[test]
+    fn parse_statuspage_components_maps_and_sorts_leaf_rows() {
+        let json = br#"{
+          "components": [
+            {"id": "c-cli", "name": "CLI", "status": "operational", "position": 2},
+            {"id": "c-api", "name": "Codex API", "status": "major_outage", "position": 1},
+            {"id": "c-fed", "name": "FedRAMP", "status": "degraded_performance", "position": 25}
+          ]
+        }"#;
+        let components = parse_statuspage_components(json).expect("valid components json");
+        let names: Vec<&str> = components.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["Codex API", "CLI", "FedRAMP"]);
+        let indicators: Vec<ProviderStatusIndicator> =
+            components.iter().map(|c| c.indicator).collect();
+        assert_eq!(
+            indicators,
+            vec![
+                ProviderStatusIndicator::Critical,
+                ProviderStatusIndicator::None,
+                ProviderStatusIndicator::Minor,
+            ]
+        );
+        assert!(components.iter().all(|c| c.children.is_empty()));
+        assert_eq!(components.last().unwrap().status, "degraded_performance");
+    }
+
+    #[test]
+    fn parse_statuspage_components_tolerates_missing_components_and_drops_blank_names() {
+        let empty = parse_statuspage_components(b"{}").expect("tolerates missing components");
+        assert!(empty.is_empty());
+
+        let json = br#"{
+          "components": [
+            {"id": "blank", "name": "   ", "status": "operational", "position": 1},
+            {"id": "api", "name": " API ", "status": "operational", "position": 2}
+          ]
+        }"#;
+        let components = parse_statuspage_components(json).expect("valid components json");
+        let names: Vec<&str> = components.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["API"]);
+    }
+
+    #[test]
+    fn parse_workspace_status_selects_worst_incident_and_ignores_resolved_incidents() {
+        let product_id = "npdyhgECDJ6tB66MxXyo";
+        let worst_json = br#"[
+          {
+            "id": "inc-1",
+            "begin": "2025-12-02T09:00:00+00:00",
+            "end": null,
+            "affected_products": [
+              {"title": "Gemini", "id": "npdyhgECDJ6tB66MxXyo"}
+            ],
+            "most_recent_update": {
+              "when": "2025-12-02T10:00:00+00:00",
+              "status": "SERVICE_INFORMATION",
+              "text": "**Summary**\nMinor issue.\n"
+            }
+          },
+          {
+            "id": "inc-2",
+            "begin": "2025-12-02T11:00:00+00:00",
+            "end": null,
+            "affected_products": [
+              {"title": "Gemini", "id": "npdyhgECDJ6tB66MxXyo"}
+            ],
+            "most_recent_update": {
+              "when": "2025-12-02T12:00:00+00:00",
+              "status": "SERVICE_OUTAGE",
+              "text": "**Summary**\nGemini API error.\n"
+            }
+          }
+        ]"#;
+        let status =
+            parse_google_workspace_status(worst_json, product_id).expect("worst workspace status");
+        assert_eq!(status.indicator, ProviderStatusIndicator::Critical);
+        assert_eq!(status.description.as_deref(), Some("Gemini API error."));
+        assert!(status.updated_at.is_some());
+
+        let resolved_json = br#"[
+          {
+            "id": "inc-3",
+            "begin": "2025-12-02T08:00:00+00:00",
+            "end": "2025-12-02T09:00:00+00:00",
+            "affected_products": [
+              {"title": "Gemini", "id": "npdyhgECDJ6tB66MxXyo"}
+            ],
+            "most_recent_update": {
+              "when": "2025-12-02T09:00:00+00:00",
+              "status": "AVAILABLE",
+              "text": "**Summary**\nResolved.\n"
+            }
+          }
+        ]"#;
+        let resolved =
+            parse_google_workspace_status(resolved_json, product_id).expect("resolved workspace");
+        assert_eq!(resolved.indicator, ProviderStatusIndicator::None);
+        assert!(resolved.description.is_none());
     }
 }

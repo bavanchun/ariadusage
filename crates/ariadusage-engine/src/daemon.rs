@@ -232,7 +232,7 @@ impl ConfigIpcBackend {
             let cookie_default = p_cfg
                 .and_then(|p| p.cookie_source)
                 .map(cookie_source_str)
-                .unwrap_or("auto");
+                .unwrap_or("off");
 
             let mut sec = SettingsSection::new(
                 format!("provider-{pid}"),
@@ -441,6 +441,15 @@ impl IpcBackend for ConfigIpcBackend {
 /// Builds the default [`EngineRuntime`] wired to `config_store`, [`SecretStore`], [`NetBroker`],
 /// and [`ProviderRegistry`].
 pub fn build_default_runtime(config_store: ConfigStore) -> Result<Arc<EngineRuntime>, DaemonError> {
+    build_default_runtime_with_options(config_store, false)
+}
+
+/// Builds the default [`EngineRuntime`] with an explicit `disable_keyring` toggle injected by the
+/// caller (for example from `ARIADUSAGE_DISABLE_KEYRING` in the CLI binary).
+pub fn build_default_runtime_with_options(
+    config_store: ConfigStore,
+    disable_keyring: bool,
+) -> Result<Arc<EngineRuntime>, DaemonError> {
     let config = config_store.load_effective().unwrap_or_else(|_| {
         ariadusage_core::config::normalize(Config::new(Config::CURRENT_VERSION, Vec::new()))
     });
@@ -450,11 +459,9 @@ pub fn build_default_runtime(config_store: ConfigStore) -> Result<Arc<EngineRunt
         data.join("ariadusage").join("secrets.json"),
         consented,
     );
-    let disabled = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
     let secret_store = Arc::new(
         crate::brokers::secret_store::SecretStore::new(
-            crate::brokers::secret_store::service::ServiceBackend::new(disabled),
+            crate::brokers::secret_store::service::ServiceBackend::new(disable_keyring),
         )
         .with_file_fallback(file_backend, consented),
     );
@@ -494,20 +501,34 @@ pub async fn run_daemon_with_shutdown(
 /// Runs the foreground engine daemon until `SIGINT` or `SIGTERM` is received.
 #[cfg(unix)]
 pub async fn run_daemon(socket_override: Option<PathBuf>) -> Result<(), DaemonError> {
+    run_daemon_with_options(socket_override, false).await
+}
+
+/// Runs the foreground engine daemon with an explicit `disable_keyring` toggle until `SIGINT` or
+/// `SIGTERM` is received, starting the background refresh timer while the daemon is active.
+#[cfg(unix)]
+pub async fn run_daemon_with_options(
+    socket_override: Option<PathBuf>,
+    disable_keyring: bool,
+) -> Result<(), DaemonError> {
     let cfg_path = config_path()?;
-    let runtime = build_default_runtime(ConfigStore::new(cfg_path))?;
-    let backend: Arc<dyn IpcBackend> = runtime;
+    let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)?;
+    runtime.start_timer();
+    let backend: Arc<dyn IpcBackend> = runtime.clone();
 
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    run_daemon_with_shutdown(socket_override, backend, async move {
+    let res = run_daemon_with_shutdown(socket_override, backend, async move {
         tokio::select! {
             _ = sigint.recv() => {}
             _ = sigterm.recv() => {}
         }
     })
-    .await
+    .await;
+
+    runtime.stop_timer();
+    res
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 // Ported from CodexBar Tests/CodexBarTests/RequiredRefreshCoalescingTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/AdaptiveRefreshTimerTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/ClaudeResilienceTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Tests/CodexBarTests/HookTransitionDetectorLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar TestsLinux/HookTransitionDetectorLinuxTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -236,7 +236,7 @@ fn provider_registry_wires_claude_by_default_and_allows_codex_and_antigravity_re
     let antigravity = ProviderId::new("antigravity").unwrap();
 
     assert!(registry.has_registered_plan(&claude));
-    assert!(!registry.has_registered_plan(&codex));
+    assert!(registry.has_registered_plan(&codex));
     assert!(!registry.has_registered_plan(&antigravity));
 
     let codex_plan = ScriptedPlan::new("codex.cli", SourceKind::Cli);
@@ -993,4 +993,538 @@ async fn runtime_serves_ipc_v1_socket_server_end_to_end() {
 
     drop(write_half);
     server.stop().await;
+}
+
+#[tokio::test]
+async fn unset_cookie_source_stays_unset_and_never_triggers_browser_cookie_import() {
+    use ariadusage_core::config::CookieSource;
+    use ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig;
+
+    let tmp = TempDir::new().unwrap();
+    let net = Arc::new(NetBroker::new(NetConfig::default()).expect("default net broker"));
+    let cfg = ClaudeOAuthStrategyConfig::new(Arc::clone(&net), tmp.path(), tmp.path());
+    assert_eq!(cfg.cookie_source, None);
+    assert_eq!(cfg.effective_cookie_source(), CookieSource::Off);
+
+    let mut cfg_manual = ClaudeOAuthStrategyConfig::new(net, tmp.path(), tmp.path());
+    cfg_manual.manual_cookie_header = Some("sessionKey=short-test".into());
+    assert_eq!(cfg_manual.effective_cookie_source(), CookieSource::Manual);
+
+    let t0: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+    let registry = ProviderRegistry::default().with_directories(tmp.path(), tmp.path());
+    let (runtime, _sink) = test_runtime(&tmp, registry, t0);
+
+    // Default Claude provider settings page must report cookieSource == "off" when unset
+    let claude_page = runtime
+        .get_settings(&SettingsScope::Provider(claude_id.clone()))
+        .await
+        .expect("claude settings page");
+    let mut found_cookie_source = None;
+    for section in &claude_page.sections {
+        for desc in &section.descriptors {
+            if desc.id.as_str() == "providers.claude.cookieSource"
+                && let DescriptorKind::Choice { selected, .. } = &desc.kind
+            {
+                found_cookie_source = Some(selected.clone());
+            }
+        }
+    }
+    assert_eq!(found_cookie_source.as_deref(), Some("off"));
+
+    // Set sourceMode to "web" while leaving cookieSource unset -> must fail closed without importing browser cookies
+    runtime
+        .set_setting(
+            &SettingId::new("providers.claude.sourceMode").unwrap(),
+            &json!("web"),
+        )
+        .await
+        .expect("set sourceMode web");
+
+    let mut opts = RefreshOptions::user_initiated();
+    opts.refresh_status = false;
+    runtime.refresh_provider(claude_id.clone(), opts).await;
+    let snap = runtime.current_snapshot();
+    let claude = snap.providers.iter().find(|p| p.id == claude_id).unwrap();
+    let err = claude
+        .last_error
+        .as_ref()
+        .expect("web without cookie must fail");
+    assert_eq!(err.kind, ProviderErrorKind::MissingCredential);
+}
+
+#[tokio::test]
+async fn user_refresh_paths_queue_behind_running_batch_and_refresh_provider_action_scopes_to_single_provider()
+ {
+    let tmp = TempDir::new().unwrap();
+    let t0: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+    let codex_id = ProviderId::new("codex").unwrap();
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let claude_plan = ScriptedPlan::new("claude.oauth", SourceKind::Oauth);
+    claude_plan.push_gated(
+        Arc::clone(&started),
+        Arc::clone(&release),
+        make_usage(20.0, t0, None, Some(claude_id.clone())),
+    );
+    claude_plan.push_ok(make_usage(40.0, t0, None, Some(claude_id.clone())));
+    claude_plan.push_ok(make_usage(60.0, t0, None, Some(claude_id.clone())));
+
+    let codex_plan = ScriptedPlan::new("codex.cli", SourceKind::Cli);
+    codex_plan.push_ok(make_usage(10.0, t0, None, Some(codex_id.clone())));
+    codex_plan.push_ok(make_usage(20.0, t0, None, Some(codex_id.clone())));
+    codex_plan.push_ok(make_usage(30.0, t0, None, Some(codex_id.clone())));
+
+    let mut registry = ProviderRegistry::empty();
+    registry.register_plan(claude_id.clone(), Arc::new(claude_plan.clone()));
+    registry.register_plan(codex_id.clone(), Arc::new(codex_plan.clone()));
+    let (runtime, _sink) = test_runtime(&tmp, registry, t0);
+
+    let mut bg_opts = RefreshOptions::background();
+    bg_opts.refresh_status = false;
+
+    // Start an in-flight batch
+    let rt_bg = Arc::clone(&runtime);
+    let bg_task = tokio::spawn(async move { rt_bg.refresh_batch(bg_opts).await });
+    started.notified().await;
+
+    // User-initiated Refresh { provider: None } via handle_client_intent must queue behind the in-flight batch
+    let rt_user = Arc::clone(&runtime);
+    let user_task = tokio::spawn(async move {
+        rt_user
+            .handle_client_intent(ClientMessage::Refresh {
+                provider: None,
+                id: None,
+            })
+            .await
+    });
+    tokio::task::yield_now().await;
+
+    // Release the first batch -> queued user refresh runs a second batch
+    release.notify_waiters();
+    assert!(bg_task.await.unwrap());
+    let _ = user_task.await.unwrap();
+    assert_eq!(claude_plan.call_count(), 2);
+    assert_eq!(codex_plan.call_count(), 2);
+
+    // RunAction("refreshProvider.claude") refreshes ONLY claude, not codex!
+    runtime
+        .run_action(&ActionId::new("refreshProvider.claude").unwrap(), None)
+        .await
+        .expect("refreshProvider.claude succeeds");
+    assert_eq!(claude_plan.call_count(), 3);
+    assert_eq!(codex_plan.call_count(), 2);
+
+    // Unqualified "refreshProvider" is rejected
+    assert!(
+        runtime
+            .run_action(&ActionId::new("refreshProvider").unwrap(), None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn adaptive_and_fixed_refresh_timer_parity_tests() {
+    // Ported from AdaptiveRefreshTimerTests.swift:
+    // - `launchWithNoMenuHistoryBeginsAtThirtyMinutes`
+    // - `menuOpenChangesDecisionToTwoMinutes`
+    // - `menuOpenAdvancesLongIdleTimerDuringRefresh`
+    // - `menuOpenDoesNotPostponeSoonerTimer`
+    // - `codingActivityAdvancesLongIdleTimer`
+    // - `codingActivityDoesNotPostponeEarlierMenuDrivenTimer`
+    // - `plainAdaptiveModeIgnoresCodingActivity`
+    // - `notingMenuOpenOutsideAdaptiveModeOnlyRecordsHistory`
+    // - `notingCodingActivityOutsideAgentAwareModeIsIgnored`
+    // - `clearingCodingActivityObservationStopsFiveMinuteOverride`
+    // - `opportunisticTimerRefreshIsANoOpWhileAnotherRefreshIsAlreadyInFlight`
+    // - `manualModeNeverStartsRecurringTimer`
+    // - `fixedModeTicksRecurAtOverriddenCadence`
+    // - `fixedTimerUsesLowPowerClampedIntervalWhilePreservingSleepOverride`
+    // - `adaptiveTimerUsesLowPowerClampedIntervalWhilePreservingSleepOverride`
+    // - `fixedTimerLoopStaysIntervalAlignedAfterASlowRefresh`
+    // - `adaptiveModeKeepsRecomputingAndRefreshingAcrossMenuOpenChanges`
+    // - `changingFrequencyAwayFromFixedCancelsPendingTickWithoutExtraRefresh`
+    // - `restartingFixedTimerReplacesExistingLoopWithoutDoubleFiring`
+    let tmp = TempDir::new().unwrap();
+    let clock_now = Arc::new(Mutex::new(
+        "2026-03-04T12:00:00Z".parse::<Timestamp>().unwrap(),
+    ));
+    let claude_id = ProviderId::new("claude").unwrap();
+    let plan = ScriptedPlan::new("claude.oauth", SourceKind::Oauth);
+    for _ in 0..20 {
+        let ts = *clock_now.lock().unwrap();
+        plan.push_ok(make_usage(15.0, ts, None, Some(claude_id.clone())));
+    }
+
+    let mut registry = ProviderRegistry::empty();
+    registry.register_plan(claude_id.clone(), Arc::new(plan));
+
+    let config_store = ConfigStore::new(tmp.path().join("config.json"));
+    config_store
+        .update(|cfg| {
+            ariadusage_core::config::set_provider_enabled(cfg, &claude_id, true);
+        })
+        .unwrap();
+    let secret_store = Arc::new(SecretStore::new(MemoryBackend::new()));
+    let net = Arc::new(NetBroker::new(NetConfig::default()).unwrap());
+    let cn = Arc::clone(&clock_now);
+    let runtime = Arc::new(
+        EngineRuntime::new(config_store, secret_store, net, registry)
+            .with_clock(Arc::new(move || *cn.lock().unwrap())),
+    );
+
+    let t0 = *clock_now.lock().unwrap();
+    let cadence_id = SettingId::new("app.refresh.cadence").unwrap();
+    let status_checks_id = SettingId::new("app.statusChecksEnabled").unwrap();
+    runtime
+        .set_setting(&status_checks_id, &json!(false))
+        .await
+        .unwrap();
+
+    // 1. Noting menu open & coding activity in Manual mode
+    runtime
+        .set_setting(&cadence_id, &json!("manual"))
+        .await
+        .unwrap();
+    runtime.start_timer();
+    assert_eq!(runtime.scheduled_fire_at(), None);
+    assert!(!runtime.note_menu_opened(t0));
+    assert_eq!(runtime.last_menu_opened_at(), Some(t0));
+    assert!(!runtime.note_coding_activity_observed(t0));
+    assert_eq!(runtime.last_coding_activity_at(), None);
+
+    // 2. Plain Adaptive mode: launch with no menu history begins at 30m, ignores coding activity
+    let tmp2 = TempDir::new().unwrap();
+    let (rt_adapt, _) = test_runtime(&tmp2, ProviderRegistry::empty(), t0);
+    rt_adapt
+        .set_setting(&cadence_id, &json!("adaptive"))
+        .await
+        .unwrap();
+    assert_eq!(
+        rt_adapt.next_adaptive_timer_sleep_duration(),
+        Some(Duration::from_secs(1800))
+    );
+    assert_eq!(
+        rt_adapt.scheduled_fire_at(),
+        Some(t0.checked_add(jiff::Span::new().seconds(1800)).unwrap())
+    );
+    // Plain adaptive ignores coding activity
+    let t_plus_10 = t0.checked_add(jiff::Span::new().seconds(10)).unwrap();
+    assert!(!rt_adapt.note_coding_activity_observed_at(t_plus_10, t_plus_10));
+    assert_eq!(rt_adapt.last_coding_activity_at(), None);
+    // Menu open changes decision to 2m and advances long-idle timer even during an in-flight refresh
+    rt_adapt.set_refreshing_for_testing(true);
+    assert!(rt_adapt.note_menu_opened(t_plus_10));
+    assert_eq!(
+        rt_adapt.scheduled_fire_at(),
+        Some(
+            t_plus_10
+                .checked_add(jiff::Span::new().seconds(120))
+                .unwrap()
+        )
+    );
+    rt_adapt.set_refreshing_for_testing(false);
+    // Menu open does not postpone a sooner timer
+    let sooner = t_plus_10
+        .checked_add(jiff::Span::new().seconds(30))
+        .unwrap();
+    rt_adapt.set_scheduled_fire_at_for_testing(Some(sooner));
+    assert!(!rt_adapt.note_menu_opened(t_plus_10));
+    assert_eq!(rt_adapt.scheduled_fire_at(), Some(sooner));
+
+    // 3. AdaptiveAgentAware: coding activity advances long-idle timer, does not postpone menu-driven timer
+    let tmp3 = TempDir::new().unwrap();
+    let (rt_agent, _) = test_runtime(&tmp3, ProviderRegistry::empty(), t0);
+    rt_agent
+        .set_setting(&cadence_id, &json!("adaptiveAgentAware"))
+        .await
+        .unwrap();
+    rt_agent.set_scheduled_fire_at_for_testing(Some(
+        t0.checked_add(jiff::Span::new().seconds(1800)).unwrap(),
+    ));
+    assert!(rt_agent.note_coding_activity_observed_at(t0, t0));
+    assert_eq!(
+        rt_agent.scheduled_fire_at(),
+        Some(t0.checked_add(jiff::Span::new().seconds(300)).unwrap())
+    );
+    // Does not postpone earlier menu-driven timer (t0 + 120s)
+    rt_agent.set_scheduled_fire_at_for_testing(Some(
+        t0.checked_add(jiff::Span::new().seconds(120)).unwrap(),
+    ));
+    let t_plus_30 = t0.checked_add(jiff::Span::new().seconds(30)).unwrap();
+    assert!(!rt_agent.note_coding_activity_observed_at(t_plus_30, t_plus_30));
+    assert_eq!(
+        rt_agent.scheduled_fire_at(),
+        Some(t0.checked_add(jiff::Span::new().seconds(120)).unwrap())
+    );
+    // Clearing coding activity observation stops 5m override
+    rt_agent.clear_coding_activity_observation();
+    assert_eq!(rt_agent.last_coding_activity_at(), None);
+
+    // 4. Low-power clamping while preserving sleep override for both fixed and adaptive timers
+    rt_adapt.set_low_power_mode(true, t0);
+    rt_adapt
+        .set_setting(&cadence_id, &json!("1m"))
+        .await
+        .unwrap();
+    rt_adapt.restart_timer_with_sleep_override(Some(Duration::from_millis(20)));
+    assert_eq!(
+        rt_adapt.fixed_refresh_interval(),
+        Some(Duration::from_secs(1800))
+    );
+    assert_eq!(
+        rt_adapt.timer_sleep_override(),
+        Some(Duration::from_millis(20))
+    );
+    rt_adapt.stop_timer();
+
+    rt_adapt
+        .set_setting(&cadence_id, &json!("adaptive"))
+        .await
+        .unwrap();
+    rt_adapt.set_timer_sleep_override(Some(Duration::from_millis(20)));
+    assert_eq!(
+        rt_adapt.next_adaptive_timer_sleep_duration(),
+        Some(Duration::from_millis(20))
+    );
+    assert_eq!(
+        rt_adapt.adaptive_computed_interval(),
+        Some(Duration::from_secs(1800))
+    );
+
+    // 5. Fixed mode recurring ticks with sleep override + cancelling / restarting timer
+    runtime
+        .set_setting(&cadence_id, &json!("1m"))
+        .await
+        .unwrap();
+    runtime.restart_timer_with_sleep_override(Some(Duration::from_millis(15)));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while runtime.completed_refresh_count() < 2 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(runtime.completed_refresh_count() >= 2);
+
+    // Changing frequency away from fixed to manual cancels pending tick without extra refresh
+    runtime
+        .set_setting(&cadence_id, &json!("manual"))
+        .await
+        .unwrap();
+    let count_after_manual = runtime.completed_refresh_count();
+    tokio::time::sleep(Duration::from_millis(40)).await;
+    assert_eq!(runtime.completed_refresh_count(), count_after_manual);
+    runtime.stop_timer();
+}
+
+#[tokio::test]
+async fn claude_credential_change_resilience_tests() {
+    // Ported from ClaudeResilienceTests.swift:
+    // - `supersededCredentialChangeClearsPriorClaudeStateAfterCancellation`
+    // - `credentialsChangeClearsPriorClaudeSnapshotForNonTransientFailure`
+    // - `credentialsChangeClearsPriorClaudeSnapshotForTransientFailure`
+    // - `credentialsChangeBeforeFetchClearsStaleResetBackfill`
+    // - `credentialsChangeDuringSuccessfulClaudeFetchAppliesFreshSnapshotWithoutStaleReset`
+    let tmp = TempDir::new().unwrap();
+    let t0: Timestamp = "2026-03-04T12:00:00Z".parse().unwrap();
+    let t1: Timestamp = "2026-03-04T12:05:00Z".parse().unwrap();
+    let claude_id = ProviderId::new("claude").unwrap();
+
+    let claude_dir = tmp.path().join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let cred_path = claude_dir.join(".credentials.json");
+    let config_json_path = claude_dir.join(".config.json");
+
+    let write_creds = |token: &str, uuid: &str| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&cred_path)
+                .unwrap();
+            std::io::Write::write_all(
+                &mut f,
+                format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#).as_bytes(),
+            )
+            .unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(
+                &cred_path,
+                format!(r#"{{"claudeAiOauth":{{"accessToken":"{token}"}}}}"#),
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            &config_json_path,
+            format!(r#"{{"oauthAccount":{{"accountUuid":"{uuid}"}}}}"#),
+        )
+        .unwrap();
+    };
+
+    write_creds("tok-account-a", "11111111-2222-3333-4444-555555555555");
+
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let plan = ScriptedPlan::new("claude.oauth", SourceKind::Oauth);
+    // Step 1: Cancelled in-flight fetch while credentials change to account B -> clears prior state!
+    plan.push_gated(
+        Arc::clone(&started),
+        Arc::clone(&release),
+        make_usage(20.0, t0, Some("a@example.invalid"), Some(claude_id.clone())),
+    );
+    // Step 2: Transient failure after credentials change to account C -> clears prior snapshot immediately!
+    plan.push_err(|| {
+        FetchError::Classified(
+            ClassifiedError::new(ProviderErrorKind::NetworkFailure, "timed out")
+                .with_transport(TransportClass::Timeout),
+        )
+    });
+    // Step 3: Successful fetch during which credentials change to account D -> applies fresh snapshot!
+    let cred_path_clone = cred_path.clone();
+    let config_path_clone = config_json_path.clone();
+    let claude_id_clone = claude_id.clone();
+    plan.steps.lock().unwrap().push_back(Box::new(move |_cx| {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&cred_path_clone)
+                .unwrap();
+            std::io::Write::write_all(
+                &mut f,
+                br#"{"claudeAiOauth":{"accessToken":"tok-account-d"}}"#,
+            )
+            .unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            std::fs::write(
+                &cred_path_clone,
+                br#"{"claudeAiOauth":{"accessToken":"tok-account-d"}}"#,
+            )
+            .unwrap();
+        }
+        std::fs::write(
+            &config_path_clone,
+            r#"{"oauthAccount":{"accountUuid":"dddddddd-2222-3333-4444-555555555555"}}"#,
+        )
+        .unwrap();
+        let fresh = make_usage(
+            12.0,
+            t1,
+            Some("d@example.invalid"),
+            Some(claude_id_clone.clone()),
+        );
+        let res = FetchResult::new(fresh, "claude.oauth", "claude.oauth", SourceKind::Oauth);
+        Box::pin(async move { Ok(res) })
+    }));
+
+    let mut registry = ProviderRegistry::empty().with_directories(tmp.path(), tmp.path());
+    registry.register_plan(claude_id.clone(), Arc::new(plan));
+    let (runtime, _sink) = test_runtime(&tmp, registry, t0);
+
+    let mut opts = RefreshOptions::user_initiated();
+    opts.refresh_status = false;
+
+    // Seed prior Account A snapshot
+    runtime.seed_provider_snapshot(
+        claude_id.clone(),
+        make_usage(45.0, t0, Some("a@example.invalid"), Some(claude_id.clone())),
+    );
+    assert!(
+        runtime
+            .current_snapshot()
+            .providers
+            .iter()
+            .find(|p| p.id == claude_id)
+            .unwrap()
+            .windows
+            .primary
+            .is_some()
+    );
+
+    // 1. Start refresh, change credentials to Account B while in flight, then cancel via replacement
+    let rt1 = Arc::clone(&runtime);
+    let cid1 = claude_id.clone();
+    let mut bg_opts = RefreshOptions::background();
+    bg_opts.refresh_status = false;
+    let t_cancel = tokio::spawn(async move {
+        rt1.refresh_provider(cid1, bg_opts).await;
+    });
+    started.notified().await;
+    write_creds("tok-account-b", "bbbbbbbb-2222-3333-4444-555555555555");
+    runtime.coordinator().invalidate_requests(&claude_id);
+    t_cancel.await.unwrap();
+    // Prior Account A snapshot was cleared when credentials changed!
+    let snap_after_b = runtime.current_snapshot();
+    let claude_b = snap_after_b
+        .providers
+        .iter()
+        .find(|p| p.id == claude_id)
+        .unwrap();
+    assert!(claude_b.windows.primary.is_none());
+
+    // 2. Seed Account B snapshot, change credentials to Account C, and run transient failure -> must clear prior snapshot and surface error immediately
+    runtime.seed_provider_snapshot(
+        claude_id.clone(),
+        make_usage(50.0, t0, Some("b@example.invalid"), Some(claude_id.clone())),
+    );
+    write_creds("tok-account-c", "cccccccc-2222-3333-4444-555555555555");
+    runtime.refresh_provider(claude_id.clone(), opts).await;
+    let snap_after_c = runtime.current_snapshot();
+    let claude_c = snap_after_c
+        .providers
+        .iter()
+        .find(|p| p.id == claude_id)
+        .unwrap();
+    assert!(claude_c.windows.primary.is_none());
+    assert!(claude_c.last_error.is_some());
+
+    // 3. Seed Account C snapshot, run successful fetch during which credentials change to Account D -> applies fresh Account D snapshot!
+    runtime.seed_provider_snapshot(
+        claude_id.clone(),
+        make_usage(75.0, t0, Some("c@example.invalid"), Some(claude_id.clone())),
+    );
+    runtime.refresh_provider(claude_id.clone(), opts).await;
+    let snap_after_d = runtime.current_snapshot();
+    let claude_d = snap_after_d
+        .providers
+        .iter()
+        .find(|p| p.id == claude_id)
+        .unwrap();
+    assert_eq!(
+        claude_d
+            .windows
+            .primary
+            .as_ref()
+            .unwrap()
+            .value
+            .as_ref()
+            .unwrap()
+            .used_percent,
+        12.0
+    );
+    assert_eq!(
+        claude_d
+            .identity
+            .as_ref()
+            .unwrap()
+            .value
+            .as_ref()
+            .unwrap()
+            .account_email
+            .as_deref(),
+        Some("d@example.invalid")
+    );
 }

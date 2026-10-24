@@ -1910,6 +1910,7 @@ sources = [
     "Sources/CodexBarCore/ProviderStatus.swift",
     "Sources/CodexBarCore/ProviderStatusFetcher.swift",
     "Tests/CodexBarTests/StatuspageSummaryTests.swift",
+    "Tests/CodexBarTests/GoogleWorkspaceStatusTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1935,7 +1936,7 @@ sources = [
     "Sources/CodexBar/UsageStore.swift",
     "Sources/CodexBar/UsageStore+Refresh.swift",
     "Sources/CodexBar/UsageStore+ProviderStatus.swift",
-    "Sources/CodexBar/AdaptiveRefreshController.swift",
+    "Sources/CodexBar/UsageStore+AdaptiveRefresh.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -1961,6 +1962,7 @@ path = "crates/ariadusage-engine/tests/status_feeds.rs"
 sources = [
     "Tests/CodexBarTests/ProviderStatusFetchTests.swift",
     "Tests/CodexBarTests/StatuspageSummaryTests.swift",
+    "Tests/CodexBarTests/GoogleWorkspaceStatusTests.swift",
     "Tests/CodexBarTests/ProviderStatusRefreshPublicationTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
@@ -1972,6 +1974,6 @@ sources = [
     "Tests/CodexBarTests/RequiredRefreshCoalescingTests.swift",
     "Tests/CodexBarTests/AdaptiveRefreshTimerTests.swift",
     "Tests/CodexBarTests/ClaudeResilienceTests.swift",
-    "Tests/CodexBarTests/HookTransitionDetectorLinuxTests.swift",
+    "TestsLinux/HookTransitionDetectorLinuxTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
