@@ -79,25 +79,9 @@ Examples:
   ariadusage config disable --provider antigravity
   ariadusage config set-source --provider claude --source cli";
 
-/// Common logging/verbosity flags accepted by `config` subcommands (`CLICommonOptions`).
+/// Common output flags accepted by `config` subcommands.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigCommonArgs {
-    /// Enable verbose logging
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
-
-    /// Emit machine-readable logs (JSONL) to stderr
-    #[arg(long = "json-output")]
-    pub json_output: bool,
-
-    /// Log level (trace|verbose|debug|info|warning|error|critical)
-    #[arg(long = "log-level")]
-    pub log_level: Option<String>,
-
-    /// Disable ANSI colors in text output
-    #[arg(long = "no-color")]
-    pub no_color: bool,
-
     #[command(flatten)]
     pub output: HooksOutputArgs,
 }
@@ -447,32 +431,35 @@ pub fn render_config_set_source_text(result: &ConfigSetSourceResult) -> String {
     )
 }
 
-/// Resolves the CLI configuration file path, honoring `ARIADUSAGE_CONFIG` (and `CODEXBAR_CONFIG`
-/// when `ARIADUSAGE_CONFIG` is unset) with full engine path validation.
-pub fn resolve_cli_config_path() -> Result<PathBuf, paths::PathError> {
-    paths::resolve_config_path(
-        |var| {
-            std::env::var_os(var).or_else(|| {
-                if var == "ARIADUSAGE_CONFIG" {
-                    std::env::var_os("CODEXBAR_CONFIG")
-                } else {
-                    None
-                }
-            })
-        },
-        etcetera::home_dir().as_deref().ok(),
-    )
+fn args_failure(message: impl Into<String>, output: HooksOutputPreferences) -> HooksCliError {
+    HooksCliError {
+        code: EXIT_ARGS as u8,
+        message: Some(message.into()),
+        output,
+        kind: HooksErrorKind::Args,
+    }
+}
+
+fn resolve_config_output(args: &HooksOutputArgs) -> Result<HooksOutputPreferences, HooksCliError> {
+    let fallback = HooksOutputPreferences::from_args(args);
+    let format = parse_output_format(args.format.as_deref(), args.json, args.json_only)
+        .map_err(|msg| args_failure(msg, fallback))?;
+    Ok(HooksOutputPreferences {
+        format,
+        json_only: args.json_only,
+        pretty: args.pretty,
+    })
 }
 
 fn default_config_store(output: HooksOutputPreferences) -> Result<ConfigStore, HooksCliError> {
-    let path = resolve_cli_config_path()
+    let path = paths::config_path()
         .map_err(|err| HooksCliError::failure(err.to_string(), output, HooksErrorKind::Config))?;
     Ok(ConfigStore::new(path))
 }
 
 fn format_store_error(error: &StoreError) -> String {
     match error {
-        StoreError::Decode(err) => format!("Failed to decode CodexBar config: {err}"),
+        StoreError::Decode(err) => format!("Failed to decode AriadUsage config: {err}"),
         other => other.to_string(),
     }
 }
@@ -536,9 +523,7 @@ fn collect_secret_presence(config: &Config) -> SecretPresence {
     }
 
     let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
-        == Some(std::ffi::OsStr::new("1"))
-        || std::env::var_os("CODEXBAR_SUPPRESS_TEST_KEYCHAIN_ACCESS").as_deref()
-            == Some(std::ffi::OsStr::new("1"));
+        == Some(std::ffi::OsStr::new("1"));
     let Ok(secret_store) = build_default_secret_store(config, disable_keyring) else {
         return presence;
     };
@@ -665,7 +650,7 @@ pub fn run_config_validate_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
-    let output = HooksOutputPreferences::from_args(&common.output);
+    let output = resolve_config_output(&common.output)?;
     let config = load_config_from_store(store, output)?;
     let secrets = collect_secret_presence(&config);
     let issues = validate(&config, &secrets);
@@ -701,7 +686,7 @@ pub fn run_config_dump_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
-    let output = HooksOutputPreferences::from_args(&args.common.output);
+    let output = resolve_config_output(&args.common.output)?;
     if args.show_secrets {
         return Err(HooksCliError {
             code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
@@ -739,7 +724,7 @@ pub fn run_config_providers_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
-    let output = HooksOutputPreferences::from_args(&common.output);
+    let output = resolve_config_output(&common.output)?;
     let config = load_config_from_store(store, output)?;
     let results = config_provider_statuses(&config);
 
@@ -764,12 +749,11 @@ pub fn run_config_set_provider_enabled_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
-    let output = HooksOutputPreferences::from_args(&args.common.output);
+    let output = resolve_config_output(&args.common.output)?;
     let Some(descriptor) = resolve_config_provider(args.provider.as_deref()) else {
-        return Err(HooksCliError::failure(
+        return Err(args_failure(
             "Unknown or missing provider. Use --provider <name>.",
             output,
-            HooksErrorKind::Args,
         ));
     };
 
@@ -801,10 +785,10 @@ pub fn run_config_set_source_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
-    let output = HooksOutputPreferences::from_args(&args.common.output);
+    let output = resolve_config_output(&args.common.output)?;
     let (descriptor, source) =
         config_source_selection(args.provider.as_deref(), args.source.as_deref())
-            .map_err(|msg| HooksCliError::failure(msg, output, HooksErrorKind::Args))?;
+            .map_err(|msg| args_failure(msg, output))?;
 
     let config = load_config_from_store(store, output)?;
     let updated = config_setting_source(&config, &descriptor.id, source);

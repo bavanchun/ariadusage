@@ -36,10 +36,6 @@ pub enum CostProvider {
     Claude,
     Codex,
     Antigravity,
-    Cursor,
-    OpenCodeGo,
-    Pi,
-    VertexAi,
 }
 
 impl CostProvider {
@@ -49,10 +45,6 @@ impl CostProvider {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Antigravity => "antigravity",
-            Self::Cursor => "cursor",
-            Self::OpenCodeGo => "opencodego",
-            Self::Pi => "pi",
-            Self::VertexAi => "vertexai",
         }
     }
 
@@ -62,16 +54,12 @@ impl CostProvider {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
             Self::Antigravity => "Antigravity",
-            Self::Cursor => "Cursor",
-            Self::OpenCodeGo => "OpenCode Go",
-            Self::Pi => "Pi",
-            Self::VertexAi => "Vertex AI",
         }
     }
 
     #[must_use]
     pub const fn supports_cost_command(self) -> bool {
-        matches!(self, Self::Claude | Self::Codex)
+        matches!(self, Self::Claude | Self::Codex | Self::Antigravity)
     }
 
     #[must_use]
@@ -85,10 +73,6 @@ impl CostProvider {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
             "antigravity" => Some(Self::Antigravity),
-            "cursor" => Some(Self::Cursor),
-            "opencodego" | "opencode-go" => Some(Self::OpenCodeGo),
-            "pi" => Some(Self::Pi),
-            "vertexai" | "vertex-ai" => Some(Self::VertexAi),
             _ => None,
         }
     }
@@ -1301,81 +1285,6 @@ fn checked_sum_i64<I: Iterator<Item = i64>>(iter: I) -> Option<i64> {
     Some(sum)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CursorCookieSource {
-    Auto,
-    Manual,
-    Off,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CursorProviderSettings {
-    pub cookie_source: CursorCookieSource,
-    pub manual_cookie_header: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum CursorCostAvailabilityError {
-    #[error("Cursor cost is unavailable because the Cursor cookie source is set to Off.")]
-    CookieSourceOff,
-    #[error("Cursor cost requires a non-empty Manual cookie header.")]
-    ManualCookieMissing,
-    #[error("{0}")]
-    Resolution(String),
-}
-
-#[must_use]
-pub fn normalize_cookie_header(raw: Option<&str>) -> Option<String> {
-    let raw = raw?.trim();
-    if raw.is_empty() {
-        return None;
-    }
-    let stripped = raw
-        .strip_prefix("Cookie:")
-        .or_else(|| raw.strip_prefix("cookie:"))
-        .map_or(raw, str::trim);
-    (!stripped.is_empty()).then(|| stripped.to_owned())
-}
-
-#[must_use]
-pub fn cursor_cost_availability_error(
-    provider: CostProvider,
-    settings: Option<&CursorProviderSettings>,
-    resolution_error: Option<&str>,
-) -> Option<CursorCostAvailabilityError> {
-    if provider != CostProvider::Cursor {
-        return None;
-    }
-    if let Some(err) = resolution_error {
-        return Some(CursorCostAvailabilityError::Resolution(err.to_owned()));
-    }
-    let settings = settings?;
-    match settings.cookie_source {
-        CursorCookieSource::Off => Some(CursorCostAvailabilityError::CookieSourceOff),
-        CursorCookieSource::Manual
-            if normalize_cookie_header(settings.manual_cookie_header.as_deref()).is_none() =>
-        {
-            Some(CursorCostAvailabilityError::ManualCookieMissing)
-        }
-        _ => None,
-    }
-}
-
-#[must_use]
-pub fn cursor_cost_header_override(
-    provider: CostProvider,
-    settings: Option<&CursorProviderSettings>,
-) -> Option<String> {
-    if provider != CostProvider::Cursor {
-        return None;
-    }
-    let settings = settings?;
-    if settings.cookie_source != CursorCookieSource::Manual {
-        return None;
-    }
-    normalize_cookie_header(settings.manual_cookie_header.as_deref())
-}
-
 #[must_use]
 pub const fn decode_cost_include_pi_sessions(provider_native_only: bool) -> bool {
     !provider_native_only
@@ -1452,16 +1361,11 @@ pub fn cost_providers(
 #[must_use]
 pub fn cost_include_pi_sessions(
     provider: CostProvider,
-    selected_providers: &[CostProvider],
+    _selected_providers: &[CostProvider],
     group_by: CostGroupBy,
     format: OutputFormat,
     include_pi_sessions: bool,
 ) -> bool {
-    if (provider == CostProvider::Claude || provider == CostProvider::Codex)
-        && selected_providers.contains(&CostProvider::Pi)
-    {
-        return false;
-    }
     if provider == CostProvider::Codex
         && group_by == CostGroupBy::Session
         && format == OutputFormat::Text
@@ -1541,7 +1445,7 @@ pub fn session_timestamp_string(timestamp: Timestamp, timezone: &TimeZone) -> St
 }
 
 #[must_use]
-pub fn cost_estimate_hint(provider: CostProvider) -> &'static str {
+pub const fn cost_estimate_hint(provider: CostProvider) -> &'static str {
     match provider {
         CostProvider::Codex => {
             "Not a subscription bill or plan value · local usage × public API prices"
@@ -1552,10 +1456,6 @@ pub fn cost_estimate_hint(provider: CostProvider) -> &'static str {
         CostProvider::Antigravity => {
             "Local usage × public API prices · not Antigravity charges or credits"
         }
-        CostProvider::Cursor => {
-            "From Cursor's usage dashboard at vendor token rates; may differ from your invoice."
-        }
-        _ => COST_ESTIMATE_HINT,
     }
 }
 
@@ -1805,10 +1705,7 @@ pub fn render_cost_text(
     if let Some(notice) = history_notice {
         lines.push(notice.to_owned());
     }
-    if include_breakdown
-        && (provider == CostProvider::Claude || provider == CostProvider::OpenCodeGo)
-        && !snapshot.daily.is_empty()
-    {
+    if include_breakdown && provider == CostProvider::Claude && !snapshot.daily.is_empty() {
         lines.extend(token_detail_lines(snapshot, timezone, use_color));
     }
     lines.push(cost_estimate_hint(provider).to_owned());
@@ -2304,11 +2201,7 @@ pub fn make_cost_payload(
 
     CostPayload {
         provider: provider.raw_value().to_owned(),
-        source: if provider == CostProvider::Cursor {
-            "web".to_owned()
-        } else {
-            "local".to_owned()
-        },
+        source: "local".to_owned(),
         updated_at: snapshot.map(|s| s.updated_at).or_else(|| {
             if error.is_some() {
                 Some(Timestamp::now())
@@ -2345,44 +2238,6 @@ pub fn make_cost_payload(
             message: msg.to_owned(),
         }),
         incomplete_request_count: incomplete_sum.filter(|&c| c > 0),
-    }
-}
-
-#[must_use]
-pub fn make_open_codex_cost_payload(
-    snapshot: &CostUsageTokenSnapshot,
-    timezone: &TimeZone,
-) -> CostPayload {
-    let summary = snapshot.summary(snapshot.history_days, timezone);
-    let last_30_days = last_30_days_totals(snapshot, timezone);
-    CostPayload {
-        provider: "opencodex".to_owned(),
-        source: "opencodex".to_owned(),
-        updated_at: Some(snapshot.updated_at),
-        currency_code: Some(snapshot.currency_code.clone()),
-        session_tokens: snapshot.session_tokens,
-        session_cost_usd: snapshot.session_cost_usd,
-        history_days: Some(snapshot.history_days as i64),
-        reporting_period: Some(
-            snapshot
-                .reporting_period
-                .unwrap_or(CostReportingPeriod::Rolling {
-                    days: snapshot.history_days,
-                })
-                .raw_value(),
-        ),
-        history_label: Some(snapshot.period_label()),
-        history_coverage_is_established: Some(snapshot.history_coverage_is_established),
-        last_30_days_tokens: last_30_days.0,
-        last_30_days_cost_usd: last_30_days.1,
-        metered_cost_usd: None,
-        daily: snapshot.daily.iter().map(cost_daily_payload).collect(),
-        projects: Vec::new(),
-        totals: cost_totals(snapshot, timezone),
-        provenance: Some(CostProvenance::ListPriceEstimate.raw_value().to_owned()),
-        coverage: Some(summary.coverage),
-        error: None,
-        incomplete_request_count: None,
     }
 }
 
@@ -2483,8 +2338,8 @@ fn cost_totals(
 /// CLI options for `ariadusage cost`.
 #[derive(Debug, Clone, Args, Default)]
 pub struct CostCommandArgs {
-    /// Provider to query (codex | claude | antigravity | all)
-    #[arg(short = 'p', long = "provider")]
+    /// Provider to query (codex | claude | antigravity | both | all)
+    #[arg(long = "provider")]
     pub provider: Option<String>,
 
     /// Output format: text | json
@@ -2492,7 +2347,7 @@ pub struct CostCommandArgs {
     pub format: Option<String>,
 
     /// Shorthand for `--format json`
-    #[arg(short = 'j', long = "json")]
+    #[arg(long = "json")]
     pub json: bool,
 
     /// Emit JSON-only output (errors also emitted as JSON)
@@ -2546,18 +2401,6 @@ pub struct CostCommandArgs {
     /// Identified subtotal window end, inclusive Unix milliseconds (UTC)
     #[arg(long = "identified-end")]
     pub identified_end: Option<i64>,
-
-    /// Log level
-    #[arg(long = "log-level")]
-    pub log_level: Option<String>,
-
-    /// Enable verbose logging
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
-
-    /// Emit JSON log lines on stderr
-    #[arg(long = "json-output")]
-    pub json_output: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2566,9 +2409,98 @@ pub struct CostRunEnvironment {
     pub codex_home: Option<PathBuf>,
     pub cache_root: Option<PathBuf>,
     pub config_path: Option<PathBuf>,
+    pub env: Option<BTreeMap<String, String>>,
     pub now: Option<Timestamp>,
     pub timezone: Option<TimeZone>,
     pub catalog: Option<ModelsDevCatalog>,
+}
+
+fn resolve_environment_map(env_overrides: &CostRunEnvironment) -> BTreeMap<String, String> {
+    env_overrides
+        .env
+        .clone()
+        .unwrap_or_else(|| std::env::vars().collect())
+}
+
+fn resolve_effective_home(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    if let Some(raw_home) = env.get("HOME").map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let candidate = PathBuf::from(raw_home);
+        if candidate.is_absolute() {
+            return Some(candidate);
+        }
+    }
+    etcetera::home_dir().ok().filter(|p| p.is_absolute())
+}
+
+fn resolve_effective_config_path(
+    env_overrides: &CostRunEnvironment,
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    if let Some(ref explicit) = env_overrides.config_path {
+        return Some(explicit.clone());
+    }
+    if env_overrides.env.is_some() {
+        ariadusage_engine::paths::resolve_config_path(
+            |var| env.get(var).map(std::ffi::OsString::from),
+            home,
+        )
+        .ok()
+    } else {
+        ariadusage_engine::paths::config_path().ok()
+    }
+}
+
+/// Resolves default Claude Code `projects` directories using `ClaudeConfigPaths`, matching
+/// `ClaudeConfigPaths.costProjectsRoots`:
+/// - When `CLAUDE_CONFIG_DIR` is non-empty, returns `[<CLAUDE_CONFIG_DIR>/projects]`.
+/// - Otherwise returns `[<HOME>/.config/claude/projects, <HOME>/.claude/projects]`.
+#[must_use]
+pub fn resolve_default_claude_projects_roots(
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+) -> Vec<PathBuf> {
+    use ariadusage_engine::providers::claude::{CLAUDE_CONFIG_DIR_ENV_KEY, ClaudeConfigPaths};
+
+    let working_dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let fallback_home = home
+        .map(Path::to_path_buf)
+        .or_else(|| resolve_effective_home(env))
+        .unwrap_or_else(|| PathBuf::from("/"));
+    let config_root = ClaudeConfigPaths::config_root(env, &working_dir, &fallback_home);
+    if ClaudeConfigPaths::resolved_directory_path(
+        env.get(CLAUDE_CONFIG_DIR_ENV_KEY).map(String::as_str),
+        &working_dir,
+    )
+    .is_some()
+    {
+        return vec![config_root.join("projects")];
+    }
+    let owner_home = ClaudeConfigPaths::resolved_directory_path(
+        env.get("HOME").map(String::as_str),
+        &working_dir,
+    )
+    .unwrap_or(fallback_home);
+    if owner_home == Path::new("/") {
+        return Vec::new();
+    }
+    vec![
+        owner_home.join(".config/claude/projects"),
+        config_root.join("projects"),
+    ]
+}
+
+/// Resolves the default Codex home directory (`CODEX_HOME` or `<HOME>/.codex`) via
+/// `ariadusage_engine::cost::codex::resolve_codex_roots_with`.
+#[must_use]
+pub fn resolve_default_codex_home(
+    env: &BTreeMap<String, String>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let default_opts = CodexScanOptions::default();
+    ariadusage_engine::cost::codex::resolve_codex_roots_with(&default_opts, env, home)
+        .first()
+        .and_then(|sessions_root| sessions_root.parent().map(Path::to_path_buf))
 }
 
 pub fn run_cost_command(args: &CostCommandArgs) -> i32 {
@@ -2657,9 +2589,9 @@ pub fn run_cost_command_with_env(
         .collect();
     if providers.is_empty() {
         return emit_cost_cli_error(
-            1,
+            EXIT_ARGS,
             "args",
-            "Error: cost is only supported for Claude, Codex.",
+            "Error: cost is only supported for Claude, Codex, Antigravity.",
             format,
             json_only,
             pretty,
@@ -2753,7 +2685,10 @@ fn resolve_cost_provider_selection(
 ) -> Result<Vec<CostProvider>, String> {
     if let Some(raw) = raw_provider {
         let trimmed = raw.trim().to_ascii_lowercase();
-        if trimmed == "all" || trimmed == "both" {
+        if trimmed == "both" {
+            return Ok(vec![CostProvider::Codex, CostProvider::Claude]);
+        }
+        if trimmed == "all" {
             return Ok(vec![
                 CostProvider::Codex,
                 CostProvider::Claude,
@@ -2767,10 +2702,9 @@ fn resolve_cost_provider_selection(
     }
 
     // Default to enabled providers in config (or defaults if config is absent/unreadable).
-    let store = env_overrides
-        .config_path
-        .clone()
-        .or_else(|| config::resolve_cli_config_path().ok())
+    let env = resolve_environment_map(env_overrides);
+    let effective_home = resolve_effective_home(&env);
+    let store = resolve_effective_config_path(env_overrides, &env, effective_home.as_deref())
         .map(ariadusage_engine::config_store::ConfigStore::new);
     if let Some(store) = store
         && let Ok(cfg) = store.load_effective()
@@ -2878,17 +2812,25 @@ fn load_local_provider_snapshot(
         until_key.as_str(),
         timestamp::BucketTimeZone::from_tz(timezone.clone()),
     );
-    let cache_root = env_overrides
-        .cache_root
-        .clone()
-        .unwrap_or_else(store::default_cache_root);
+    let env = resolve_environment_map(env_overrides);
+    let effective_home = resolve_effective_home(&env);
+    let cache_root = env_overrides.cache_root.clone().unwrap_or_else(|| {
+        let resolved = store::resolve_cache_root(&env, effective_home.as_deref());
+        if resolved.as_os_str().is_empty() {
+            store::default_cache_root()
+        } else {
+            resolved
+        }
+    });
 
     match provider {
         CostProvider::Claude => {
             let roots = env_overrides
                 .claude_projects_roots
                 .clone()
-                .unwrap_or_default();
+                .unwrap_or_else(|| {
+                    resolve_default_claude_projects_roots(&env, effective_home.as_deref())
+                });
             let claude_opts = ClaudeScanOptions {
                 claude_projects_roots: roots,
                 provider_filter: ClaudeLogProviderFilter::ExcludeVertexAi,
@@ -2916,8 +2858,12 @@ fn load_local_provider_snapshot(
                 let mut store = CostUsageStore::new(Some(&cache_root));
                 store.load_metadata().and_then(|m| m.priority_turns_cursor)
             };
+            let resolved_codex_home = env_overrides
+                .codex_home
+                .clone()
+                .or_else(|| resolve_default_codex_home(&env, effective_home.as_deref()));
             let codex_opts = CodexScanOptions {
-                codex_home: env_overrides.codex_home.clone(),
+                codex_home: resolved_codex_home,
                 codex_sessions_root: None,
                 priority_db_path: None,
                 temp_dir: Some(store::default_sqlite_copy_parent(Some(&cache_root))),
@@ -2942,13 +2888,132 @@ fn load_local_provider_snapshot(
                 timezone,
             )
         }
-        _ => CostUsageTokenSnapshot {
-            updated_at: now,
-            history_days,
-            ..CostUsageTokenSnapshot::default()
+        CostProvider::Antigravity => {
+            use ariadusage_engine::providers::antigravity::{
+                AntigravityLocalReader, Context as AntigravityScanContext,
+            };
+
+            let mut ag_env = env.clone();
+            if !ag_env
+                .get("HOME")
+                .is_some_and(|value| !value.trim().is_empty())
+                && let Some(ref home_path) = effective_home
+            {
+                ag_env.insert("HOME".to_owned(), home_path.to_string_lossy().into_owned());
+            }
+            let mut context = AntigravityScanContext::new(ag_env, Vec::new())
+                .with_copy_parent(store::default_sqlite_copy_parent(Some(&cache_root)));
+            if let Some(cfg_path) =
+                resolve_effective_config_path(env_overrides, &env, effective_home.as_deref())
+                && let Ok(cfg) =
+                    ariadusage_engine::config_store::ConfigStore::new(cfg_path).load_effective()
+                && let Some(provider_cfg) = cfg.provider_config("antigravity")
+            {
+                context = context.with_provider_config(provider_cfg);
+            }
+            let tz_offset_seconds = now.to_zoned(timezone.clone()).offset().seconds();
+            match AntigravityLocalReader::load_token_snapshot(
+                &context,
+                now,
+                history_days,
+                tz_offset_seconds,
+                Some(&cache_root),
+                || Ok(()),
+            ) {
+                Ok(ag_snap) => snapshot_from_antigravity_snapshot(ag_snap, period),
+                Err(_) => CostUsageTokenSnapshot {
+                    updated_at: now,
+                    history_days,
+                    history_coverage_is_established: false,
+                    ..CostUsageTokenSnapshot::default()
+                }
+                .reporting(period),
+            }
         }
-        .reporting(period),
     }
+}
+
+fn snapshot_from_antigravity_snapshot(
+    ag: ariadusage_engine::providers::antigravity::CostUsageTokenSnapshot,
+    period: CostReportingPeriod,
+) -> CostUsageTokenSnapshot {
+    use ariadusage_engine::providers::antigravity::CostProvenance as AgProvenance;
+
+    let daily: Vec<CostUsageDailyReportEntry> = ag
+        .daily
+        .into_iter()
+        .map(|entry| CostUsageDailyReportEntry {
+            date: entry.date,
+            input_tokens: entry.input_tokens.and_then(|v| i64::try_from(v).ok()),
+            output_tokens: entry.output_tokens.and_then(|v| i64::try_from(v).ok()),
+            cache_read_tokens: entry.cache_read_tokens.and_then(|v| i64::try_from(v).ok()),
+            cache_creation_tokens: entry
+                .cache_creation_tokens
+                .and_then(|v| i64::try_from(v).ok()),
+            reasoning_tokens: entry.reasoning_tokens.and_then(|v| i64::try_from(v).ok()),
+            total_tokens: entry.total_tokens.and_then(|v| i64::try_from(v).ok()),
+            request_count: entry.request_count.and_then(|v| i64::try_from(v).ok()),
+            cost_usd: entry.cost_usd,
+            models_used: entry.models_used,
+            model_breakdowns: entry.model_breakdowns.map(|bds| {
+                bds.into_iter()
+                    .map(|b| CostUsageModelBreakdown {
+                        model_name: b.model_name,
+                        cost_usd: b.cost_usd,
+                        total_tokens: b.total_tokens.and_then(|v| i64::try_from(v).ok()),
+                        request_count: b.request_count.and_then(|v| i64::try_from(v).ok()),
+                        input_tokens: b.input_tokens.and_then(|v| i64::try_from(v).ok()),
+                        output_tokens: b.output_tokens.and_then(|v| i64::try_from(v).ok()),
+                        cache_read_tokens: b.cache_read_tokens.and_then(|v| i64::try_from(v).ok()),
+                        cache_creation_tokens: b
+                            .cache_creation_tokens
+                            .and_then(|v| i64::try_from(v).ok()),
+                        reasoning_tokens: b.reasoning_tokens.and_then(|v| i64::try_from(v).ok()),
+                        ..CostUsageModelBreakdown::default()
+                    })
+                    .collect()
+            }),
+            unpriced_request_count: entry
+                .unpriced_request_count
+                .and_then(|v| i64::try_from(v).ok()),
+            priced_request_count: None,
+            unmetered_request_count: None,
+            estimated_request_count: entry
+                .estimated_request_count
+                .and_then(|v| i64::try_from(v).ok()),
+        })
+        .collect();
+
+    let provenance = match ag.cost_provenance {
+        AgProvenance::ListPriceEstimate => CostProvenance::ListPriceEstimate,
+        AgProvenance::VendorMetered => CostProvenance::VendorMetered,
+        AgProvenance::Mixed => CostProvenance::Mixed,
+        AgProvenance::Unknown => CostProvenance::Unknown,
+    };
+    let details_are_complete = ag.history_coverage_is_established && !ag.history_scan_is_partial;
+
+    CostUsageTokenSnapshot {
+        session_tokens: ag.session_tokens.and_then(|v| i64::try_from(v).ok()),
+        session_cost_usd: ag.session_cost_usd,
+        session_requests: ag.session_requests.and_then(|v| i64::try_from(v).ok()),
+        last_30_days_tokens: ag.last_30_days_tokens.and_then(|v| i64::try_from(v).ok()),
+        last_30_days_cost_usd: ag.last_30_days_cost_usd,
+        last_30_days_requests: ag.last_30_days_requests.and_then(|v| i64::try_from(v).ok()),
+        currency_code: ag.currency_code,
+        history_days: ag.history_days,
+        history_coverage_is_established: ag.history_coverage_is_established,
+        history_scan_is_partial: ag.history_scan_is_partial,
+        history_label: None,
+        reporting_period: None,
+        metered_cost_usd: None,
+        cost_provenance: provenance,
+        daily,
+        details_are_complete,
+        projects: Vec::new(),
+        sessions: Vec::new(),
+        updated_at: ag.updated_at,
+    }
+    .reporting(period)
 }
 
 fn convert_engine_entry(entry: &EngineDailyEntry) -> CostUsageDailyReportEntry {
