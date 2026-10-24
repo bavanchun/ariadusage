@@ -13,6 +13,7 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 
 use ariadusage_core::config::{
     Config, Issue, IssueSeverity, ProviderConfig, ProviderEntry, SecretPresence,
@@ -26,7 +27,8 @@ use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::error::StoreError;
 use ariadusage_engine::paths;
 use ariadusage_protocol::{
-    ConfigProviderStatusResult, ConfigProviderToggleResult, ConfigSetSourceResult, ProviderId,
+    ConfigIssueSeverity, ConfigProviderStatusResult, ConfigProviderToggleResult,
+    ConfigSetSourceResult, ConfigValidationIssuePayload, ProviderId,
 };
 use clap::{Args, Subcommand};
 use tokio_util::sync::CancellationToken;
@@ -35,6 +37,86 @@ pub use crate::hooks::HooksOutputFormat as OutputFormat;
 use crate::hooks::{
     HooksCliError, HooksErrorKind, HooksOutputArgs, HooksOutputFormat, HooksOutputPreferences,
 };
+
+/// CLI log level (`CodexBarLog.Level` in `CodexBarLog.swift`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CliLogLevel {
+    Trace,
+    Verbose,
+    Debug,
+    Info,
+    Warning,
+    Error,
+    Critical,
+}
+
+impl CliLogLevel {
+    /// Parses a raw `--log-level` value (`trace|verbose|debug|info|warning|error|critical`).
+    #[must_use]
+    pub fn parse_level(raw: Option<&str>) -> Option<Self> {
+        let trimmed = raw?.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        match trimmed.to_ascii_lowercase().as_str() {
+            "trace" => Some(Self::Trace),
+            "verbose" => Some(Self::Verbose),
+            "debug" => Some(Self::Debug),
+            "info" => Some(Self::Info),
+            "warning" => Some(Self::Warning),
+            "error" => Some(Self::Error),
+            "critical" => Some(Self::Critical),
+            _ => None,
+        }
+    }
+
+    /// Resolves the effective log level from `--verbose` and `--log-level` (`CodexBarCLI.resolvedLogLevel`).
+    #[must_use]
+    pub fn resolved(verbose: bool, raw_level: Option<&str>) -> Self {
+        Self::parse_level(raw_level).unwrap_or(if verbose { Self::Debug } else { Self::Error })
+    }
+}
+
+/// Resolved CLI logging configuration (`CodexBarLog.Configuration` in `CLIEntry.swift`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CliLoggingConfiguration {
+    pub level: CliLogLevel,
+    pub json: bool,
+}
+
+impl CliLoggingConfiguration {
+    /// Builds the CLI logging configuration from CLI flags (`CodexBarCLI.loggingConfiguration`).
+    #[must_use]
+    pub fn from_flags(
+        verbose: bool,
+        json_output: bool,
+        json_only: bool,
+        log_level: Option<&str>,
+    ) -> Self {
+        Self {
+            level: CliLogLevel::resolved(verbose, log_level),
+            json: json_output || json_only,
+        }
+    }
+}
+
+static CLI_LOGGING_CONFIG: OnceLock<Mutex<Option<CliLoggingConfiguration>>> = OnceLock::new();
+
+/// Bootstraps or updates the process-wide CLI logging configuration (`CodexBarLog.bootstrapIfNeeded`).
+pub fn bootstrap_cli_logging(config: CliLoggingConfiguration) {
+    let cell = CLI_LOGGING_CONFIG.get_or_init(|| Mutex::new(None));
+    if let Ok(mut guard) = cell.lock() {
+        *guard = Some(config);
+    }
+}
+
+/// Returns the most recently bootstrapped CLI logging configuration.
+#[must_use]
+pub fn current_cli_logging_configuration() -> Option<CliLoggingConfiguration> {
+    CLI_LOGGING_CONFIG
+        .get()
+        .and_then(|cell| cell.lock().ok().and_then(|g| *g))
+}
 
 /// Exit code for invalid CLI arguments (`CLIExitCode.invalidArguments`).
 pub const EXIT_ARGS: i32 = 2;
@@ -79,11 +161,36 @@ Examples:
   ariadusage config disable --provider antigravity
   ariadusage config set-source --provider claude --source cli";
 
-/// Common output flags accepted by `config` subcommands.
+/// Common output and logging flags accepted by `config` subcommands (`CLICommonOptions`).
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConfigCommonArgs {
     #[command(flatten)]
     pub output: HooksOutputArgs,
+
+    /// Enable verbose logging
+    #[arg(short = 'v', long = "verbose")]
+    pub verbose: bool,
+
+    /// Emit machine-readable logs
+    #[arg(long = "json-output")]
+    pub json_output: bool,
+
+    /// Set log level (trace|verbose|debug|info|warning|error|critical)
+    #[arg(long = "log-level")]
+    pub log_level: Option<String>,
+}
+
+impl ConfigCommonArgs {
+    /// Returns the resolved [`CliLoggingConfiguration`] for these flags.
+    #[must_use]
+    pub fn logging_configuration(&self) -> CliLoggingConfiguration {
+        CliLoggingConfiguration::from_flags(
+            self.verbose,
+            self.json_output,
+            self.output.json_only,
+            self.log_level.as_deref(),
+        )
+    }
 }
 
 /// Top-level `ariadusage config` arguments.
@@ -618,6 +725,7 @@ pub fn run_config_command_with_store(
             run_config_set_source_with_store(&sub, store, stdout)
         }
         Some(ConfigSubcommand::SetApiKey(sub)) => {
+            bootstrap_cli_logging(sub.common.logging_configuration());
             let output = HooksOutputPreferences::from_args(&sub.common.output);
             Err(HooksCliError {
                 code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
@@ -630,6 +738,7 @@ pub fn run_config_command_with_store(
             })
         }
         Some(ConfigSubcommand::Preferences(sub)) => {
+            bootstrap_cli_logging(sub.common.logging_configuration());
             let output = HooksOutputPreferences::from_args(&sub.common.output);
             Err(HooksCliError {
                 code: UNSUPPORTED_CONFIG_OPERATION_EXIT_CODE,
@@ -650,6 +759,7 @@ pub fn run_config_validate_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
+    bootstrap_cli_logging(common.logging_configuration());
     let output = resolve_config_output(&common.output)?;
     let config = load_config_from_store(store, output)?;
     let secrets = collect_secret_presence(&config);
@@ -663,7 +773,20 @@ pub fn run_config_validate_with_store(
             let _ = writeln!(stdout, "{}", render_config_validate_text(&issues));
         }
         HooksOutputFormat::Json => {
-            let _ = print_json(&issues, output.pretty, stdout);
+            let payload: Vec<ConfigValidationIssuePayload> = issues
+                .iter()
+                .map(|issue| ConfigValidationIssuePayload {
+                    severity: match issue.severity {
+                        IssueSeverity::Warning => ConfigIssueSeverity::Warning,
+                        IssueSeverity::Error => ConfigIssueSeverity::Error,
+                    },
+                    provider: issue.provider.clone(),
+                    field: issue.field.clone(),
+                    code: issue.code.clone(),
+                    message: issue.message.clone(),
+                })
+                .collect();
+            let _ = print_json(&payload, output.pretty, stdout);
         }
     }
 
@@ -686,6 +809,7 @@ pub fn run_config_dump_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
+    bootstrap_cli_logging(args.common.logging_configuration());
     let output = resolve_config_output(&args.common.output)?;
     if args.show_secrets {
         return Err(HooksCliError {
@@ -724,6 +848,7 @@ pub fn run_config_providers_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
+    bootstrap_cli_logging(common.logging_configuration());
     let output = resolve_config_output(&common.output)?;
     let config = load_config_from_store(store, output)?;
     let results = config_provider_statuses(&config);
@@ -749,6 +874,7 @@ pub fn run_config_set_provider_enabled_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
+    bootstrap_cli_logging(args.common.logging_configuration());
     let output = resolve_config_output(&args.common.output)?;
     let Some(descriptor) = resolve_config_provider(args.provider.as_deref()) else {
         return Err(args_failure(
@@ -785,6 +911,7 @@ pub fn run_config_set_source_with_store(
     store: &ConfigStore,
     stdout: &mut dyn Write,
 ) -> Result<(), HooksCliError> {
+    bootstrap_cli_logging(args.common.logging_configuration());
     let output = resolve_config_output(&args.common.output)?;
     let (descriptor, source) =
         config_source_selection(args.provider.as_deref(), args.source.as_deref())

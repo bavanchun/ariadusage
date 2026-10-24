@@ -35,6 +35,7 @@ rustix = { workspace = true, features = ["process"] }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }
+rusqlite = { workspace = true }
 tokio = { workspace = true }
 tempfile = { workspace = true }
 
