@@ -687,7 +687,12 @@ fn write_pattern(destination: &str, count: usize) -> Result<(), std::io::Error> 
 
     let mut stdout = std::io::stdout();
     let mut stderr = std::io::stderr();
-    let chunk = vec![b'x'; 16 * 1024];
+    let byte = if destination == "stdout-zero" {
+        0
+    } else {
+        b'x'
+    };
+    let chunk = vec![byte; 16 * 1024];
     let mut written = 0;
     while written < count {
         let size = (count - written).min(chunk.len());
