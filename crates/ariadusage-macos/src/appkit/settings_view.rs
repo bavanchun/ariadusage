@@ -6,31 +6,40 @@
 // Ported from CodexBar Sources/CodexBar/PreferencesMenuPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesAboutPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarLayoutEditor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesICloudSyncPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesSpendDashboardPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesNotificationsPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesAdvancedPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesHooksPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesPluginsPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderDetailView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderSettingsRows.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! Native AppKit Settings view hierarchy hosting an `NSOutlineView` source-list
 //! sidebar, `NSSearchField`, sort/filter controls, navigation header, and a
 //! scrollable detail document built from native `NSSwitch`, `NSPopUpButton`,
-//! `NSButton`, `NSSlider`, `NSStepper`, and `NSTextField` controls positioned
-//! by [`crate::settings_layout::layout_settings_window`].
+//! `NSButton`, `NSSegmentedControl`, `NSColorWell`, `NSSlider`, `NSStepper`,
+//! and `NSTextField` controls positioned by
+//! [`crate::settings_layout::layout_settings_window`].
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use ariadusage_protocol::ids::SettingId;
-use ariadusage_protocol::settings::SettingsPage;
+use ariadusage_protocol::ids::{ActionId, ProviderId, SettingId};
+use ariadusage_protocol::settings::{SettingsPage, SettingsScope};
 use ariadusage_protocol::snapshot::EngineSnapshot;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSBezelStyle, NSBezierPath, NSBitmapImageRep, NSButton, NSButtonType, NSColor,
-    NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags, NSFont,
-    NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold, NSImage,
-    NSLineBreakMode, NSOutlineView, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
-    NSResponder, NSScrollView, NSSearchField, NSSlider, NSStepper, NSSwitch, NSTableColumn,
-    NSTableRowView, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextAlignment,
-    NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
-    NSVisualEffectView, NSWorkspace,
+    NSColorWell, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
+    NSFont, NSFontWeightBold, NSFontWeightMedium, NSFontWeightRegular, NSFontWeightSemibold,
+    NSImage, NSLineBreakMode, NSOutlineView, NSPasteboard, NSPasteboardTypeString, NSPopUpButton,
+    NSResponder, NSScrollView, NSSearchField, NSSegmentedControl, NSSlider, NSStepper, NSSwitch,
+    NSTableColumn, NSTableRowView, NSTableViewSelectionHighlightStyle, NSTableViewStyle,
+    NSTextAlignment, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
+    NSVisualEffectState, NSVisualEffectView, NSWorkspace,
 };
 use objc2_foundation::{
     NSIndexSet, NSNotification, NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
@@ -43,7 +52,8 @@ use crate::geometry::{Point, Rect, Size};
 use crate::settings::{
     ChoiceItem, FormButtonAction, ProviderStatusDotColor, SIDEBAR_DEFAULT_WIDTH, SettingsPane,
     SettingsSelection, SettingsState, SidebarChipStyle, SidebarFilterState, SidebarModel,
-    WINDOW_HEIGHT, WINDOW_WIDTH, clamp_sidebar_width, pane_model,
+    WINDOW_HEIGHT, WINDOW_WIDTH, clamp_sidebar_width, pane_model, secret_set_command_args,
+    secret_set_terminal_command,
 };
 use crate::settings_layout::{
     DETAIL_HEADER_HEIGHT, FormButtonLayout, FormControlLayout, FormRowLayout, FormSectionLayout,
@@ -63,6 +73,7 @@ enum ControlBinding {
     Choice {
         setting_id: SettingId,
         options: Vec<ChoiceItem>,
+        pulls_down: bool,
     },
     ButtonAction(FormButtonAction),
     OpenUrl(String),
@@ -90,6 +101,14 @@ enum IconDrawKind {
     BarsMini {
         dark: bool,
         enabled: bool,
+    },
+    UsageProgressBar {
+        percent_used: f64,
+        accent_rgb: Rgb,
+        dark: bool,
+    },
+    MetricBox {
+        dark: bool,
     },
 }
 
@@ -160,6 +179,46 @@ define_class!(
                         palette.text_disabled()
                     };
                     draw_bars_mini_glyph(rect, color);
+                }
+                IconDrawKind::UsageProgressBar {
+                    percent_used,
+                    accent_rgb,
+                    dark,
+                } => {
+                    let palette = Palette { dark };
+                    let radius = (rect.h / 2.0).max(2.0);
+                    palette.control_bg(true).setFill();
+                    NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                        ns_rect(rect),
+                        radius,
+                        radius,
+                    )
+                    .fill();
+                    let remaining_frac = ((100.0 - percent_used).clamp(0.0, 100.0)) / 100.0;
+                    let fill_w = (rect.w * remaining_frac).max(if remaining_frac > 0.0 {
+                        4.0
+                    } else {
+                        0.0
+                    });
+                    if fill_w > 0.0 {
+                        let fill_rect = Rect::new(rect.x, rect.y, fill_w, rect.h);
+                        rgb_color(accent_rgb, 1.0).setFill();
+                        NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                            ns_rect(fill_rect),
+                            radius,
+                            radius,
+                        )
+                        .fill();
+                    }
+                }
+                IconDrawKind::MetricBox { dark } => {
+                    let palette = Palette { dark };
+                    fill_stroke_rounded(
+                        rect,
+                        8.0,
+                        palette.control_bg(false),
+                        palette.card_border(),
+                    );
                 }
             }
         }
@@ -385,6 +444,8 @@ pub struct SettingsViewState {
     pub engine_client: Option<EngineClient>,
     pub on_setting_changed: Option<SettingChangeCallback>,
     pub layout: Option<SettingsWindowLayout>,
+    pub last_secret_terminal_command: Option<Vec<String>>,
+    pub last_refreshed_provider: Option<Option<String>>,
     sidebar_effect_view: Option<Retained<NSVisualEffectView>>,
     search_field: Option<Retained<NSSearchField>>,
     sort_button: Option<Retained<NSButton>>,
@@ -416,6 +477,8 @@ impl Default for SettingsViewState {
             engine_client: None,
             on_setting_changed: None,
             layout: None,
+            last_secret_terminal_command: None,
+            last_refreshed_provider: None,
             sidebar_effect_view: None,
             search_field: None,
             sort_button: None,
@@ -597,6 +660,19 @@ define_class!(
             }
         }
 
+        #[unsafe(method(checkboxToggled:))]
+        fn checkbox_toggled(&self, sender: Option<&NSButton>) {
+            let Some(sender) = sender else {
+                return;
+            };
+            let idx = sender.tag() as usize;
+            let binding = self.ivars().borrow().control_bindings.get(idx).cloned();
+            if let Some(ControlBinding::Toggle { setting_id }) = binding {
+                let on = sender.state() == NSControlStateValueOn;
+                self.apply_setting_change(&setting_id, serde_json::Value::Bool(on));
+            }
+        }
+
         #[unsafe(method(choicePopupChanged:))]
         fn choice_popup_changed(&self, sender: Option<&NSPopUpButton>) {
             let Some(sender) = sender else {
@@ -607,12 +683,24 @@ define_class!(
             if let Some(ControlBinding::Choice {
                 setting_id,
                 options,
+                pulls_down,
             }) = binding
             {
-                // In a pull-down `NSPopUpButton`, index 0 is the title item and options start at 1.
                 let item_idx = sender.indexOfSelectedItem();
-                if item_idx >= 1
-                    && let Some(choice) = options.get((item_idx - 1) as usize)
+                let opt_idx = if pulls_down {
+                    // In a pull-down `NSPopUpButton`, index 0 is the title item and options start at 1.
+                    if item_idx >= 1 {
+                        Some((item_idx - 1) as usize)
+                    } else {
+                        None
+                    }
+                } else if item_idx >= 0 {
+                    Some(item_idx as usize)
+                } else {
+                    None
+                };
+                if let Some(i) = opt_idx
+                    && let Some(choice) = options.get(i)
                 {
                     self.apply_setting_change(&setting_id, choice.to_json_value());
                 }
@@ -780,6 +868,7 @@ define_class!(
                     was != pane
                 };
                 if changed {
+                    self.request_provider_settings_if_needed(&pane);
                     self.rebuild_detail_only();
                     self.setNeedsDisplay(true);
                 }
@@ -1205,10 +1294,29 @@ impl SettingsView {
     pub fn select_pane(&self, pane: SettingsPane) {
         {
             let mut state = self.ivars().borrow_mut();
-            state.selection.select(pane);
+            state.selection.select(pane.clone());
         }
+        self.request_provider_settings_if_needed(&pane);
         self.rebuild_ui();
         self.setNeedsDisplay(true);
+    }
+
+    fn request_provider_settings_if_needed(&self, pane: &SettingsPane) {
+        if let SettingsPane::Provider(id) = pane
+            && matches!(id.as_str(), "codex" | "claude" | "antigravity")
+            && let Some(client) = self.ivars().borrow().engine_client.clone()
+            && let Ok(pid) = ProviderId::new(id.clone())
+        {
+            client.get_settings(SettingsScope::Provider(pid));
+        }
+    }
+
+    pub fn last_secret_terminal_command(&self) -> Option<Vec<String>> {
+        self.ivars().borrow().last_secret_terminal_command.clone()
+    }
+
+    pub fn last_refreshed_provider(&self) -> Option<Option<String>> {
+        self.ivars().borrow().last_refreshed_provider.clone()
     }
 
     pub fn selected_pane(&self) -> SettingsPane {
@@ -1317,17 +1425,26 @@ impl SettingsView {
         let (sidebar_model, layout) = self.recompute_layout();
         self.sync_sidebar_subviews(&sidebar_model, &layout);
         self.sync_detail_subviews(&layout);
+        if let Some(win) = self.window() {
+            win.recalculateKeyViewLoop();
+        }
     }
 
     fn rebuild_sidebar_only(&self) {
         let (sidebar_model, layout) = self.recompute_layout();
         self.sync_sidebar_subviews(&sidebar_model, &layout);
+        if let Some(win) = self.window() {
+            win.recalculateKeyViewLoop();
+        }
         self.setNeedsDisplay(true);
     }
 
     fn rebuild_detail_only(&self) {
         let (_sidebar_model, layout) = self.recompute_layout();
         self.sync_detail_subviews(&layout);
+        if let Some(win) = self.window() {
+            win.recalculateKeyViewLoop();
+        }
     }
 
     fn sync_sidebar_subviews(&self, sidebar_model: &SidebarModel, layout: &SettingsWindowLayout) {
@@ -2164,6 +2281,513 @@ impl SettingsView {
                     palette,
                 );
             }
+            FormControlLayout::Checkbox {
+                rect,
+                value,
+                enabled,
+                setting_id,
+            } => {
+                let is_en = *enabled && row_enabled;
+                let cb = NSButton::new(mtm);
+                cb.setFrame(ns_rect(to_card(*rect)));
+                cb.setButtonType(NSButtonType::Switch);
+                cb.setTitle(&NSString::from_str(&row.title));
+                cb.setState(if *value {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+                cb.setEnabled(is_en);
+                // SAFETY: setting accessibility description and target/action on `cb`.
+                unsafe {
+                    let desc = NSString::from_str(&row.title);
+                    let _: () = msg_send![&cb, setAccessibilityLabel: &*desc];
+                    if let Some(id) = setting_id {
+                        let tag = self.register_binding(ControlBinding::Toggle {
+                            setting_id: id.clone(),
+                        });
+                        cb.setTag(tag);
+                        cb.setTarget(Some(self));
+                        cb.setAction(Some(sel!(checkboxToggled:)));
+                    }
+                }
+                card_view.addSubview(&cb);
+            }
+            FormControlLayout::BorderedChoice {
+                rect,
+                selected_label,
+                options,
+                enabled,
+                setting_id,
+            } => {
+                let popup = self.make_bordered_choice_popup(
+                    to_card(*rect),
+                    selected_label,
+                    options,
+                    *enabled && row_enabled,
+                    setting_id.clone(),
+                );
+                card_view.addSubview(&popup);
+            }
+            FormControlLayout::Segmented {
+                segmented_rect,
+                trailing_note_rect,
+                labels,
+                selected_index,
+                trailing_note,
+                enabled,
+            } => {
+                let is_en = *enabled && row_enabled;
+                let seg = NSSegmentedControl::new(mtm);
+                seg.setFrame(ns_rect(to_card(*segmented_rect)));
+                seg.setSegmentCount(labels.len() as isize);
+                for (i, lbl) in labels.iter().enumerate() {
+                    seg.setLabel_forSegment(&NSString::from_str(lbl), i as isize);
+                    let w = (lbl.chars().count() as f64 * 6.8 + 18.0).max(44.0);
+                    seg.setWidth_forSegment(w, i as isize);
+                }
+                if *selected_index < labels.len() {
+                    seg.setSelectedSegment(*selected_index as isize);
+                }
+                seg.setEnabled(is_en);
+                // SAFETY: setting accessibility label on `NSSegmentedControl`.
+                unsafe {
+                    let desc = NSString::from_str(&row.title);
+                    let _: () = msg_send![&seg, setAccessibilityLabel: &*desc];
+                }
+                card_view.addSubview(&seg);
+
+                if let (Some(note), Some(nr)) = (trailing_note, trailing_note_rect) {
+                    let note_lbl = make_label(
+                        mtm,
+                        to_card(*nr),
+                        note,
+                        11.5,
+                        Weight::Regular,
+                        &sub_color,
+                        NSTextAlignment::Left,
+                        1,
+                        is_en,
+                    );
+                    card_view.addSubview(&note_lbl);
+                }
+            }
+            FormControlLayout::ReadOnlyValue {
+                value_rect,
+                value,
+                monospaced,
+            } => {
+                if !value.is_empty() {
+                    let align = if row.title.is_empty() {
+                        NSTextAlignment::Left
+                    } else {
+                        NSTextAlignment::Right
+                    };
+                    let val_lbl = make_label(
+                        mtm,
+                        to_card(*value_rect),
+                        value,
+                        12.0,
+                        Weight::Regular,
+                        &sub_color,
+                        align,
+                        if row.title.is_empty() { 2 } else { 1 },
+                        row_enabled,
+                    );
+                    if *monospaced {
+                        // SAFETY: `NSFontWeightRegular` is an immutable AppKit font weight constant.
+                        let mono = NSFont::monospacedSystemFontOfSize_weight(11.5, unsafe {
+                            NSFontWeightRegular
+                        });
+                        val_lbl.setFont(Some(&mono));
+                    }
+                    card_view.addSubview(&val_lbl);
+                }
+            }
+            FormControlLayout::SecretStatus {
+                status_rect,
+                button,
+                is_set,
+                status_text,
+            } => {
+                let status_color = if *is_set {
+                    palette.text_primary()
+                } else {
+                    palette.text_secondary()
+                };
+                let status_lbl = make_label(
+                    mtm,
+                    to_card(*status_rect),
+                    status_text,
+                    12.0,
+                    Weight::Medium,
+                    &status_color,
+                    NSTextAlignment::Right,
+                    1,
+                    row_enabled,
+                );
+                card_view.addSubview(&status_lbl);
+
+                let btn = self.make_action_button(to_card(button.rect), button, row_enabled);
+                card_view.addSubview(&btn);
+            }
+            FormControlLayout::ColorHex {
+                field_rect,
+                swatch_rect,
+                hex_value,
+                placeholder,
+                swatch_rgb,
+                enabled,
+            } => {
+                let is_en = *enabled && row_enabled;
+                let base_label = if row.title.is_empty() {
+                    "Accent color"
+                } else {
+                    row.title.as_str()
+                };
+                let tf = NSTextField::new(mtm);
+                tf.setFrame(ns_rect(to_card(*field_rect)));
+                tf.setStringValue(&NSString::from_str(hex_value));
+                tf.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+                tf.setEnabled(is_en);
+                // SAFETY: setting accessibility description on hex `NSTextField`.
+                unsafe {
+                    let desc = NSString::from_str(&format!("{base_label}, Hex color value"));
+                    let _: () = msg_send![&tf, setAccessibilityLabel: &*desc];
+                }
+                card_view.addSubview(&tf);
+
+                // SAFETY: `initWithFrame:` is `NSColorWell`'s designated initializer.
+                let well: Retained<NSColorWell> = unsafe {
+                    msg_send![
+                        NSColorWell::alloc(mtm),
+                        initWithFrame: ns_rect(to_card(*swatch_rect))
+                    ]
+                };
+                well.setColor(&rgb_color(*swatch_rgb, 1.0));
+                well.setEnabled(is_en);
+                // SAFETY: setting accessibility description on `NSColorWell`.
+                unsafe {
+                    let desc = NSString::from_str(base_label);
+                    let _: () = msg_send![&well, setAccessibilityLabel: &*desc];
+                }
+                card_view.addSubview(&well);
+            }
+            FormControlLayout::ProviderHeader {
+                icon_rect,
+                title_rect,
+                subtitle_rect,
+                refresh_button,
+                toggle_rect,
+                provider_id,
+                display_name,
+                subtitle,
+                enabled,
+                toggle_setting_id,
+            } => {
+                let glyph = SettingsIconView::new(
+                    mtm,
+                    to_card(*icon_rect),
+                    IconDrawKind::ProviderGlyph {
+                        provider_id: provider_id.clone(),
+                        enabled: *enabled,
+                        dark: palette.dark,
+                    },
+                );
+                card_view.addSubview(&glyph);
+
+                let name_lbl = make_label(
+                    mtm,
+                    to_card(*title_rect),
+                    display_name,
+                    15.0,
+                    Weight::Semibold,
+                    &palette.text_primary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                );
+                card_view.addSubview(&name_lbl);
+
+                let sub_lbl = make_label(
+                    mtm,
+                    to_card(*subtitle_rect),
+                    subtitle,
+                    11.5,
+                    Weight::Regular,
+                    &palette.text_secondary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                );
+                card_view.addSubview(&sub_lbl);
+
+                let ref_btn = NSButton::new(mtm);
+                ref_btn.setFrame(ns_rect(to_card(refresh_button.rect)));
+                ref_btn.setBordered(false);
+                ref_btn.setTitle(&NSString::from_str(""));
+                if let Some(img) = symbol_image("arrow.clockwise", Some("Refresh")) {
+                    ref_btn.setImage(Some(&img));
+                } else {
+                    ref_btn.setTitle(&NSString::from_str("↻"));
+                }
+                ref_btn.setEnabled(refresh_button.enabled && row_enabled);
+                let ref_tag = self
+                    .register_binding(ControlBinding::ButtonAction(refresh_button.action.clone()));
+                ref_btn.setTag(ref_tag);
+                // SAFETY: setting accessibility description and target/action on `ref_btn`.
+                unsafe {
+                    let desc = NSString::from_str("Refresh");
+                    let _: () = msg_send![&ref_btn, setAccessibilityLabel: &*desc];
+                    ref_btn.setTarget(Some(self));
+                    ref_btn.setAction(Some(sel!(controlActionClicked:)));
+                }
+                card_view.addSubview(&ref_btn);
+
+                let sw = NSSwitch::new(mtm);
+                sw.setFrame(ns_rect(to_card(*toggle_rect)));
+                sw.setState(if *enabled {
+                    NSControlStateValueOn
+                } else {
+                    NSControlStateValueOff
+                });
+                sw.setEnabled(toggle_setting_id.is_some() && row_enabled);
+                // SAFETY: setting accessibility description `"Enabled"` and target/action on `NSSwitch`.
+                unsafe {
+                    let desc = NSString::from_str("Enabled");
+                    let _: () = msg_send![&sw, setAccessibilityLabel: &*desc];
+                    if let Some(id) = toggle_setting_id {
+                        let tag = self.register_binding(ControlBinding::Toggle {
+                            setting_id: id.clone(),
+                        });
+                        sw.setTag(tag);
+                        sw.setTarget(Some(self));
+                        sw.setAction(Some(sel!(switchToggled:)));
+                    }
+                }
+                card_view.addSubview(&sw);
+            }
+            FormControlLayout::UsageWindowBar {
+                title_rect,
+                reset_rect,
+                bar_rect,
+                pace_rect,
+                title,
+                percent_used,
+                percent_label,
+                reset_label,
+                pace_label,
+                accent_rgb,
+            } => {
+                let left_text = format!("{title} {percent_label}");
+                let left_lbl = make_label(
+                    mtm,
+                    to_card(*title_rect),
+                    &left_text,
+                    12.0,
+                    Weight::Medium,
+                    &palette.text_primary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                );
+                card_view.addSubview(&left_lbl);
+
+                let right_lbl = make_label(
+                    mtm,
+                    to_card(*reset_rect),
+                    reset_label,
+                    11.5,
+                    Weight::Regular,
+                    &palette.text_secondary(),
+                    NSTextAlignment::Right,
+                    1,
+                    true,
+                );
+                card_view.addSubview(&right_lbl);
+
+                let bar_view = SettingsIconView::new(
+                    mtm,
+                    to_card(*bar_rect),
+                    IconDrawKind::UsageProgressBar {
+                        percent_used: *percent_used,
+                        accent_rgb: *accent_rgb,
+                        dark: palette.dark,
+                    },
+                );
+                // SAFETY: exposing `bar_view` as `"Usage remaining"` in the AX tree.
+                unsafe {
+                    let role = NSString::from_str("AXValueIndicator");
+                    let desc = NSString::from_str("Usage remaining");
+                    let _: () = msg_send![&bar_view, setAccessibilityElement: true];
+                    let _: () = msg_send![&bar_view, setAccessibilityRole: &*role];
+                    let _: () = msg_send![&bar_view, setAccessibilityLabel: &*desc];
+                }
+                card_view.addSubview(&bar_view);
+
+                if let (Some(pace), Some(pr)) = (pace_label, pace_rect) {
+                    let pace_lbl = make_label(
+                        mtm,
+                        to_card(*pr),
+                        pace,
+                        11.0,
+                        Weight::Regular,
+                        &palette.text_secondary(),
+                        NSTextAlignment::Left,
+                        1,
+                        true,
+                    );
+                    card_view.addSubview(&pace_lbl);
+                }
+            }
+            FormControlLayout::EmptyStateCard {
+                icon_rect,
+                title_rect,
+                subtitle_rect,
+                symbol,
+                title,
+                subtitle,
+            } => {
+                let icon_view = SettingsIconView::new(
+                    mtm,
+                    to_card(*icon_rect),
+                    IconDrawKind::SidebarChip(SidebarChipStyle::Symbol {
+                        symbol,
+                        color: Rgb {
+                            r: 88,
+                            g: 86,
+                            b: 214,
+                        },
+                    }),
+                );
+                card_view.addSubview(&icon_view);
+
+                let t_lbl = make_label(
+                    mtm,
+                    to_card(*title_rect),
+                    title,
+                    14.0,
+                    Weight::Semibold,
+                    &palette.text_primary(),
+                    NSTextAlignment::Center,
+                    1,
+                    true,
+                );
+                card_view.addSubview(&t_lbl);
+
+                let s_lbl = make_label(
+                    mtm,
+                    to_card(*subtitle_rect),
+                    subtitle,
+                    12.0,
+                    Weight::Regular,
+                    &palette.text_secondary(),
+                    NSTextAlignment::Center,
+                    2,
+                    true,
+                );
+                card_view.addSubview(&s_lbl);
+            }
+            FormControlLayout::SpendSummaryGrid {
+                currency_rect,
+                coverage_rect,
+                metric_boxes,
+                token_items,
+                footer_rect,
+                currency_label,
+                coverage_label,
+                footer_note,
+            } => {
+                card_view.addSubview(&make_label(
+                    mtm,
+                    to_card(*currency_rect),
+                    currency_label,
+                    12.0,
+                    Weight::Semibold,
+                    &palette.text_primary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                ));
+                card_view.addSubview(&make_label(
+                    mtm,
+                    to_card(*coverage_rect),
+                    coverage_label,
+                    11.5,
+                    Weight::Regular,
+                    &palette.text_secondary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                ));
+                for (box_r, m_title, m_val) in metric_boxes {
+                    let bc = to_card(*box_r);
+                    let bg = SettingsIconView::new(
+                        mtm,
+                        bc,
+                        IconDrawKind::MetricBox { dark: palette.dark },
+                    );
+                    card_view.addSubview(&bg);
+                    card_view.addSubview(&make_label(
+                        mtm,
+                        Rect::new(bc.x + 10.0, bc.y + 8.0, (bc.w - 20.0).max(40.0), 15.0),
+                        m_title,
+                        11.0,
+                        Weight::Medium,
+                        &palette.text_secondary(),
+                        NSTextAlignment::Left,
+                        1,
+                        true,
+                    ));
+                    card_view.addSubview(&make_label(
+                        mtm,
+                        Rect::new(bc.x + 10.0, bc.y + 26.0, (bc.w - 20.0).max(40.0), 20.0),
+                        m_val,
+                        14.0,
+                        Weight::Semibold,
+                        &palette.text_primary(),
+                        NSTextAlignment::Left,
+                        1,
+                        true,
+                    ));
+                }
+                for (tok_r, t_title, t_val) in token_items {
+                    let tc = to_card(*tok_r);
+                    card_view.addSubview(&make_label(
+                        mtm,
+                        Rect::new(tc.x, tc.y + 2.0, tc.w, 15.0),
+                        t_title,
+                        11.0,
+                        Weight::Regular,
+                        &palette.text_secondary(),
+                        NSTextAlignment::Left,
+                        1,
+                        true,
+                    ));
+                    card_view.addSubview(&make_label(
+                        mtm,
+                        Rect::new(tc.x, tc.y + 18.0, tc.w, 16.0),
+                        t_val,
+                        12.0,
+                        Weight::Medium,
+                        &palette.text_primary(),
+                        NSTextAlignment::Left,
+                        1,
+                        true,
+                    ));
+                }
+                card_view.addSubview(&make_label(
+                    mtm,
+                    to_card(*footer_rect),
+                    footer_note,
+                    11.0,
+                    Weight::Regular,
+                    &palette.text_secondary(),
+                    NSTextAlignment::Left,
+                    1,
+                    true,
+                ));
+            }
             FormControlLayout::ExternalLink { .. } => {}
         }
     }
@@ -2483,6 +3107,56 @@ impl SettingsView {
                 let tag = self.register_binding(ControlBinding::Choice {
                     setting_id: id,
                     options: options.to_vec(),
+                    pulls_down: true,
+                });
+                popup.setTag(tag);
+                popup.setTarget(Some(self));
+                popup.setAction(Some(sel!(choicePopupChanged:)));
+            }
+        }
+        popup
+    }
+
+    fn make_bordered_choice_popup(
+        &self,
+        frame: Rect,
+        selected_label: &str,
+        options: &[ChoiceItem],
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    ) -> Retained<NSPopUpButton> {
+        let mtm = self.mtm();
+        // SAFETY: `initWithFrame:pullsDown:` with `pullsDown = false` and `bordered = true`
+        // produces a standard `AXPopUpButton`.
+        let popup: Retained<NSPopUpButton> = unsafe {
+            msg_send![
+                NSPopUpButton::alloc(mtm),
+                initWithFrame: ns_rect(frame),
+                pullsDown: false
+            ]
+        };
+        popup.setBordered(true);
+        popup.setFont(Some(&system_font(12.0, Weight::Regular)));
+        if options.is_empty() {
+            popup.addItemWithTitle(&NSString::from_str(selected_label));
+        } else {
+            let mut selected_idx = 0isize;
+            for (idx, opt) in options.iter().enumerate() {
+                popup.addItemWithTitle(&NSString::from_str(opt.label()));
+                if opt.label() == selected_label {
+                    selected_idx = idx as isize;
+                }
+            }
+            popup.selectItemAtIndex(selected_idx);
+        }
+        popup.setEnabled(enabled);
+        // SAFETY: setting target/action on `popup`.
+        unsafe {
+            if let Some(id) = setting_id {
+                let tag = self.register_binding(ControlBinding::Choice {
+                    setting_id: id,
+                    options: options.to_vec(),
+                    pulls_down: false,
                 });
                 popup.setTag(tag);
                 popup.setTarget(Some(self));
@@ -2498,21 +3172,7 @@ impl SettingsView {
         selected_label: &str,
         enabled: bool,
     ) -> Retained<NSPopUpButton> {
-        let mtm = self.mtm();
-        // SAFETY: `initWithFrame:pullsDown:` with `pullsDown = false` and `bordered = true`
-        // produces a standard `AXPopUpButton`.
-        let popup: Retained<NSPopUpButton> = unsafe {
-            msg_send![
-                NSPopUpButton::alloc(mtm),
-                initWithFrame: ns_rect(frame),
-                pullsDown: false
-            ]
-        };
-        popup.setBordered(true);
-        popup.setFont(Some(&system_font(11.0, Weight::Regular)));
-        popup.addItemWithTitle(&NSString::from_str(selected_label));
-        popup.setEnabled(enabled);
-        popup
+        self.make_bordered_choice_popup(frame, selected_label, &[], enabled, None)
     }
 
     fn make_action_button(
@@ -2559,7 +3219,11 @@ impl SettingsView {
         if let Some(cb) = callback {
             cb(setting_id, value);
         }
-        self.rebuild_detail_only();
+        if setting_id.as_str().ends_with(".enabled") {
+            self.rebuild_ui();
+        } else {
+            self.rebuild_detail_only();
+        }
         self.setNeedsDisplay(true);
     }
 
@@ -2571,6 +3235,39 @@ impl SettingsView {
                 app.terminate(None);
             }
             FormButtonAction::OpenUrl(url) => open_external_url(&url),
+            FormButtonAction::RefreshProvider(provider_id) => {
+                let client = {
+                    let mut state = self.ivars().borrow_mut();
+                    state.last_refreshed_provider = Some(provider_id.clone());
+                    state.engine_client.clone()
+                };
+                if let Some(c) = client {
+                    let pid = provider_id.and_then(|s| ProviderId::new(s).ok());
+                    c.refresh(pid);
+                }
+            }
+            FormButtonAction::LaunchSecretSetInTerminal { setting_id } => {
+                let args = secret_set_command_args(&setting_id);
+                let cmd_line = secret_set_terminal_command(&setting_id);
+                self.ivars().borrow_mut().last_secret_terminal_command = Some(args.to_vec());
+                copy_to_pasteboard(&cmd_line);
+                if std::env::var_os("NEXTEST").is_none()
+                    && std::env::var_os("ARIADUSAGE_DISABLE_TERMINAL_LAUNCH").is_none()
+                {
+                    let _ = std::process::Command::new("/usr/bin/open")
+                        .args(["-a", "Terminal"])
+                        .spawn();
+                }
+            }
+            FormButtonAction::RunEngineAction { action_id } => {
+                let client = self.ivars().borrow().engine_client.clone();
+                if let Some(c) = client
+                    && let Ok(aid) = ActionId::new(action_id)
+                {
+                    c.run_action(aid, Some(true));
+                }
+            }
+            FormButtonAction::CopyText(text) => copy_to_pasteboard(&text),
         }
     }
 

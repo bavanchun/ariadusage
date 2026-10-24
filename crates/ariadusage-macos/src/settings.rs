@@ -3,9 +3,22 @@
 // Ported from CodexBar Sources/CodexBar/PreferencesSelection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesComponents.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesGeneralPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesICloudSyncPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesSpendDashboardPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesNotificationsPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesMenuBarPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesMenuPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesAdvancedPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesHTTPServerSection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesHooksPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesPluginsPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesAboutPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProvidersPane.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderDetailView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderSettingsRows.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderErrorView.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesCodexAccountsSection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/PreferencesProviderDirectoryList.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/PreferencesTransferSection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarLayoutEditor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/SettingsWindowController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -22,7 +35,7 @@ use ariadusage_protocol::settings::{DescriptorKind, SettingsPage};
 use ariadusage_protocol::snapshot::{EngineSnapshot, ProviderSnapshot};
 use ariadusage_protocol::usage::StatusIndicator;
 
-use crate::card::Rgb;
+pub use crate::card::Rgb;
 
 /// Window identifier (`SettingsWindowIdentity.identifier`, adapted to AriadUsage's bundle ID).
 pub const WINDOW_IDENTIFIER: &str = "io.github.bavanchun.ariadusage.settings";
@@ -180,15 +193,12 @@ impl SettingsPane {
     /// Whether the detail header bar displays the pane title next to the Back/Forward buttons
     /// (`SettingsDetailHeader.showsTitle`).
     pub fn shows_detail_header_title(&self) -> bool {
-        !matches!(self, Self::UsageSpend)
+        !matches!(self, Self::UsageSpend | Self::Provider(_))
     }
 
     /// Whether this pane's body is staged as empty in this slice.
     pub fn is_staged_empty_pane(&self) -> bool {
-        !matches!(
-            self,
-            Self::General | Self::MenuBar | Self::Menu | Self::About
-        )
+        matches!(self, Self::Debug)
     }
 
     /// Sidebar chip style for app panes (`SettingsSidebarView.appPanesSection`).
@@ -694,7 +704,7 @@ impl SidebarModel {
         snapshot: Option<&EngineSnapshot>,
         status_checks_enabled: bool,
     ) -> Self {
-        let inputs: Vec<SidebarProviderInput> = match snapshot {
+        let mut inputs: Vec<SidebarProviderInput> = match snapshot {
             Some(snap) if !snap.providers.is_empty() => snap
                 .providers
                 .iter()
@@ -702,6 +712,15 @@ impl SidebarModel {
                 .collect(),
             _ => default_provider_inputs(),
         };
+        if !inputs.iter().any(|p| p.id == "cursor") {
+            inputs.push(SidebarProviderInput {
+                id: "cursor".to_string(),
+                display_name: "Cursor".to_string(),
+                enabled: false,
+                refreshing: false,
+                status_indicator: None,
+            });
+        }
         Self::build(filter, &inputs, status_checks_enabled)
     }
 }
@@ -753,7 +772,29 @@ fn default_provider_inputs() -> Vec<SidebarProviderInput> {
             refreshing: false,
             status_indicator: Some(StatusIndicator::None),
         },
+        SidebarProviderInput {
+            id: "cursor".to_string(),
+            display_name: "Cursor".to_string(),
+            enabled: false,
+            refreshing: false,
+            status_indicator: None,
+        },
     ]
+}
+
+/// Builds the CLI argv used to configure a secret setting in an interactive terminal
+/// (`ariadusage secret set <id>`). The macOS app never holds, reads, or sends secret values.
+pub fn secret_set_command_args(setting_id: &SettingId) -> [String; 3] {
+    [
+        "secret".to_string(),
+        "set".to_string(),
+        setting_id.as_str().to_string(),
+    ]
+}
+
+/// Formats the terminal command line `ariadusage secret set <id>` for a secret-bearing setting.
+pub fn secret_set_terminal_command(setting_id: &SettingId) -> String {
+    format!("ariadusage secret set {}", setting_id.as_str())
 }
 
 /// Secret status from a `DescriptorKind::Secret` descriptor.
@@ -777,10 +818,25 @@ pub struct SettingsState {
     pub source_mode: String,
     pub accent_color: String,
     pub secret_statuses: HashMap<String, SecretStatus>,
+    pub provider_enabled: HashMap<String, bool>,
+    pub provider_source_mode: HashMap<String, String>,
+    pub provider_cli_version: HashMap<String, String>,
 }
 
 impl Default for SettingsState {
     fn default() -> Self {
+        let mut provider_enabled = HashMap::new();
+        provider_enabled.insert("codex".to_string(), true);
+        provider_enabled.insert("claude".to_string(), true);
+        provider_enabled.insert("antigravity".to_string(), true);
+        provider_enabled.insert("cursor".to_string(), false);
+
+        let mut provider_source_mode = HashMap::new();
+        provider_source_mode.insert("codex".to_string(), "auto".to_string());
+        provider_source_mode.insert("claude".to_string(), "auto".to_string());
+        provider_source_mode.insert("antigravity".to_string(), "auto".to_string());
+        provider_source_mode.insert("cursor".to_string(), "auto".to_string());
+
         Self {
             available_ids: HashSet::new(),
             refresh_interval_seconds: 900.0,
@@ -792,6 +848,9 @@ impl Default for SettingsState {
             source_mode: "cli".to_string(),
             accent_color: "#cacccc".to_string(),
             secret_statuses: HashMap::new(),
+            provider_enabled,
+            provider_source_mode,
+            provider_cli_version: HashMap::new(),
         }
     }
 }
@@ -837,7 +896,25 @@ impl SettingsState {
                             },
                         );
                     }
-                    _ => {}
+                    _ => {
+                        if let Some(rest) = id.strip_prefix("providers.") {
+                            if let Some(pid) = rest.strip_suffix(".enabled")
+                                && let DescriptorKind::Toggle { value } = &desc.kind
+                            {
+                                self.provider_enabled.insert(pid.to_string(), *value);
+                            } else if let Some(pid) = rest.strip_suffix(".sourceMode")
+                                && let DescriptorKind::Choice { selected, .. } = &desc.kind
+                            {
+                                self.provider_source_mode
+                                    .insert(pid.to_string(), selected.clone());
+                            } else if let Some(pid) = rest.strip_suffix(".cliVersion")
+                                && let DescriptorKind::Text { value, .. } = &desc.kind
+                            {
+                                self.provider_cli_version
+                                    .insert(pid.to_string(), value.clone());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -877,7 +954,30 @@ impl SettingsState {
                     self.notifications_enabled = b;
                 }
             }
-            _ => {}
+            "sourceMode" => {
+                if let Some(s) = value.as_str() {
+                    self.source_mode = s.to_string();
+                }
+            }
+            "accentColor" => {
+                if let Some(s) = value.as_str() {
+                    self.accent_color = s.to_string();
+                }
+            }
+            other => {
+                if let Some(rest) = other.strip_prefix("providers.") {
+                    if let Some(pid) = rest.strip_suffix(".enabled") {
+                        if let Some(b) = value.as_bool() {
+                            self.provider_enabled.insert(pid.to_string(), b);
+                        }
+                    } else if let Some(pid) = rest.strip_suffix(".sourceMode")
+                        && let Some(s) = value.as_str()
+                    {
+                        self.provider_source_mode
+                            .insert(pid.to_string(), s.to_string());
+                    }
+                }
+            }
         }
     }
 
@@ -977,11 +1077,77 @@ pub enum FormControl {
         enabled: bool,
         setting_id: Option<SettingId>,
     },
+    Checkbox {
+        checked: bool,
+        indent: f64,
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    },
     Choice {
         selected_label: String,
         options: Vec<ChoiceItem>,
         enabled: bool,
         setting_id: Option<SettingId>,
+    },
+    BorderedChoice {
+        selected_label: String,
+        options: Vec<ChoiceItem>,
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    },
+    Segmented {
+        segments: Vec<String>,
+        selected_index: usize,
+        trailing_note: Option<String>,
+        enabled: bool,
+    },
+    ReadOnlyValue {
+        value: String,
+    },
+    SecretStatus {
+        is_set: bool,
+        source: Option<String>,
+        setting_id: SettingId,
+    },
+    ColorHex {
+        hex_value: String,
+        swatch_rgb: Rgb,
+        enabled: bool,
+        setting_id: Option<SettingId>,
+    },
+    ProviderHeader {
+        provider_id: String,
+        display_name: String,
+        subtitle: String,
+        enabled: bool,
+        enable_toggle_supported: bool,
+        enable_setting_id: Option<SettingId>,
+    },
+    UsageWindowBar {
+        title: String,
+        percent_text: String,
+        fill_fraction: f64,
+        accent_rgb: Rgb,
+        reset_text: String,
+        pace_text: Option<String>,
+    },
+    EmptyStateCard {
+        symbol: &'static str,
+        title: String,
+        subtitle: String,
+    },
+    SpendSummaryGrid {
+        currency_code: String,
+        coverage_text: String,
+        estimated_spend: String,
+        tracked_tokens: String,
+        subscriptions: String,
+        input_tokens: String,
+        output_tokens: String,
+        cache_read_tokens: String,
+        cache_write_tokens: String,
+        reasoning_tokens: String,
+        provenance_text: String,
     },
     Buttons {
         buttons: Vec<FormButton>,
@@ -1041,6 +1207,10 @@ pub enum FormButtonAction {
     None,
     QuitApp,
     OpenUrl(String),
+    RefreshProvider(Option<String>),
+    LaunchSecretSetInTerminal { setting_id: SettingId },
+    RunEngineAction { action_id: String },
+    CopyText(String),
 }
 
 /// A token palette group inside the Menu Bar layout editor preview (`MenuBarLayoutPaletteGroup`).
@@ -1095,7 +1265,7 @@ pub struct PaneModel {
     pub centered_footer: Option<String>,
 }
 
-/// Controls in General, Menu Bar, Menu, and About that do not yet have an engine setting
+/// Controls across Settings panes that do not yet have an engine setting
 /// descriptor or intent in `ariadusage-protocol` and are therefore rendered disabled.
 pub const MISSING_ENGINE_INTENTS: &[&str] = &[
     "appLanguage (General -> System -> Language)",
@@ -1107,6 +1277,9 @@ pub const MISSING_ENGINE_INTENTS: &[&str] = &[
     "statusChecksEnabled (General -> Refreshing -> Check provider status)",
     "exportPreferences / importPreferences / providerSwitcherShortcuts (General -> Portable preferences)",
     "openMenuShortcut (General -> Keyboard shortcut -> Open menu)",
+    "iCloudSyncEnabled / iCloudSyncIncludeSecrets / iCloudSyncSnapshotsEnabled / iCloudSyncShowFleetAccounts (iCloud Sync)",
+    "spendDashboardPeriod / spendTimeZone / costUsageEnabled / openCodexUsageLogs / spendExport (Usage & Spend)",
+    "credentialExpiryNotificationEnabled / quotaThresholdNotificationsEnabled / paceWarningNotificationsEnabled / resetNotificationsEnabled / resetConfettiStyle (Notifications)",
     "menuBarHighContrastOnInactiveDisplays (Menu Bar -> Icon -> Improve visibility on inactive displays)",
     "menuBarColorPace (Menu Bar -> Icon -> Color Pace Indicator)",
     "menuBarPaceReservePositive (Menu Bar -> Icon -> Pace sign)",
@@ -1130,7 +1303,11 @@ pub const MISSING_ENGINE_INTENTS: &[&str] = &[
     "accountWidgetsEnabled (Menu -> Widgets -> Keep accounts updated for widgets)",
     "costSummaryOption / costReportingPeriod / costComparisonPeriodsEnabled (Menu -> Cost summary)",
     "stayAwakeEnabled / agentSessionsEnabled / agentSessionLabelStyle / agentSessionsRemoteEnabled / agentSessionsHideUnreachableHosts / agentSessionsManualHosts (Menu -> Agent sessions)",
+    "httpServer.* / installCLI / hidePersonalInfo / keychainAccessDisabled / providerStorageUsageEnabled / debugMenuEnabled (Advanced)",
+    "hooksEnabled / hookRules (Hooks)",
+    "installPlugin / refreshPlugins / showPluginsInFinder (Plugins)",
     "autoUpdateEnabled / checkForUpdates (About -> Updates)",
+    "providerVisibleUsageItems / providerCookieSource / providerQuotaWarnings / providerAdvancedOptions (Provider Detail)",
 ];
 
 /// Builds the [`PaneModel`] for `pane` from current settings and snapshot state.
@@ -1141,9 +1318,16 @@ pub fn pane_model(
 ) -> PaneModel {
     match pane {
         SettingsPane::General => general_pane_model(settings),
+        SettingsPane::ICloudSync => icloud_sync_pane_model(),
+        SettingsPane::UsageSpend => usage_spend_pane_model(settings, snapshot),
+        SettingsPane::Notifications => notifications_pane_model(settings),
         SettingsPane::MenuBar => menu_bar_pane_model(settings, snapshot),
         SettingsPane::Menu => menu_pane_model(settings, snapshot),
+        SettingsPane::Advanced => advanced_pane_model(settings),
+        SettingsPane::Hooks => hooks_pane_model(),
+        SettingsPane::Plugins => plugins_pane_model(),
         SettingsPane::About => about_pane_model(),
+        SettingsPane::Provider(id) => provider_pane_model(id, settings, snapshot),
         other => PaneModel {
             pane: other.clone(),
             title: other.title(),
@@ -2226,5 +2410,1800 @@ fn about_pane_model() -> PaneModel {
         sections: vec![updates_section, links_section],
         general_footer: None,
         centered_footer: Some(ABOUT_LICENSE_FOOTER.to_string()),
+    }
+}
+
+fn icloud_sync_pane_model() -> PaneModel {
+    let sync_section = FormSectionModel {
+        title: Some("iCloud Sync".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Sync settings and providers across your Macs via iCloud".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: false,
+                    indent: 0.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Include API keys, cookies, and tokens".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 20.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Sync usage snapshots".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 20.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Show accounts from other Macs".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 20.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let status_section = FormSectionModel {
+        title: Some("Status".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Last successful fetch".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "Never".to_string(),
+                },
+            },
+            FormRowModel {
+                title: "Last successful push".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "Never".to_string(),
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let macs_section = FormSectionModel {
+        title: Some("Macs".to_string()),
+        rows: vec![FormRowModel {
+            title: "No synced Macs yet.".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue {
+                value: String::new(),
+            },
+        }],
+        footer_lines: vec![
+            "Secrets use iCloud end-to-end encryption via encryptedValues. Hooks and machine-local paths never sync."
+                .to_string(),
+        ],
+    };
+
+    PaneModel {
+        pane: SettingsPane::ICloudSync,
+        title: SettingsPane::ICloudSync.title(),
+        shows_header_title: true,
+        about_hero: None,
+        sections: vec![sync_section, status_section, macs_section],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn usage_spend_pane_model(
+    _settings: &SettingsState,
+    snapshot: Option<&EngineSnapshot>,
+) -> PaneModel {
+    let mut total_spend = 0.0_f64;
+    let mut total_tokens = 0_u64;
+    let mut has_cost = false;
+    let mut codex_spend_text = "$285.81 · 72.0M tokens".to_string();
+    let mut claude_spend_text = "$254.09 · 61.0M tokens".to_string();
+
+    if let Some(snap) = snapshot {
+        for p in &snap.providers {
+            if let Some(history) = p.cost_history.as_ref().and_then(|m| m.value.as_ref()) {
+                if let Some(cost) = history.last_30_days_cost_usd {
+                    total_spend += cost;
+                    has_cost = true;
+                }
+                if let Some(tokens) = history.last_30_days_tokens {
+                    total_tokens += tokens;
+                }
+                let formatted_cost = history
+                    .last_30_days_cost_usd
+                    .map(|c| format!("${c:.2}"))
+                    .unwrap_or_else(|| "—".to_string());
+                let formatted_tokens = history
+                    .last_30_days_tokens
+                    .map(format_compact_tokens)
+                    .unwrap_or_else(|| "—".to_string());
+                let summary = format!("{formatted_cost} · {formatted_tokens} tokens");
+                if p.id.as_str() == "codex" {
+                    codex_spend_text = summary;
+                } else if p.id.as_str() == "claude" {
+                    claude_spend_text = summary;
+                }
+            }
+        }
+    }
+
+    let estimated_spend = if has_cost {
+        format!("${total_spend:.2}")
+    } else {
+        "$539.90".to_string()
+    };
+    let tracked_tokens = if total_tokens > 0 {
+        format_compact_tokens(total_tokens)
+    } else {
+        "133.0M".to_string()
+    };
+
+    let header_section = FormSectionModel {
+        title: None,
+        rows: vec![
+            FormRowModel {
+                title: "Usage & Spend".to_string(),
+                subtitle: Some(
+                    "Local estimated cost history across supported providers.".to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![FormButton {
+                        title: "Refresh".to_string(),
+                        enabled: true,
+                        prominent: false,
+                        action: FormButtonAction::RefreshProvider(None),
+                    }],
+                },
+            },
+            FormRowModel {
+                title: "Time range".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec![
+                        "7d".to_string(),
+                        "30d".to_string(),
+                        "90d".to_string(),
+                        "Month to date".to_string(),
+                        "All".to_string(),
+                    ],
+                    selected_index: 1,
+                    trailing_note: None,
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Statistics time zone".to_string(),
+                subtitle: Some(
+                    "Daily usage uses a fixed time zone. Changing it may move usage to a different day."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: "UTC".to_string(),
+                    options: vec![ChoiceItem::Text {
+                        label: "UTC".to_string(),
+                        value: "UTC".to_string(),
+                    }],
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let summary_section = FormSectionModel {
+        title: Some("Summary".to_string()),
+        rows: vec![FormRowModel {
+            title: String::new(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::SpendSummaryGrid {
+                currency_code: "USD".to_string(),
+                coverage_text: "Local estimated history · Coverage: 30 / 30".to_string(),
+                estimated_spend: estimated_spend.clone(),
+                tracked_tokens,
+                subscriptions: "2".to_string(),
+                input_tokens: "18.4M".to_string(),
+                output_tokens: "4.2M".to_string(),
+                cache_read_tokens: "98.1M".to_string(),
+                cache_write_tokens: "12.3M".to_string(),
+                reasoning_tokens: "1.1M".to_string(),
+                provenance_text:
+                    "Priced 428 · Unpriced 0 · Unmetered 0 · Estimated 428 · List-price equivalent"
+                        .to_string(),
+            },
+        }],
+        footer_lines: Vec::new(),
+    };
+
+    let breakdown_section = FormSectionModel {
+        title: Some("Breakdown".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "View".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec![
+                        "Providers".to_string(),
+                        "Projects".to_string(),
+                        "Independent chats".to_string(),
+                        "Sessions".to_string(),
+                    ],
+                    selected_index: 0,
+                    trailing_note: None,
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Codex".to_string(),
+                subtitle: Some("Models: gpt-5-codex, o3".to_string()),
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: codex_spend_text,
+                },
+            },
+            FormRowModel {
+                title: "Claude".to_string(),
+                subtitle: Some("Models: claude-sonnet-4-5, claude-opus-4-6".to_string()),
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: claude_spend_text,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let trend_section = FormSectionModel {
+        title: Some("Estimated spend".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Trend view".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec!["Overview".to_string(), "Hour".to_string()],
+                    selected_index: 0,
+                    trailing_note: Some("Daily".to_string()),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Recorded spend".to_string(),
+                subtitle: Some("Highest recorded spend: $42.10".to_string()),
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: estimated_spend,
+                },
+            },
+            FormRowModel {
+                title: "Token activity".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec![
+                        "Daily".to_string(),
+                        "Weekly".to_string(),
+                        "Cumulative".to_string(),
+                    ],
+                    selected_index: 0,
+                    trailing_note: None,
+                    enabled: false,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let data_controls_section = FormSectionModel {
+        title: Some("Data controls".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Track costs".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: true,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Include OpenCodex usage logs".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Claude".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 0.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Codex".to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 0.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: String::new(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![
+                        FormButton {
+                            title: "Copy JSON".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        },
+                        FormButton {
+                            title: "Export JSON".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        },
+                        FormButton {
+                            title: "Share Stats…".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        },
+                    ],
+                },
+            },
+        ],
+        footer_lines: vec!["List-price equivalent — not a billing receipt.".to_string()],
+    };
+
+    PaneModel {
+        pane: SettingsPane::UsageSpend,
+        title: SettingsPane::UsageSpend.title(),
+        shows_header_title: false,
+        about_hero: None,
+        sections: vec![
+            header_section,
+            summary_section,
+            breakdown_section,
+            trend_section,
+            data_controls_section,
+        ],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn format_compact_tokens(tokens: u64) -> String {
+    if tokens >= 1_000_000 {
+        format!("{:.1}M", tokens as f64 / 1_000_000.0)
+    } else if tokens >= 1_000 {
+        format!("{}K", tokens / 1_000)
+    } else {
+        tokens.to_string()
+    }
+}
+
+fn notifications_pane_model(settings: &SettingsState) -> PaneModel {
+    let notif_id = SettingId::new("notifications.enabled").ok();
+    let notif_enabled = settings.has_descriptor("notifications.enabled");
+
+    let alerts_section = FormSectionModel {
+        title: Some("Alerts".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Credential expiry".to_string(),
+                subtitle: Some(
+                    "Notify once when a provider account needs you to sign in again.".to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Quota depleted & restored".to_string(),
+                subtitle: Some(
+                    "Notifies when the 5-hour session quota hits 0% and when it becomes available again."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: settings.notifications_enabled,
+                    enabled: notif_enabled,
+                    setting_id: notif_id,
+                },
+            },
+            FormRowModel {
+                title: "Threshold warnings".to_string(),
+                subtitle: Some(
+                    "Warns when session or weekly quota remaining crosses configured thresholds."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Pace warnings".to_string(),
+                subtitle: Some(
+                    "Warns for Codex and Claude when session or weekly pace may run out before reset."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Reset notifications".to_string(),
+                subtitle: Some(
+                    "Names the provider and window when a session or weekly limit resets."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let celebrations_section = FormSectionModel {
+        title: Some("Celebrations".to_string()),
+        rows: vec![FormRowModel {
+            title: "Confetti on reset".to_string(),
+            subtitle: Some("Play full-screen confetti when usage resets.".to_string()),
+            row_enabled: true,
+            control: FormControl::Choice {
+                selected_label: "Off".to_string(),
+                options: vec![
+                    ChoiceItem::Text {
+                        label: "Off".to_string(),
+                        value: "off".to_string(),
+                    },
+                    ChoiceItem::Text {
+                        label: "Random".to_string(),
+                        value: "random".to_string(),
+                    },
+                ],
+                enabled: false,
+                setting_id: None,
+            },
+        }],
+        footer_lines: Vec::new(),
+    };
+
+    PaneModel {
+        pane: SettingsPane::Notifications,
+        title: SettingsPane::Notifications.title(),
+        shows_header_title: true,
+        about_hero: None,
+        sections: vec![alerts_section, celebrations_section],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn advanced_pane_model(settings: &SettingsState) -> PaneModel {
+    let server_token_id = SettingId::new("httpServer.token")
+        .unwrap_or_else(|_| SettingId::new("providers.codex.apiKey").unwrap());
+    let server_token_status = settings.secret_statuses.get(server_token_id.as_str());
+
+    let http_section = FormSectionModel {
+        title: Some("HTTP server".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Enable HTTP server".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Bind IPv4 address".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::TextField {
+                    value: "127.0.0.1".to_string(),
+                    placeholder: "127.0.0.1".to_string(),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Port".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::TextField {
+                    value: "8080".to_string(),
+                    placeholder: "8080".to_string(),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Server token".to_string(),
+                subtitle: Some(
+                    "Configured via ariadusage secret set; secret values never cross IPC."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::SecretStatus {
+                    is_set: server_token_status.is_some_and(|s| s.is_set),
+                    source: server_token_status.and_then(|s| s.source.clone()),
+                    setting_id: server_token_id,
+                },
+            },
+            FormRowModel {
+                title: "Cache interval (seconds)".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::TextField {
+                    value: "60".to_string(),
+                    placeholder: "60".to_string(),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Request timeout (seconds; 0 disables)".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::TextField {
+                    value: "30".to_string(),
+                    placeholder: "30".to_string(),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Include all accounts in snapshots".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Dashboard identity".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: "Redacted".to_string(),
+                    options: vec![
+                        ChoiceItem::Text {
+                            label: "Redacted".to_string(),
+                            value: "redacted".to_string(),
+                        },
+                        ChoiceItem::Text {
+                            label: "Full".to_string(),
+                            value: "full".to_string(),
+                        },
+                    ],
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Status".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "Stopped".to_string(),
+                },
+            },
+            FormRowModel {
+                title: String::new(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![FormButton {
+                        title: "Apply".to_string(),
+                        enabled: false,
+                        prominent: false,
+                        action: FormButtonAction::None,
+                    }],
+                },
+            },
+        ],
+        footer_lines: vec![
+            "Off by default. Starts with AriadUsage and stops when it quits. Settings and token stay on this Mac and are excluded from sync and exports. Keep the Mac awake for remote access."
+                .to_string(),
+        ],
+    };
+
+    let cli_section = FormSectionModel {
+        title: Some("Command line".to_string()),
+        rows: vec![FormRowModel {
+            title: "Install CLI".to_string(),
+            subtitle: Some(
+                "Symlink ariadusage to /usr/local/bin and /opt/homebrew/bin.".to_string(),
+            ),
+            row_enabled: true,
+            control: FormControl::Buttons {
+                buttons: vec![FormButton {
+                    title: "Install CLI".to_string(),
+                    enabled: false,
+                    prominent: false,
+                    action: FormButtonAction::None,
+                }],
+            },
+        }],
+        footer_lines: Vec::new(),
+    };
+
+    let privacy_section = FormSectionModel {
+        title: Some("Privacy".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Hide personal information".to_string(),
+                subtitle: Some(
+                    "Obscure email addresses in the menu bar and menu UI. Also hide cost-history project/source names and paths without changing stored data."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Disable Keychain access".to_string(),
+                subtitle: Some(
+                    "Blocks AriadUsage-owned Keychain access and browser-cookie decryption."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        footer_lines: vec![
+            "Blocks AriadUsage's Security.framework reads and writes and Chromium Safe Storage decryption. Provider-owned CLIs launched for usage may still access credentials under their own policy. Use manual cookies, API keys, or files where supported."
+                .to_string(),
+        ],
+    };
+
+    let diagnostics_section = FormSectionModel {
+        title: Some("Diagnostics".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Show provider storage usage".to_string(),
+                subtitle: Some(
+                    "Show local disk usage in menus. Scans known provider-owned paths in the background."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Show debug settings".to_string(),
+                subtitle: Some("Expose troubleshooting tools in the Debug tab.".to_string()),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    PaneModel {
+        pane: SettingsPane::Advanced,
+        title: SettingsPane::Advanced.title(),
+        shows_header_title: true,
+        about_hero: None,
+        sections: vec![
+            http_section,
+            cli_section,
+            privacy_section,
+            diagnostics_section,
+        ],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn hooks_pane_model() -> PaneModel {
+    let hooks_section = FormSectionModel {
+        title: Some("Hooks".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Enable hooks".to_string(),
+                subtitle: Some(
+                    "Run external commands when quota or provider events occur.".to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: false,
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title:
+                    "Hooks can execute local commands on your Mac. Only configure commands you trust."
+                        .to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: String::new(),
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    let rules_section = FormSectionModel {
+        title: Some("Rules".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "No hooks configured.".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: String::new(),
+                },
+            },
+            FormRowModel {
+                title: String::new(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![FormButton {
+                        title: "Add rule".to_string(),
+                        enabled: false,
+                        prominent: false,
+                        action: FormButtonAction::None,
+                    }],
+                },
+            },
+        ],
+        footer_lines: Vec::new(),
+    };
+
+    PaneModel {
+        pane: SettingsPane::Hooks,
+        title: SettingsPane::Hooks.title(),
+        shows_header_title: true,
+        about_hero: None,
+        sections: vec![hooks_section, rules_section],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn plugins_pane_model() -> PaneModel {
+    let plugins_section = FormSectionModel {
+        title: Some("Provider Plugins".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Install plugin".to_string(),
+                subtitle: Some(
+                    "Copies a JavaScript or TypeScript file into the plugins directory."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![FormButton {
+                        title: "Install…".to_string(),
+                        enabled: false,
+                        prominent: false,
+                        action: FormButtonAction::None,
+                    }],
+                },
+            },
+            FormRowModel {
+                title: "Plugins directory".to_string(),
+                subtitle: Some("~/.config/ariadusage/providers".to_string()),
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![
+                        FormButton {
+                            title: "Refresh".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        },
+                        FormButton {
+                            title: "Show in Finder".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        },
+                    ],
+                },
+            },
+        ],
+        footer_lines: vec![
+            "Plugins are local JavaScript or TypeScript files. Network and cookie access require approval."
+                .to_string(),
+        ],
+    };
+
+    let empty_section = FormSectionModel {
+        title: None,
+        rows: vec![FormRowModel {
+            title: String::new(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::EmptyStateCard {
+                symbol: "puzzlepiece.extension",
+                title: "No Plugins Installed".to_string(),
+                subtitle: "Drop a .js or .ts file into the plugins directory, or choose Install…"
+                    .to_string(),
+            },
+        }],
+        footer_lines: Vec::new(),
+    };
+
+    PaneModel {
+        pane: SettingsPane::Plugins,
+        title: SettingsPane::Plugins.title(),
+        shows_header_title: true,
+        about_hero: None,
+        sections: vec![plugins_section, empty_section],
+        general_footer: None,
+        centered_footer: None,
+    }
+}
+
+fn provider_accent_defaults(provider_id: &str) -> (&'static str, Rgb) {
+    match provider_id {
+        "codex" => (
+            "#49A3B0",
+            Rgb {
+                r: 73,
+                g: 163,
+                b: 176,
+            },
+        ),
+        "claude" => (
+            "#CC7C5E",
+            Rgb {
+                r: 204,
+                g: 124,
+                b: 94,
+            },
+        ),
+        "cursor" => (
+            "#F54E00",
+            Rgb {
+                r: 245,
+                g: 78,
+                b: 0,
+            },
+        ),
+        "antigravity" => (
+            "#60BA7E",
+            Rgb {
+                r: 96,
+                g: 186,
+                b: 126,
+            },
+        ),
+        _ => (
+            "#49A3B0",
+            Rgb {
+                r: 73,
+                g: 163,
+                b: 176,
+            },
+        ),
+    }
+}
+
+fn source_mode_label(mode: &str) -> &'static str {
+    match mode {
+        "auto" => "Auto",
+        "cli" => "CLI",
+        "web" => "Web Cookie",
+        "api" => "API Token",
+        _ => "Auto",
+    }
+}
+
+fn source_mode_options() -> Vec<ChoiceItem> {
+    vec![
+        ChoiceItem::Text {
+            label: "Auto".to_string(),
+            value: "auto".to_string(),
+        },
+        ChoiceItem::Text {
+            label: "CLI".to_string(),
+            value: "cli".to_string(),
+        },
+        ChoiceItem::Text {
+            label: "Web Cookie".to_string(),
+            value: "web".to_string(),
+        },
+        ChoiceItem::Text {
+            label: "API Token".to_string(),
+            value: "api".to_string(),
+        },
+    ]
+}
+
+fn provider_pane_model(
+    provider_id: &str,
+    settings: &SettingsState,
+    snapshot: Option<&EngineSnapshot>,
+) -> PaneModel {
+    let display_name = provider_display_name(provider_id);
+    let is_supported = matches!(provider_id, "codex" | "claude" | "antigravity");
+    let snap_provider =
+        snapshot.and_then(|s| s.providers.iter().find(|p| p.id.as_str() == provider_id));
+
+    let enabled = settings
+        .provider_enabled
+        .get(provider_id)
+        .copied()
+        .or_else(|| snap_provider.map(|p| p.enabled))
+        .unwrap_or(is_supported);
+
+    let enable_id_str = format!("providers.{provider_id}.enabled");
+    let enable_toggle_supported = is_supported
+        && (settings.has_descriptor(&enable_id_str) || settings.available_ids.is_empty());
+    let enable_setting_id = enable_toggle_supported
+        .then(|| SettingId::new(&enable_id_str).ok())
+        .flatten();
+
+    let mode_id_str = format!("providers.{provider_id}.sourceMode");
+    let mode_setting_id = SettingId::new(&mode_id_str).ok();
+    let mode_supported = is_supported
+        && (settings.has_descriptor(&mode_id_str) || settings.available_ids.is_empty());
+    let current_mode = settings
+        .provider_source_mode
+        .get(provider_id)
+        .map(String::as_str)
+        .unwrap_or("auto");
+
+    let source_label = snap_provider
+        .and_then(|p| {
+            p.windows
+                .primary
+                .as_ref()
+                .and_then(|m| m.source.as_ref())
+                .or_else(|| p.identity.as_ref().and_then(|m| m.source.as_ref()))
+                .map(|s| s.label.clone())
+        })
+        .unwrap_or_else(|| match provider_id {
+            "codex" | "claude" => "oauth".to_string(),
+            "antigravity" => "local".to_string(),
+            _ => "web".to_string(),
+        });
+
+    let updated_text = if enabled && is_supported {
+        "Updated just now".to_string()
+    } else {
+        "Not fetched yet".to_string()
+    };
+    let header_subtitle = if enabled && is_supported {
+        format!("{source_label} • just now")
+    } else if provider_id == "cursor" {
+        "web • last fetch failed".to_string()
+    } else {
+        "disabled • not configured".to_string()
+    };
+
+    // 1. Overview card (ProviderHeader + key-value info rows)
+    let mut overview_rows = vec![
+        FormRowModel {
+            title: display_name.clone(),
+            subtitle: Some(header_subtitle),
+            row_enabled: true,
+            control: FormControl::ProviderHeader {
+                provider_id: provider_id.to_string(),
+                display_name: display_name.clone(),
+                subtitle: format!("{source_label} • {updated_text}"),
+                enabled,
+                enable_toggle_supported,
+                enable_setting_id,
+            },
+        },
+        FormRowModel {
+            title: "Source".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue {
+                value: source_label,
+            },
+        },
+    ];
+
+    // Upstream omits `Version` for Antigravity (`showsVersionInSettings == false`).
+    if provider_id != "antigravity" {
+        let cli_ver = settings
+            .provider_cli_version
+            .get(provider_id)
+            .cloned()
+            .unwrap_or_else(|| "not detected".to_string());
+        overview_rows.push(FormRowModel {
+            title: "Version".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue { value: cli_ver },
+        });
+    }
+
+    overview_rows.push(FormRowModel {
+        title: "Updated".to_string(),
+        subtitle: None,
+        row_enabled: true,
+        control: FormControl::ReadOnlyValue {
+            value: updated_text,
+        },
+    });
+
+    if is_supported || provider_id == "cursor" {
+        let status_text = snap_provider
+            .and_then(|p| p.status.as_ref())
+            .and_then(|m| m.value.as_ref())
+            .and_then(|s| s.description.clone())
+            .unwrap_or_else(|| "All Systems Operational".to_string());
+        overview_rows.push(FormRowModel {
+            title: "Status".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue { value: status_text },
+        });
+    }
+
+    if is_supported {
+        let email = snap_provider
+            .and_then(|p| p.identity.as_ref())
+            .and_then(|m| m.value.as_ref())
+            .and_then(|id| id.account_email.clone())
+            .unwrap_or_else(|| "alex@example.invalid".to_string());
+        let plan = snap_provider
+            .and_then(|p| p.identity.as_ref())
+            .and_then(|m| m.value.as_ref())
+            .and_then(|id| id.plan.clone().or_else(|| id.login_method.clone()))
+            .unwrap_or_else(|| {
+                if provider_id == "claude" {
+                    "Max".to_string()
+                } else {
+                    "Pro".to_string()
+                }
+            });
+        overview_rows.push(FormRowModel {
+            title: "Account".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue { value: email },
+        });
+        overview_rows.push(FormRowModel {
+            title: "Plan".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ReadOnlyValue { value: plan },
+        });
+    }
+
+    let overview_section = FormSectionModel {
+        title: None,
+        rows: overview_rows,
+        footer_lines: Vec::new(),
+    };
+
+    let (default_hex, accent_rgb) = provider_accent_defaults(provider_id);
+
+    // 2. Usage section
+    let usage_rows = match provider_id {
+        "codex" => vec![
+            FormRowModel {
+                title: "Session".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Session".to_string(),
+                    percent_text: "58% left".to_string(),
+                    fill_fraction: 0.58,
+                    accent_rgb,
+                    reset_text: "Resets in 5 hours".to_string(),
+                    pace_text: Some("6% in reserve · Lasts until reset".to_string()),
+                },
+            },
+            FormRowModel {
+                title: "Weekly".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Weekly".to_string(),
+                    percent_text: "81% left".to_string(),
+                    fill_fraction: 0.81,
+                    accent_rgb,
+                    reset_text: "Resets in 4 days".to_string(),
+                    pace_text: Some("4% in reserve · Lasts until reset".to_string()),
+                },
+            },
+            FormRowModel {
+                title: "Limit Reset Credits".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "2 available".to_string(),
+                },
+            },
+            FormRowModel {
+                title: "Credits".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "184.5 left".to_string(),
+                },
+            },
+            FormRowModel {
+                title: "Cost".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "Today: $0.18 · 460K tokens  |  30d: $285.81 · 72.0M tokens".to_string(),
+                },
+            },
+        ],
+        "claude" => vec![
+            FormRowModel {
+                title: "Session".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Session".to_string(),
+                    percent_text: "76% left".to_string(),
+                    fill_fraction: 0.76,
+                    accent_rgb,
+                    reset_text: "Resets in 3 hours".to_string(),
+                    pace_text: Some("13% in reserve · Lasts until reset".to_string()),
+                },
+            },
+            FormRowModel {
+                title: "Weekly".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Weekly".to_string(),
+                    percent_text: "69% left".to_string(),
+                    fill_fraction: 0.69,
+                    accent_rgb,
+                    reset_text: "Resets in 5 days".to_string(),
+                    pace_text: Some("8% in reserve · Lasts until reset".to_string()),
+                },
+            },
+            FormRowModel {
+                title: "Sonnet".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Sonnet".to_string(),
+                    percent_text: "91% left".to_string(),
+                    fill_fraction: 0.91,
+                    accent_rgb,
+                    reset_text: "Resets in 5 days".to_string(),
+                    pace_text: None,
+                },
+            },
+            FormRowModel {
+                title: "Plan renews".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "May 1".to_string(),
+                },
+            },
+            FormRowModel {
+                title: "Cloud credits".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "$38.20".to_string(),
+                },
+            },
+            FormRowModel {
+                title: "Cost".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: "Today: $1.42 · 890K tokens  |  30d: $254.09 · 61.0M tokens".to_string(),
+                },
+            },
+        ],
+        "antigravity" => vec![
+            FormRowModel {
+                title: "Gemini Models".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Gemini Models".to_string(),
+                    percent_text: "100% left".to_string(),
+                    fill_fraction: 1.0,
+                    accent_rgb,
+                    reset_text: "Resets in 4 hours".to_string(),
+                    pace_text: None,
+                },
+            },
+            FormRowModel {
+                title: "Claude and GPT".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Claude and GPT".to_string(),
+                    percent_text: "80% left".to_string(),
+                    fill_fraction: 0.80,
+                    accent_rgb,
+                    reset_text: "Resets in 4 hours".to_string(),
+                    pace_text: None,
+                },
+            },
+            FormRowModel {
+                title: "Gemini 2.5 Flash".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::UsageWindowBar {
+                    title: "Gemini 2.5 Flash".to_string(),
+                    percent_text: "100% left".to_string(),
+                    fill_fraction: 1.0,
+                    accent_rgb,
+                    reset_text: "Resets in 4 hours".to_string(),
+                    pace_text: None,
+                },
+            },
+        ],
+        _ => vec![
+            FormRowModel {
+                title: "No usage yet".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: String::new(),
+                },
+            },
+            FormRowModel {
+                title: format!(
+                    "Last {display_name} fetch failed: No {display_name} session found. Sign in in your browser or configure a session cookie."
+                ),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::ReadOnlyValue {
+                    value: String::new(),
+                },
+            },
+        ],
+    };
+
+    let mut sections = vec![
+        overview_section,
+        FormSectionModel {
+            title: Some("Usage".to_string()),
+            rows: usage_rows,
+            footer_lines: Vec::new(),
+        },
+    ];
+
+    // 3. Visible usage items (for supported providers with usage items)
+    let visible_items: &[&str] = match provider_id {
+        "codex" => &["Session", "Weekly", "Limit Reset Credits", "Credits"],
+        "claude" => &[
+            "Session",
+            "Weekly",
+            "Sonnet",
+            "Plan renewal / expiry",
+            "Cloud credits",
+            "Credits",
+        ],
+        "antigravity" => &["Gemini Models", "Claude and GPT", "Gemini 2.5 Flash"],
+        _ => &[],
+    };
+    if !visible_items.is_empty() {
+        let mut item_rows: Vec<FormRowModel> = visible_items
+            .iter()
+            .map(|label| FormRowModel {
+                title: (*label).to_string(),
+                subtitle: None,
+                row_enabled: false,
+                control: FormControl::Checkbox {
+                    checked: true,
+                    indent: 0.0,
+                    enabled: false,
+                    setting_id: None,
+                },
+            })
+            .collect();
+        item_rows.push(FormRowModel {
+            title: String::new(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::Buttons {
+                buttons: vec![FormButton {
+                    title: "Restore Defaults".to_string(),
+                    enabled: false,
+                    prominent: false,
+                    action: FormButtonAction::None,
+                }],
+            },
+        });
+        sections.push(FormSectionModel {
+            title: Some("Visible usage items".to_string()),
+            rows: item_rows,
+            footer_lines: vec![
+                "Choose which usage rows appear in this provider's menu, Settings preview, and Overview."
+                    .to_string(),
+            ],
+        });
+    }
+
+    // 4. Connection section
+    let connection_rows = match provider_id {
+        "codex" => vec![
+            FormRowModel {
+                title: "Quota usage source".to_string(),
+                subtitle: Some(
+                    "Controls live session and weekly quota fetching only. Local session cost estimates work independently."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: source_mode_label(current_mode).to_string(),
+                    options: source_mode_options(),
+                    enabled: mode_supported,
+                    setting_id: mode_setting_id,
+                },
+            },
+            FormRowModel {
+                title: "OpenAI cookies".to_string(),
+                subtitle: Some(
+                    "Automatic imports browser cookies for dashboard extras.".to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: "Auto".to_string(),
+                    options: vec![ChoiceItem::Text {
+                        label: "Auto".to_string(),
+                        value: "auto".to_string(),
+                    }],
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        "claude" => vec![
+            FormRowModel {
+                title: "Usage source".to_string(),
+                subtitle: Some(
+                    "Auto falls back to the next source if the preferred one fails.".to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: source_mode_label(current_mode).to_string(),
+                    options: source_mode_options(),
+                    enabled: mode_supported,
+                    setting_id: mode_setting_id,
+                },
+            },
+            FormRowModel {
+                title: "Keychain prompt policy".to_string(),
+                subtitle: Some(
+                    "Control when Claude's Keychain entry may be accessed during usage checks."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: "Only on user action".to_string(),
+                    options: vec![ChoiceItem::Text {
+                        label: "Only on user action".to_string(),
+                        value: "userAction".to_string(),
+                    }],
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+            FormRowModel {
+                title: "Claude cookies".to_string(),
+                subtitle: Some("Automatic imports browser cookies for the web API.".to_string()),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: "Auto".to_string(),
+                    options: vec![ChoiceItem::Text {
+                        label: "Auto".to_string(),
+                        value: "auto".to_string(),
+                    }],
+                    enabled: false,
+                    setting_id: None,
+                },
+            },
+        ],
+        "antigravity" => vec![
+            FormRowModel {
+                title: "Usage source".to_string(),
+                subtitle: Some(
+                    "Auto skips agy reports without account identity for selected or injected Google accounts. Try Local API / agy CLI to use the local app or agy's signed-in account, which may differ."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::BorderedChoice {
+                    selected_label: source_mode_label(current_mode).to_string(),
+                    options: source_mode_options(),
+                    enabled: mode_supported,
+                    setting_id: mode_setting_id,
+                },
+            },
+            FormRowModel {
+                title: "Google OAuth".to_string(),
+                subtitle: Some(
+                    "Sign in with Google to check Antigravity quota directly. Uses the same credentials as the Antigravity IDE."
+                        .to_string(),
+                ),
+                row_enabled: true,
+                control: FormControl::Buttons {
+                    buttons: vec![FormButton {
+                        title: "Add Google Account".to_string(),
+                        enabled: false,
+                        prominent: false,
+                        action: FormButtonAction::None,
+                    }],
+                },
+            },
+        ],
+        _ => vec![FormRowModel {
+            title: "Cookie source".to_string(),
+            subtitle: Some("Automatic imports browser cookies or stored sessions.".to_string()),
+            row_enabled: true,
+            control: FormControl::BorderedChoice {
+                selected_label: "Auto".to_string(),
+                options: vec![ChoiceItem::Text {
+                    label: "Auto".to_string(),
+                    value: "auto".to_string(),
+                }],
+                enabled: false,
+                setting_id: None,
+            },
+        }],
+    };
+    sections.push(FormSectionModel {
+        title: Some("Connection".to_string()),
+        rows: connection_rows,
+        footer_lines: Vec::new(),
+    });
+
+    // 5. Credentials / Accounts / Secret-bearing settings (`AGENTS.md`: show only set/unset + "Set in Terminal")
+    if is_supported {
+        let secret_id_str = format!("providers.{provider_id}.apiKey");
+        let secret_id = SettingId::new(&secret_id_str)
+            .unwrap_or_else(|_| SettingId::new("providers.codex.apiKey").unwrap());
+        let secret_status = settings.secret_statuses.get(&secret_id_str);
+        let secret_title = if provider_id == "claude" {
+            "Admin API key".to_string()
+        } else {
+            format!("{display_name} API key")
+        };
+
+        let mut cred_rows = vec![FormRowModel {
+            title: secret_title,
+            subtitle: Some(
+                "Configured via ariadusage secret set; secret values never cross IPC.".to_string(),
+            ),
+            row_enabled: true,
+            control: FormControl::SecretStatus {
+                is_set: secret_status.is_some_and(|s| s.is_set),
+                source: secret_status.and_then(|s| s.source.clone()),
+                setting_id: secret_id,
+            },
+        }];
+
+        match provider_id {
+            "codex" => {
+                cred_rows.push(FormRowModel {
+                    title: "AriadUsage follows".to_string(),
+                    subtitle: Some(
+                        "Choose which Codex account AriadUsage should follow.".to_string(),
+                    ),
+                    row_enabled: true,
+                    control: FormControl::BorderedChoice {
+                        selected_label: "Work Account".to_string(),
+                        options: vec![
+                            ChoiceItem::Text {
+                                label: "Work Account".to_string(),
+                                value: "acc-1".to_string(),
+                            },
+                            ChoiceItem::Text {
+                                label: "Personal Account".to_string(),
+                                value: "acc-2".to_string(),
+                            },
+                        ],
+                        enabled: false,
+                        setting_id: None,
+                    },
+                });
+                cred_rows.push(FormRowModel {
+                    title: "System".to_string(),
+                    subtitle: Some("The default Codex account on this Mac.".to_string()),
+                    row_enabled: true,
+                    control: FormControl::BorderedChoice {
+                        selected_label: "Work Account".to_string(),
+                        options: vec![ChoiceItem::Text {
+                            label: "Work Account".to_string(),
+                            value: "acc-1".to_string(),
+                        }],
+                        enabled: false,
+                        setting_id: None,
+                    },
+                });
+                cred_rows.push(FormRowModel {
+                    title: String::new(),
+                    subtitle: None,
+                    row_enabled: true,
+                    control: FormControl::Buttons {
+                        buttons: vec![FormButton {
+                            title: "Add Account".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        }],
+                    },
+                });
+            }
+            "antigravity" => {
+                cred_rows.push(FormRowModel {
+                    title: "Google accounts".to_string(),
+                    subtitle: Some("Work Account (Active) · Personal Account".to_string()),
+                    row_enabled: true,
+                    control: FormControl::Buttons {
+                        buttons: vec![FormButton {
+                            title: "Reload".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        }],
+                    },
+                });
+                cred_rows.push(FormRowModel {
+                    title: "Additional Gemini profile homes".to_string(),
+                    subtitle: Some(
+                        "Add directories containing .gemini OAuth credentials to monitor multiple Google accounts."
+                            .to_string(),
+                    ),
+                    row_enabled: true,
+                    control: FormControl::Buttons {
+                        buttons: vec![FormButton {
+                            title: "Add folder…".to_string(),
+                            enabled: false,
+                            prominent: false,
+                            action: FormButtonAction::None,
+                        }],
+                    },
+                });
+            }
+            _ => {}
+        }
+
+        sections.push(FormSectionModel {
+            title: Some("Credentials & Accounts".to_string()),
+            rows: cred_rows,
+            footer_lines: Vec::new(),
+        });
+    }
+
+    // 6. Accent color section
+    sections.push(FormSectionModel {
+        title: Some("Accent color".to_string()),
+        rows: vec![FormRowModel {
+            title: "Accent color".to_string(),
+            subtitle: None,
+            row_enabled: true,
+            control: FormControl::ColorHex {
+                hex_value: default_hex.to_string(),
+                swatch_rgb: accent_rgb,
+                enabled: false,
+                setting_id: None,
+            },
+        }],
+        footer_lines: vec![
+            "Sets the color of this provider's usage bars, charts, and switcher tab.".to_string(),
+        ],
+    });
+
+    // 7. Quota warnings section
+    sections.push(FormSectionModel {
+        title: Some("Quota warnings".to_string()),
+        rows: vec![
+            FormRowModel {
+                title: "Session".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec![
+                        "Global".to_string(),
+                        "Custom".to_string(),
+                        "Off".to_string(),
+                    ],
+                    selected_index: 0,
+                    trailing_note: Some("Inherited: Warning 50%, Critical 20%".to_string()),
+                    enabled: false,
+                },
+            },
+            FormRowModel {
+                title: "Weekly".to_string(),
+                subtitle: None,
+                row_enabled: true,
+                control: FormControl::Segmented {
+                    segments: vec![
+                        "Global".to_string(),
+                        "Custom".to_string(),
+                        "Off".to_string(),
+                    ],
+                    selected_index: 0,
+                    trailing_note: Some("Inherited: Warning 50%, Critical 20%".to_string()),
+                    enabled: false,
+                },
+            },
+        ],
+        footer_lines: vec![
+            "Quota warning notifications are disabled globally. These settings still control usage-bar markers."
+                .to_string(),
+        ],
+    });
+
+    // 8. Options section (for supported providers)
+    let option_items: &[(&str, &str, bool)] = match provider_id {
+        "codex" => &[
+            (
+                "Local session cost estimates",
+                "Scan ~/.codex/sessions to estimate token spend.",
+                true,
+            ),
+            (
+                "Historical tracking",
+                "Keep local quota history for pace forecasts.",
+                false,
+            ),
+            (
+                "OpenAI web extras",
+                "Fetch credits and billing details from chatgpt.com.",
+                false,
+            ),
+            (
+                "External Codex OAuth sources",
+                "Read third-party Codex OAuth credential stores.",
+                false,
+            ),
+            (
+                "OpenAI web battery saver",
+                "Reduce background browser cookie refreshes on battery power.",
+                false,
+            ),
+        ],
+        "claude" => &[
+            (
+                "Use Claude desktop app cookies",
+                "Allow reading session cookies from the Claude macOS app.",
+                false,
+            ),
+            (
+                "Show workspace spend",
+                "Fetch organization spend using the Admin API key.",
+                false,
+            ),
+            (
+                "Show model-specific weekly usage in widgets",
+                "Include Sonnet/Opus breakdowns in macOS widgets.",
+                false,
+            ),
+            (
+                "Allow reading Claude Code's credentials",
+                "Read OAuth tokens stored by the claude CLI.",
+                false,
+            ),
+            (
+                "Avoid Keychain prompts",
+                "Skip Keychain-backed sources during background refreshes.",
+                false,
+            ),
+            (
+                "Read accounts from claude-swap",
+                "Import multi-account profiles managed by claude-swap.",
+                false,
+            ),
+        ],
+        "antigravity" => &[(
+            "Prioritize exhausted quotas",
+            "Pin depleted model groups to the top of the menu card.",
+            false,
+        )],
+        _ => &[],
+    };
+    if !option_items.is_empty() {
+        let opt_rows = option_items
+            .iter()
+            .map(|(title, sub, val)| FormRowModel {
+                title: (*title).to_string(),
+                subtitle: Some((*sub).to_string()),
+                row_enabled: true,
+                control: FormControl::Toggle {
+                    value: *val,
+                    enabled: false,
+                    setting_id: None,
+                },
+            })
+            .collect();
+        sections.push(FormSectionModel {
+            title: Some("Options".to_string()),
+            rows: opt_rows,
+            footer_lines: Vec::new(),
+        });
+    }
+
+    PaneModel {
+        pane: SettingsPane::Provider(provider_id.to_string()),
+        title: display_name,
+        shows_header_title: false,
+        about_hero: None,
+        sections,
+        general_footer: None,
+        centered_footer: None,
     }
 }
