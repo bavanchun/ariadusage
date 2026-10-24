@@ -62,8 +62,8 @@ pub fn idle_window_ids(snapshot: &UsageSnapshot) -> BTreeSet<String> {
     }
 
     let idle_families: Vec<Vec<&NamedRateWindow>> = families
-        .iter()
-        .filter_map(|(_, lanes)| {
+        .values()
+        .filter_map(|lanes| {
             if lanes
                 .iter()
                 .all(|w| w.usage_known && w.window.used_percent <= 0.0)
