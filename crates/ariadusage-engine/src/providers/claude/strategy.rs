@@ -1836,9 +1836,6 @@ impl FetchStrategy for ClaudeAdminAPIFetchStrategy {
             if cx.selected_token_account.is_some() {
                 return self.is_selected_admin_api_account(cx).await;
             }
-            if cx.source_mode == SourceMode::Api {
-                return true;
-            }
             self.resolve_token(cx).await.is_some()
         })
     }

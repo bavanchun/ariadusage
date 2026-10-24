@@ -42,6 +42,8 @@ pub const ADMIN_API_HOST: &str = "api.anthropic.com";
 pub const DEFAULT_ADMIN_API_BASE_URL: &str = "https://api.anthropic.com";
 pub const COST_REPORT_PATH: &str = "/v1/organizations/cost_report";
 pub const MESSAGES_REPORT_PATH: &str = "/v1/organizations/usage_report/messages";
+pub const COST_REPORT_ENDPOINT: &str = "cost_report";
+pub const MESSAGES_ENDPOINT: &str = "messages";
 pub const ANTHROPIC_VERSION_HEADER: &str = "anthropic-version";
 pub const ANTHROPIC_VERSION_VALUE: &str = "2023-06-01";
 pub const API_KEY_HEADER: &str = "x-api-key";
@@ -127,33 +129,25 @@ impl ClaudeAdminAPISettingsReader {
         None
     }
 
-    /// Trims surrounding whitespace and quotes and strips an optional case-insensitive `Bearer ` prefix.
+    /// Trims surrounding whitespace and one matching quote layer (`SettingsValue.cleaned`).
     pub fn clean_token(raw: Option<&str>) -> Option<SecretString> {
-        let mut token = SettingsValue::cleaned(raw)?;
-        if token.len() >= 7 && token[..7].eq_ignore_ascii_case("bearer ") {
-            token = token[7..].trim().to_owned();
-        }
-        if token.is_empty() {
-            None
-        } else {
-            Some(SecretString::new(token))
-        }
+        SettingsValue::cleaned(raw).map(SecretString::new)
     }
 
-    /// Reads `ANTHROPIC_ADMIN_WORKSPACE_SPEND` from a `SecretString` environment map.
+    /// Reads `ANTHROPIC_ADMIN_WORKSPACE_SPEND` from a `SecretString` environment map,
+    /// matching `ClaudeProviderDescriptor.swift:577` (`env[key] == "true"`).
     pub fn workspace_spend_enabled(environment: &BTreeMap<String, SecretString>) -> bool {
-        let raw = environment
+        environment
             .get(Self::WORKSPACE_SPEND_ENV_KEY)
-            .map(SecretString::expose_secret);
-        SettingsValue::cleaned(raw).is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            .is_some_and(|v| v.expose_secret() == "true")
     }
 
-    /// Reads `ANTHROPIC_ADMIN_WORKSPACE_SPEND` from a plain `String` environment map.
+    /// Reads `ANTHROPIC_ADMIN_WORKSPACE_SPEND` from a plain `String` environment map,
+    /// matching `ClaudeProviderDescriptor.swift:577` (`env[key] == "true"`).
     pub fn workspace_spend_enabled_from_strings(environment: &BTreeMap<String, String>) -> bool {
-        let raw = environment
+        environment
             .get(Self::WORKSPACE_SPEND_ENV_KEY)
-            .map(String::as_str);
-        SettingsValue::cleaned(raw).is_some_and(|v| v.eq_ignore_ascii_case("true"))
+            .is_some_and(|v| v == "true")
     }
 
     /// Looks up `providers.claude.apiKey` in [`SecretStore`] and cleans the token.
@@ -185,16 +179,24 @@ impl ClaudeAdminAPISettingsReader {
     }
 }
 
-/// Environment descriptor matching `ClaudeProviderDescriptor.swift:124-137`.
+/// Environment descriptor matching `ClaudeProviderDescriptor.swift:39-44, 69-74`.
 pub fn claude_env_descriptor<C>(
     sanitized_api_key: fn(&C) -> Option<String>,
+    workspace_spend_enabled: fn(&C) -> Option<String>,
 ) -> ProviderEnvDescriptor<C> {
     ProviderEnvDescriptor {
-        projections: vec![EnvProjection {
-            key: ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY.to_owned(),
-            precedence: EnvPrecedence::Config,
-            value_from_config: sanitized_api_key,
-        }],
+        projections: vec![
+            EnvProjection {
+                key: ClaudeAdminAPISettingsReader::ADMIN_API_KEY_ENV_KEY.to_owned(),
+                precedence: EnvPrecedence::Config,
+                value_from_config: sanitized_api_key,
+            },
+            EnvProjection {
+                key: ClaudeAdminAPISettingsReader::WORKSPACE_SPEND_ENV_KEY.to_owned(),
+                precedence: EnvPrecedence::Config,
+                value_from_config: workspace_spend_enabled,
+            },
+        ],
         account_projection: Some(AccountTokenProjection {
             scrub_keys: vec![
                 CLAUDE_OAUTH_TOKEN_ENV_KEY.to_owned(),
@@ -207,6 +209,17 @@ pub fn claude_env_descriptor<C>(
             target_key: None,
         }),
     }
+}
+
+/// Returns [`claude_env_descriptor`] bound to [`ariadusage_core::config::ProviderConfig`],
+/// projecting `claude_workspace_spend_enabled` into `ANTHROPIC_ADMIN_WORKSPACE_SPEND`.
+pub fn claude_provider_config_env_descriptor(
+    sanitized_api_key: fn(&ariadusage_core::config::ProviderConfig) -> Option<String>,
+) -> ProviderEnvDescriptor<ariadusage_core::config::ProviderConfig> {
+    claude_env_descriptor(sanitized_api_key, |cfg| {
+        cfg.claude_workspace_spend_enabled_opt()
+            .map(|v| v.to_string())
+    })
 }
 
 /// Token account environment override matching `ClaudeProviderDescriptor.swift:59-68`.
@@ -869,46 +882,35 @@ pub fn validate_admin_api_url(url: &Url) -> Result<(), OriginError> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaudeAdminAPIUsageError {
-    Unauthorized,
-    InvalidUrl,
-    OriginRejected(OriginError),
-    HttpError {
+    MissingCredentials,
+    NetworkError(String),
+    ApiError {
+        endpoint: &'static str,
         status_code: u16,
-        message: Option<String>,
     },
-    ParseFailed(String),
-    Network(String),
+    ParseFailed {
+        endpoint: &'static str,
+    },
+    OriginRejected(OriginError),
     Cancelled,
 }
 
 impl fmt::Display for ClaudeAdminAPIUsageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Unauthorized => f.write_str(
-                "Anthropic rejected the Admin API key. Use an organization key starting with sk-ant-admin...",
-            ),
-            Self::InvalidUrl => f.write_str("Could not build Anthropic Admin API URL."),
-            Self::OriginRejected(err) => {
-                write!(f, "Anthropic Admin API origin rejected: {err}")
-            }
-            Self::HttpError {
+            Self::MissingCredentials => f.write_str("Missing Anthropic Admin API key."),
+            Self::NetworkError(msg) => write!(f, "Claude API usage network error: {msg}"),
+            Self::ApiError {
+                endpoint,
                 status_code,
-                message: Some(msg),
-            } if !msg.trim().is_empty() => {
-                write!(
-                    f,
-                    "Anthropic Admin API returned HTTP {status_code}: {}",
-                    msg.trim()
-                )
+            } => write!(f, "Claude API usage {endpoint} error: HTTP {status_code}"),
+            Self::ParseFailed { endpoint } => {
+                write!(f, "Failed to parse Claude API usage {endpoint}")
             }
-            Self::HttpError { status_code, .. } => {
-                write!(f, "Anthropic Admin API returned HTTP {status_code}.")
+            Self::OriginRejected(err) => {
+                write!(f, "Claude API usage network error: {err}")
             }
-            Self::ParseFailed(details) => {
-                write!(f, "Could not parse Anthropic Admin API response: {details}")
-            }
-            Self::Network(msg) => write!(f, "Anthropic Admin API network error: {msg}"),
-            Self::Cancelled => f.write_str("Anthropic Admin API request cancelled."),
+            Self::Cancelled => f.write_str("Claude API usage network error: cancelled"),
         }
     }
 }
@@ -919,22 +921,29 @@ impl ClaudeAdminAPIUsageError {
     pub fn into_classified_error(self) -> ClassifiedError {
         let message = self.to_string();
         match self {
-            Self::Unauthorized => {
-                ClassifiedError::new(ProviderErrorKind::AuthenticationExpired, message)
+            Self::MissingCredentials => {
+                ClassifiedError::new(ProviderErrorKind::MissingCredential, message)
             }
-            Self::InvalidUrl | Self::OriginRejected(_) => {
-                ClassifiedError::new(ProviderErrorKind::ApiFailure, message)
+            Self::NetworkError(_) => {
+                ClassifiedError::new(ProviderErrorKind::NetworkFailure, message)
             }
-            Self::HttpError {
+            Self::ApiError {
+                status_code: 401 | 403,
+                ..
+            } => ClassifiedError::new(ProviderErrorKind::AuthenticationExpired, message),
+            Self::ApiError {
                 status_code: 429, ..
             } => ClassifiedError::new(ProviderErrorKind::RateLimited, message),
-            Self::HttpError {
+            Self::ApiError {
                 status_code: 500..=599,
                 ..
             } => ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, message),
-            Self::HttpError { .. } => ClassifiedError::new(ProviderErrorKind::ApiFailure, message),
-            Self::ParseFailed(_) => ClassifiedError::new(ProviderErrorKind::ParseFailure, message),
-            Self::Network(_) => ClassifiedError::new(ProviderErrorKind::NetworkFailure, message),
+            Self::ApiError { .. } | Self::OriginRejected(_) => {
+                ClassifiedError::new(ProviderErrorKind::ApiFailure, message)
+            }
+            Self::ParseFailed { .. } => {
+                ClassifiedError::new(ProviderErrorKind::ParseFailure, message)
+            }
             Self::Cancelled => ClassifiedError::new(ProviderErrorKind::Unknown, message)
                 .with_transport(TransportClass::Cancelled),
         }
@@ -1021,9 +1030,11 @@ impl ClaudeAdminAPIUsageFetcher {
         now: Timestamp,
         call: &BrokerCall,
     ) -> Result<ClaudeAdminAPIUsageSnapshot, ClaudeAdminAPIUsageError> {
-        let Some(cleaned_key) = ClaudeAdminAPISettingsReader::clean_token(Some(api_key)) else {
-            return Err(ClaudeAdminAPIUsageError::Unauthorized);
-        };
+        let trimmed = api_key.trim();
+        if trimmed.is_empty() {
+            return Err(ClaudeAdminAPIUsageError::MissingCredentials);
+        }
+        let cleaned_key = SecretString::new(trimmed);
 
         validate_admin_api_url(endpoint.base_url())
             .map_err(ClaudeAdminAPIUsageError::OriginRejected)?;
@@ -1035,12 +1046,34 @@ impl ClaudeAdminAPIUsageFetcher {
         let cost_url = Self::build_url(endpoint.base_url(), COST_REPORT_PATH, &cost_query)?;
         let usage_url = Self::build_url(endpoint.base_url(), MESSAGES_REPORT_PATH, &usage_query)?;
 
-        let (cost_bytes, usage_bytes) = tokio::try_join!(
-            Self::fetch_bytes(net, endpoint, cost_url, &cleaned_key, call),
-            Self::fetch_bytes(net, endpoint, usage_url, &cleaned_key, call),
-        )?;
+        let cost_bytes = Self::fetch_bytes(
+            net,
+            endpoint,
+            cost_url,
+            &cleaned_key,
+            COST_REPORT_ENDPOINT,
+            call,
+        )
+        .await?;
+        let cost_response = Self::decode_costs(&cost_bytes)?;
 
-        Self::parse_snapshot(&cost_bytes, &usage_bytes, workspace_spend_enabled, now)
+        let usage_bytes = Self::fetch_bytes(
+            net,
+            endpoint,
+            usage_url,
+            &cleaned_key,
+            MESSAGES_ENDPOINT,
+            call,
+        )
+        .await?;
+        let usage_response = Self::decode_messages(&usage_bytes)?;
+
+        Ok(Self::build_snapshot(
+            cost_response,
+            usage_response,
+            workspace_spend_enabled,
+            now,
+        ))
     }
 
     pub fn parse_snapshot(
@@ -1049,10 +1082,8 @@ impl ClaudeAdminAPIUsageFetcher {
         workspace_spend_enabled: bool,
         now: Timestamp,
     ) -> Result<ClaudeAdminAPIUsageSnapshot, ClaudeAdminAPIUsageError> {
-        let cost_response: CostReportResponse = serde_json::from_slice(cost_data)
-            .map_err(|e| ClaudeAdminAPIUsageError::ParseFailed(e.to_string()))?;
-        let usage_response: MessagesUsageReportResponse = serde_json::from_slice(usage_data)
-            .map_err(|e| ClaudeAdminAPIUsageError::ParseFailed(e.to_string()))?;
+        let cost_response = Self::decode_costs(cost_data)?;
+        let usage_response = Self::decode_messages(usage_data)?;
 
         Ok(Self::build_snapshot(
             cost_response,
@@ -1060,6 +1091,20 @@ impl ClaudeAdminAPIUsageFetcher {
             workspace_spend_enabled,
             now,
         ))
+    }
+
+    fn decode_costs(data: &[u8]) -> Result<CostReportResponse, ClaudeAdminAPIUsageError> {
+        serde_json::from_slice(data).map_err(|_| ClaudeAdminAPIUsageError::ParseFailed {
+            endpoint: COST_REPORT_ENDPOINT,
+        })
+    }
+
+    fn decode_messages(
+        data: &[u8],
+    ) -> Result<MessagesUsageReportResponse, ClaudeAdminAPIUsageError> {
+        serde_json::from_slice(data).map_err(|_| ClaudeAdminAPIUsageError::ParseFailed {
+            endpoint: MESSAGES_ENDPOINT,
+        })
     }
 
     fn build_snapshot(
@@ -1282,14 +1327,14 @@ impl ClaudeAdminAPIUsageFetcher {
         let today = utc_date
             .at(0, 0, 0, 0)
             .to_zoned(TimeZone::UTC)
-            .map_err(|_| ClaudeAdminAPIUsageError::InvalidUrl)?;
+            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?;
         let start = today
             .checked_sub(30.days())
-            .map_err(|_| ClaudeAdminAPIUsageError::InvalidUrl)?
+            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?
             .timestamp();
         let end = today
             .checked_add(1.days())
-            .map_err(|_| ClaudeAdminAPIUsageError::InvalidUrl)?
+            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?
             .timestamp();
         Ok((start, end))
     }
@@ -1333,7 +1378,7 @@ impl ClaudeAdminAPIUsageFetcher {
         let base = base_url.as_str().trim_end_matches('/');
         let rel = path.trim_start_matches('/');
         let mut url = Url::parse(&format!("{base}/{rel}"))
-            .map_err(|_| ClaudeAdminAPIUsageError::InvalidUrl)?;
+            .map_err(|e| ClaudeAdminAPIUsageError::NetworkError(e.to_string()))?;
         {
             let mut pairs = url.query_pairs_mut();
             for (k, v) in query_items {
@@ -1349,6 +1394,7 @@ impl ClaudeAdminAPIUsageFetcher {
         endpoint: &ClaudeAdminAPIEndpointConfig,
         url: Url,
         api_key: &SecretString,
+        endpoint_name: &'static str,
         call: &BrokerCall,
     ) -> Result<Vec<u8>, ClaudeAdminAPIUsageError> {
         validate_admin_api_url(&url).map_err(ClaudeAdminAPIUsageError::OriginRejected)?;
@@ -1378,26 +1424,23 @@ impl ClaudeAdminAPIUsageFetcher {
                     OriginError::Invalid,
                 ));
             }
-            Err(NetError::Http {
-                status: 401 | 403, ..
-            }) => return Err(ClaudeAdminAPIUsageError::Unauthorized),
             Err(NetError::Http { status }) => {
-                return Err(ClaudeAdminAPIUsageError::HttpError {
+                return Err(ClaudeAdminAPIUsageError::ApiError {
+                    endpoint: endpoint_name,
                     status_code: status,
-                    message: None,
                 });
             }
-            Err(err) => return Err(ClaudeAdminAPIUsageError::Network(err.to_string())),
+            Err(err) => return Err(ClaudeAdminAPIUsageError::NetworkError(err.to_string())),
         };
 
         let status = response.status.as_u16();
-        match status {
-            200..=299 => Ok(response.body.to_vec()),
-            401 | 403 => Err(ClaudeAdminAPIUsageError::Unauthorized),
-            _ => Err(ClaudeAdminAPIUsageError::HttpError {
+        if status == 200 {
+            Ok(response.body.to_vec())
+        } else {
+            Err(ClaudeAdminAPIUsageError::ApiError {
+                endpoint: endpoint_name,
                 status_code: status,
-                message: Self::extract_error_message(&response.body),
-            }),
+            })
         }
     }
 
@@ -1434,20 +1477,5 @@ impl ClaudeAdminAPIUsageFetcher {
             return None;
         }
         trimmed.parse::<f64>().ok().filter(|v| v.is_finite())
-    }
-
-    pub fn extract_error_message(data: &[u8]) -> Option<String> {
-        if let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(data) {
-            if let Some(Value::Object(err_obj)) = map.get("error")
-                && let Some(Value::String(msg)) = err_obj.get("message")
-            {
-                return SettingsValue::cleaned(Some(msg.as_str()));
-            }
-            if let Some(Value::String(msg)) = map.get("message") {
-                return SettingsValue::cleaned(Some(msg.as_str()));
-            }
-        }
-        let text = std::str::from_utf8(data).ok()?;
-        SettingsValue::cleaned(Some(text))
     }
 }
