@@ -19,9 +19,14 @@ test-hooks = ["dep:nix"]
 [dependencies]
 ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
 ariadusage-protocol = { version = "0.0.0", path = "../ariadusage-protocol", features = ["codec"] }
+axum = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 etcetera = { workspace = true }
+http = { workspace = true }
+http-body-util = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 jiff = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
@@ -32,6 +37,7 @@ tempfile = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["codec"] }
+tower = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 zeroize = { workspace = true }

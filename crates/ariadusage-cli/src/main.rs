@@ -1,3 +1,5 @@
+pub mod serve;
+
 #[cfg(target_os = "macos")]
 use ariadusage_cli::launch_agent;
 use ariadusage_cli::{
@@ -130,6 +132,14 @@ enum Commands {
         #[arg(long)]
         log_level: Option<String>,
     },
+
+    /// Start the local HTTP server and built-in web dashboard
+    #[command(long_about = serve::SERVE_LONG_ABOUT)]
+    Serve(serve::ServeCommandArgs),
+
+    /// Print a one-shot dashboard-v1 snapshot as JSON
+    #[command(long_about = serve::DASHBOARD_LONG_ABOUT)]
+    Dashboard(serve::DashboardCommandArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -453,6 +463,22 @@ fn main() {
                 std::process::exit(i32::from(code));
             }
         },
+        Some(Commands::Serve(args)) => {
+            if let Err(error) = serve::run_serve_command(args) {
+                let mut stdout = io::stdout();
+                let mut stderr = io::stderr();
+                serve::write_serve_cli_error(&error, &mut stdout, &mut stderr);
+                std::process::exit(i32::from(error.code));
+            }
+        }
+        Some(Commands::Dashboard(args)) => {
+            if let Err(error) = serve::run_dashboard_command(args) {
+                let mut stdout = io::stdout();
+                let mut stderr = io::stderr();
+                serve::write_serve_cli_error(&error, &mut stdout, &mut stderr);
+                std::process::exit(i32::from(error.code));
+            }
+        }
         None => {}
     }
 }
