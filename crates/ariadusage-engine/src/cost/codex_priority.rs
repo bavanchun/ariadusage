@@ -1147,6 +1147,7 @@ fn copy_regular_file_nofollow(src: &Path, dst: &Path, max_bytes: u64) -> std::io
     {
         use rustix::fs::{FileType, Mode, OFlags, fstat, open};
         use rustix::process::geteuid;
+        use std::io::Read;
 
         let src_fd = open(
             src,
@@ -1174,19 +1175,29 @@ fn copy_regular_file_nofollow(src: &Path, dst: &Path, max_bytes: u64) -> std::io
                 "database exceeds max size",
             ));
         }
-        let mut reader = std::fs::File::from(src_fd);
+        let reader = std::fs::File::from(src_fd);
+        let mut bounded_reader = reader.take(max_bytes.saturating_add(1));
         let dst_fd = open(
             dst,
-            OFlags::RDWR | OFlags::CREATE | OFlags::TRUNC | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::from_raw_mode(0o600),
         )
         .map_err(std::io::Error::from)?;
         let mut writer = std::fs::File::from(dst_fd);
-        std::io::copy(&mut reader, &mut writer)?;
+        let copied = std::io::copy(&mut bounded_reader, &mut writer)?;
+        if copied > max_bytes {
+            let _ = fs::remove_file(dst);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "database grew past max size during copy",
+            ));
+        }
         Ok(())
     }
     #[cfg(not(unix))]
     {
+        use std::io::Read;
+
         let meta = fs::symlink_metadata(src)?;
         if !meta.file_type().is_file() || meta.len() > max_bytes {
             return Err(std::io::Error::new(
@@ -1194,29 +1205,85 @@ fn copy_regular_file_nofollow(src: &Path, dst: &Path, max_bytes: u64) -> std::io
                 "invalid sqlite file",
             ));
         }
-        let mut reader = fs::File::open(src)?;
-        let mut writer = fs::File::create(dst)?;
-        std::io::copy(&mut reader, &mut writer)?;
+        let reader = fs::File::open(src)?;
+        let mut bounded_reader = reader.take(max_bytes.saturating_add(1));
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dst)?;
+        let copied = std::io::copy(&mut bounded_reader, &mut writer)?;
+        if copied > max_bytes {
+            let _ = fs::remove_file(dst);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "database grew past max size during copy",
+            ));
+        }
         Ok(())
     }
 }
 
-fn resolve_temp_parent(injected_temp_dir: Option<&Path>) -> Option<PathBuf> {
-    if let Some(dir) = injected_temp_dir {
-        let _ = fs::create_dir_all(dir);
-        return Some(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
-    }
-    if let Some(trusted) = crate::paths::trusted_runtime_dir() {
-        return Some(trusted);
-    }
-    #[cfg(unix)]
+#[cfg(unix)]
+fn ensure_private_0700_dir(dir: &Path) -> Option<PathBuf> {
+    use rustix::fs::{FileType, Mode, OFlags, chmod, fchmod, fstat, lstat, open};
+    use rustix::process::geteuid;
+    use std::os::unix::fs::DirBuilderExt;
+
+    if let Some(parent) = dir.parent()
+        && !parent.as_os_str().is_empty()
     {
-        let fallback = Path::new("/tmp");
-        if fs::symlink_metadata(fallback).is_ok() {
-            return Some(fs::canonicalize(fallback).unwrap_or_else(|_| fallback.to_path_buf()));
+        let mut parent_builder = fs::DirBuilder::new();
+        parent_builder.recursive(true).mode(0o700);
+        let _ = parent_builder.create(parent);
+    }
+
+    if let Ok(existing_stat) = lstat(dir)
+        && FileType::from_raw_mode(existing_stat.st_mode) != FileType::Directory
+    {
+        return None;
+    }
+
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder.create(dir).ok()?;
+
+    let dir_fd = open(
+        dir,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .ok()?;
+    let dir_stat = fstat(&dir_fd).ok()?;
+    if FileType::from_raw_mode(dir_stat.st_mode) != FileType::Directory
+        || dir_stat.st_uid != geteuid().as_raw()
+    {
+        return None;
+    }
+    if (dir_stat.st_mode & 0o777) != 0o700 {
+        let _ = fchmod(&dir_fd, Mode::from_raw_mode(0o700));
+        let _ = chmod(dir, Mode::from_raw_mode(0o700));
+        let recheck = fstat(&dir_fd).ok()?;
+        if (recheck.st_mode & 0o777) != 0o700 {
+            return None;
         }
     }
-    None
+    Some(fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()))
+}
+
+fn resolve_temp_parent(injected_temp_dir: Option<&Path>) -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        if let Some(dir) = injected_temp_dir {
+            return ensure_private_0700_dir(dir);
+        }
+        let default_parent = crate::cost::store::default_sqlite_copy_parent(None);
+        ensure_private_0700_dir(&default_parent)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = injected_temp_dir;
+        None
+    }
 }
 
 /// Copies a foreign Codex SQLite database (`logs_2.sqlite` or `state_*.sqlite`) and its optional
