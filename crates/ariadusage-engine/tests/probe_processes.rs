@@ -76,9 +76,9 @@ fn write_fake_process(
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:17
-async fn failed_or_empty_lsof_recovers_only_process_owned_proc_listeners() {
+async fn proc_scan_returns_only_process_owned_listeners() {
     let proc_root = tempdir().unwrap();
+    write_fake_process(proc_root.path(), 42, 1000, 1, Some("net:[12345]"), None);
     let process_root = proc_root.path().join("42");
     let fd_dir = process_root.join("fd");
     let net_dir = process_root.join("net");
@@ -108,9 +108,9 @@ sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeo
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:24
-async fn missing_lsof_executable_recovers_through_proc() {
+async fn proc_scan_reads_the_process_socket_table() {
     let proc_root = tempdir().unwrap();
+    write_fake_process(proc_root.path(), 42, 1000, 1, Some("net:[12345]"), None);
     let process_root = proc_root.path().join("42");
     let fd_dir = process_root.join("fd");
     let net_dir = process_root.join("net");
@@ -139,7 +139,6 @@ sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeo
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:91
 async fn absent_process_retains_no_ports_error() {
     let proc_root = tempdir().unwrap();
     let call = test_broker_call();
@@ -156,9 +155,9 @@ async fn absent_process_retains_no_ports_error() {
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:104
 async fn ordinary_empty_discovery_retains_no_ports_classification() {
     let proc_root = tempdir().unwrap();
+    write_fake_process(proc_root.path(), 42, 1000, 1, Some("net:[12345]"), None);
     let process_root = proc_root.path().join("42");
     let fd_dir = process_root.join("fd");
     fs::create_dir_all(&fd_dir).unwrap();
@@ -177,9 +176,9 @@ async fn ordinary_empty_discovery_retains_no_ports_classification() {
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:114
 async fn cancelled_discovery_returns_cancelled() {
     let proc_root = tempdir().unwrap();
+    write_fake_process(proc_root.path(), 42, 1000, 1, Some("net:[12345]"), None);
     let process_root = proc_root.path().join("42");
     let fd_dir = process_root.join("fd");
     let net_dir = process_root.join("net");
@@ -203,14 +202,13 @@ async fn cancelled_discovery_returns_cancelled() {
 }
 
 #[tokio::test]
-// CodexBar: TestsLinux/AntigravityPortDiscoveryTests.swift:142
 async fn linux_proc_recovers_a_real_listener_on_own_pid() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let my_pid = std::process::id() as i32;
 
     let call = test_broker_call();
-    let probe = LocalProbe::new();
+    let probe = LocalProbe::with_hooks("/proc".into(), rustix::process::getuid().as_raw(), None);
     let ports = probe
         .listening_tcp_ports(&call, my_pid, Duration::from_secs(5))
         .await
@@ -260,6 +258,17 @@ async fn foreign_uid_and_foreign_namespace_processes_are_excluded() {
         Some("net:[9999]"),
         Some(&["agy", "serve", "--port", "4242"]),
     );
+    #[cfg(target_os = "linux")]
+    {
+        // Matching real UID but foreign effective UID must be rejected before argv filtering.
+        write_fake_process(proc_root.path(), 105, uid, 10000, Some(own_ns), None);
+        fs::write(
+            proc_root.path().join("105/status"),
+            "Uid:\t1000\t2000\t1000\t1000\n",
+        )
+        .unwrap();
+        fs::write(proc_root.path().join("105/cmdline"), b"agy\0serve\0").unwrap();
+    }
     // Process 104: non-matching argv
     write_fake_process(
         proc_root.path(),

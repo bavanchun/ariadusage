@@ -1054,7 +1054,9 @@ impl AntigravityOfflineFetchStrategy {
                 "the local Antigravity session does not match the selected account".to_owned()
             }
             AntigravityStatusProbeError::PortDiscoveryPending { .. }
-            | AntigravityStatusProbeError::PortDiscoveryFailed { .. } => {
+            | AntigravityStatusProbeError::PortDiscoveryFailed { .. }
+            | AntigravityStatusProbeError::PortDiscoveryCommandPending(_)
+            | AntigravityStatusProbeError::PortDiscoveryCommandFailed(_) => {
                 "check Diagnostics for per-source details".to_owned()
             }
             AntigravityStatusProbeError::Transport(_) => "the usage request failed".to_owned(),

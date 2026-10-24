@@ -249,7 +249,6 @@ fn language_server_endpoints_include_linux_http_fallback() {
     );
 }
 
-// upstream: AntigravityPortDiscoveryTests.swift:31 CLI readiness retries namespace warnings until the proc listener appears
 #[tokio::test]
 async fn cli_readiness_retries_until_the_listener_appears() {
     let attempts = Arc::new(AtomicUsize::new(0));

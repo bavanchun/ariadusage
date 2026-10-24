@@ -215,9 +215,11 @@ impl ProcessLauncher for BrokerProcessLauncher {
         let gate = Arc::clone(&self.gate);
         Box::pin(async move {
             let program = AbsolutePath::new(&request.binary).map_err(|error| error.to_string())?;
+            let home = request.environment.get("HOME").map(PathBuf::from);
             let mut command = Command::new(program, Vec::new())
                 .with_env(request.environment)
                 .timeout(request.timeout);
+            command.set_cwd(home);
             command.set_reap_marker(true);
             let session = tokio::time::timeout(
                 request.timeout,

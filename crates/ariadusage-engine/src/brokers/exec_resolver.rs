@@ -214,6 +214,21 @@ pub fn check_trust(fs: &dyn ResolverFs, candidate: &Path) -> Result<(), ResolveE
     Ok(())
 }
 
+/// Resolves fixed absolute utility paths through the same executable trust boundary.
+pub fn resolve_absolute_candidates(
+    candidates: &[PathBuf],
+    fs: &dyn ResolverFs,
+) -> Result<AbsolutePath, ResolveError> {
+    for candidate in candidates {
+        if candidate.is_absolute() && fs.is_executable(candidate) {
+            check_trust(fs, candidate)?;
+            return AbsolutePath::from_absolute_path(candidate.clone())
+                .map_err(|_| ResolveError::NotFound);
+        }
+    }
+    Err(ResolveError::NotFound)
+}
+
 pub fn effective_path(login: Option<&[PathBuf]>, current: Option<&std::ffi::OsStr>) -> OsString {
     let mut parts = Vec::new();
 

@@ -448,6 +448,11 @@ pub async fn wait_for_snapshot(
                 last_port_error = Some(Error::PortDiscoveryFailed { code, stderr });
                 Vec::new()
             }
+            Err(Error::PortDiscoveryCommandPending(error)) => {
+                check_cancel(cancel)?;
+                last_port_error = Some(Error::PortDiscoveryCommandFailed(error));
+                Vec::new()
+            }
             Err(Error::PortDetectionFailed(ref message))
                 if message == "no listening ports found" =>
             {
@@ -1189,15 +1194,7 @@ impl FetchStrategy for AntigravityCLIHTTPSFetchStrategy {
     }
 }
 fn map_probe_error(error: crate::brokers::local_probe::ProbeError) -> Error {
-    use crate::brokers::local_probe::ProbeError;
-    match error {
-        ProbeError::Cancelled => Error::Cancelled,
-        ProbeError::TimedOut => Error::TimedOut,
-        ProbeError::NoListeningPorts => {
-            Error::PortDetectionFailed("no listening ports found".into())
-        }
-        _ => Error::PortDetectionFailed("local process discovery unavailable".into()),
-    }
+    error.into()
 }
 async fn fetch_cli_ports(
     config: &AntigravityStrategyConfig,

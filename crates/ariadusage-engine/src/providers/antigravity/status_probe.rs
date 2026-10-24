@@ -25,7 +25,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::brokers::call::BrokerCall;
-use crate::brokers::local_probe::{LocalProbe, ProbeError};
+use crate::brokers::local_probe::{ListenerCommandError, LocalProbe, ProbeError};
 use crate::brokers::net::{NetBody, NetBroker, NetError, NetRequest};
 use crate::brokers::process::ProcessIdentity;
 
@@ -1109,6 +1109,10 @@ pub enum AntigravityStatusProbeError {
         code: i32,
         stderr: ariadusage_protocol::secret::SecretString,
     },
+    #[error("{0}")]
+    PortDiscoveryCommandPending(ListenerCommandError),
+    #[error("{0}")]
+    PortDiscoveryCommandFailed(ListenerCommandError),
     #[error("Antigravity CLI usage report failed: {0}")]
     CliReportFailed(super::cli_print_failure::AntigravityCLIPrintFailure),
     #[error("Antigravity CLI is signed out. Run agy in a terminal to sign in, then retry.")]
@@ -1139,6 +1143,33 @@ impl fmt::Debug for AntigravityStatusProbeError {
         }
     }
 }
+impl From<ProbeError> for AntigravityStatusProbeError {
+    fn from(error: ProbeError) -> Self {
+        use crate::brokers::process::ProcessError;
+        match error {
+            ProbeError::Cancelled => Self::Cancelled,
+            ProbeError::TimedOut => Self::TimedOut,
+            ProbeError::NoListeningPorts => {
+                Self::PortDetectionFailed("no listening ports found".into())
+            }
+            ProbeError::ListenerDiscoveryPending(ListenerCommandError::NonZeroExit {
+                code,
+                stderr,
+            }) => Self::PortDiscoveryPending { code, stderr },
+            ProbeError::ListenerDiscoveryPending(error) => Self::PortDiscoveryCommandPending(error),
+            ProbeError::ListenerCommand(ListenerCommandError::Process {
+                source: ProcessError::TimedOut,
+                ..
+            }) => Self::TimedOut,
+            ProbeError::ListenerCommand(ListenerCommandError::Process {
+                source: ProcessError::Cancelled,
+                ..
+            }) => Self::Cancelled,
+            other => Self::PortDetectionFailed(other.to_string()),
+        }
+    }
+}
+
 impl AntigravityStatusProbeError {
     fn port_detection_description(message: &str) -> String {
         match message {
@@ -1167,7 +1198,9 @@ impl AntigravityStatusProbeError {
             | Self::MissingCSRFToken
             | Self::PortDetectionFailed(_)
             | Self::PortDiscoveryPending { .. }
-            | Self::PortDiscoveryFailed { .. } => {
+            | Self::PortDiscoveryFailed { .. }
+            | Self::PortDiscoveryCommandPending(_)
+            | Self::PortDiscoveryCommandFailed(_) => {
                 ClassifiedError::new(ProviderErrorKind::ProviderUnavailable, self.to_string())
             }
             Self::ApiError(_) => {
@@ -2496,16 +2529,7 @@ impl AntigravityStatusProbe {
     }
 
     fn map_probe_error(err: ProbeError) -> AntigravityStatusProbeError {
-        match err {
-            ProbeError::NoListeningPorts => AntigravityStatusProbeError::PortDetectionFailed(
-                "no listening ports found".to_owned(),
-            ),
-            ProbeError::TimedOut => AntigravityStatusProbeError::TimedOut,
-            ProbeError::Cancelled => AntigravityStatusProbeError::Cancelled,
-            ProbeError::Unsupported | ProbeError::ProcUnavailable => {
-                AntigravityStatusProbeError::PortDetectionFailed(err.to_string())
-            }
-        }
+        err.into()
     }
 
     fn map_net_error(err: NetError) -> AntigravityStatusProbeError {
