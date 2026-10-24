@@ -26,8 +26,8 @@ pub use error::{OutputStream, ProcessError};
 pub use procscan::{
     ProcessIdentity, fd_targets, parse_marker_environment, parse_procargs2_arguments,
     parse_procargs2_environment, parse_procargs2_marker, process_children, process_descendants,
-    process_group, process_identity, process_net_ns, process_state, process_uid,
-    read_marker_environment, same_uid_processes,
+    process_group, process_identity, process_net_ns, process_ppid_and_start_secs, process_state,
+    process_uid, read_marker_environment, same_uid_processes,
 };
 pub use pty::{
     PtyCompletionReason, PtyError, PtyScript, PtySession, PtySize, PtyTranscript, SendOnSubstring,

@@ -1,20 +1,29 @@
 // Ported from CodexBar Sources/CodexBarCore/AgentSession.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/LocalAgentSessionScanner.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
-// Ported from CodexBar Sources/CodexBarCore/SessionWindowFocuser.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLISessionsCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ariadusage_core::gates::launch::LaunchGate;
+use ariadusage_core::pipeline::FetchInteraction;
 use jiff::Timestamp;
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
+
+use crate::brokers::call::BrokerCall;
+use crate::brokers::local_probe::LocalProbe;
+use crate::brokers::process::{
+    AbsolutePath, Command as BrokerCommand, Output as BrokerOutput, ProcessEnv, ProcessRegistry,
+    StreamPolicy, process_ppid_and_start_secs, run as run_process,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -149,17 +158,155 @@ impl AgentSession {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SessionScanConfig {
-    pub active_window_secs: f64,
-    pub recent_file_window_secs: f64,
-    pub max_sessions: usize,
+    pub active_window: f64,
+    pub file_only_window: f64,
+    pub max_process_count: usize,
+    pub max_codex_rollout_count: usize,
+    pub max_claude_transcript_count_per_project: usize,
+    pub max_directory_entry_count: usize,
+    pub max_directory_depth: usize,
+    pub directory_scan_budget: f64,
+    pub adaptive_directory_scan_budget: f64,
 }
 
 impl Default for SessionScanConfig {
     fn default() -> Self {
         Self {
-            active_window_secs: 180.0,
-            recent_file_window_secs: 6.0 * 3600.0,
-            max_sessions: 50,
+            active_window: 120.0,
+            file_only_window: 30.0 * 60.0,
+            max_process_count: 64,
+            max_codex_rollout_count: 128,
+            max_claude_transcript_count_per_project: 64,
+            max_directory_entry_count: 512,
+            max_directory_depth: 1,
+            directory_scan_budget: 0.25,
+            adaptive_directory_scan_budget: 0.15,
+        }
+    }
+}
+
+impl SessionScanConfig {
+    pub fn state(
+        &self,
+        last_activity_at: Option<Timestamp>,
+        now: Timestamp,
+        has_live_process: bool,
+    ) -> AgentSessionState {
+        let Some(last_activity_at) = last_activity_at else {
+            return if has_live_process {
+                AgentSessionState::Active
+            } else {
+                AgentSessionState::Idle
+            };
+        };
+        let elapsed = (now.as_second() - last_activity_at.as_second()) as f64;
+        if elapsed <= self.active_window {
+            AgentSessionState::Active
+        } else {
+            AgentSessionState::Idle
+        }
+    }
+}
+
+pub(crate) struct DirectoryMetadataScanBudget {
+    remaining_entry_count: usize,
+    max_depth: usize,
+    deadline: Instant,
+}
+
+impl DirectoryMetadataScanBudget {
+    pub(crate) fn new(max_entry_count: usize, max_depth: usize, time_limit: f64) -> Self {
+        Self {
+            remaining_entry_count: max_entry_count,
+            max_depth,
+            deadline: Instant::now() + Duration::from_secs_f64(time_limit.max(0.0)),
+        }
+    }
+
+    pub(crate) fn has_time_remaining(&self) -> bool {
+        Instant::now() < self.deadline
+    }
+
+    pub(crate) fn files(&mut self, directory: &Path) -> Vec<PathBuf> {
+        if self.max_depth == 0 || self.remaining_entry_count == 0 || !self.has_time_remaining() {
+            return Vec::new();
+        }
+        let Ok(meta) = fs::symlink_metadata(directory) else {
+            return Vec::new();
+        };
+        if !meta.file_type().is_dir() {
+            return Vec::new();
+        }
+        let Ok(read_dir) = fs::read_dir(directory) else {
+            return Vec::new();
+        };
+        let mut files = Vec::new();
+        for entry in read_dir {
+            if self.remaining_entry_count == 0 || !self.has_time_remaining() {
+                break;
+            }
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let file_name = entry.file_name();
+            if file_name.to_string_lossy().starts_with('.') {
+                continue;
+            }
+            self.remaining_entry_count -= 1;
+            if !self.has_time_remaining() {
+                break;
+            }
+            let path = entry.path();
+            let Ok(entry_meta) = fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if entry_meta.file_type().is_file() {
+                files.push(path);
+            }
+        }
+        files
+    }
+
+    pub(crate) fn compact_map_while_time_remains<T, F>(
+        &self,
+        urls: Vec<PathBuf>,
+        mut transform: F,
+    ) -> Vec<T>
+    where
+        F: FnMut(PathBuf) -> Option<T>,
+    {
+        let mut results = Vec::new();
+        for url in urls {
+            if !self.has_time_remaining() {
+                break;
+            }
+            if let Some(result) = transform(url) {
+                results.push(result);
+            }
+        }
+        results
+    }
+}
+
+#[derive(Debug, Default)]
+struct FutureModificationDateClamp {
+    clamp_date: Mutex<Option<Timestamp>>,
+}
+
+impl FutureModificationDateClamp {
+    fn clamp(&self, modified_at: Timestamp, now: Timestamp) -> Timestamp {
+        if modified_at <= now {
+            return modified_at;
+        }
+        let mut guard = self
+            .clamp_date
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(clamp_date) = *guard {
+            clamp_date.min(now)
+        } else {
+            *guard = Some(now);
+            now
         }
     }
 }
@@ -551,11 +698,45 @@ impl AgentPSOutputParser {
     }
 }
 
+fn run_broker_command(
+    executable: &str,
+    args: &[&str],
+    env: ProcessEnv,
+    timeout: Duration,
+    stdout_cap: usize,
+) -> Option<BrokerOutput> {
+    let exe_path = AbsolutePath::new(Path::new(executable)).ok()?;
+    let mut command = BrokerCommand::new(exe_path, args.iter().map(OsString::from).collect())
+        .with_env(env)
+        .timeout(timeout);
+    command
+        .set_stdout(StreamPolicy::Capture { cap: stdout_cap })
+        .set_stderr(StreamPolicy::Discard);
+
+    let handle = std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .ok()?;
+        let call = BrokerCall {
+            interaction: FetchInteraction::Background,
+            cancel: CancellationToken::new(),
+            request_id: "session-scan".to_owned(),
+        };
+        let registry = ProcessRegistry::new();
+        let gate = LaunchGate::new(Instant::now);
+        rt.block_on(run_process(call, command, &registry, &gate))
+            .ok()
+    });
+    handle.join().ok().flatten()
+}
+
 pub struct ChatGPTCodexProcessTrust;
 
 impl ChatGPTCodexProcessTrust {
     pub const OUTER_BUNDLE_PATH: &'static str = "/Applications/ChatGPT.app";
-    pub const REQUIREMENT: &'static str = "anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = \"2DC432GLL2\"";
+    pub const REQUIREMENT: &'static str =
+        "anchor apple generic and certificate leaf[subject.OU] = \"2DC432GLL2\"";
 
     pub fn is_trusted(pid: i32) -> bool {
         Self::is_trusted_with(
@@ -597,30 +778,11 @@ impl ChatGPTCodexProcessTrust {
     }
 
     fn default_executable_path(pid: i32) -> Option<String> {
-        #[cfg(target_os = "macos")]
-        {
-            use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-            let pid_u32 = u32::try_from(pid).ok()?;
-            if pid_u32 == 0 {
-                return None;
-            }
-            let sys_pid = Pid::from_u32(pid_u32);
-            let mut system = System::new();
-            system.refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[sys_pid]),
-                true,
-                ProcessRefreshKind::nothing().with_exe(UpdateKind::Always),
-            );
-            system
-                .process(sys_pid)
-                .and_then(|proc| proc.exe())
-                .map(|path| path.to_string_lossy().into_owned())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = pid;
-            None
-        }
+        let probe = LocalProbe::new();
+        let identity = probe.owned_process_identity(pid)?;
+        probe
+            .executable_path(identity)
+            .map(|path| path.to_string_lossy().into_owned())
     }
 
     fn default_resolve_path(path: String) -> String {
@@ -632,10 +794,15 @@ impl ChatGPTCodexProcessTrust {
     fn default_process_is_trusted(pid: i32) -> bool {
         #[cfg(target_os = "macos")]
         {
-            Command::new("/usr/bin/codesign")
-                .args(["--verify", "-R", Self::REQUIREMENT, &pid.to_string()])
-                .output()
-                .is_ok_and(|out| out.status.success())
+            let pid_str = pid.to_string();
+            run_broker_command(
+                "/usr/bin/codesign",
+                &["--verify", "-R", Self::REQUIREMENT, &pid_str],
+                ProcessEnv::empty(),
+                Duration::from_secs(5),
+                16 * 1024,
+            )
+            .is_some_and(|out| out.status.success())
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -647,10 +814,14 @@ impl ChatGPTCodexProcessTrust {
     fn default_app_is_trusted(bundle_path: String) -> bool {
         #[cfg(target_os = "macos")]
         {
-            Command::new("/usr/bin/codesign")
-                .args(["--verify", "-R", Self::REQUIREMENT, &bundle_path])
-                .output()
-                .is_ok_and(|out| out.status.success())
+            run_broker_command(
+                "/usr/bin/codesign",
+                &["--verify", "-R", Self::REQUIREMENT, &bundle_path],
+                ProcessEnv::empty(),
+                Duration::from_secs(5),
+                16 * 1024,
+            )
+            .is_some_and(|out| out.status.success())
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -852,6 +1023,8 @@ pub struct CodexRolloutMetadata {
 pub struct CodexRolloutFirstLineParser;
 
 impl CodexRolloutFirstLineParser {
+    pub const MAX_FIRST_LINE_BYTES: usize = 256 * 1024;
+
     pub fn parse(line: &str) -> Option<CodexRolloutMetadata> {
         let root: serde_json::Value = serde_json::from_str(line).ok()?;
         let obj = root.as_object()?;
@@ -860,8 +1033,9 @@ impl CodexRolloutFirstLineParser {
         }
         let payload = obj.get("payload")?.as_object()?;
         let id = payload
-            .get("id")
+            .get("session_id")
             .and_then(|v| v.as_str())
+            .or_else(|| payload.get("id").and_then(|v| v.as_str()))
             .map(ToOwned::to_owned);
         let timestamp = payload
             .get("timestamp")
@@ -889,11 +1063,27 @@ impl CodexRolloutFirstLineParser {
     }
 
     pub fn read(path: &Path) -> Option<CodexRolloutMetadata> {
-        let file = File::open(path).ok()?;
-        let mut reader = BufReader::new(file);
-        let mut first_line = String::new();
-        reader.read_line(&mut first_line).ok()?;
-        Self::parse(first_line.trim())
+        let meta = fs::symlink_metadata(path).ok()?;
+        if !meta.file_type().is_file() {
+            return None;
+        }
+        let mut file = File::open(path).ok()?;
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while data.len() < Self::MAX_FIRST_LINE_BYTES {
+            let max_read = (Self::MAX_FIRST_LINE_BYTES - data.len()).min(chunk.len());
+            let n = file.read(&mut chunk[..max_read]).ok()?;
+            if n == 0 {
+                break;
+            }
+            if let Some(newline_idx) = chunk[..n].iter().position(|&b| b == b'\n') {
+                data.extend_from_slice(&chunk[..newline_idx]);
+                break;
+            }
+            data.extend_from_slice(&chunk[..n]);
+        }
+        let line = String::from_utf8(data).ok()?;
+        Self::parse(line.trim())
     }
 }
 
@@ -904,6 +1094,7 @@ pub type CwdProvider =
 #[derive(Clone, Default)]
 pub struct LocalAgentSessionScanner {
     pub config: SessionScanConfig,
+    future_modification_date_clamp: Arc<FutureModificationDateClamp>,
     process_output_provider: Option<ProcessOutputProvider>,
     cwd_provider: Option<CwdProvider>,
 }
@@ -918,6 +1109,7 @@ impl LocalAgentSessionScanner {
     ) -> Self {
         Self {
             config: SessionScanConfig::default(),
+            future_modification_date_clamp: Arc::new(FutureModificationDateClamp::default()),
             process_output_provider: Some(Arc::new(process_output_provider)),
             cwd_provider: Some(Arc::new(cwd_provider)),
         }
@@ -937,32 +1129,44 @@ impl LocalAgentSessionScanner {
         environment: &HashMap<String, String>,
         include_file_only_sessions: bool,
     ) -> Vec<AgentSession> {
-        let ps_args = ["-axo", "pid=,ppid=,lstart=,command="];
-        let ps_output = if let Some(provider) = &self.process_output_provider {
-            provider(&ps_args)
+        let records = if let Some(provider) = &self.process_output_provider {
+            let ps_args = ["-axo", "pid=,ppid=,lstart=,command="];
+            let Some(ps_output) = provider(&ps_args) else {
+                return Vec::new();
+            };
+            AgentPSOutputParser::parse(&ps_output)
         } else {
-            Self::default_process_output(&ps_args)
-        };
-        let Some(ps_output) = ps_output else {
-            return Vec::new();
+            Self::default_process_records()
         };
 
-        let mut records = AgentPSOutputParser::parse(&ps_output);
-        if self.process_output_provider.is_none() {
-            Self::enrich_records_from_kernel(&mut records);
-        }
+        let mut agents = AgentSessionCorrelation::newest_processes_first(
+            &AgentPSOutputParser::agent_processes(&records),
+        );
+        agents.truncate(self.config.max_process_count);
 
-        let agents = AgentPSOutputParser::agent_processes(&records);
         let pids: Vec<i32> = agents.iter().map(|r| r.pid).collect();
         let cwd_by_pid = if pids.is_empty() {
             HashMap::new()
         } else if let Some(provider) = &self.cwd_provider {
             provider(&pids, environment)
         } else {
-            Self::default_cwd_by_pid(&pids)
+            Self::default_cwd_by_pid(&pids, environment)
         };
 
         let host = Self::host_name(environment);
+        let time_limit = if include_file_only_sessions {
+            self.config.directory_scan_budget
+        } else {
+            self.config
+                .directory_scan_budget
+                .min(self.config.adaptive_directory_scan_budget)
+        };
+        let mut directory_budget = DirectoryMetadataScanBudget::new(
+            self.config.max_directory_entry_count,
+            self.config.max_directory_depth,
+            time_limit,
+        );
+
         let mut sessions = Vec::new();
 
         for record in &agents {
@@ -986,13 +1190,13 @@ impl LocalAgentSessionScanner {
                 provider,
                 dialect,
                 source,
-                state: AgentSessionState::Active,
+                state: self.config.state(None, now, true),
                 pid: Some(record.pid),
                 cwd,
                 project_name,
                 session_name: None,
                 started_at: record.started_at,
-                last_activity_at: record.started_at,
+                last_activity_at: None,
                 transcript_path: None,
                 host: host.clone(),
             });
@@ -1004,7 +1208,13 @@ impl LocalAgentSessionScanner {
                     ChatGPTCodexProcessTrust::is_trusted(r.pid)
                 }))
         {
-            let file_sessions = self.scan_recent_codex_rollouts(now, environment, &host, &sessions);
+            let file_sessions = self.scan_recent_codex_rollouts(
+                now,
+                environment,
+                &host,
+                &sessions,
+                &mut directory_budget,
+            );
             sessions.extend(file_sessions);
         }
 
@@ -1013,12 +1223,19 @@ impl LocalAgentSessionScanner {
             let rhs_state = matches!(rhs.state, AgentSessionState::Active);
             rhs_state
                 .cmp(&lhs_state)
-                .then_with(|| rhs.last_activity_at.cmp(&lhs.last_activity_at))
-                .then_with(|| rhs.started_at.cmp(&lhs.started_at))
+                .then_with(|| {
+                    rhs.last_activity_at
+                        .or(rhs.started_at)
+                        .cmp(&lhs.last_activity_at.or(lhs.started_at))
+                })
                 .then_with(|| lhs.id.cmp(&rhs.id))
         });
-        sessions.truncate(self.config.max_sessions);
+
+        let mut seen = HashSet::new();
         sessions
+            .into_iter()
+            .filter(|s| seen.insert(format!("{}:{}", s.host, s.id)))
+            .collect()
     }
 
     fn scan_recent_codex_rollouts(
@@ -1027,6 +1244,7 @@ impl LocalAgentSessionScanner {
         environment: &HashMap<String, String>,
         host: &str,
         live_sessions: &[AgentSession],
+        directory_budget: &mut DirectoryMetadataScanBudget,
     ) -> Vec<AgentSession> {
         let codex_home = environment.get("CODEX_HOME").cloned().or_else(|| {
             environment
@@ -1036,36 +1254,24 @@ impl LocalAgentSessionScanner {
         let Some(codex_home) = codex_home else {
             return Vec::new();
         };
-        let sessions_dir = Path::new(&codex_home).join("sessions");
-        if !sessions_dir.is_dir() {
-            return Vec::new();
-        }
-        let mut rollout_files = Vec::new();
-        Self::collect_jsonl_files(&sessions_dir, &mut rollout_files);
+        let candidates =
+            self.codex_rollout_candidates(now, Path::new(&codex_home), directory_budget);
 
         let now_secs = now.as_second();
-        let recent_cutoff = now_secs - (self.config.recent_file_window_secs as i64);
-        let active_cutoff = now_secs - (self.config.active_window_secs as i64);
+        let file_only_cutoff = now_secs - (self.config.file_only_window as i64);
 
         let mut results = Vec::new();
-        for path in rollout_files {
-            let Ok(meta) = fs::metadata(&path) else {
-                continue;
-            };
-            let Ok(modified) = meta.modified() else {
-                continue;
-            };
-            let Ok(dur) = modified.duration_since(UNIX_EPOCH) else {
-                continue;
-            };
-            let modified_secs = dur.as_secs() as i64;
-            if modified_secs < recent_cutoff {
+        for (path, modified_ts) in candidates {
+            if !directory_budget.has_time_remaining() {
+                break;
+            }
+            if modified_ts.as_second() < file_only_cutoff {
                 continue;
             }
-            let Ok(modified_ts) = Timestamp::from_second(modified_secs) else {
+            let Some(rollout) = CodexRolloutFirstLineParser::read(&path) else {
                 continue;
             };
-            let Some(rollout) = CodexRolloutFirstLineParser::read(&path) else {
+            let Some(id) = rollout.id else {
                 continue;
             };
             if live_sessions.iter().any(|s| {
@@ -1077,14 +1283,7 @@ impl LocalAgentSessionScanner {
             }) {
                 continue;
             }
-            let id = rollout
-                .id
-                .unwrap_or_else(|| format!("file:{}", path.to_string_lossy()));
-            let state = if modified_secs >= active_cutoff {
-                AgentSessionState::Active
-            } else {
-                AgentSessionState::Idle
-            };
+            let state = self.config.state(Some(modified_ts), now, false);
             let source = AgentSessionCorrelation::file_only_codex_source(
                 rollout.source.as_deref(),
                 rollout.originator.as_deref(),
@@ -1113,225 +1312,246 @@ impl LocalAgentSessionScanner {
         results
     }
 
-    fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
-        let Ok(entries) = fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                Self::collect_jsonl_files(&path, out);
-            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
-                out.push(path);
+    fn codex_rollout_candidates(
+        &self,
+        now: Timestamp,
+        codex_home: &Path,
+        directory_budget: &mut DirectoryMetadataScanBudget,
+    ) -> Vec<(PathBuf, Timestamp)> {
+        let root = codex_home.join("sessions");
+        let yesterday = now
+            .checked_sub(jiff::SignedDuration::from_hours(24))
+            .unwrap_or(now);
+        let mut day_dirs = Vec::new();
+        for day_ts in [now, yesterday] {
+            let zoned = day_ts.to_zoned(TimeZone::system());
+            let d = zoned.date();
+            let rel = format!("{:04}/{:02}/{:02}", d.year(), d.month(), d.day());
+            let dir = root.join(rel);
+            if !day_dirs.contains(&dir) {
+                day_dirs.push(dir);
             }
         }
-    }
 
-    fn enrich_records_from_kernel(records: &mut [AgentProcessRecord]) {
-        #[cfg(target_os = "macos")]
-        for record in records.iter_mut() {
-            if let Some(argv) = crate::brokers::process::procscan::darwin_process_argv(record.pid) {
-                record.arguments = Some(argv);
-            }
+        let mut candidates: Vec<(PathBuf, Timestamp)> = Vec::new();
+        for directory in day_dirs {
+            let files = directory_budget.files(&directory);
+            let day_candidates = directory_budget.compact_map_while_time_remains(files, |file| {
+                let name = file.file_name()?.to_str()?;
+                if !name.starts_with("rollout-") || file.extension()? != "jsonl" {
+                    return None;
+                }
+                let meta = fs::symlink_metadata(&file).ok()?;
+                if !meta.file_type().is_file() {
+                    return None;
+                }
+                let modified = meta.modified().ok()?;
+                let modified_ts = system_time_to_timestamp(modified)?;
+                let clamped = self.future_modification_date_clamp.clamp(modified_ts, now);
+                Some((file, clamped))
+            });
+            candidates.extend(day_candidates);
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = records;
+        candidates.sort_by_key(|lhs| std::cmp::Reverse(lhs.1));
+        candidates.truncate(self.config.max_codex_rollout_count);
+        candidates
     }
 
-    fn default_process_output(args: &[&str]) -> Option<String> {
-        let output = Command::new("/bin/ps").args(args).output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        String::from_utf8(output.stdout).ok()
+    fn default_process_records() -> Vec<AgentProcessRecord> {
+        let handle = std::thread::spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            let probe = LocalProbe::new();
+            let call = BrokerCall {
+                interaction: FetchInteraction::Background,
+                cancel: CancellationToken::new(),
+                request_id: "session-process-scan".to_owned(),
+            };
+            let processes = rt
+                .block_on(probe.same_user_processes(&call, |_| true))
+                .ok()?;
+            let proc_root = probe.proc_root();
+            let records = processes
+                .into_iter()
+                .map(|proc| {
+                    let (ppid, start_secs) =
+                        process_ppid_and_start_secs(proc_root, proc.identity.pid)
+                            .unwrap_or((1, None));
+                    let started_at = start_secs.and_then(|secs| Timestamp::from_second(secs).ok());
+                    let argv = proc.argv.into_inner();
+                    let command = argv.join(" ");
+                    AgentProcessRecord::new(proc.identity.pid, ppid, started_at, command)
+                        .with_arguments(Some(argv))
+                })
+                .collect::<Vec<_>>();
+            Some(records)
+        });
+        handle.join().ok().flatten().unwrap_or_default()
     }
 
-    fn default_cwd_by_pid(pids: &[i32]) -> HashMap<i32, String> {
+    fn default_cwd_by_pid(
+        pids: &[i32],
+        environment: &HashMap<String, String>,
+    ) -> HashMap<i32, String> {
         let pid_list = pids
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
-        let output = Command::new("/usr/sbin/lsof")
-            .args(["-a", "-p", &pid_list, "-d", "cwd", "-Fn"])
-            .output()
-            .ok();
-        let Some(output) = output else {
-            return HashMap::new();
-        };
-        let Ok(stdout) = String::from_utf8(output.stdout) else {
-            return HashMap::new();
-        };
-        LSOFCWDOutputParser::parse(&stdout)
+        let env =
+            ProcessEnv::from_allowlist(environment.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        for candidate in ["/usr/sbin/lsof", "/usr/bin/lsof"] {
+            if let Some(output) = run_broker_command(
+                candidate,
+                &["-a", "-d", "cwd", "-Fn", "-p", &pid_list],
+                env.clone(),
+                Duration::from_secs(5),
+                256 * 1024,
+            ) && let Ok(stdout) = String::from_utf8(output.stdout.to_vec())
+            {
+                let parsed = LSOFCWDOutputParser::parse(&stdout);
+                if !parsed.is_empty() || output.status.success() {
+                    return parsed;
+                }
+            }
+        }
+        pids.iter()
+            .filter_map(|&pid| {
+                let target = fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+                Some((pid, target.to_string_lossy().into_owned()))
+            })
+            .collect()
     }
 
     fn host_name(environment: &HashMap<String, String>) -> String {
         if let Some(host) = environment.get("HOSTNAME").filter(|s| !s.is_empty()) {
             return host.clone();
         }
-        Command::new("/bin/hostname")
-            .output()
-            .ok()
-            .and_then(|out| String::from_utf8(out.stdout).ok())
-            .map(|s| s.trim().to_owned())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "localhost".to_owned())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionFocusResult {
-    Focused { target_description: String },
-    ActivatedApplicationOnly { reason: String },
-    Failed { reason: String },
-    UnsupportedPlatform,
-}
-
-pub struct SessionWindowFocuser;
-
-impl SessionWindowFocuser {
-    pub fn focus(session: &AgentSession) -> SessionFocusResult {
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = session;
-            SessionFocusResult::UnsupportedPlatform
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let bundle_id = match (session.provider, session.source) {
-                (AgentSessionProvider::Claude, AgentSessionSource::DesktopApp) => {
-                    Some("com.anthropic.claudefordesktop")
+        for candidate in ["/bin/hostname", "/usr/bin/hostname"] {
+            if let Some(out) = run_broker_command(
+                candidate,
+                &[],
+                ProcessEnv::empty(),
+                Duration::from_secs(2),
+                4096,
+            ) && out.status.success()
+                && let Ok(text) = String::from_utf8(out.stdout.to_vec())
+            {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    return trimmed.to_owned();
                 }
-                (AgentSessionProvider::Codex, AgentSessionSource::DesktopApp) => {
-                    Some("com.openai.codex")
-                }
-                (_, AgentSessionSource::Ide) => Some("com.microsoft.VSCode"),
-                _ => None,
-            };
-            if let Some(bundle_id) = bundle_id {
-                let status = Command::new("/usr/bin/open")
-                    .args(["-b", bundle_id])
-                    .status();
-                if status.is_ok_and(|s| s.success()) {
-                    return SessionFocusResult::Focused {
-                        target_description: bundle_id.to_owned(),
-                    };
-                }
-                return SessionFocusResult::ActivatedApplicationOnly {
-                    reason: format!("Could not activate application bundle {bundle_id}."),
-                };
-            }
-            if let Some(pid) = session.pid {
-                return SessionFocusResult::ActivatedApplicationOnly {
-                    reason: format!(
-                        "Session process {pid} does not expose a direct window handle."
-                    ),
-                };
-            }
-            SessionFocusResult::Failed {
-                reason: "Session has no focusable window or process.".to_owned(),
             }
         }
+        "localhost".to_owned()
     }
 }
 
 /// Filters sessions for JSON output (`CodexBarCLI.sessionsForJSON(_:includePiFamily:)`).
 ///
-/// Legacy v1 JSON (`--json`) excludes Pi-family (`provider == "pi"`) rows so closed-enum v1
+/// Legacy v1 JSON (`--json`) keeps only Codex and Claude rows so closed-enum v1
 /// decoders continue to succeed; `--json-v2` sets `include_pi_family = true`.
 pub fn sessions_for_json(sessions: &[AgentSession], include_pi_family: bool) -> Vec<AgentSession> {
     if include_pi_family {
-        sessions.to_vec()
-    } else {
-        sessions
-            .iter()
-            .filter(|session| session.provider != AgentSessionProvider::Pi)
-            .cloned()
-            .collect()
+        return sessions.to_vec();
     }
+    sessions
+        .iter()
+        .filter(|session| {
+            matches!(
+                session.provider,
+                AgentSessionProvider::Codex | AgentSessionProvider::Claude
+            )
+        })
+        .cloned()
+        .collect()
 }
 
 /// Renders the human-readable sessions table (`CodexBarCLI.renderSessionsTable(_:now:)`).
 pub fn render_sessions_table(sessions: &[AgentSession], now: Timestamp) -> String {
     if sessions.is_empty() {
-        return "No active or recent agent sessions.".to_owned();
+        return "No agent sessions found.".to_owned();
     }
-    let headers = [
-        "STATE", "PROVIDER", "DIALECT", "SOURCE", "PID", "PROJECT", "ACTIVITY", "ID",
-    ];
-    let rows: Vec<[String; 8]> = sessions
+    let rows: Vec<[String; 7]> = sessions
         .iter()
         .map(|session| {
+            let state = session.state.as_str();
+            let provider = session.provider.as_str();
+            let dialect = session.dialect.map_or("—", |d| d.as_str());
+            let source = session.source.as_str();
+            let project = session.project_name.as_deref().unwrap_or("—");
+            let age = session_age(session, now);
             [
-                session.state.as_str().to_owned(),
-                session.provider.as_str().to_owned(),
-                session
-                    .dialect
-                    .map(|d| d.as_str().to_owned())
-                    .unwrap_or_else(|| "-".to_owned()),
-                session.source.as_str().to_owned(),
-                session
-                    .pid
-                    .map(|p| p.to_string())
-                    .unwrap_or_else(|| "-".to_owned()),
-                session
-                    .project_name
-                    .clone()
-                    .or_else(|| session.cwd.clone())
-                    .unwrap_or_else(|| "-".to_owned()),
-                relative_timestamp(session.last_activity_at.or(session.started_at), now),
+                state.to_owned(),
+                provider.to_owned(),
+                dialect.to_owned(),
+                source.to_owned(),
+                project.to_owned(),
+                age,
                 session.id.clone(),
             ]
         })
         .collect();
 
-    let mut widths = [0usize; 8];
+    let headers = [
+        "STATE", "PROVIDER", "DIALECT", "SOURCE", "PROJECT", "ACTIVITY", "ID",
+    ];
+    let mut widths = [0usize; 7];
     for (idx, header) in headers.iter().enumerate() {
-        widths[idx] = rows
+        let max_row = rows
             .iter()
-            .map(|r| r[idx].len())
+            .map(|r| r[idx].chars().count())
             .max()
-            .unwrap_or(0)
-            .max(header.len());
+            .unwrap_or(0);
+        widths[idx] = header.chars().count().max(max_row);
     }
 
-    let format_row = |cols: &[String; 8]| -> String {
+    let render_row = |cols: &[&str; 7]| -> String {
         cols.iter()
             .enumerate()
             .map(|(idx, col)| {
-                if idx == cols.len() - 1 {
-                    col.clone()
-                } else {
-                    format!("{:<width$}", col, width = widths[idx])
-                }
+                let len = col.chars().count();
+                let pad = widths[idx].saturating_sub(len);
+                format!("{col}{}", " ".repeat(pad))
             })
             .collect::<Vec<_>>()
             .join("  ")
     };
 
-    let header_cols: [String; 8] = headers.map(ToOwned::to_owned);
     let mut lines = Vec::with_capacity(rows.len() + 1);
-    lines.push(format_row(&header_cols));
+    lines.push(render_row(&headers));
     for row in &rows {
-        lines.push(format_row(row));
+        let refs = [
+            row[0].as_str(),
+            row[1].as_str(),
+            row[2].as_str(),
+            row[3].as_str(),
+            row[4].as_str(),
+            row[5].as_str(),
+            row[6].as_str(),
+        ];
+        lines.push(render_row(&refs));
     }
     lines.join("\n")
 }
 
-fn relative_timestamp(date: Option<Timestamp>, now: Timestamp) -> String {
-    let Some(date) = date else {
-        return "-".to_owned();
+fn session_age(session: &AgentSession, now: Timestamp) -> String {
+    let Some(date) = session.last_activity_at.or(session.started_at) else {
+        return "now".to_owned();
     };
     let seconds = (now.as_second() - date.as_second()).max(0);
     if seconds < 60 {
-        return format!("{seconds}s ago");
+        return format!("{seconds}s");
     }
-    let minutes = seconds / 60;
-    if minutes < 60 {
-        return format!("{minutes}m ago");
+    if seconds < 3600 {
+        return format!("{}m", seconds / 60);
     }
-    let hours = minutes / 60;
-    format!("{hours}h ago")
+    if seconds < 86_400 {
+        return format!("{}h", seconds / 3600);
+    }
+    format!("{}d", seconds / 86_400)
 }
 
 pub fn system_time_to_timestamp(time: SystemTime) -> Option<Timestamp> {

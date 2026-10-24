@@ -1,13 +1,14 @@
 // Ported from CodexBar Tests/CodexBarTests/AgentSessionJSONTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use ariadusage_cli::{
-    SessionsOptions, execute_sessions_focus, render_sessions_table, sessions_for_json,
+    SessionsOptions, execute_sessions_focus_with_scanner, render_sessions_table, sessions_for_json,
     sessions_json_protocol_version,
 };
 use ariadusage_engine::sessions::{
     AgentSession, AgentSessionDialect, AgentSessionProvider, AgentSessionSource, AgentSessionState,
+    LocalAgentSessionScanner,
 };
 use jiff::Timestamp;
 use serde::Deserialize;
@@ -217,15 +218,35 @@ fn human_readable_sessions_table_includes_pi_family_dialect_tags() {
 
 #[test]
 fn sessions_focus_rejects_missing_or_unknown_session_id() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let scanner = LocalAgentSessionScanner::new(
+        |_args| Some("4242 1 Mon Jul 6 09:03:00 2026 /usr/local/bin/claude".to_owned()),
+        |_pids, _env| HashMap::from([(4242, "/tmp/demo-project".to_owned())]),
+    );
+    let env = HashMap::from([
+        (
+            "HOME".to_owned(),
+            temp.path().to_string_lossy().into_owned(),
+        ),
+        ("HOSTNAME".to_owned(), "test-host".to_owned()),
+    ]);
+
     assert_eq!(
-        execute_sessions_focus(None),
+        execute_sessions_focus_with_scanner(None, &scanner, &env),
         Err((1, "Missing session id.".to_owned()))
     );
     assert_eq!(
-        execute_sessions_focus(Some("nonexistent-session-id-99999")),
+        execute_sessions_focus_with_scanner(Some("nonexistent-session-id-99999"), &scanner, &env),
         Err((
             1,
             "Unknown session: nonexistent-session-id-99999".to_owned()
+        ))
+    );
+    assert_eq!(
+        execute_sessions_focus_with_scanner(Some("pid:4242"), &scanner, &env),
+        Err((
+            2,
+            "Session focus is unsupported on this frontend.".to_owned()
         ))
     );
 }

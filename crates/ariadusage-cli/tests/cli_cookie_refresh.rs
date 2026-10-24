@@ -655,7 +655,7 @@ fn classified_cookie_failures_retain_safe_category_hints() {
             ),
             ProviderErrorKind::ParseFailure => assert_eq!(
                 result.message,
-                "The provider response could not be read. Check for a CodexBar update."
+                "The provider response could not be read. Check for an AriadUsage update."
             ),
             ProviderErrorKind::NetworkFailure => assert_eq!(
                 result.message,
@@ -747,7 +747,7 @@ fn wrapped_profile_failures_use_only_the_selected_browser_access_hints() {
     }
 }
 
-// upstream: CLICookieRefreshTests.swift:446 plugin HTTP rejection reaches cookie refresh output
+// partial-upstream: CLICookieRefreshTests.swift:446 plugin HTTP rejection reaches cookie refresh output
 #[test]
 fn plugin_http_rejection_reaches_cookie_refresh_output() {
     let descriptor = make_descriptor("raycast", true, None);
@@ -835,7 +835,7 @@ fn keychain_failure_takes_precedence_over_classified_hints() {
                 Some((&gate, 1001)),
             );
             let expected = if disabled {
-                "Chrome cookie decryption is disabled in CodexBar; enable Keychain access and refresh."
+                "Chrome cookie decryption is disabled in AriadUsage; enable Keychain access and refresh."
             } else {
                 "Chrome cookie decryption was declined in Keychain; rerun with --allow-keychain-prompt to request Keychain access again."
             };

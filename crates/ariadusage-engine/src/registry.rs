@@ -367,6 +367,21 @@ impl ProviderRegistry {
         registry
     }
 
+    /// Registers a default [`AntigravityProviderPlanFactory`] using the registry's configured
+    /// working and home directories.
+    pub fn register_antigravity_default(&mut self, net: Arc<NetBroker>) {
+        let agy_id = ProviderId::new("antigravity").expect("valid provider id");
+        let antigravity_config = AntigravityStrategyConfig::new(
+            net,
+            self.working_directory.clone(),
+            self.home_directory.clone(),
+        );
+        self.register_factory(
+            agy_id,
+            Arc::new(AntigravityProviderPlanFactory::new(antigravity_config)),
+        );
+    }
+
     /// Creates a registry containing all first-party descriptors and no registered plan factories.
     pub fn empty() -> Self {
         let working_directory = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/tmp"));
