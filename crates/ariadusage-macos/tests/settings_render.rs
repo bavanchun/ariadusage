@@ -395,7 +395,7 @@ mod macos {
     }
 
     // Rust-added: pixel-diff harness comparing all 13 dark-mode Settings window panes
-    // rendered on fixture data against external golden capture PNGs.
+    // rendered on fixture data against external golden capture PNG files.
     fn pixel_diff_settings_panes_against_captures(mtm: MainThreadMarker) {
         let Some(captures_dir) =
             captures_dir_from_env("pixel_diff_settings_panes_against_captures")

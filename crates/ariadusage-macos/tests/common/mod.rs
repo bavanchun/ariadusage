@@ -441,7 +441,7 @@ pub mod pixel_diff {
     }
 
     /// Creates a persistent temporary directory under `<target_dir>/pixel-diff/<suite>-*`
-    /// where diff and actual PNGs are written.
+    /// where diff and actual PNG files are written.
     pub fn create_diff_output_dir(suite_name: &str) -> PathBuf {
         let target_dir = resolve_cargo_target_dir();
         let parent = target_dir.join("pixel-diff");
