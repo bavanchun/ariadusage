@@ -536,8 +536,7 @@ impl FutureModificationDateClamp {
 pub struct ClaudeDesktopProjectsLocator;
 
 impl ClaudeDesktopProjectsLocator {
-    const SESSION_DIRECTORY_NAMES: &[&str] =
-        &["local-agent-mode-sessions", "claude-code-sessions"];
+    const SESSION_DIRECTORY_NAMES: &[&str] = &["local-agent-mode-sessions", "claude-code-sessions"];
 
     const SKIPPED_DIRECTORY_NAMES: &[&str] = &[
         ".build",
@@ -550,12 +549,8 @@ impl ClaudeDesktopProjectsLocator {
     ];
 
     pub fn roots(home_directory: &Path) -> Vec<PathBuf> {
-        let mut budget = DirectoryMetadataScanBudget::new(
-            usize::MAX,
-            4,
-            f64::INFINITY,
-            Timestamp::now(),
-        );
+        let mut budget =
+            DirectoryMetadataScanBudget::new(usize::MAX, 4, f64::INFINITY, Timestamp::now());
         Self::roots_with_budget(home_directory, &mut budget, false)
     }
 
@@ -1207,12 +1202,7 @@ impl ChatGPTCodexProcessTrust {
             }
             run_shared_broker_command(
                 "/usr/bin/codesign",
-                &[
-                    "--verify",
-                    "-R",
-                    Self::REQUIREMENT,
-                    Self::OUTER_BUNDLE_PATH,
-                ],
+                &["--verify", "-R", Self::REQUIREMENT, Self::OUTER_BUNDLE_PATH],
                 ProcessEnv::empty(),
                 Duration::from_secs(5),
                 16 * 1024,
@@ -1751,10 +1741,7 @@ impl CodexThreadMetadataReader {
         let Ok(conn) = Connection::open_with_flags(&copied_path, flags) else {
             return result;
         };
-        let _ = conn.set_db_config(
-            rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE,
-            true,
-        );
+        let _ = conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
         let _ = conn.pragma_update(None, "trusted_schema", false);
         let _ = conn.busy_timeout(Duration::from_millis(100));
 
@@ -1850,7 +1837,10 @@ impl CodexRolloutMetadata {
         AgentSessionSource::Unknown
     }
 
-    pub fn descriptive_name(&self, thread_metadata: Option<&CodexThreadMetadata>) -> Option<String> {
+    pub fn descriptive_name(
+        &self,
+        thread_metadata: Option<&CodexThreadMetadata>,
+    ) -> Option<String> {
         let task_name: Option<String> = if self.is_guardian {
             Some("Approval review".to_owned())
         } else if let Some(agent_path) = thread_metadata
@@ -2104,9 +2094,7 @@ impl CodexRolloutFirstLineParser {
             return None;
         }
         let cwd = metadata.cwd.clone();
-        let project_name = cwd
-            .as_deref()
-            .and_then(project_name_from_cwd);
+        let project_name = cwd.as_deref().and_then(project_name_from_cwd);
         Some(AgentSession {
             id: metadata.session_id.clone(),
             provider: AgentSessionProvider::Codex,
@@ -2400,9 +2388,8 @@ impl LocalAgentSessionScanner {
             return LocalSessionScanResult::default();
         }
 
-        let codex_app_server_present =
-            AgentPSOutputParser::has_codex_app_server(&all_processes)
-                || trusted_codex_app_server_present;
+        let codex_app_server_present = AgentPSOutputParser::has_codex_app_server(&all_processes)
+            || trusted_codex_app_server_present;
         let pids: Vec<i32> = processes.iter().map(|p| p.pid).collect();
         let cwd_by_pid = self.cwd_by_pid(&pids, environment).await;
         let codex_cwds: Vec<String> = processes
@@ -2449,8 +2436,8 @@ impl LocalAgentSessionScanner {
 
         let include_unmatched_codex_rollouts =
             include_file_only_sessions || trusted_codex_app_server_present;
-        let enrich_rollouts = read_rollout_metadata
-            && (include_unmatched_codex_rollouts || !codex_cwds.is_empty());
+        let enrich_rollouts =
+            read_rollout_metadata && (include_unmatched_codex_rollouts || !codex_cwds.is_empty());
         let mut candidates = if enrich_rollouts {
             self.codex_rollout_candidates(now, &codex_home_directory, &mut directory_budget)
         } else {
@@ -2585,11 +2572,8 @@ impl LocalAgentSessionScanner {
             let id = rollout
                 .map(|r| r.metadata.session_id.clone())
                 .or_else(|| {
-                    transcript.and_then(|t| {
-                        t.url
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
-                    })
+                    transcript
+                        .and_then(|t| t.url.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 })
                 .unwrap_or_else(|| format!("pid:{}", process.pid));
             let source = if provider == AgentSessionProvider::Claude {
@@ -2695,22 +2679,21 @@ impl LocalAgentSessionScanner {
         let mut candidates: Vec<(PathBuf, Timestamp)> = Vec::new();
         for directory in day_dirs {
             let files = directory_budget.files(&directory);
-            let day_candidates =
-                directory_budget.compact_map_while_time_remains(&files, |file| {
-                    let name = file.file_name()?.to_str()?;
-                    if !name.starts_with("rollout-") || file.extension()? != "jsonl" {
-                        return None;
-                    }
-                    let meta = fs::symlink_metadata(file).ok()?;
-                    if meta.file_type().is_symlink() || !meta.is_file() {
-                        return None;
-                    }
-                    let modified_ts = system_time_to_timestamp(meta.modified().ok()?)?;
-                    let clamped =
-                        self.future_modification_date_clamp
-                            .clamp(file, modified_ts, now);
-                    Some((file.clone(), clamped))
-                });
+            let day_candidates = directory_budget.compact_map_while_time_remains(&files, |file| {
+                let name = file.file_name()?.to_str()?;
+                if !name.starts_with("rollout-") || file.extension()? != "jsonl" {
+                    return None;
+                }
+                let meta = fs::symlink_metadata(file).ok()?;
+                if meta.file_type().is_symlink() || !meta.is_file() {
+                    return None;
+                }
+                let modified_ts = system_time_to_timestamp(meta.modified().ok()?)?;
+                let clamped = self
+                    .future_modification_date_clamp
+                    .clamp(file, modified_ts, now);
+                Some((file.clone(), clamped))
+            });
             candidates.extend(day_candidates);
         }
         candidates.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1));
@@ -2769,8 +2752,10 @@ impl LocalAgentSessionScanner {
         codex_home_directory: &Path,
         environment: &HashMap<String, String>,
     ) -> HashMap<String, CodexThreadMetadata> {
-        let session_ids: HashSet<String> =
-            rollouts.iter().map(|r| r.metadata.session_id.clone()).collect();
+        let session_ids: HashSet<String> = rollouts
+            .iter()
+            .map(|r| r.metadata.session_id.clone())
+            .collect();
         let indexed_names =
             CodexThreadMetadataReader::indexed_thread_names(codex_home_directory, &session_ids);
         let mut groups: HashMap<PathBuf, (CodexThreadMetadataReader, HashSet<String>)> =
@@ -2885,10 +2870,7 @@ impl LocalAgentSessionScanner {
         sessions
     }
 
-    async fn has_trusted_chatgpt_codex_app_server(
-        &self,
-        records: &[AgentProcessRecord],
-    ) -> bool {
+    async fn has_trusted_chatgpt_codex_app_server(&self, records: &[AgentProcessRecord]) -> bool {
         if let Some(ref validator) = self.app_server_trust_validator {
             return AgentPSOutputParser::has_trusted_chatgpt_codex_app_server(records, |r| {
                 validator(r)
@@ -2930,11 +2912,7 @@ impl LocalAgentSessionScanner {
                 .iter()
                 .map(|snap| {
                     AgentProcessRecord::new(snap.pid, 1, None, snap.command.clone())
-                        .with_arguments(
-                            snap.executable_name
-                                .as_ref()
-                                .map(|exe| vec![exe.clone()]),
-                        )
+                        .with_arguments(snap.executable_name.as_ref().map(|exe| vec![exe.clone()]))
                 })
                 .collect();
         }

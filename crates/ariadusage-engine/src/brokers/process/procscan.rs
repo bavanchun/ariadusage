@@ -1094,7 +1094,11 @@ mod tests {
         let ruid = rustix::process::getuid().as_raw();
         let euid = rustix::process::geteuid().as_raw();
         let clk_tck = rustix::param::clock_ticks_per_second();
-        std::fs::write(proc_root.path().join("stat"), "cpu  0 0 0 0\nbtime 1700000000\n").unwrap();
+        std::fs::write(
+            proc_root.path().join("stat"),
+            "cpu  0 0 0 0\nbtime 1700000000\n",
+        )
+        .unwrap();
         write_fake_process_with_uids(proc_root.path(), 702, clk_tck * 42, &[], ruid, euid);
 
         assert_eq!(

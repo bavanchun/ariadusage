@@ -374,9 +374,7 @@ async fn forged_app_server_command_cannot_borrow_installed_chatgpt_identity() {
         "{pid} 1 Mon Jul 6 09:03:00 2026 {NESTED_CHATGPT_CODEX} app-server"
     ));
     let scanner = LocalAgentSessionScanner::with_providers(
-        move |_| {
-            format!("{pid} 1 Mon Jul 6 09:03:00 2026 {NESTED_CHATGPT_CODEX} app-server")
-        },
+        move |_| format!("{pid} 1 Mon Jul 6 09:03:00 2026 {NESTED_CHATGPT_CODEX} app-server"),
         |_, _| HashMap::new(),
     );
     let sessions = scanner
@@ -647,10 +645,7 @@ fn newest_transcript_is_selected_from_mapped_project_directory() {
     assert!(match_transcript.is_some());
     let match_transcript = match_transcript.expect("newest transcript");
     assert_eq!(
-        match_transcript
-            .url
-            .file_name()
-            .and_then(|s| s.to_str()),
+        match_transcript.url.file_name().and_then(|s| s.to_str()),
         Some("newer.jsonl")
     );
     assert_eq!(
@@ -688,14 +683,12 @@ fn directory_metadata_scan_bounds_entry_count_depth_and_time() {
     fs::create_dir_all(&nested).expect("create nested");
     fs::write(nested.join("nested.jsonl"), "fixture\n").expect("write nested");
 
-    let mut bounded =
-        DirectoryMetadataScanBudget::new(2, 1, 60.0, Timestamp::now());
+    let mut bounded = DirectoryMetadataScanBudget::new(2, 1, 60.0, Timestamp::now());
     let files = bounded.files(root.path());
     assert!(files.len() <= 2);
     assert!(!files.iter().any(|p| p.parent() == Some(nested.as_path())));
 
-    let mut expired =
-        DirectoryMetadataScanBudget::new(100, 2, 0.0, Timestamp::now());
+    let mut expired = DirectoryMetadataScanBudget::new(100, 2, 0.0, Timestamp::now());
     assert!(expired.files(root.path()).is_empty());
 }
 
@@ -836,17 +829,10 @@ fn desktop_root_discovery_honors_the_shared_deadline() {
             },
         );
 
-        let roots = ClaudeDesktopProjectsLocator::roots_with_budget(
-            root.path(),
-            &mut budget,
-            false,
-        );
+        let roots =
+            ClaudeDesktopProjectsLocator::roots_with_budget(root.path(), &mut budget, false);
 
-        let expected: Vec<PathBuf> = if expired {
-            Vec::new()
-        } else {
-            vec![projects]
-        };
+        let expected: Vec<PathBuf> = if expired { Vec::new() } else { vec![projects] };
         assert_eq!(roots, expected);
     }
 }
@@ -984,19 +970,16 @@ fn make_adaptive_chatgpt_fixture(
         Timestamp::from_second(now.as_second() - rollout_age_secs).unwrap(),
     );
 
-    let executable =
-        app_server_executable.replace("<home>", &root.path().to_string_lossy());
+    let executable = app_server_executable.replace("<home>", &root.path().to_string_lossy());
     let ps_line = format!(
         "4234 1 Mon Jul 6 09:03:00 2026 {executable} -c features.code_mode_host=true app-server --analytics-default-enabled"
     );
     let validator: Arc<dyn Fn(&AgentProcessRecord) -> bool + Send + Sync> =
         custom_validator.unwrap_or_else(|| Arc::new(move |_| app_server_is_trusted));
-    let scanner = LocalAgentSessionScanner::with_providers(
-        move |_| ps_line.clone(),
-        |_, _| HashMap::new(),
-    )
-    .with_app_server_trust_validator(move |r| validator(r))
-    .with_directory_scan_started_at(|| Timestamp::MAX);
+    let scanner =
+        LocalAgentSessionScanner::with_providers(move |_| ps_line.clone(), |_, _| HashMap::new())
+            .with_app_server_trust_validator(move |r| validator(r))
+            .with_directory_scan_started_at(|| Timestamp::MAX);
 
     let environment = HashMap::from([
         (
@@ -1007,7 +990,10 @@ fn make_adaptive_chatgpt_fixture(
             "HOME".to_owned(),
             root.path().to_string_lossy().into_owned(),
         ),
-        ("PATH".to_owned(), "/usr/bin:/bin:/usr/sbin:/sbin".to_owned()),
+        (
+            "PATH".to_owned(),
+            "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+        ),
     ]);
     AdaptiveChatGPTFixture {
         _root: root,
@@ -1020,7 +1006,7 @@ fn make_adaptive_chatgpt_fixture(
 // upstream: CodexSessionRolloutTests.swift:77 trusted chatgpt app server projects recent codex rollout activity without an agent process
 #[tokio::test]
 async fn trusted_chatgpt_app_server_projects_recent_codex_rollout_activity_without_an_agent_process()
-{
+ {
     for executable in CHATGPT_EXECUTABLES {
         let now = Timestamp::now();
         let fixture = make_adaptive_chatgpt_fixture(now, 30, executable, true, None);
@@ -1068,7 +1054,12 @@ async fn continuing_an_existing_chatgpt_codex_rollout_advances_the_adaptive_acti
             .scanner
             .scan_with_env(now, &fixture.environment, false)
             .await;
-        assert!(first_sessions.first().and_then(|s| s.last_activity_at).is_some());
+        assert!(
+            first_sessions
+                .first()
+                .and_then(|s| s.last_activity_at)
+                .is_some()
+        );
         let first_activity = first_sessions
             .first()
             .and_then(|s| s.last_activity_at)
@@ -1084,7 +1075,12 @@ async fn continuing_an_existing_chatgpt_codex_rollout_advances_the_adaptive_acti
                 false,
             )
             .await;
-        assert!(continued_sessions.first().and_then(|s| s.last_activity_at).is_some());
+        assert!(
+            continued_sessions
+                .first()
+                .and_then(|s| s.last_activity_at)
+                .is_some()
+        );
         let continued_activity = continued_sessions
             .first()
             .and_then(|s| s.last_activity_at)
@@ -1150,7 +1146,10 @@ async fn local_scanner_parses_only_its_newest_configured_rollout_candidates() {
         let id = format!("bounded-rollout-{idx}");
         let url = session_dir.join(format!("rollout-bounded-{idx}.jsonl"));
         fs::write(&url, fixture.replace("019f-session-fixture", &id)).expect("write rollout");
-        set_modified(&url, Timestamp::from_second(now.as_second() - age_secs).unwrap());
+        set_modified(
+            &url,
+            Timestamp::from_second(now.as_second() - age_secs).unwrap(),
+        );
     }
 
     let scanner = LocalAgentSessionScanner::with_config(SessionScanConfig {
@@ -1169,7 +1168,10 @@ async fn local_scanner_parses_only_its_newest_configured_rollout_candidates() {
             "HOME".to_owned(),
             temp_root.path().to_string_lossy().into_owned(),
         ),
-        ("PATH".to_owned(), "/usr/bin:/bin:/usr/sbin:/sbin".to_owned()),
+        (
+            "PATH".to_owned(),
+            "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+        ),
     ]);
     let sessions = scanner.scan_with_env(now, &env, true).await;
 
@@ -1190,7 +1192,11 @@ async fn local_scanner_parses_only_its_newest_configured_rollout_candidates() {
     );
 
     let rescanned = scanner
-        .scan_with_env(Timestamp::from_second(now.as_second() + 30).unwrap(), &env, true)
+        .scan_with_env(
+            Timestamp::from_second(now.as_second() + 30).unwrap(),
+            &env,
+            true,
+        )
         .await;
     assert_eq!(
         rescanned
@@ -1337,7 +1343,10 @@ async fn live_scanner_suppresses_descriptive_names_for_ambiguous_same_project_pr
     let session_dir = codex_home.join("sessions").join(format_day_dir(now));
     fs::create_dir_all(&session_dir).expect("create session dir");
 
-    for (idx, name) in ["recent_activity", "older_activity"].into_iter().enumerate() {
+    for (idx, name) in ["recent_activity", "older_activity"]
+        .into_iter()
+        .enumerate()
+    {
         let line = format!(
             "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"session-{idx}\",\"cwd\":\"/repo\",\"originator\":\"codex_cli\",\"source\":{{\"subagent\":{{\"thread_spawn\":{{\"agent_path\":\"/root/{name}\"}}}}}}}}}}"
         );
@@ -1366,12 +1375,19 @@ async fn live_scanner_suppresses_descriptive_names_for_ambiguous_same_project_pr
             "HOME".to_owned(),
             root.path().to_string_lossy().into_owned(),
         ),
-        ("PATH".to_owned(), "/usr/bin:/bin:/usr/sbin:/sbin".to_owned()),
+        (
+            "PATH".to_owned(),
+            "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+        ),
     ]);
     let sessions = scanner.scan_with_env(now, &env, false).await;
 
     assert_eq!(sessions.len(), 2);
-    assert!(sessions.iter().all(|s| s.project_name.as_deref() == Some("repo")));
+    assert!(
+        sessions
+            .iter()
+            .all(|s| s.project_name.as_deref() == Some("repo"))
+    );
     assert!(sessions.iter().all(|s| s.session_name.is_none()));
 }
 
@@ -1505,7 +1521,10 @@ async fn scanner_resolves_relative_sqlite_homes_for_multiple_session_projects() 
             "HOME".to_owned(),
             root.path().to_string_lossy().into_owned(),
         ),
-        ("PATH".to_owned(), "/usr/bin:/bin:/usr/sbin:/sbin".to_owned()),
+        (
+            "PATH".to_owned(),
+            "/usr/bin:/bin:/usr/sbin:/sbin".to_owned(),
+        ),
     ]);
     let sessions = scanner.scan_with_env(now, &env, true).await;
 
@@ -1742,7 +1761,10 @@ async fn rollout_activity_respects_the_entry_cap_without_a_process() {
     for idx in 0..12 {
         let url = dir.join(format!("rollout-{idx}.jsonl"));
         fs::copy(&fixture.rollout, &url).expect("copy rollout");
-        set_modified(&url, Timestamp::from_second(ADAPTIVE_NOW_SECS - 30).unwrap());
+        set_modified(
+            &url,
+            Timestamp::from_second(ADAPTIVE_NOW_SECS - 30).unwrap(),
+        );
     }
     let visits = Arc::new(AtomicUsize::new(0));
     let visits_clone = Arc::clone(&visits);
@@ -1784,7 +1806,11 @@ async fn yesterday_rollouts_count_while_other_filenames_and_deeper_directories_d
         &moved_rollout,
         Timestamp::from_second(ADAPTIVE_NOW_SECS - 30).unwrap(),
     );
-    for name in ["other.jsonl", "rollout-ignore.txt", "nested/rollout-ignore.jsonl"] {
+    for name in [
+        "other.jsonl",
+        "rollout-ignore.txt",
+        "nested/rollout-ignore.jsonl",
+    ] {
         let url = today_dir.join(name);
         if let Some(parent) = url.parent() {
             fs::create_dir_all(parent).expect("create parent");
@@ -1861,18 +1887,16 @@ async fn session_enrichment_and_activity_share_one_directory_walk() {
     let visits_clone = Arc::clone(&visits);
     let reads = Arc::new(AtomicUsize::new(0));
     let reads_clone = Arc::clone(&reads);
-    let scanner = LocalAgentSessionScanner::with_providers(
-        |_| String::new(),
-        |_, _| HashMap::new(),
-    )
-    .with_rollout_metadata_reader(move |url| {
-        reads_clone.fetch_add(1, Ordering::SeqCst);
-        CodexRolloutFirstLineParser::read(url)
-    })
-    .with_directory_scan_started_at(|| Timestamp::MAX)
-    .with_did_visit_directory_entry(move || {
-        visits_clone.fetch_add(1, Ordering::SeqCst);
-    });
+    let scanner =
+        LocalAgentSessionScanner::with_providers(|_| String::new(), |_, _| HashMap::new())
+            .with_rollout_metadata_reader(move |url| {
+                reads_clone.fetch_add(1, Ordering::SeqCst);
+                CodexRolloutFirstLineParser::read(url)
+            })
+            .with_directory_scan_started_at(|| Timestamp::MAX)
+            .with_did_visit_directory_entry(move || {
+                visits_clone.fetch_add(1, Ordering::SeqCst);
+            });
     let result = scanner
         .scan_with_activity_and_env(now, &fixture.environment(), true, true)
         .await;
