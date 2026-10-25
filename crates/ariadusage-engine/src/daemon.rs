@@ -733,12 +733,25 @@ pub async fn run_daemon_with_shutdown(
 
     let sock = match socket_override {
         Some(path) => path,
-        None => socket_path()?,
+        None => match socket_path() {
+            Ok(path) => path,
+            Err(err) => {
+                backend.shutdown().await;
+                return Err(DaemonError::Path(err));
+            }
+        },
     };
 
-    let mut server = start_ipc_server(sock, backend).await?;
+    let mut server = match start_ipc_server(sock, Arc::clone(&backend)).await {
+        Ok(server) => server,
+        Err(err) => {
+            backend.shutdown().await;
+            return Err(DaemonError::Ipc(err));
+        }
+    };
     shutdown.await;
     server.stop().await;
+    backend.shutdown().await;
     Ok(())
 }
 
@@ -759,22 +772,18 @@ pub async fn run_daemon_with_options(
     let runtime = build_default_runtime_with_options(ConfigStore::new(cfg_path), disable_keyring)?;
     runtime.start_host_observers();
     runtime.start_timer();
-    let backend: Arc<dyn IpcBackend> = runtime.clone();
+    let backend: Arc<dyn IpcBackend> = runtime;
 
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
 
-    let res = run_daemon_with_shutdown(socket_override, backend, async move {
+    run_daemon_with_shutdown(socket_override, backend, async move {
         tokio::select! {
             _ = sigint.recv() => {}
             _ = sigterm.recv() => {}
         }
     })
-    .await;
-
-    runtime.stop_host_observers();
-    runtime.stop_timer();
-    res
+    .await
 }
 
 #[cfg(test)]

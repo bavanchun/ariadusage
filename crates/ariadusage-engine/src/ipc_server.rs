@@ -149,6 +149,11 @@ pub trait IpcBackend: Send + Sync + 'static {
         id: ActionId,
         confirm: Option<bool>,
     ) -> Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, IpcError>> + Send + '_>>;
+
+    /// Perform backend teardown (such as draining tracked child processes) during daemon shutdown.
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
 }
 
 /// Handle to a running IPC v1 Unix socket server.

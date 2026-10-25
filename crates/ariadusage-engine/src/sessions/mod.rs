@@ -561,6 +561,14 @@ impl LocalAgentSessionScanner {
         self
     }
 
+    pub fn process_registry(&self) -> &Arc<ProcessRegistry> {
+        &self.process_registry
+    }
+
+    pub fn launch_gate(&self) -> &Arc<LaunchGate> {
+        &self.launch_gate
+    }
+
     pub fn with_lsof_candidates(mut self, candidates: Vec<PathBuf>) -> Self {
         self.lsof_candidates = candidates;
         self

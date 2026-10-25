@@ -675,10 +675,8 @@ pub struct CliRuntime {
     pub persists_cli_sessions: bool,
     pub idle_window: Option<Duration>,
 }
-impl Default for CliRuntime {
-    fn default() -> Self {
-        let registry = Arc::new(ProcessRegistry::new());
-        let gate = Arc::new(LaunchGate::default());
+impl CliRuntime {
+    pub fn with_process_broker(registry: Arc<ProcessRegistry>, gate: Arc<LaunchGate>) -> Self {
         Self {
             session: AntigravityCLISession::live(registry.clone(), gate.clone()),
             registry,
@@ -691,6 +689,14 @@ impl Default for CliRuntime {
             persists_cli_sessions: false,
             idle_window: None,
         }
+    }
+}
+impl Default for CliRuntime {
+    fn default() -> Self {
+        Self::with_process_broker(
+            Arc::new(ProcessRegistry::new()),
+            Arc::new(LaunchGate::default()),
+        )
     }
 }
 pub struct AntigravityCLIHTTPSFetchStrategy {
