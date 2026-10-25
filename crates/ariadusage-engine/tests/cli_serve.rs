@@ -930,6 +930,26 @@ fn dashboard_auth_compares_constant_time_digests_and_fails_closed() {
 // upstream: CLIServeAuthTests.swift:193 adding no-store preserves an existing cache-control header
 #[test]
 fn adding_no_store_preserves_an_existing_cache_control_header() {
+    let plain = CliLocalHttpResponse::json(200, "OK", b"[]".to_vec());
+    let mut declared_headers = BTreeMap::new();
+    declared_headers.insert("Cache-Control".to_string(), "no-store".to_string());
+    let declared =
+        CliLocalHttpResponse::json(200, "OK", b"[]".to_vec()).with_headers(declared_headers);
+
+    let annotated = adding_no_store(plain);
+    let untouched = adding_no_store(declared);
+
+    assert_eq!(
+        annotated.headers.get("Cache-Control").map(String::as_str),
+        Some("no-store")
+    );
+    assert_eq!(untouched.headers.len(), 1);
+    assert_eq!(adding_no_store(annotated).headers.len(), 1);
+}
+
+// Rust-added: adding_no_store preserves a pre-existing non-no-store Cache-Control value
+#[test]
+fn adding_no_store_preserves_custom_cache_control_value() {
     let mut existing = BTreeMap::new();
     existing.insert(
         "Cache-Control".to_string(),
@@ -1566,6 +1586,7 @@ async fn snapshot_never_accepts_the_token_from_the_query_string() {
         )
         .await;
         assert!(raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
     })
     .await;
 }

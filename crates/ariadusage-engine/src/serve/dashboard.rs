@@ -2281,10 +2281,11 @@ impl DashboardManagedCodexAccounts {
                     .max_by_key(|r| r.snapshot.as_ref().map(|s| s.updated_at));
                 let error = if record.is_some_and(|r| r.error.is_some()) {
                     Some(
-                        "Saved usage refresh failed. Refresh this account in CodexBar.".to_string(),
+                        "Saved usage refresh failed. Refresh this account in AriadUsage."
+                            .to_string(),
                     )
                 } else if record.and_then(|r| r.snapshot.as_ref()).is_none() {
-                    Some("No saved usage for this account. Refresh it in CodexBar.".to_string())
+                    Some("No saved usage for this account. Refresh it in AriadUsage.".to_string())
                 } else {
                     None
                 };
