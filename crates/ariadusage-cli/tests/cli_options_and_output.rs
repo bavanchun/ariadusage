@@ -2005,6 +2005,21 @@ fn cli_runtime_claude_and_codex_configs_share_runtime_process_registry() {
     ));
     assert!(Arc::ptr_eq(&claude_cfg.launch_gate, &runtime_launch_gate));
     assert!(Arc::ptr_eq(
+        claude_cfg.cli_session.process_registry(),
+        &runtime_process_registry
+    ));
+    assert!(Arc::ptr_eq(
+        claude_cfg.cli_session.launch_gate(),
+        &runtime_launch_gate
+    ));
+    assert_eq!(
+        claude_cfg.cli_session.dedicated_probe_dir(),
+        ariadusage_engine::providers::claude::default_dedicated_probe_working_directory(
+            temp.path()
+        )
+    );
+    assert_eq!(claude_cfg.cli_session.home_directory(), temp.path());
+    assert!(Arc::ptr_eq(
         &codex_cfg.cli_fetcher.process_registry,
         &runtime_process_registry
     ));

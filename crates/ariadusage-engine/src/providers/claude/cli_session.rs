@@ -436,6 +436,31 @@ impl ClaudeCLISession {
     }
 
     #[must_use]
+    pub fn home_directory(&self) -> &Path {
+        &self.home_dir
+    }
+
+    #[must_use]
+    pub fn working_directory_override(&self) -> Option<&Path> {
+        self.working_directory_override.as_deref()
+    }
+
+    #[must_use]
+    pub fn startup_ready_delay(&self) -> Duration {
+        self.startup_ready_delay
+    }
+
+    #[must_use]
+    pub fn process_registry(&self) -> &Arc<ProcessRegistry> {
+        &self.registry
+    }
+
+    #[must_use]
+    pub fn launch_gate(&self) -> &Arc<LaunchGate> {
+        &self.gate
+    }
+
+    #[must_use]
     pub fn probe_settings_arguments() -> Vec<String> {
         vec![
             "--settings".to_owned(),

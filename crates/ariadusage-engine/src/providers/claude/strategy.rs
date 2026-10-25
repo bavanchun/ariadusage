@@ -411,6 +411,29 @@ impl ClaudeOAuthStrategyConfig {
         self
     }
 
+    pub fn with_process_broker(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        let dedicated_probe_dir = self.cli_session.dedicated_probe_dir().to_path_buf();
+        let home_dir = self.cli_session.home_directory().to_path_buf();
+        let mut session = ClaudeCLISession::new(
+            dedicated_probe_dir,
+            Arc::clone(&registry),
+            Arc::clone(&gate),
+        )
+        .with_home_directory(home_dir)
+        .with_startup_ready_delay(self.cli_session.startup_ready_delay());
+        if let Some(working_dir) = self.cli_session.working_directory_override() {
+            session = session.with_working_directory(working_dir.to_path_buf());
+        }
+        self.process_registry = registry;
+        self.launch_gate = gate;
+        self.cli_session = Arc::new(session);
+        self
+    }
+
     pub fn with_cli_rate_limit_gate(mut self, gate: Arc<ClaudeCLIRateLimitGate>) -> Self {
         self.cli_rate_limit_gate = gate;
         self
