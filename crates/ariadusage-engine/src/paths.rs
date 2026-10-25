@@ -123,15 +123,6 @@ pub fn resolve_cli_home_dir(
         .or_else(|| fallback_home.filter(|p| !p.as_os_str().is_empty()))
 }
 
-/// Resolves the current user's home directory using [`resolve_cli_home_dir`] over `HOME` and
-/// `etcetera::home_dir()`.
-pub fn user_home_dir() -> Option<PathBuf> {
-    resolve_cli_home_dir(
-        std::env::var_os("HOME").as_deref(),
-        etcetera::home_dir().ok(),
-    )
-}
-
 /// Resolves the XDG state directory from an injected environment lookup and home path.
 ///
 /// Priority:

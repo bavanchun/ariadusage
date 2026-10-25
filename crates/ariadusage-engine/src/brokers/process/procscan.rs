@@ -205,6 +205,66 @@ pub fn process_group(root: &Path, pid: i32) -> Option<i32> {
         .ok()
 }
 
+/// Returns `(ppid, started_at_unix_seconds)` for an owned process.
+pub fn process_ppid_and_start_secs(root: &Path, pid: i32) -> Option<(i32, Option<i64>)> {
+    if pid <= 0 {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    if is_live_proc_root(root) {
+        let my_ruid = rustix::process::getuid().as_raw();
+        let my_euid = rustix::process::geteuid().as_raw();
+        let info = darwin_bsd_info(pid)?;
+        if info.pbi_ruid != my_ruid || info.pbi_uid != my_euid {
+            return None;
+        }
+        let ppid = i32::try_from(info.pbi_ppid.0).ok()?;
+        let start_secs = i64::try_from(info.pbi_start_tvsec).ok();
+        return Some((ppid, start_secs));
+    }
+    let before = proc_fs_owned_identity(root, pid)?;
+    let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+    let suffix_start = stat.rfind(')')?.checked_add(1)?;
+    let fields = stat.get(suffix_start..)?.split_whitespace();
+    let ppid: i32 = fields.clone().nth(1)?.parse().ok()?;
+    let start_ticks: u64 = fields.clone().nth(19)?.parse().ok()?;
+    if proc_fs_owned_identity(root, pid) != Some(before) {
+        return None;
+    }
+    let start_secs = proc_fs_start_secs(root, start_ticks);
+    Some((ppid, start_secs))
+}
+
+fn proc_fs_start_secs(root: &Path, start_ticks: u64) -> Option<i64> {
+    #[cfg(unix)]
+    {
+        let clk_tck = rustix::param::clock_ticks_per_second();
+        if clk_tck == 0 {
+            return None;
+        }
+        let btime = proc_fs_boot_time_secs(root)?;
+        let offset_secs = i64::try_from(start_ticks / clk_tck).ok()?;
+        btime.checked_add(offset_secs)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, start_ticks);
+        None
+    }
+}
+
+#[cfg(unix)]
+fn proc_fs_boot_time_secs(root: &Path) -> Option<i64> {
+    let contents = std::fs::read_to_string(root.join("stat")).ok()?;
+    contents.lines().find_map(|line| {
+        line.strip_prefix("btime ")?
+            .split_whitespace()
+            .next()?
+            .parse::<i64>()
+            .ok()
+    })
+}
+
 pub fn process_net_ns(root: &Path, pid: i32) -> Option<String> {
     if pid <= 0 {
         return None;
@@ -938,7 +998,8 @@ fn darwin_read_marker_environment(pid: i32, key: &str) -> Option<Zeroizing<Vec<u
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        ProcessIdentity, process_cwd, process_descendants_with_hook, read_selected_environment,
+        ProcessIdentity, process_cwd, process_descendants_with_hook, process_ppid_and_start_secs,
+        read_selected_environment,
     };
 
     #[test]
@@ -1023,6 +1084,33 @@ mod tests {
         assert!(
             read_selected_environment(proc_root.path(), 701, &["PI_CODING_AGENT_DIR"]).is_empty()
         );
+    }
+
+    // Rust-added: verify `process_ppid_and_start_secs` computes start seconds from `btime` and
+    // `starttime` ticks on `/proc` and rejects processes owned by another UID.
+    #[test]
+    fn process_ppid_and_start_secs_computes_start_time_and_enforces_uid() {
+        let proc_root = tempfile::tempdir().unwrap();
+        let ruid = rustix::process::getuid().as_raw();
+        let euid = rustix::process::geteuid().as_raw();
+        let clk_tck = rustix::param::clock_ticks_per_second();
+        std::fs::write(proc_root.path().join("stat"), "cpu  0 0 0 0\nbtime 1700000000\n").unwrap();
+        write_fake_process_with_uids(proc_root.path(), 702, clk_tck * 42, &[], ruid, euid);
+
+        assert_eq!(
+            process_ppid_and_start_secs(proc_root.path(), 702),
+            Some((1, Some(1_700_000_042)))
+        );
+
+        write_fake_process_with_uids(
+            proc_root.path(),
+            702,
+            clk_tck * 42,
+            &[],
+            ruid.wrapping_add(1),
+            euid,
+        );
+        assert_eq!(process_ppid_and_start_secs(proc_root.path(), 702), None);
     }
 
     fn write_fake_process(

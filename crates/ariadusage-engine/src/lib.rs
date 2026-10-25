@@ -51,7 +51,7 @@ pub use paths::{
     ENGINE_SOCKET_REL_PATH, PathError, SUN_PATH_MAX_BYTES, canonicalize_macos_var_prefix,
     config_path, data_dir, resolve_cli_home_dir, resolve_config_path, resolve_data_dir,
     resolve_macos_runtime_dir_with, resolve_runtime_dir, resolve_socket_path_from_runtime_dir,
-    resolve_state_dir, runtime_dir, socket_path, state_dir, trusted_runtime_dir, user_home_dir,
+    resolve_state_dir, runtime_dir, socket_path, state_dir, trusted_runtime_dir,
     validate_socket_path_len,
 };
 pub use private_file::{WriteHooks, repair_permissions, write_private};
