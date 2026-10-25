@@ -1962,3 +1962,70 @@ fn web_debug_dump_html_is_rejected_with_exit_64() {
             .contains("--web-debug-dump-html is not supported; AriadUsage web strategies use JSON APIs and do not parse HTML.")
     );
 }
+
+// Rust-added: CLI runtime Claude and Codex strategy configs share the runtime's ProcessRegistry and LaunchGate
+#[test]
+fn cli_runtime_claude_and_codex_configs_share_runtime_process_registry() {
+    use ariadusage_engine::brokers::secret_store::{SecretStore, service::ServiceBackend};
+    use ariadusage_engine::config_store::ConfigStore;
+    use ariadusage_engine::registry::ProviderRegistry;
+    use ariadusage_engine::runtime::EngineRuntime;
+
+    let temp = tempfile::tempdir().unwrap();
+    let net = Arc::new(
+        ariadusage_engine::brokers::net::NetBroker::new(
+            ariadusage_engine::brokers::net::NetConfig::default(),
+        )
+        .unwrap(),
+    );
+    let registry = ProviderRegistry::empty().with_directories(temp.path(), temp.path());
+    let runtime = Arc::new(
+        EngineRuntime::new(
+            ConfigStore::new(temp.path().join("config.json")),
+            Arc::new(SecretStore::new(ServiceBackend::new(true))),
+            Arc::clone(&net),
+            registry,
+        )
+        .with_base_environment(std::collections::BTreeMap::new()),
+    );
+    let runtime_process_registry = runtime.process_registry();
+    let runtime_launch_gate = runtime.launch_gate();
+
+    let (claude_cfg, codex_cfg) = ariadusage_cli::register_cli_providers_with_web_timeout(
+        &runtime,
+        net,
+        temp.path().to_path_buf(),
+        Some(temp.path().to_path_buf()),
+        Some(42.5),
+    );
+
+    assert!(Arc::ptr_eq(
+        &claude_cfg.process_registry,
+        &runtime_process_registry
+    ));
+    assert!(Arc::ptr_eq(&claude_cfg.launch_gate, &runtime_launch_gate));
+    assert!(Arc::ptr_eq(
+        &codex_cfg.cli_fetcher.process_registry,
+        &runtime_process_registry
+    ));
+    assert!(Arc::ptr_eq(
+        &codex_cfg.cli_fetcher.core_launch_gate,
+        &runtime_launch_gate
+    ));
+    assert!(Arc::ptr_eq(
+        codex_cfg.cli_fetcher.cli_session.process_registry(),
+        &runtime_process_registry
+    ));
+    assert!(Arc::ptr_eq(
+        codex_cfg.cli_fetcher.cli_session.launch_gate(),
+        &runtime_launch_gate
+    ));
+    assert!(Arc::ptr_eq(
+        &claude_cfg.process_registry,
+        &codex_cfg.cli_fetcher.process_registry
+    ));
+    assert!(Arc::ptr_eq(
+        &claude_cfg.launch_gate,
+        &codex_cfg.cli_fetcher.core_launch_gate
+    ));
+}

@@ -149,40 +149,51 @@ pub fn build_cli_codex_strategy_config(
 /// Registers the CLI provider factories (`claude`, `codex`) and `antigravity` plan on `runtime`,
 /// wiring `web_timeout_seconds` into both
 /// [`ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig::with_web_timeout_seconds`]
-/// and [`ariadusage_engine::providers::codex::CodexStrategyConfig::with_web_timeout`].
+/// and [`ariadusage_engine::providers::codex::CodexStrategyConfig::with_web_timeout`] and sharing
+/// `runtime.process_registry()` and `runtime.launch_gate()` across both configs.
 pub fn register_cli_providers_with_web_timeout(
     runtime: &EngineRuntime,
     net: Arc<ariadusage_engine::brokers::net::NetBroker>,
     working_dir: PathBuf,
     home_dir: Option<PathBuf>,
     web_timeout_seconds: Option<f64>,
+) -> (
+    ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig,
+    ariadusage_engine::providers::codex::CodexStrategyConfig,
 ) {
     let effective_home = home_dir.clone().unwrap_or_else(|| working_dir.clone());
+    let process_registry = runtime.process_registry();
+    let launch_gate = runtime.launch_gate();
+
+    let mut claude_cfg = build_cli_claude_strategy_config(
+        Arc::clone(&net),
+        working_dir.clone(),
+        effective_home.clone(),
+        web_timeout_seconds,
+    );
+    claude_cfg.process_registry = Arc::clone(&process_registry);
+    claude_cfg.launch_gate = Arc::clone(&launch_gate);
     if let Ok(claude_id) = ProviderId::new("claude") {
-        let claude_cfg = build_cli_claude_strategy_config(
-            Arc::clone(&net),
-            working_dir.clone(),
-            effective_home.clone(),
-            web_timeout_seconds,
-        );
         runtime.register_provider_factory(
             claude_id,
             Arc::new(ariadusage_engine::registry::ClaudeProviderPlanFactory::new(
-                claude_cfg,
+                claude_cfg.clone(),
             )),
         );
     }
+
+    let codex_cfg = build_cli_codex_strategy_config(
+        Arc::clone(&net),
+        working_dir.clone(),
+        effective_home,
+        web_timeout_seconds,
+    )
+    .with_process_broker(process_registry, launch_gate);
     if let Ok(codex_id) = ProviderId::new("codex") {
-        let codex_cfg = build_cli_codex_strategy_config(
-            Arc::clone(&net),
-            working_dir.clone(),
-            effective_home,
-            web_timeout_seconds,
-        );
         runtime.register_provider_factory(
             codex_id,
             Arc::new(ariadusage_engine::registry::CodexProviderPlanFactory::new(
-                codex_cfg,
+                codex_cfg.clone(),
             )),
         );
     }
@@ -199,6 +210,7 @@ pub fn register_cli_providers_with_web_timeout(
             ),
         );
     }
+    (claude_cfg, codex_cfg)
 }
 
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
