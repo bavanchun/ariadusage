@@ -291,14 +291,6 @@ pub struct ValidatedServeOptions {
     pub all_accounts: bool,
 }
 
-fn allowlisted_serve_env(engine_runtime: &EngineRuntime) -> BTreeMap<String, String> {
-    engine_runtime
-        .base_environment()
-        .into_iter()
-        .map(|(k, v)| (k, v.expose_secret().to_owned()))
-        .collect()
-}
-
 pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
     if args.dashboard_token.is_some() {
         return Err(ServeCliError::args(
@@ -309,7 +301,10 @@ pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
         .map_err(|err| ServeCliError::runtime(format!("Failed to resolve config path: {err}")))?;
     let store = ConfigStore::new(config_path.clone());
     let engine_runtime = ariadusage_cli::build_cli_runtime().map_err(ServeCliError::runtime)?;
-    let env = allowlisted_serve_env(&engine_runtime);
+    let mut token_env = BTreeMap::new();
+    if let Ok(token) = std::env::var("ARIADUSAGE_DASHBOARD_TOKEN") {
+        token_env.insert("ARIADUSAGE_DASHBOARD_TOKEN".to_string(), token);
+    }
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -331,7 +326,7 @@ pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
             SecretLookup::Found(secret) => Some(secret),
             _ => None,
         };
-        let validated = validate_serve_args(&args, secret_store_token.as_ref(), &env)?;
+        let validated = validate_serve_args(&args, secret_store_token.as_ref(), &token_env)?;
 
         let mut runtime = ServeRuntime::new(
             store,
@@ -793,5 +788,49 @@ mod tests {
         assert_eq!(payload.provider, "codex");
         assert_eq!(payload.source, "local");
         assert!(payload.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn dashboard_token_is_absent_from_provider_plan_inputs() {
+        let temp = tempfile::tempdir().unwrap();
+        let base_env =
+            ariadusage_cli::build_cli_base_environment(Some(temp.path()), |key| match key {
+                "ARIADUSAGE_DASHBOARD_TOKEN" => Some("top-secret-dashboard-token".to_string()),
+                "CODEX_HOME" => Some(temp.path().join("codex").to_string_lossy().into_owned()),
+                _ => None,
+            });
+        assert!(!base_env.contains_key("ARIADUSAGE_DASHBOARD_TOKEN"));
+        assert!(base_env.contains_key("CODEX_HOME"));
+
+        let config_store = ConfigStore::new(temp.path().join("config.toml"));
+        let runtime =
+            ariadusage_engine::daemon::build_default_runtime_with_env(config_store, true, base_env)
+                .unwrap();
+        assert!(
+            !runtime
+                .base_environment()
+                .contains_key("ARIADUSAGE_DASHBOARD_TOKEN")
+        );
+
+        let config = Config::new(Config::CURRENT_VERSION, Vec::new());
+        let prefs = AppPreferences::from_config(&config);
+        let registry = runtime.registry_snapshot();
+        for slug in ["claude", "codex", "antigravity"] {
+            let provider_id = ProviderId::new(slug).unwrap();
+            let inputs = EngineRuntime::resolve_plan_inputs_with_store(
+                Some(runtime.secret_store()),
+                &provider_id,
+                &config,
+                &prefs,
+                runtime.base_environment(),
+                FetchInteraction::Background,
+                CancellationToken::new(),
+                format!("test-plan-inputs-{slug}"),
+            )
+            .await;
+            if let Some(spec) = registry.resolve_spec(&provider_id, &config, &inputs) {
+                assert!(!spec.environment.contains_key("ARIADUSAGE_DASHBOARD_TOKEN"));
+            }
+        }
     }
 }

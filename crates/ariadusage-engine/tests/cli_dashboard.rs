@@ -1846,7 +1846,7 @@ fn reads_app_written_snapshots_with_stable_ids_and_independent_errors() {
     assert_eq!(accounts[1].snapshot, None);
     assert_eq!(
         accounts[1].error.as_deref(),
-        Some("Saved usage refresh failed. Refresh this account in CodexBar.")
+        Some("Saved usage refresh failed. Refresh this account in AriadUsage.")
     );
     assert_eq!(accounts[1].display_label, "second@example.net — Personal");
     assert_eq!(std::fs::read(&fixture.accounts_path).unwrap(), before);
@@ -2945,7 +2945,9 @@ fn dashboard_provider_freshness_includes_status_updates() {
         false,
     );
     let obj = json_object(&snapshot);
-    let provider = &obj["providers"][0];
+    let providers = obj["providers"].as_array().unwrap();
+    assert!(!providers.is_empty());
+    let provider = &providers[0];
 
     assert_eq!(provider["updatedAt"], "1970-01-01T00:00:30Z");
 }
@@ -3027,7 +3029,12 @@ fn dashboard_daily_cost_uses_generation_day_without_update_metadata() {
         false,
     );
     let obj = json_object(&snapshot);
-    assert_eq!(obj["providers"][0]["cost"]["todayUSD"], 2.5);
+    let providers = obj["providers"].as_array().unwrap();
+    assert!(!providers.is_empty());
+    let provider = &providers[0];
+    let cost_object = provider["cost"].as_object().unwrap();
+    assert!(!cost_object.is_empty());
+    assert_eq!(cost_object["todayUSD"].as_f64(), Some(2.5));
 }
 
 // upstream: DashboardSnapshotBuilderTests.swift:691 dashboard keeps incomplete only costs and scopes Today to its generation date
@@ -4609,6 +4616,7 @@ fn live_account_expansion_is_an_explicit_serve_only_option() {
     );
 }
 
+// Rust-added: verifies atomic file replacement, staging cleanup, and missing-parent rejection
 #[test]
 fn write_dashboard_snapshot_atomically_replaces_existing_file_and_cleans_staging() {
     let dir = tempfile::tempdir().unwrap();

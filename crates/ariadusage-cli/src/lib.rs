@@ -63,6 +63,42 @@ impl OutputFormat {
 
 pub use ariadusage_engine::paths::resolve_cli_home_dir;
 
+/// Builds the allowlisted base environment map shared by CLI provider plan inputs.
+///
+/// `ARIADUSAGE_DASHBOARD_TOKEN` is intentionally excluded here so the serve dashboard secret never
+/// enters provider plan inputs or non-`serve` commands.
+pub fn build_cli_base_environment<F>(
+    home_dir: Option<&Path>,
+    mut get_var: F,
+) -> BTreeMap<String, SecretString>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let mut base_env = BTreeMap::new();
+    if let Some(home_str) = home_dir.and_then(Path::to_str) {
+        base_env.insert("HOME".to_owned(), SecretString::new(home_str.to_owned()));
+    }
+    for key in [
+        "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
+        "ANTHROPIC_ADMIN_API_KEY",
+        "ANTHROPIC_ADMIN_KEY",
+        "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
+        "OPENAI_API_KEY",
+        "CODEX_HOME",
+        "GEMINI_CLI_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    ] {
+        if let Some(val) = get_var(key) {
+            base_env.insert(key.to_owned(), SecretString::new(val));
+        }
+    }
+    base_env
+}
+
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
 /// active or when a command executes directly in the CLI process.
 pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
@@ -77,30 +113,7 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
         std::env::var_os("HOME").as_deref(),
         etcetera::home_dir().ok(),
     );
-
-    let mut base_env = BTreeMap::new();
-    if let Some(home_str) = home_dir.as_deref().and_then(Path::to_str) {
-        base_env.insert("HOME".to_owned(), SecretString::new(home_str.to_owned()));
-    }
-    for key in [
-        "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON",
-        "ANTHROPIC_ADMIN_API_KEY",
-        "ANTHROPIC_ADMIN_KEY",
-        "ANTHROPIC_ADMIN_WORKSPACE_SPEND",
-        "OPENAI_API_KEY",
-        "CODEX_HOME",
-        "GEMINI_CLI_HOME",
-        "CLAUDE_CONFIG_DIR",
-        "ARIADUSAGE_DASHBOARD_TOKEN",
-        "XDG_CONFIG_HOME",
-        "XDG_CACHE_HOME",
-        "XDG_DATA_HOME",
-        "XDG_STATE_HOME",
-    ] {
-        if let Ok(val) = std::env::var(key) {
-            base_env.insert(key.to_owned(), SecretString::new(val));
-        }
-    }
+    let base_env = build_cli_base_environment(home_dir.as_deref(), |key| std::env::var(key).ok());
 
     let runtime =
         build_default_runtime_with_env(ConfigStore::new(cfg_path), disable_keyring, base_env)
