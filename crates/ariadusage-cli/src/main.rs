@@ -13,8 +13,9 @@ use ariadusage_cli::options::UsageOptions;
 use ariadusage_cli::status_command::run_status_live;
 use ariadusage_cli::usage_command::run_usage_or_cards_live;
 use ariadusage_cli::{
-    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, config, cost,
-    execute_cache_clear, execute_cookie_refresh, execute_diagnose,
+    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, SessionsOptions,
+    config, cost, execute_cache_clear, execute_cookie_refresh, execute_diagnose,
+    execute_sessions_focus, execute_sessions_list,
 };
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
@@ -290,6 +291,18 @@ enum Commands {
     /// Print a one-shot dashboard-v1 snapshot as JSON
     #[command(long_about = serve::DASHBOARD_LONG_ABOUT)]
     Dashboard(serve::DashboardCommandArgs),
+
+    /// List or focus live local coding agent sessions
+    Sessions {
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "json-v2")]
+        json_v2: bool,
+        #[arg(long)]
+        pretty: bool,
+        #[command(subcommand)]
+        action: Option<SessionsCommands>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -345,6 +358,24 @@ enum CookieCommands {
         verbose: bool,
         #[arg(long)]
         json_output: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionsCommands {
+    /// List live local coding agent sessions
+    List {
+        #[arg(long)]
+        json: bool,
+        #[arg(long = "json-v2")]
+        json_v2: bool,
+        #[arg(long)]
+        pretty: bool,
+    },
+    /// Focus the terminal or desktop window of a live session
+    Focus {
+        /// Session identifier
+        id: Option<String>,
     },
 }
 
@@ -631,6 +662,39 @@ fn main() {
                 std::process::exit(i32::from(error.code));
             }
         }
+        Some(Commands::Sessions {
+            json,
+            json_v2,
+            pretty,
+            action,
+        }) => match action {
+            None => {
+                let opts = SessionsOptions {
+                    json_shortcut: json,
+                    json_v2,
+                    pretty,
+                };
+                println!("{}", execute_sessions_list(&opts));
+            }
+            Some(SessionsCommands::List {
+                json: l_json,
+                json_v2: l_json_v2,
+                pretty: l_pretty,
+            }) => {
+                let opts = SessionsOptions {
+                    json_shortcut: json || l_json,
+                    json_v2: json_v2 || l_json_v2,
+                    pretty: pretty || l_pretty,
+                };
+                println!("{}", execute_sessions_list(&opts));
+            }
+            Some(SessionsCommands::Focus { id }) => {
+                if let Err((code, msg)) = execute_sessions_focus(id.as_deref()) {
+                    eprintln!("{msg}");
+                    std::process::exit(i32::from(code));
+                }
+            }
+        },
         Some(Commands::Dashboard(args)) => {
             if let Err(error) = serve::run_dashboard_command(args) {
                 let mut stdout = io::stdout();
