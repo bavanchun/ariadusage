@@ -8,6 +8,7 @@
 // Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/CodexWeeklyCapSurfaceTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Tests/CodexBarTests/CodexbarTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1430,5 +1431,843 @@ mod macos_pixel_tests {
             render_png_for_appearance(&golden_light_match, true, false, None, false).unwrap(),
         )
         .unwrap();
+    }
+}
+
+mod menu_bar_display_text_tests {
+    use ariadusage_macos::format::{ResetTimeDisplayStyle, credits_string};
+    use ariadusage_macos::icon::{
+        MenuBarDisplayMode, MenuBarDisplayText, MenuBarIconStyle, StatusLevel,
+        brand_status_overlay, brand_status_overlay_for_width, button_title,
+    };
+    use ariadusage_macos::presentation::{
+        IconPreferences, MenuBarMetricPreference, UtcDateTexts, menu_bar_display_text,
+        resolve_menu_bar_metric_window, resolved_icon_percents_for_style, weekly_pace_delta,
+    };
+    use ariadusage_protocol::ids::ProviderId;
+    use ariadusage_protocol::metric::{Confidence, Metric};
+    use ariadusage_protocol::snapshot::{ProviderSnapshot, ProviderWindows};
+    use ariadusage_protocol::usage::{Cost, Credits, RateWindow};
+    use jiff::{SignedDuration, Timestamp};
+
+    fn rw(used: f64, minutes: Option<u32>, resets_at: Option<Timestamp>) -> RateWindow {
+        let mut w = RateWindow::new(used);
+        w.window_minutes = minutes;
+        w.resets_at = resets_at;
+        w
+    }
+
+    fn metric<T>(v: T) -> Metric<T> {
+        Metric::value(v, None, None, Confidence::Exact)
+    }
+
+    fn provider_with_windows(
+        id: &str,
+        primary: Option<RateWindow>,
+        secondary: Option<RateWindow>,
+        updated_at: Option<Timestamp>,
+    ) -> ProviderSnapshot {
+        let mut snap = ProviderSnapshot::new(ProviderId::new(id).unwrap(), id, true, "auto");
+        snap.updated_at = updated_at;
+        snap.windows = ProviderWindows {
+            primary: primary.map(metric),
+            secondary: secondary.map(metric),
+            tertiary: None,
+            extra: Vec::new(),
+        };
+        snap
+    }
+
+    // upstream: StatusItemAnimationTests.swift:938 menu bar display text formats percent and pace
+    #[test]
+    fn menu_bar_display_text_formats_percent_and_pace() {
+        let now = Timestamp::UNIX_EPOCH;
+        let percent_window = rw(40.0, None, None);
+        let pace_window = rw(
+            30.0,
+            Some(10080),
+            Some(
+                now.checked_add(SignedDuration::from_secs(60 * 60 * 24 * 6))
+                    .unwrap(),
+            ),
+        );
+        let pace_delta = weekly_pace_delta("codex", &pace_window, now);
+        let dates = UtcDateTexts;
+
+        let percent = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Percent,
+            Some(&percent_window),
+            Some(&pace_window),
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            pace_delta,
+            false,
+            now,
+            &dates,
+        );
+        let pace = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Pace,
+            Some(&percent_window),
+            Some(&pace_window),
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            pace_delta,
+            false,
+            now,
+            &dates,
+        );
+        let both = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Both,
+            Some(&percent_window),
+            Some(&pace_window),
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            pace_delta,
+            false,
+            now,
+            &dates,
+        );
+
+        assert_eq!(percent.as_deref(), Some("40%"));
+        assert_eq!(pace.as_deref(), Some("+16%"));
+        assert_eq!(both.as_deref(), Some("40% · +16%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:970 menu bar display text formats codex combined percent lanes
+    #[test]
+    fn menu_bar_display_text_formats_codex_combined_percent_lanes() {
+        let now = Timestamp::UNIX_EPOCH;
+        let dates = UtcDateTexts;
+        let session_window = rw(7.0, Some(300), None);
+        let weekly_window = rw(18.0, Some(10080), None);
+
+        let remaining = MenuBarDisplayText::combined_session_weekly_percent_text(
+            Some(&session_window),
+            Some(&weekly_window),
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            now,
+            &dates,
+        );
+        let used = MenuBarDisplayText::combined_session_weekly_percent_text(
+            Some(&session_window),
+            Some(&weekly_window),
+            true,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            now,
+            &dates,
+        );
+        let weekly_only = MenuBarDisplayText::combined_session_weekly_percent_text(
+            None,
+            Some(&weekly_window),
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            now,
+            &dates,
+        );
+        let nine_hour = MenuBarDisplayText::combined_session_weekly_percent_text(
+            Some(&rw(7.0, Some(540), None)),
+            Some(&weekly_window),
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            now,
+            &dates,
+        );
+        let unknown_session_duration = MenuBarDisplayText::combined_session_weekly_percent_text(
+            Some(&rw(7.0, None, None)),
+            Some(&weekly_window),
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            now,
+            &dates,
+        );
+
+        assert_eq!(remaining.as_deref(), Some("5h 93% · W 82%"));
+        assert_eq!(used.as_deref(), Some("5h 7% · W 18%"));
+        assert_eq!(weekly_only.as_deref(), Some("W 82%"));
+        assert_eq!(nine_hour.as_deref(), Some("9h 93% · W 82%"));
+        assert_eq!(unknown_session_duration.as_deref(), Some("S 93% · W 82%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1011 menu bar display text falls back to percent when pace unavailable
+    #[test]
+    fn menu_bar_display_text_falls_back_to_percent_when_pace_unavailable() {
+        let now = Timestamp::UNIX_EPOCH;
+        let dates = UtcDateTexts;
+        let percent_window = rw(40.0, None, None);
+
+        let pace = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Pace,
+            Some(&percent_window),
+            None,
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            None,
+            false,
+            now,
+            &dates,
+        );
+        let both = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Both,
+            Some(&percent_window),
+            None,
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            None,
+            false,
+            now,
+            &dates,
+        );
+
+        assert_eq!(pace.as_deref(), Some("40%"));
+        assert_eq!(both.as_deref(), Some("40%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1028 menu bar display text falls back to percent when pace nil for codex
+    #[test]
+    fn menu_bar_display_text_falls_back_to_percent_when_pace_nil_for_codex() {
+        let now = Timestamp::UNIX_EPOCH;
+        let dates = UtcDateTexts;
+        let percent_window = rw(40.0, None, None);
+
+        let pace = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Pace,
+            Some(&percent_window),
+            None,
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            None,
+            false,
+            now,
+            &dates,
+        );
+        let both = MenuBarDisplayText::display_text(
+            MenuBarDisplayMode::Both,
+            Some(&percent_window),
+            None,
+            Some(&percent_window),
+            true,
+            false,
+            ResetTimeDisplayStyle::Countdown,
+            false,
+            None,
+            false,
+            now,
+            &dates,
+        );
+
+        assert_eq!(pace.as_deref(), Some("40%"));
+        assert_eq!(both.as_deref(), Some("40%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1047 claude primary menu bar metric computes pace from selected session window
+    #[test]
+    fn claude_primary_menu_bar_metric_computes_pace_from_selected_session_window() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let claude = provider_with_windows(
+            "claude",
+            Some(rw(
+                80.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                20.0,
+                Some(7 * 24 * 60),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(24 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::Primary,
+                display_mode: MenuBarDisplayMode::Both,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("20% · +60%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1098 claude combined menu bar metric shows session and weekly lanes
+    #[test]
+    fn claude_combined_menu_bar_metric_shows_session_and_weekly_lanes() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let claude = provider_with_windows(
+            "claude",
+            Some(rw(
+                12.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                45.0,
+                Some(7 * 24 * 60),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(24 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Percent,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("5h 12% · W 45%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1150 claude combined menu bar metric shows weekly only when session lane is absent
+    #[test]
+    fn claude_combined_menu_bar_metric_shows_weekly_only_when_session_lane_is_absent() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let weekly = rw(
+            42.0,
+            Some(7 * 24 * 60),
+            Some(
+                now.checked_add(SignedDuration::from_secs(24 * 60 * 60))
+                    .unwrap(),
+            ),
+        );
+        let claude = provider_with_windows("claude", Some(weekly.clone()), Some(weekly), Some(now));
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Percent,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("W 42%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1198 claude combined menu bar metric paces the weekly lane in both mode
+    #[test]
+    fn claude_combined_menu_bar_metric_paces_the_weekly_lane_in_both_mode() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let claude = provider_with_windows(
+            "claude",
+            Some(rw(
+                100.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                50.0,
+                Some(7 * 24 * 60),
+                Some(now.checked_add(SignedDuration::from_secs(60 * 60)).unwrap()),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Both,
+                shows_reset_time_when_exhausted: false,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("0% · ")),
+            Some(true)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1254 claude combined menu bar metric pairs session usage with weekly pace
+    #[test]
+    fn claude_combined_menu_bar_metric_pairs_session_usage_with_weekly_pace() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let claude = provider_with_windows(
+            "claude",
+            Some(rw(
+                12.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                45.0,
+                Some(7 * 24 * 60),
+                Some(now.checked_add(SignedDuration::from_secs(60 * 60)).unwrap()),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Both,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("12% · ")),
+            Some(true)
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("45%")),
+            Some(false)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1312 codex combined menu bar metric pairs session usage with weekly pace
+    #[test]
+    fn codex_combined_menu_bar_metric_pairs_session_usage_with_weekly_pace() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let codex = provider_with_windows(
+            "codex",
+            Some(rw(
+                12.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                91.0,
+                Some(7 * 24 * 60),
+                Some(now.checked_add(SignedDuration::from_secs(60 * 60)).unwrap()),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &codex,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Both,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("12% · ")),
+            Some(true)
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("91%")),
+            Some(false)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1369 claude combined menu bar metric surfaces an exhausted weekly lane in both mode
+    #[test]
+    fn claude_combined_menu_bar_metric_surfaces_an_exhausted_weekly_lane_in_both_mode() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let claude = provider_with_windows(
+            "claude",
+            Some(rw(
+                12.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(rw(
+                100.0,
+                Some(7 * 24 * 60),
+                Some(now.checked_add(SignedDuration::from_secs(60 * 60)).unwrap()),
+            )),
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Both,
+                shows_reset_time_when_exhausted: false,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("0%"));
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("88%")),
+            Some(false)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1426 claude combined menu bar metric falls back to weekly lane in both mode when session absent
+    #[test]
+    fn claude_combined_menu_bar_metric_falls_back_to_weekly_lane_in_both_mode_when_session_absent()
+    {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let weekly = rw(
+            42.0,
+            Some(7 * 24 * 60),
+            Some(now.checked_add(SignedDuration::from_secs(60 * 60)).unwrap()),
+        );
+        let claude = provider_with_windows("claude", Some(weekly.clone()), Some(weekly), Some(now));
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Both,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(
+            display_text.as_deref().map(|s| s.starts_with("42%")),
+            Some(true)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1475 claude combined menu bar metric shows spend limit for a spend-limit-only account
+    #[test]
+    fn claude_combined_menu_bar_metric_shows_spend_limit_for_a_spend_limit_only_account() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let mut claude = provider_with_windows("claude", None, None, Some(now));
+        // Synthetic placeholder window is projected as MetricState::Unknown on the wire.
+        claude.windows.primary = Some(Metric::unknown());
+        let cost = Cost {
+            used: 45.0,
+            limit: Some(100.0),
+            currency_code: "USD".to_string(),
+            period: Some("Spend limit".to_string()),
+            resets_at: None,
+            balance: None,
+            next_regen_amount: None,
+            personal_used: None,
+            balance_updated_at: None,
+            balance_is_workspace: None,
+            balance_is_unavailable: None,
+        };
+        claude.cost = Some(metric(cost));
+
+        let display_text = menu_bar_display_text(
+            &claude,
+            IconPreferences {
+                show_used: true,
+                metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+                display_mode: MenuBarDisplayMode::Percent,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("45%"));
+        assert_eq!(
+            display_text.as_deref().map(|s| s.contains("5h")),
+            Some(false)
+        );
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1534 codex menu bar pace does not fall back to session when weekly projection is unavailable
+    #[test]
+    fn codex_menu_bar_pace_does_not_fall_back_to_session_when_weekly_projection_is_unavailable() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let codex = provider_with_windows(
+            "codex",
+            Some(rw(
+                80.0,
+                Some(300),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(4 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            None,
+            Some(now),
+        );
+        let display_text = menu_bar_display_text(
+            &codex,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::Primary,
+                display_mode: MenuBarDisplayMode::Both,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        assert_eq!(display_text.as_deref(), Some("20%"));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1581 menu bar display text uses credits when codex weekly is exhausted
+    #[test]
+    fn menu_bar_display_text_uses_credits_when_codex_weekly_is_exhausted() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let mut codex = provider_with_windows(
+            "codex",
+            Some(rw(20.0, None, None)),
+            Some(rw(100.0, None, None)),
+            Some(now),
+        );
+        let remaining_credits = 20.0 * 4.5 + 100.0 / 10.0;
+        let mut credits = Credits::new(remaining_credits);
+        credits.updated_at = Some(now);
+        codex.credits = Some(metric(credits));
+
+        let display_text = menu_bar_display_text(
+            &codex,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::Secondary,
+                display_mode: MenuBarDisplayMode::Percent,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        let expected = credits_string(remaining_credits).replace(" left", "");
+        assert_eq!(display_text, Some(expected));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1627 menu bar display text uses credits when codex session is exhausted
+    #[test]
+    fn menu_bar_display_text_uses_credits_when_codex_session_is_exhausted() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let mut codex = provider_with_windows(
+            "codex",
+            Some(rw(100.0, None, None)),
+            Some(rw(40.0, None, None)),
+            Some(now),
+        );
+        let remaining_credits = 100.0 - 40.0 / 2.0;
+        let mut credits = Credits::new(remaining_credits);
+        credits.updated_at = Some(now);
+        codex.credits = Some(metric(credits));
+
+        let display_text = menu_bar_display_text(
+            &codex,
+            IconPreferences {
+                show_used: false,
+                metric_preference: MenuBarMetricPreference::Primary,
+                display_mode: MenuBarDisplayMode::Percent,
+                now: Some(now),
+                ..IconPreferences::default()
+            },
+        );
+        let expected = credits_string(remaining_credits).replace(" left", "");
+        assert_eq!(display_text, Some(expected));
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1719 brand image with status overlay returns original image when no issue
+    #[test]
+    fn brand_image_with_status_overlay_returns_original_image_when_no_issue() {
+        assert_eq!(brand_status_overlay(StatusLevel::None), None);
+        #[cfg(target_os = "macos")]
+        {
+            use ariadusage_macos::appkit::{brand_image_with_status_overlay, render_brand_icon};
+            let brand = render_brand_icon("codex").expect("brand icon");
+            let output =
+                brand_image_with_status_overlay(&brand, StatusLevel::None).expect("output");
+            assert_eq!(
+                objc2::rc::Retained::as_ptr(&output),
+                objc2::rc::Retained::as_ptr(&brand)
+            );
+        }
+    }
+
+    // upstream: StatusItemAnimationTests.swift:1729 brand image with status overlay draws issue mark
+    #[test]
+    fn brand_image_with_status_overlay_draws_issue_mark() {
+        let overlay = brand_status_overlay_for_width(StatusLevel::Major, 16.0)
+            .expect("major overlay must be present");
+        assert!(overlay.max_alpha() > 0.01);
+        #[cfg(target_os = "macos")]
+        {
+            use ariadusage_macos::appkit::{brand_image_with_status_overlay, max_bitmap_alpha};
+            use objc2::AllocAnyThread;
+            use objc2_app_kit::NSImage;
+            use objc2_foundation::NSSize;
+
+            let size = NSSize::new(16.0, 16.0);
+            let brand = NSImage::initWithSize(NSImage::alloc(), size);
+            brand.setTemplate(true);
+            let baseline_alpha = max_bitmap_alpha(&brand);
+
+            let output =
+                brand_image_with_status_overlay(&brand, StatusLevel::Major).expect("output");
+            assert_ne!(
+                objc2::rc::Retained::as_ptr(&output),
+                objc2::rc::Retained::as_ptr(&brand)
+            );
+            let output_alpha = max_bitmap_alpha(&output);
+            assert!(baseline_alpha < 0.01);
+            assert!(output_alpha > 0.01);
+        }
+    }
+
+    // upstream: CodexWeeklyCapSurfaceTests.swift:129 combined menu bar modes ignore exhausted weekly lane after its reset
+    #[test]
+    fn combined_menu_bar_modes_ignore_exhausted_weekly_lane_after_its_reset_display_text() {
+        let now = Timestamp::from_second(1_800_000_000).unwrap();
+        let session_reset = now.checked_add(SignedDuration::from_secs(3600)).unwrap();
+        let codex = provider_with_windows(
+            "codex",
+            Some(rw(1.0, Some(300), Some(session_reset))),
+            Some(rw(100.0, Some(10080), Some(now))),
+            Some(now.checked_sub(SignedDuration::from_secs(7200)).unwrap()),
+        );
+
+        let selected = resolve_menu_bar_metric_window(
+            MenuBarMetricPreference::PrimaryAndSecondary,
+            &codex,
+            false,
+            false,
+            Some(now),
+        )
+        .expect("selected window");
+        assert_eq!(100.0 - selected.used_percent, 99.0);
+        assert_eq!(selected.resets_at, Some(session_reset));
+
+        let base_prefs = IconPreferences {
+            show_used: false,
+            metric_preference: MenuBarMetricPreference::PrimaryAndSecondary,
+            icon_style: MenuBarIconStyle::IconAndPercent,
+            reset_time_display_style: ResetTimeDisplayStyle::Countdown,
+            now: Some(now),
+            ..IconPreferences::default()
+        };
+        assert_eq!(
+            menu_bar_display_text(
+                &codex,
+                IconPreferences {
+                    display_mode: MenuBarDisplayMode::Percent,
+                    ..base_prefs
+                },
+            )
+            .as_deref(),
+            Some("5h 99%")
+        );
+        assert_eq!(
+            menu_bar_display_text(
+                &codex,
+                IconPreferences {
+                    display_mode: MenuBarDisplayMode::Pace,
+                    ..base_prefs
+                },
+            )
+            .as_deref(),
+            Some("99%")
+        );
+        assert_eq!(
+            menu_bar_display_text(
+                &codex,
+                IconPreferences {
+                    display_mode: MenuBarDisplayMode::Both,
+                    ..base_prefs
+                },
+            )
+            .as_deref(),
+            Some("99%")
+        );
+        assert_eq!(
+            menu_bar_display_text(
+                &codex,
+                IconPreferences {
+                    display_mode: MenuBarDisplayMode::ResetTime,
+                    ..base_prefs
+                },
+            )
+            .as_deref(),
+            Some("↻ in 1h")
+        );
+
+        let mut expired_session = provider_with_windows(
+            "codex",
+            Some(rw(100.0, Some(300), Some(now))),
+            Some(rw(
+                40.0,
+                Some(10080),
+                Some(
+                    now.checked_add(SignedDuration::from_secs(7 * 24 * 60 * 60))
+                        .unwrap(),
+                ),
+            )),
+            Some(now.checked_sub(SignedDuration::from_secs(7200)).unwrap()),
+        );
+        let mut credits = Credits::new(80.0);
+        credits.updated_at = Some(now);
+        expired_session.credits = Some(metric(credits));
+
+        let reset_primary = resolve_menu_bar_metric_window(
+            MenuBarMetricPreference::Primary,
+            &expired_session,
+            false,
+            false,
+            Some(now),
+        )
+        .expect("reset primary");
+        let (primary, secondary) = resolved_icon_percents_for_style(
+            &expired_session,
+            ariadusage_macos::icon::IconStyle::Codex,
+            false,
+            None,
+            Some(now),
+        );
+        assert_eq!(100.0 - reset_primary.used_percent, 60.0);
+        assert_eq!(primary, Some(60.0));
+        assert_eq!(secondary, None);
+        assert_eq!(
+            menu_bar_display_text(
+                &expired_session,
+                IconPreferences {
+                    show_used: false,
+                    metric_preference: MenuBarMetricPreference::Primary,
+                    display_mode: MenuBarDisplayMode::Percent,
+                    now: Some(now),
+                    ..IconPreferences::default()
+                },
+            )
+            .as_deref(),
+            Some("60%")
+        );
+        assert_eq!(button_title(Some("60%"), true, false), " 60%");
     }
 }

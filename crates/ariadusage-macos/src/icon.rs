@@ -1,6 +1,10 @@
 // Ported from CodexBar Sources/CodexBar/IconRenderer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/LoadingPattern.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/MenuBarDisplayMode.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/MenuBarDisplayText.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarLayoutRenderer.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/ProviderBrandIcon.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/SettingsStore+MenuPreferences.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/SessionQuotaNotifications.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -2075,4 +2079,492 @@ pub fn effective_provider_tint_rgb(
         f64::from(accent_rgb.2) / 255.0,
     );
     meets_appearance_contrast(r, g, b, appearance_name).then_some(accent_rgb)
+}
+
+/// Menu-bar status item icon style (`MenuBarIconStyle`, `SettingsStore+MenuPreferences.swift:4-16`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MenuBarIconStyle {
+    #[default]
+    Critters,
+    Bars,
+    IconAndPercent,
+}
+
+impl MenuBarIconStyle {
+    pub const fn raw_value(self) -> &'static str {
+        match self {
+            Self::Critters => "critters",
+            Self::Bars => "bars",
+            Self::IconAndPercent => "iconAndPercent",
+        }
+    }
+
+    pub fn from_raw_value(raw: &str) -> Option<Self> {
+        match raw {
+            "critters" => Some(Self::Critters),
+            "bars" => Some(Self::Bars),
+            "iconAndPercent" => Some(Self::IconAndPercent),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Critters => "Critters",
+            Self::Bars => "Bars",
+            Self::IconAndPercent => "Icon & percent",
+        }
+    }
+
+    /// Whether the status item renders the provider brand icon paired with a display text label
+    /// (`SettingsStore.showsBrandIconWithPercent`, `SettingsStore+MenuPreferences.swift:158-160`).
+    pub const fn shows_brand_icon_with_percent(self) -> bool {
+        matches!(self, Self::IconAndPercent)
+    }
+
+    /// Whether critter decorations should be suppressed on meter bars
+    /// (`SettingsStore.hidesCritters`, `SettingsStore+MenuPreferences.swift:162-164`).
+    pub const fn hides_critters(self) -> bool {
+        matches!(self, Self::Bars)
+    }
+}
+
+/// Text display mode when [`MenuBarIconStyle::IconAndPercent`] is active
+/// (`MenuBarDisplayMode`, `MenuBarDisplayMode.swift:4-31`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum MenuBarDisplayMode {
+    #[default]
+    Percent,
+    Pace,
+    Both,
+    ResetTime,
+}
+
+impl MenuBarDisplayMode {
+    pub const fn raw_value(self) -> &'static str {
+        match self {
+            Self::Percent => "percent",
+            Self::Pace => "pace",
+            Self::Both => "both",
+            Self::ResetTime => "resetTime",
+        }
+    }
+
+    pub fn from_raw_value(raw: &str) -> Option<Self> {
+        match raw {
+            "percent" => Some(Self::Percent),
+            "pace" => Some(Self::Pace),
+            "both" => Some(Self::Both),
+            "resetTime" => Some(Self::ResetTime),
+            _ => None,
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Percent => "Percent",
+            Self::Pace => "Pace",
+            Self::Both => "Both",
+            Self::ResetTime => "Reset time",
+        }
+    }
+}
+
+/// Pure formatting rules for the status item's text label in [`MenuBarIconStyle::IconAndPercent`]
+/// mode (`MenuBarDisplayText`, `MenuBarDisplayText.swift:4-220`).
+pub struct MenuBarDisplayText;
+
+impl MenuBarDisplayText {
+    /// Prepends an optional prefix and strips an optional trailing suffix from `text`
+    /// (`MenuBarDisplayText.prefixedValue`, `MenuBarDisplayText.swift:5-22`).
+    pub fn prefixed_value(
+        text: Option<&str>,
+        prefix: Option<&str>,
+        removing_suffix: Option<&str>,
+    ) -> Option<String> {
+        let trimmed = text?.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut normalized = trimmed.to_string();
+        if let Some(removing_suffix) = removing_suffix
+            && !removing_suffix.is_empty()
+            && normalized.ends_with(removing_suffix)
+        {
+            normalized.truncate(normalized.len() - removing_suffix.len());
+            normalized = normalized.trim().to_string();
+        }
+        if normalized.is_empty() {
+            return None;
+        }
+        let Some(prefix) = prefix.map(str::trim).filter(|p| !p.is_empty()) else {
+            return Some(normalized);
+        };
+        Some(format!("{prefix} {normalized}"))
+    }
+
+    /// Formats a DeepSeek balance cost snapshot as a currency string
+    /// (`MenuBarDisplayText.deepSeekBalanceText`, `MenuBarDisplayText.swift:24-36`).
+    pub fn deep_seek_balance_text(
+        cost: Option<&ariadusage_protocol::usage::Cost>,
+    ) -> Option<String> {
+        let cost = cost?;
+        if !cost.used.is_finite() {
+            return None;
+        }
+        Some(crate::format::currency_string(
+            cost.used,
+            &cost.currency_code,
+        ))
+    }
+
+    /// Formats a rate window as a used or remaining percentage string
+    /// (`MenuBarDisplayText.percentText(window:showUsed:)`, `MenuBarDisplayText.swift:38-45`).
+    pub fn percent_text(
+        window: Option<&ariadusage_protocol::usage::RateWindow>,
+        show_used: bool,
+    ) -> Option<String> {
+        Self::percent_text_estimated(window, show_used, false)
+    }
+
+    /// Formats a rate window as a used or remaining percentage string, optionally prefixed with `~`
+    /// (`MenuBarDisplayText.percentText(window:showUsed:estimated:)`, `MenuBarDisplayText.swift:38-45`).
+    pub fn percent_text_estimated(
+        window: Option<&ariadusage_protocol::usage::RateWindow>,
+        show_used: bool,
+        estimated: bool,
+    ) -> Option<String> {
+        let window = window?;
+        let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
+        let percent = if show_used {
+            window.used_percent.clamp(0.0, 100.0)
+        } else {
+            remaining
+        };
+        let formatted = crate::format::percent_string(percent);
+        if estimated {
+            Some(format!("~{formatted}"))
+        } else {
+            Some(formatted)
+        }
+    }
+
+    /// Formats a pace delta percentage with an explicit sign
+    /// (`MenuBarDisplayText.paceText(deltaPercent:reservePositive:)`, `MenuBarDisplayText.swift:55-60`).
+    pub fn pace_text(delta_percent: f64, reserve_positive: bool) -> String {
+        let delta_value = delta_percent.abs().round() as i64;
+        if delta_value == 0 {
+            return "0%".to_string();
+        }
+        let is_positive = (delta_percent >= 0.0) != reserve_positive;
+        let sign = if is_positive { "+" } else { "-" };
+        format!("{sign}{delta_value}%")
+    }
+
+    /// Short label for a session rate window (`"5h"`, `"30m"`, or `"S"` when duration is unknown)
+    /// (`MenuBarDisplayText.sessionWindowLabel`, `MenuBarDisplayText.swift:97-105`).
+    pub fn session_window_label(window: Option<&ariadusage_protocol::usage::RateWindow>) -> String {
+        let Some(minutes) = window.and_then(|w| w.window_minutes).filter(|&m| m > 0) else {
+            return "S".to_string();
+        };
+        if minutes.is_multiple_of(60) {
+            format!("{}h", minutes / 60)
+        } else {
+            format!("{minutes}m")
+        }
+    }
+
+    /// Formats combined session + weekly lanes (`"5h 93% · W 82%"`, `"W 82%"`, etc.)
+    /// (`MenuBarDisplayText.combinedSessionWeeklyPercentText`, `MenuBarDisplayText.swift:62-95`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn combined_session_weekly_percent_text(
+        session_window: Option<&ariadusage_protocol::usage::RateWindow>,
+        weekly_window: Option<&ariadusage_protocol::usage::RateWindow>,
+        show_used: bool,
+        reset_time_display_style: crate::format::ResetTimeDisplayStyle,
+        shows_reset_time_when_exhausted: bool,
+        now: jiff::Timestamp,
+        dates: &dyn crate::format::DateTexts,
+    ) -> Option<String> {
+        let session_value = Self::exhausted_reset_text(
+            session_window,
+            shows_reset_time_when_exhausted,
+            reset_time_display_style,
+            now,
+            dates,
+        )
+        .or_else(|| Self::percent_text(session_window, show_used));
+        let weekly_value = Self::exhausted_reset_text(
+            weekly_window,
+            shows_reset_time_when_exhausted,
+            reset_time_display_style,
+            now,
+            dates,
+        )
+        .or_else(|| Self::percent_text(weekly_window, show_used));
+
+        let session_label = Self::session_window_label(session_window);
+        let session_part =
+            Self::prefixed_value(session_value.as_deref(), Some(&session_label), None);
+        let weekly_part = Self::prefixed_value(weekly_value.as_deref(), Some("W"), None);
+        let parts: Vec<String> = [session_part, weekly_part].into_iter().flatten().collect();
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" · "))
+        }
+    }
+
+    /// Formats the status item display text for `mode`
+    /// (`MenuBarDisplayText.displayText`, `MenuBarDisplayText.swift:107-162`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn display_text(
+        mode: MenuBarDisplayMode,
+        percent_window: Option<&ariadusage_protocol::usage::RateWindow>,
+        pace_window: Option<&ariadusage_protocol::usage::RateWindow>,
+        reset_window: Option<&ariadusage_protocol::usage::RateWindow>,
+        show_used: bool,
+        percent_is_estimated: bool,
+        reset_time_display_style: crate::format::ResetTimeDisplayStyle,
+        shows_reset_time_when_exhausted: bool,
+        pace_delta_percent: Option<f64>,
+        pace_reserve_positive: bool,
+        now: jiff::Timestamp,
+        dates: &dyn crate::format::DateTexts,
+    ) -> Option<String> {
+        let effective_reset_window = reset_window.or(percent_window);
+        let exhausted_source = match mode {
+            MenuBarDisplayMode::Percent
+            | MenuBarDisplayMode::Both
+            | MenuBarDisplayMode::ResetTime => percent_window,
+            MenuBarDisplayMode::Pace => pace_window.or(percent_window),
+        };
+        let exhausted_reset = Self::exhausted_reset_text(
+            exhausted_source,
+            shows_reset_time_when_exhausted,
+            reset_time_display_style,
+            now,
+            dates,
+        );
+        match mode {
+            MenuBarDisplayMode::Percent => exhausted_reset.or_else(|| {
+                Self::percent_text_estimated(percent_window, show_used, percent_is_estimated)
+            }),
+            MenuBarDisplayMode::Pace => {
+                if let Some(exhausted_reset) = exhausted_reset {
+                    return Some(exhausted_reset);
+                }
+                if let Some(delta) = pace_delta_percent {
+                    return Some(Self::pace_text(delta, pace_reserve_positive));
+                }
+                Self::percent_text_estimated(percent_window, show_used, percent_is_estimated)
+            }
+            MenuBarDisplayMode::Both => {
+                if let Some(exhausted_reset) = exhausted_reset {
+                    return Some(exhausted_reset);
+                }
+                let percent =
+                    Self::percent_text_estimated(percent_window, show_used, percent_is_estimated)?;
+                let Some(delta) = pace_delta_percent else {
+                    return Some(percent);
+                };
+                let pace = Self::pace_text(delta, pace_reserve_positive);
+                Some(format!("{percent} · {pace}"))
+            }
+            MenuBarDisplayMode::ResetTime => {
+                if let Some(reset) = Self::reset_time_text(
+                    effective_reset_window,
+                    reset_time_display_style,
+                    now,
+                    dates,
+                ) {
+                    return Some(reset);
+                }
+                Self::percent_text_estimated(percent_window, show_used, percent_is_estimated)
+            }
+        }
+    }
+
+    /// Formats a window's reset time with a leading `↻ ` glyph
+    /// (`MenuBarDisplayText.resetTimeText`, `MenuBarDisplayText.swift:164-179`).
+    pub fn reset_time_text(
+        window: Option<&ariadusage_protocol::usage::RateWindow>,
+        style: crate::format::ResetTimeDisplayStyle,
+        now: jiff::Timestamp,
+        dates: &dyn crate::format::DateTexts,
+    ) -> Option<String> {
+        let window = window?;
+        if let Some(resets_at) = window.resets_at {
+            let text = match style {
+                crate::format::ResetTimeDisplayStyle::Countdown => {
+                    crate::format::reset_countdown_description(crate::format::seconds_between(
+                        now, resets_at,
+                    ))
+                }
+                crate::format::ResetTimeDisplayStyle::Absolute => {
+                    crate::format::reset_description(resets_at, now, dates)
+                }
+            };
+            return Some(format!("↻ {text}"));
+        }
+        if let Some(text) = Self::reset_metadata_text(window.reset_description.as_deref()) {
+            return Some(format!("↻ {text}"));
+        }
+        None
+    }
+
+    /// Returns the `↻ ...` reset text when `enabled` is true, the window has `0%` remaining, and
+    /// its `resets_at` timestamp is still in the future
+    /// (`MenuBarDisplayText.exhaustedResetText`, `MenuBarDisplayText.swift:181-190`).
+    pub fn exhausted_reset_text(
+        window: Option<&ariadusage_protocol::usage::RateWindow>,
+        enabled: bool,
+        style: crate::format::ResetTimeDisplayStyle,
+        now: jiff::Timestamp,
+        dates: &dyn crate::format::DateTexts,
+    ) -> Option<String> {
+        if !enabled {
+            return None;
+        }
+        let window = window?;
+        let remaining = (100.0 - window.used_percent).clamp(0.0, 100.0);
+        if remaining > 0.0 {
+            return None;
+        }
+        let resets_at = window.resets_at?;
+        if resets_at <= now {
+            return None;
+        }
+        Self::reset_time_text(Some(window), style, now, dates)
+    }
+
+    /// Extracts reset metadata text when `raw` starts with or matches a recognized reset keyword
+    /// (`MenuBarDisplayText.resetMetadataText`, `MenuBarDisplayText.swift:192-219`).
+    pub fn reset_metadata_text(raw: Option<&str>) -> Option<String> {
+        let trimmed = raw?.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let normalized = trimmed.to_lowercase();
+        const RESET_PREFIXES: &[&str] = &[
+            "reset ",
+            "resets ",
+            "in ",
+            "today ",
+            "today,",
+            "tomorrow ",
+            "tomorrow,",
+            "next ",
+            "expire ",
+            "expires ",
+            "refill ",
+            "refills ",
+        ];
+        const EXACT_MATCHES: &[&str] = &["today", "tomorrow", "expired", "now", "soon"];
+        let matches_prefix = RESET_PREFIXES.iter().any(|p| normalized.starts_with(p));
+        let matches_exact = EXACT_MATCHES.contains(&normalized.as_str());
+        if matches_prefix || matches_exact {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    }
+}
+
+/// Formats the status item button title, prepending a leading space when an icon image is
+/// present and appending `"D"` when running a debug bundle
+/// (`StatusItemController.buttonTitle`, `StatusItemController+Animation.swift:719-735`).
+pub fn button_title(title: Option<&str>, has_image: bool, is_debug_app: bool) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(title) = title.filter(|t| !t.is_empty()) {
+        parts.push(title);
+    }
+    if is_debug_app {
+        parts.push("D");
+    }
+    let value = parts.join(" ");
+    if value.is_empty() {
+        return String::new();
+    }
+    if has_image {
+        format!(" {value}")
+    } else {
+        value
+    }
+}
+
+/// Status badge geometry overlaid at the bottom-right of a brand icon when a provider has an
+/// active incident (`StatusItemController.drawBrandStatusOverlay`,
+/// `StatusItemController+Animation.swift:1333-1373`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BrandStatusOverlay {
+    /// Filled `4 × 4` pt dot at `(width - 6, 2)` for `Minor` and `Maintenance` status indicators.
+    Dot { dot_rect: RectPt },
+    /// Filled exclamation mark (`2 × 6` pt rounded bar at `(width - 6, 4)` + `2 × 2` pt dot at
+    /// `(width - 6, 2)`) for `Major`, `Critical`, and `Unknown` status indicators.
+    Exclamation {
+        line_rect: RectPt,
+        line_radius_pt: f64,
+        dot_rect: RectPt,
+    },
+}
+
+impl BrandStatusOverlay {
+    /// Evaluates whether the overlay draws opaque pixels (`> 0.0` alpha) on the canvas.
+    pub const fn max_alpha(&self) -> f64 {
+        match self {
+            Self::Dot { .. } | Self::Exclamation { .. } => 1.0,
+        }
+    }
+}
+
+/// Computes the bottom-right status badge overlay for a brand icon of `width_pt` when `status`
+/// is active (`StatusItemController.drawBrandStatusOverlay`,
+/// `StatusItemController+Animation.swift:1333-1373`).
+pub fn brand_status_overlay(status: StatusLevel) -> Option<BrandStatusOverlay> {
+    brand_status_overlay_for_width(status, ICON_SIZE_PT)
+}
+
+/// Computes the bottom-right status badge overlay for a brand icon with explicit `width_pt`
+/// (`StatusItemController.drawBrandStatusOverlay`, `StatusItemController+Animation.swift:1352-1373`).
+pub fn brand_status_overlay_for_width(
+    status: StatusLevel,
+    width_pt: f64,
+) -> Option<BrandStatusOverlay> {
+    match status {
+        StatusLevel::None => None,
+        StatusLevel::Minor | StatusLevel::Maintenance => Some(BrandStatusOverlay::Dot {
+            dot_rect: RectPt::new(width_pt - 6.0, 2.0, 4.0, 4.0),
+        }),
+        StatusLevel::Major | StatusLevel::Critical | StatusLevel::Unknown => {
+            Some(BrandStatusOverlay::Exclamation {
+                line_rect: RectPt::new(width_pt - 6.0, 4.0, 2.0, 6.0),
+                line_radius_pt: 1.0,
+                dot_rect: RectPt::new(width_pt - 6.0, 2.0, 2.0, 2.0),
+            })
+        }
+    }
+}
+
+/// Computes the render deduplication signature for the `iconAndPercent` brand + text status item
+/// (`StatusItemController.applyIcon` `mode=brandPercent`, `StatusItemController+Animation.swift:373-381`).
+pub fn brand_icon_render_signature(
+    provider_id: &str,
+    style: IconStyle,
+    status: StatusLevel,
+    display_text: Option<&str>,
+    quota_warning_flash_active: bool,
+    high_contrast: bool,
+    provider_tint_rgb: Option<(u8, u8, u8)>,
+) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    "brandPercent".hash(&mut hasher);
+    provider_id.hash(&mut hasher);
+    style.hash(&mut hasher);
+    (status as u8).hash(&mut hasher);
+    display_text.hash(&mut hasher);
+    quota_warning_flash_active.hash(&mut hasher);
+    high_contrast.hash(&mut hasher);
+    provider_tint_rgb.hash(&mut hasher);
+    hasher.finish()
 }

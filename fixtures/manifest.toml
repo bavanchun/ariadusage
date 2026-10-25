@@ -930,7 +930,11 @@ path = "crates/ariadusage-macos/src/icon.rs"
 sources = [
     "Sources/CodexBar/IconRenderer.swift",
     "Sources/CodexBar/LoadingPattern.swift",
+    "Sources/CodexBar/MenuBarDisplayMode.swift",
+    "Sources/CodexBar/MenuBarDisplayText.swift",
     "Sources/CodexBar/MenuBarLayoutRenderer.swift",
+    "Sources/CodexBar/ProviderBrandIcon.swift",
+    "Sources/CodexBar/SettingsStore+MenuPreferences.swift",
     "Sources/CodexBar/StatusItemController.swift",
     "Sources/CodexBar/StatusItemController+Animation.swift",
     "Sources/CodexBar/SessionQuotaNotifications.swift",
@@ -946,6 +950,8 @@ commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 path = "crates/ariadusage-macos/src/presentation.rs"
 sources = [
     "Sources/CodexBar/IconRemainingResolver.swift",
+    "Sources/CodexBar/MenuBarDisplayMode.swift",
+    "Sources/CodexBar/MenuBarDisplayText.swift",
     "Sources/CodexBar/MenuBarMetricWindowResolver.swift",
     "Sources/CodexBar/AutomaticQuotaSelection.swift",
     "Sources/CodexBar/UnifiedIconSource.swift",
@@ -954,6 +960,7 @@ sources = [
     "Sources/CodexBar/StatusItemController+Animation.swift",
     "Sources/CodexBar/UsageStore.swift",
     "Sources/CodexBar/UsageStore+HighestUsage.swift",
+    "Sources/CodexBar/UsageStore+HistoricalPace.swift",
     "Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift",
     "Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift",
@@ -993,6 +1000,7 @@ sources = [
     "Sources/CodexBar/StatusItemController+StatusItemVending.swift",
     "Sources/CodexBar/StatusItemController.swift",
     "Sources/CodexBar/StatusItemController+Animation.swift",
+    "Sources/CodexBar/ProviderBrandIcon.swift",
     "Sources/CodexBar/AdaptiveRefreshPolicy.swift",
     "Sources/CodexBar/SettingsStore.swift",
 ]
@@ -1105,6 +1113,7 @@ sources = [
     "Tests/CodexBarTests/StatusItemAnimationTests.swift",
     "Tests/CodexBarTests/StatusItemAnimationSignatureTests.swift",
     "Tests/CodexBarTests/QuotaWarningNotificationLogicTests.swift",
+    "Tests/CodexBarTests/CodexWeeklyCapSurfaceTests.swift",
     "Tests/CodexBarTests/CodexbarTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

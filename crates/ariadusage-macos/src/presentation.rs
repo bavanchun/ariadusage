@@ -1,4 +1,6 @@
 // Ported from CodexBar Sources/CodexBar/IconRemainingResolver.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/MenuBarDisplayMode.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/MenuBarDisplayText.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuBarMetricWindowResolver.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/AutomaticQuotaSelection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UnifiedIconSource.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -7,6 +9,7 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/UsageStore+HighestUsage.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/UsageStore+HistoricalPace.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/Providers/Codex/CodexConsumerProjection.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/Claude/ClaudeProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
@@ -37,7 +40,11 @@ use ariadusage_protocol::usage::{NamedWindow, RateWindow, StatusIndicator};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
-use crate::icon::{IconInput, IconStyle, QuotaLayoutPolicy, StatusLevel};
+use crate::format::{DateTexts, ResetTimeDisplayStyle};
+use crate::icon::{
+    IconInput, IconStyle, MenuBarDisplayMode, MenuBarDisplayText, MenuBarIconStyle,
+    QuotaLayoutPolicy, StatusLevel,
+};
 
 /// Smallest non-zero percent used in `show_used` mode for Warp's unused bonus
 /// lane so `IconRenderer`'s `<= 0` check does not collapse it into the
@@ -124,7 +131,7 @@ impl<'a> UnifiedIconContext<'a> {
     }
 }
 
-/// Display preferences that change what the icon meters show.
+/// Display preferences that change what the icon meters and status-item text show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct IconPreferences {
     /// Fill meters with used instead of remaining percentages.
@@ -135,6 +142,18 @@ pub struct IconPreferences {
     pub metric_preference: MenuBarMetricPreference,
     /// Optional reference timestamp for reset-expiry checks.
     pub now: Option<Timestamp>,
+    /// Selected menu-bar icon style (`MenuBarIconStyle`: `critters`, `bars`, `iconAndPercent`).
+    pub icon_style: MenuBarIconStyle,
+    /// Selected display mode when `icon_style` is `MenuBarIconStyle::IconAndPercent`.
+    pub display_mode: MenuBarDisplayMode,
+    /// Countdown vs absolute clock formatting for menu-bar reset labels.
+    pub reset_time_display_style: ResetTimeDisplayStyle,
+    /// Whether exhausted windows show `↻ ...` reset times instead of `0%` / `100%`.
+    pub shows_reset_time_when_exhausted: bool,
+    /// Whether positive pace delta means reserve (`+`) instead of deficit (`SettingsStore.menuBarPaceReservePositive`).
+    pub pace_reserve_positive: bool,
+    /// Whether Antigravity automatic mode prioritizes exhausted pool lanes.
+    pub antigravity_prioritize_exhausted_quotas: bool,
 }
 
 /// Picks the provider the merged status item represents: the selected one
@@ -1917,6 +1936,13 @@ pub fn store_icon_observation_signature_with_override(
     prefs.show_used.hash(&mut hasher);
     prefs.hide_critters.hash(&mut hasher);
     (prefs.metric_preference as u8).hash(&mut hasher);
+    prefs.icon_style.hash(&mut hasher);
+    prefs.display_mode.hash(&mut hasher);
+    (prefs.reset_time_display_style as u8).hash(&mut hasher);
+    prefs.shows_reset_time_when_exhausted.hash(&mut hasher);
+    prefs
+        .antigravity_prioritize_exhausted_quotas
+        .hash(&mut hasher);
     store_icon_style(snapshot).hash(&mut hasher);
 
     let Some(snapshot) = snapshot else {
@@ -1939,6 +1965,9 @@ pub fn store_icon_observation_signature_with_override(
             (input.status as u8).hash(h);
             input.reserves_missing_secondary_lane.hash(h);
             input.treats_exhausted_secondary_as_missing.hash(h);
+            if prefs.icon_style.shows_brand_icon_with_percent() {
+                menu_bar_display_text(p, prefs).hash(h);
+            }
         };
 
     if merge_icons {
@@ -1951,6 +1980,299 @@ pub fn store_icon_observation_signature_with_override(
         }
     }
     hasher.finish()
+}
+
+/// Formats monetary extra-usage spend when `cost` is monetary and bounded
+/// (`StatusItemController.extraUsageSpendDisplayText`, `StatusItemController+Animation.swift:865-876`).
+pub fn extra_usage_spend_display_text(provider: &ProviderSnapshot) -> Option<String> {
+    let cost = provider.cost.as_ref().and_then(displayable_value)?;
+    let limit = cost.limit?;
+    if limit <= 0.0 || cost.used < 0.0 {
+        return None;
+    }
+    let code = cost.currency_code.trim();
+    if provider.id.as_str() == "codex" || code.is_empty() || code.eq_ignore_ascii_case("credits") {
+        return None;
+    }
+    Some(crate::format::currency_string(cost.used, code))
+}
+
+/// Resolves the `(session, weekly)` lane pair for combined `PrimaryAndSecondary` display on
+/// Codex and Claude (`StatusItemController.combinedSessionWeeklyLanes`,
+/// `StatusItemController+Animation.swift:1000-1025`).
+pub fn combined_session_weekly_lanes(
+    provider: &ProviderSnapshot,
+    preference: MenuBarMetricPreference,
+    now: Option<Timestamp>,
+) -> Option<(Option<RateWindow>, Option<RateWindow>)> {
+    if preference != MenuBarMetricPreference::PrimaryAndSecondary {
+        return None;
+    }
+    match provider.id.as_str() {
+        "claude" => {
+            if claude_spend_limit_window(provider).is_some() {
+                return None;
+            }
+            let windows = [
+                measured_window(provider.windows.primary.as_ref()),
+                measured_window(provider.windows.secondary.as_ref()),
+            ];
+            let session = windows
+                .iter()
+                .flatten()
+                .find(|w| w.window_minutes == Some(300))
+                .map(|w| (*w).clone());
+            let weekly = windows
+                .iter()
+                .flatten()
+                .find(|w| w.window_minutes == Some(10080))
+                .map(|w| (*w).clone());
+            Some((session, weekly))
+        }
+        "codex" => {
+            let candidates = codex_visible_rate_candidates(provider, now);
+            let session = candidates
+                .iter()
+                .find(|(kind, _)| *kind == CodexLaneKind::Session)
+                .map(|(_, c)| c.window.clone());
+            let weekly = candidates
+                .iter()
+                .find(|(kind, _)| *kind == CodexLaneKind::Weekly)
+                .map(|(_, c)| c.window.clone());
+            Some((session, weekly))
+        }
+        _ => None,
+    }
+}
+
+/// Selects the percent window used in combined `PrimaryAndSecondary` non-percent modes (`Pace`,
+/// `Both`, `ResetTime`), surfacing an exhausted weekly lane ahead of an active session lane
+/// (`StatusItemController.combinedDisplayPercentWindow`, `StatusItemController+Animation.swift:1130-1138`).
+pub fn combined_display_percent_window<'a>(
+    lanes: Option<&'a (Option<RateWindow>, Option<RateWindow>)>,
+    fallback: Option<&'a RateWindow>,
+) -> Option<&'a RateWindow> {
+    let Some((session, weekly)) = lanes else {
+        return fallback;
+    };
+    if let Some(weekly) = weekly.as_ref()
+        && remaining_percent(weekly) <= 0.0
+    {
+        return Some(weekly);
+    }
+    session.as_ref().or(weekly.as_ref()).or(fallback)
+}
+
+/// Resolves the rate window whose pace delta is shown in the menu bar
+/// (`StatusItemController.menuBarPaceWindow`, `StatusItemController+Animation.swift:1104-1122`).
+pub fn menu_bar_pace_window(
+    provider: &ProviderSnapshot,
+    combined_lanes: Option<&(Option<RateWindow>, Option<RateWindow>)>,
+    percent_window: Option<&RateWindow>,
+    now: Option<Timestamp>,
+) -> Option<RateWindow> {
+    if provider.id.as_str() == "codex" {
+        return codex_visible_rate_candidates(provider, now)
+            .into_iter()
+            .find(|(kind, _)| *kind == CodexLaneKind::Weekly)
+            .map(|(_, c)| c.window);
+    }
+    if provider.id.as_str() == "abacus" {
+        return measured_window(provider.windows.primary.as_ref()).cloned();
+    }
+    if let Some((_, weekly)) = combined_lanes {
+        return weekly.clone();
+    }
+    percent_window.cloned()
+}
+
+/// Computes the pace delta percentage (`actual_used - expected_used`) for a menu-bar pace window,
+/// suppressing pace when the window is exhausted (`0%` remaining) or less than `3%` of the reset
+/// period has elapsed (`UsageStore.weeklyPace`, `UsageStore+HistoricalPace.swift:8-64`).
+pub fn weekly_pace_delta(provider_id: &str, window: &RateWindow, now: Timestamp) -> Option<f64> {
+    if remaining_percent(window) <= 0.0 {
+        return None;
+    }
+    if let Some(pace) = window.pace.as_ref() {
+        if pace.expected_used_percent < 3.0 {
+            return None;
+        }
+        return Some(pace.delta_percent);
+    }
+    let resolved = if provider_id == "claude" {
+        resolved_claude_reset_window_for_pace(window)
+    } else {
+        window.clone()
+    };
+    let window_minutes = if provider_id == "codex" {
+        resolved.window_minutes.filter(|&m| m > 0).unwrap_or(10080)
+    } else {
+        resolved.window_minutes.filter(|&m| m > 0)?
+    };
+    let resets_at = resolved.resets_at?;
+    let duration_secs = f64::from(window_minutes) * 60.0;
+    if duration_secs <= 0.0 {
+        return None;
+    }
+    let time_until_reset = resets_at.duration_since(now).as_secs_f64();
+    if time_until_reset <= 0.0 || time_until_reset > duration_secs {
+        return None;
+    }
+    let elapsed = (duration_secs - time_until_reset).clamp(0.0, duration_secs);
+    let expected = (elapsed / duration_secs * 100.0).clamp(0.0, 100.0);
+    if expected < 3.0 {
+        return None;
+    }
+    let actual = resolved.used_percent.clamp(0.0, 100.0);
+    Some(actual - expected)
+}
+
+/// Pure UTC [`DateTexts`] fallback used when no platform `FoundationDateTexts` is supplied.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UtcDateTexts;
+
+impl DateTexts for UtcDateTexts {
+    fn time_zone(&self) -> TimeZone {
+        TimeZone::UTC
+    }
+
+    fn hour_minute(&self, date: Timestamp) -> String {
+        let zdt = date.to_zoned(TimeZone::UTC);
+        let h24 = zdt.hour();
+        let m = zdt.minute();
+        let (h12, ampm) = match h24 {
+            0 => (12, "AM"),
+            1..=11 => (h24, "AM"),
+            12 => (12, "PM"),
+            _ => (h24 - 12, "PM"),
+        };
+        format!("{h12}:{m:02} {ampm}")
+    }
+
+    fn month_day_hour_minute(&self, date: Timestamp) -> String {
+        format!(
+            "{} at {}",
+            self.month_day_short(date),
+            self.hour_minute(date)
+        )
+    }
+
+    fn relative_abbreviated(&self, date: Timestamp, now: Timestamp) -> String {
+        let secs = now.duration_since(date).as_secs().max(0);
+        let mins = (secs / 60).max(1);
+        format!("{mins} min ago")
+    }
+}
+
+/// Resolves the status-item display text for `provider` using the default [`UtcDateTexts`]
+/// (`StatusItemController.menuBarDisplayText`, `StatusItemController+Animation.swift:752-855`).
+pub fn menu_bar_display_text(
+    provider: &ProviderSnapshot,
+    prefs: IconPreferences,
+) -> Option<String> {
+    menu_bar_display_text_with_dates(provider, prefs, &UtcDateTexts)
+}
+
+/// Resolves the status-item display text for `provider` using an explicit [`DateTexts`]
+/// (`StatusItemController.menuBarDisplayText`, `StatusItemController+Animation.swift:752-855`).
+pub fn menu_bar_display_text_with_dates(
+    provider: &ProviderSnapshot,
+    prefs: IconPreferences,
+    dates: &dyn DateTexts,
+) -> Option<String> {
+    let provider_id = provider.id.as_str();
+    if provider_id == "deepseek" {
+        return MenuBarDisplayText::deep_seek_balance_text(
+            provider.cost.as_ref().and_then(displayable_value),
+        );
+    }
+    let now = prefs.now.unwrap_or_else(Timestamp::now);
+    let mode = prefs.display_mode;
+    let preference = prefs.metric_preference;
+
+    if mode != MenuBarDisplayMode::ResetTime
+        && preference == MenuBarMetricPreference::ExtraUsage
+        && (provider_id != "cursor" || mode == MenuBarDisplayMode::Pace)
+        && let Some(spend_text) = extra_usage_spend_display_text(provider)
+    {
+        return Some(spend_text);
+    }
+
+    let supports_average = provider_id == "gemini" || provider_id == "antigravity";
+    let percent_window = resolve_menu_bar_metric_window(
+        preference,
+        provider,
+        supports_average,
+        prefs.antigravity_prioritize_exhausted_quotas,
+        Some(now),
+    );
+
+    if mode == MenuBarDisplayMode::Percent
+        && !prefs.show_used
+        && provider_id == "codex"
+        && let Some(credits) =
+            menu_bar_credits_remaining_for_icon(provider, Some(now)).filter(|&c| c > 0.0)
+    {
+        return Some(crate::format::credits_number_string(credits));
+    }
+
+    let combined_lanes = combined_session_weekly_lanes(provider, preference, Some(now));
+    if mode == MenuBarDisplayMode::Percent
+        && let Some((session, weekly)) = &combined_lanes
+        && let Some(combined_text) = MenuBarDisplayText::combined_session_weekly_percent_text(
+            session.as_ref(),
+            weekly.as_ref(),
+            prefs.show_used,
+            prefs.reset_time_display_style,
+            prefs.shows_reset_time_when_exhausted,
+            now,
+            dates,
+        )
+    {
+        return Some(combined_text);
+    }
+
+    let display_percent_window =
+        combined_display_percent_window(combined_lanes.as_ref(), percent_window.as_ref());
+    let pace_window = menu_bar_pace_window(
+        provider,
+        combined_lanes.as_ref(),
+        percent_window.as_ref(),
+        Some(now),
+    );
+    let pace_delta = if matches!(mode, MenuBarDisplayMode::Pace | MenuBarDisplayMode::Both) {
+        pace_window
+            .as_ref()
+            .and_then(|w| weekly_pace_delta(provider_id, w, now))
+    } else {
+        None
+    };
+
+    MenuBarDisplayText::display_text(
+        mode,
+        display_percent_window,
+        pace_window.as_ref(),
+        display_percent_window,
+        prefs.show_used,
+        false,
+        prefs.reset_time_display_style,
+        prefs.shows_reset_time_when_exhausted,
+        pace_delta,
+        prefs.pace_reserve_positive,
+        now,
+        dates,
+    )
+}
+
+/// Resolves the status-item display text for the active unified icon provider in `snapshot`
+/// (`StatusItemController.menuBarDisplayText`).
+pub fn status_item_display_text(
+    snapshot: Option<&EngineSnapshot>,
+    selected_provider_id: Option<&str>,
+    prefs: IconPreferences,
+) -> Option<String> {
+    let provider = icon_provider(snapshot?, selected_provider_id)?;
+    menu_bar_display_text(provider, prefs)
 }
 
 /// Returns a measured `RateWindow` when the metric has a real value (`Value` or `Stale`).

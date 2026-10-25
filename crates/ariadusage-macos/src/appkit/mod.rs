@@ -1,6 +1,7 @@
 // Ported from CodexBar Sources/CodexBar/StatusItemController+StatusItemVending.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/StatusItemController+Animation.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBar/ProviderBrandIcon.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/AdaptiveRefreshPolicy.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/SettingsStore.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
@@ -48,12 +49,16 @@ use std::rc::Rc;
 use ariadusage_protocol::snapshot::EngineSnapshot;
 use dispatch2::DispatchQueue;
 use objc2::rc::Retained;
-use objc2::{MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
-use objc2_app_kit::{
-    NSAccessibility, NSAppearance, NSApplication, NSApplicationActivationPolicy, NSStatusBar,
-    NSStatusItem, NSVariableStatusItemLength,
+use objc2::{
+    AllocAnyThread, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send, sel,
 };
-use objc2_foundation::{NSObject, NSObjectProtocol, NSString, NSTimer};
+use objc2_app_kit::{
+    NSAccessibility, NSAppearance, NSApplication, NSApplicationActivationPolicy, NSBezierPath,
+    NSBitmapImageRep, NSCellImagePosition, NSColor, NSCompositingOperation, NSDeviceRGBColorSpace,
+    NSGraphicsContext, NSImage, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSWindingRule,
+};
+use objc2_foundation::{NSObject, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSTimer};
 
 use crate::card::CardPreferences;
 use crate::engine_client::{EngineClient, EngineEvent};
@@ -300,9 +305,13 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
     status_item.setMenu(Some(menu.menu()));
     STATE.with(|cell| {
         let settings_state = SettingsState::default();
+        let icon_style =
+            icon::MenuBarIconStyle::from_raw_value(&settings_state.menu_bar_icon_style)
+                .unwrap_or_default();
         let prefs = IconPreferences {
             show_used: settings_state.menu_bar_show_used,
-            hide_critters: settings_state.menu_bar_icon_style == "bars",
+            hide_critters: icon_style.hides_critters(),
+            icon_style,
             now: Some(jiff::Timestamp::now()),
             ..IconPreferences::default()
         };
@@ -471,8 +480,12 @@ fn apply_local_setting_change(
 }
 
 fn sync_state_from_settings(state: &mut AppState) {
+    let icon_style =
+        icon::MenuBarIconStyle::from_raw_value(&state.settings_state.menu_bar_icon_style)
+            .unwrap_or_default();
     state.prefs.show_used = state.settings_state.menu_bar_show_used;
-    state.prefs.hide_critters = state.settings_state.menu_bar_icon_style == "bars";
+    state.prefs.icon_style = icon_style;
+    state.prefs.hide_critters = icon_style.hides_critters();
     state.prefs.now = Some(jiff::Timestamp::now());
     state.last_render_signature = None;
     let card_prefs = CardPreferences {
@@ -807,12 +820,13 @@ fn sync_animation_timers(state: &mut AppState) {
             .entry(id.clone())
             .or_insert_with(|| icon::BlinkState::seeded(now, 1));
     }
-    let has_blinking_providers = target_id.is_some_and(|id| {
-        icon::style_supports_blink(
-            icon::IconStyle::from_provider_id(id),
-            state.prefs.hide_critters,
-        )
-    });
+    let has_blinking_providers = !state.prefs.icon_style.shows_brand_icon_with_percent()
+        && target_id.is_some_and(|id| {
+            icon::style_supports_blink(
+                icon::IconStyle::from_provider_id(id),
+                state.prefs.hide_critters,
+            )
+        });
     let blinking_allowed = icon::is_blinking_allowed(
         state.settings_state.random_blink_enabled,
         state.animation.blink_force_until_secs,
@@ -973,6 +987,239 @@ fn on_flash_timer_tick() {
     }
 }
 
+/// Renders the 18 × 18 pt monochrome template brand icon for `provider_id` (`ProviderBrandIcon.image`,
+/// `ProviderBrandIcon.swift:29-51`).
+pub fn render_brand_icon(provider_id: &str) -> Option<Retained<NSImage>> {
+    use crate::switcher::{PathCmd, SwitcherIcon, icon_path};
+
+    let icon_kind = match provider_id {
+        "claude" => SwitcherIcon::Claude,
+        "codex" => SwitcherIcon::Codex,
+        "antigravity" => SwitcherIcon::Antigravity,
+        _ => SwitcherIcon::for_provider(provider_id),
+    };
+    let cmds = icon_path(icon_kind, icon::ICON_SIZE_PT);
+    if cmds.is_empty() {
+        return None;
+    }
+
+    let size = NSSize::new(icon::ICON_SIZE_PT, icon::ICON_SIZE_PT);
+    let pixels = icon::CANVAS_PX as isize;
+    // SAFETY: a null plane pointer asks AppKit to allocate the 8-bit RGBA bitmap buffer.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            pixels,
+            pixels,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    rep.setSize(size);
+    let image = NSImage::initWithSize(NSImage::alloc(), size);
+    image.addRepresentation(&rep);
+
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    context.setShouldAntialias(true);
+
+    let flip_y = |y: f64| icon::ICON_SIZE_PT - y;
+    let bezier = NSBezierPath::bezierPath();
+    bezier.setWindingRule(NSWindingRule::EvenOdd);
+    for cmd in cmds {
+        match cmd {
+            PathCmd::MoveTo(p) => bezier.moveToPoint(NSPoint::new(p.x, flip_y(p.y))),
+            PathCmd::LineTo(p) => bezier.lineToPoint(NSPoint::new(p.x, flip_y(p.y))),
+            PathCmd::CubicTo(c1, c2, p) => {
+                bezier.curveToPoint_controlPoint1_controlPoint2(
+                    NSPoint::new(p.x, flip_y(p.y)),
+                    NSPoint::new(c1.x, flip_y(c1.y)),
+                    NSPoint::new(c2.x, flip_y(c2.y)),
+                );
+            }
+            PathCmd::Close => bezier.closePath(),
+        }
+    }
+    NSColor::labelColor().setFill();
+    bezier.fill();
+
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    image.setTemplate(true);
+    Some(image)
+}
+
+/// Overlays the bottom-right status indicator dot or exclamation mark onto `brand`, returning the
+/// original `brand` image unchanged when `status` is [`icon::StatusLevel::None`]
+/// (`StatusItemController.brandImageWithStatusOverlay`, `StatusItemController+Animation.swift:1333-1373`).
+pub fn brand_image_with_status_overlay(
+    brand: &NSImage,
+    status: icon::StatusLevel,
+) -> Option<Retained<NSImage>> {
+    let size = brand.size();
+    let Some(overlay) = icon::brand_status_overlay_for_width(status, size.width) else {
+        return Some(brand.retain());
+    };
+
+    let w_px = (size.width * icon::ICON_SCALE).round().max(1.0) as isize;
+    let h_px = (size.height * icon::ICON_SCALE).round().max(1.0) as isize;
+    // SAFETY: a null plane pointer asks AppKit to allocate the 8-bit RGBA bitmap buffer.
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w_px,
+            h_px,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    rep.setSize(size);
+    let output = NSImage::initWithSize(NSImage::alloc(), size);
+    output.addRepresentation(&rep);
+
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    context.setShouldAntialias(true);
+
+    let canvas = NSRect::new(NSPoint::ZERO, size);
+    brand.drawInRect_fromRect_operation_fraction(
+        canvas,
+        NSRect::ZERO,
+        NSCompositingOperation::SourceOver,
+        1.0,
+    );
+
+    NSColor::labelColor().setFill();
+    match overlay {
+        icon::BrandStatusOverlay::Dot { dot_rect } => {
+            let rect = NSRect::new(
+                NSPoint::new(dot_rect.x, dot_rect.y),
+                NSSize::new(dot_rect.w, dot_rect.h),
+            );
+            NSBezierPath::bezierPathWithOvalInRect(rect).fill();
+        }
+        icon::BrandStatusOverlay::Exclamation {
+            line_rect,
+            line_radius_pt,
+            dot_rect,
+        } => {
+            let lrect = NSRect::new(
+                NSPoint::new(line_rect.x, line_rect.y),
+                NSSize::new(line_rect.w, line_rect.h),
+            );
+            NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
+                lrect,
+                line_radius_pt,
+                line_radius_pt,
+            )
+            .fill();
+            let drect = NSRect::new(
+                NSPoint::new(dot_rect.x, dot_rect.y),
+                NSSize::new(dot_rect.w, dot_rect.h),
+            );
+            NSBezierPath::bezierPathWithOvalInRect(drect).fill();
+        }
+    }
+
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    output.setTemplate(brand.isTemplate());
+    Some(output)
+}
+
+/// Returns the maximum alpha component (`0.0..=1.0`) across all pixels of `image` when rendered
+/// into a 2× bitmap representation (`StatusItemAnimationTests.maxAlpha`,
+/// `StatusItemAnimationTests.swift:1739-1750`).
+pub fn max_bitmap_alpha(image: &NSImage) -> f64 {
+    let size = image.size();
+    let w_px = (size.width * icon::ICON_SCALE).round().max(1.0) as isize;
+    let h_px = (size.height * icon::ICON_SCALE).round().max(1.0) as isize;
+    // SAFETY: a null plane pointer asks AppKit to allocate the 8-bit RGBA bitmap buffer.
+    let Some(rep) = (unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w_px,
+            h_px,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }) else {
+        return 0.0;
+    };
+    rep.setSize(size);
+    let Some(context) = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep) else {
+        return 0.0;
+    };
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    let canvas = NSRect::new(NSPoint::ZERO, size);
+    image.drawInRect_fromRect_operation_fraction(
+        canvas,
+        NSRect::ZERO,
+        NSCompositingOperation::SourceOver,
+        1.0,
+    );
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+
+    let ptr = rep.bitmapData();
+    if ptr.is_null() {
+        return 0.0;
+    }
+    let bytes_per_row = rep.bytesPerRow();
+    let samples = rep.samplesPerPixel().max(4);
+    let mut max_a: u8 = 0;
+    for y in 0..h_px {
+        for x in 0..w_px {
+            let offset = (y * bytes_per_row + x * samples + (samples - 1)) as usize;
+            // SAFETY: `offset` is within `h_px * bytes_per_row` allocated by `rep`.
+            let alpha = unsafe { *ptr.add(offset) };
+            if alpha > max_a {
+                max_a = alpha;
+            }
+        }
+    }
+    f64::from(max_a) / 255.0
+}
+
+fn set_status_item_button_content(
+    button: &objc2_app_kit::NSStatusBarButton,
+    image: &NSImage,
+    title: Option<&str>,
+) {
+    let formatted_title = icon::button_title(title, true, false);
+    button.setImage(Some(image));
+    button.setTitle(&NSString::from_str(&formatted_title));
+    let position = if formatted_title.is_empty() {
+        NSCellImagePosition::ImageOnly
+    } else {
+        NSCellImagePosition::ImageLeft
+    };
+    button.setImagePosition(position);
+}
+
 fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
     let now_ts = jiff::Timestamp::now();
     let now = now_ts.as_millisecond() as f64 / 1000.0;
@@ -994,6 +1241,38 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
     let provider_id = provider.map(|p| p.id.as_str());
     let warning_flash =
         provider_id.is_some_and(|id| state.animation.is_quota_warning_flash_active(id, now));
+
+    if state.prefs.icon_style.shows_brand_icon_with_percent()
+        && let Some(brand_base) = render_brand_icon(provider_id.unwrap_or("codex"))
+    {
+        let display_text =
+            provider.and_then(|p| presentation::menu_bar_display_text(p, state.prefs));
+        let signature = icon::brand_icon_render_signature(
+            provider_id.unwrap_or("codex"),
+            input.style,
+            input.status,
+            display_text.as_deref(),
+            warning_flash,
+            false,
+            None,
+        );
+        if state.last_render_signature == Some(signature) {
+            return;
+        }
+        state.last_render_signature = Some(signature);
+        let badged =
+            brand_image_with_status_overlay(&brand_base, input.status).unwrap_or(brand_base);
+        let displayed_image = if warning_flash {
+            icon_image::quota_warning_flash_image(&badged).unwrap_or(badged)
+        } else {
+            badged
+        };
+        if let Some(button) = state.status_item.button(mtm) {
+            set_status_item_button_content(&button, &displayed_image, display_text.as_deref());
+        }
+        return;
+    }
+
     let needs_loading = provider_needs_loading_animation(state, provider_id);
     let phase = state.animation.active_loading_phase(needs_loading);
 
@@ -1028,7 +1307,7 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
                 } else {
                     base
                 };
-                button.setImage(Some(&image));
+                set_status_item_button_content(&button, &image, None);
             }
             return;
         }
@@ -1076,7 +1355,7 @@ fn render_status_item_icon(mtm: MainThreadMarker, state: &mut AppState) {
         } else {
             base
         };
-        button.setImage(Some(&image));
+        set_status_item_button_content(&button, &image, None);
     }
 }
 
