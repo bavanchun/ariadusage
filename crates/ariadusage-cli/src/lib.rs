@@ -12,10 +12,11 @@ pub mod logging;
 pub use logging::{
     CliLogDestination, CliLogLevel, CliLogger, CliLoggingConfiguration, CliLoggingOptions,
     JsonLogLine, LogCategories, LogRedactor, ProviderLogging, bootstrap_cli_logging,
-    captured_log_lines, clear_captured_log_lines, current_cli_log_level,
-    current_cli_logging_configuration, log_startup_state, logger, resolved_log_level,
-    set_cli_log_level, will_log_to_stderr,
+    current_cli_log_level, current_cli_logging_configuration, log_startup_state, logger,
+    resolved_log_level, set_cli_log_level, will_log_to_stderr,
 };
+#[cfg(feature = "test-hooks")]
+pub use logging::{captured_log_lines, clear_captured_log_lines};
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -861,7 +862,7 @@ pub fn cookie_help(version: &str) -> String {
          [--format text|json]\n                         \
          [--json]\n                         \
          [--json-only]\n                         \
-         [--json-output] [--log-level <trace|verbose|debug|info|warning|error|critical>]\n                         \
+         [--json-output]\n                         \
          [-v|--verbose]\n                         \
          [--pretty]\n\n\
          Description:\n  \
@@ -881,7 +882,6 @@ pub fn cookie_help(version: &str) -> String {
 pub struct CookieRefreshOptions {
     pub verbose: bool,
     pub json_output: bool,
-    pub log_level: Option<String>,
     pub json_shortcut: bool,
     pub json_only: bool,
     pub pretty: bool,
@@ -919,13 +919,6 @@ impl CookieRefreshOptions {
                     let fmt =
                         OutputFormat::parse(val).ok_or_else(|| format!("Invalid format: {val}"))?;
                     opts.format = Some(fmt);
-                }
-                "--log-level" => {
-                    idx += 1;
-                    let val = args
-                        .get(idx)
-                        .ok_or_else(|| "Missing value for --log-level".to_owned())?;
-                    opts.log_level = Some((*val).to_owned());
                 }
                 other => return Err(format!("Unknown argument: {other}")),
             }
@@ -1281,7 +1274,7 @@ pub fn execute_cookie_refresh(opts: &CookieRefreshOptions) -> Result<String, (u8
         opts.verbose,
         opts.json_output,
         opts.json_only,
-        opts.log_level.as_deref(),
+        None,
         &["cookie", "refresh"],
     ));
     if opts.provider.is_some() == opts.all {

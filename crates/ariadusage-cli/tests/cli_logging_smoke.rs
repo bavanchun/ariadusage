@@ -2,14 +2,16 @@
 // Minimal smoke tests for CLI logging (`-v`/`--verbose`, `--log-level`, `--json-output`),
 // `LogRedactor`, and `ProviderLogging`.
 
+#[cfg(feature = "test-hooks")]
 use std::collections::BTreeMap;
 
 use ariadusage_cli::{
-    CliLogDestination, CliLogLevel, CliLoggingConfiguration, JsonLogLine, LogCategories,
-    LogRedactor, ProviderLogging, bootstrap_cli_logging, captured_log_lines,
-    clear_captured_log_lines, current_cli_log_level, current_cli_logging_configuration, logger,
-    resolved_log_level, set_cli_log_level,
+    CliLogDestination, CliLogLevel, CliLoggingConfiguration, JsonLogLine, LogRedactor,
+    ProviderLogging, bootstrap_cli_logging, current_cli_log_level,
+    current_cli_logging_configuration, resolved_log_level, set_cli_log_level,
 };
+#[cfg(feature = "test-hooks")]
+use ariadusage_cli::{LogCategories, captured_log_lines, clear_captured_log_lines, logger};
 use ariadusage_core::config::{Config, ProviderConfig, ProviderEntry};
 use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_protocol::ProviderId;
@@ -119,32 +121,55 @@ fn cli_logging_configuration_and_logger_redact_messages_and_metadata() {
         true,
     ));
     assert_eq!(current_cli_log_level(), CliLogLevel::Debug);
-    clear_captured_log_lines();
 
-    let fake_token = concat!("sk-ant-", "oat01-supersecretlogger123");
-    let log = logger(LogCategories::TOKEN_COST);
-    log.trace("Filtered trace line", None);
-    log.debug(
-        &format!("Scanning for owner@example.com with {fake_token}"),
-        Some(BTreeMap::from([("auth", format!("Bearer {fake_token}"))])),
-    );
+    #[cfg(feature = "test-hooks")]
+    {
+        clear_captured_log_lines();
 
-    let captured = captured_log_lines();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].level, "debug");
-    assert_eq!(captured[0].label, LogCategories::SUBSYSTEM);
-    assert!(!captured[0].message.contains("owner@example.com"));
-    assert!(!captured[0].message.contains(fake_token));
-    assert!(captured[0].message.contains("<redacted-email>"));
-    let meta = captured[0].metadata.as_ref().expect("metadata");
-    assert_eq!(
-        meta.get("category").map(String::as_str),
-        Some(LogCategories::TOKEN_COST)
-    );
-    assert_eq!(
-        meta.get("auth").map(String::as_str),
-        Some("Bearer <redacted>")
-    );
+        let fake_token = concat!("sk-ant-", "oat01-supersecretlogger123");
+        let log = logger(LogCategories::TOKEN_COST);
+        log.trace("Filtered trace line", None);
+        log.debug(
+            &format!("Scanning for owner@example.com with {fake_token}"),
+            Some(BTreeMap::from([("auth", format!("Bearer {fake_token}"))])),
+        );
+
+        let captured = captured_log_lines();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].level, "debug");
+        assert_eq!(captured[0].label, "ariadusage.token-cost");
+        assert_eq!(captured[0].source, "ariadusage_cli::logging");
+        assert_eq!(captured[0].function, "");
+        assert!(!captured[0].message.contains("owner@example.com"));
+        assert!(!captured[0].message.contains(fake_token));
+        assert!(captured[0].message.contains("<redacted-email>"));
+        let meta = captured[0].metadata.as_ref().expect("metadata");
+        assert!(!meta.contains_key("category"));
+        assert_eq!(
+            meta.get("auth").map(String::as_str),
+            Some("Bearer <redacted>")
+        );
+
+        let raw_json = serde_json::to_string(&captured[0]).expect("encode JsonLogLine");
+        let key_positions: Vec<usize> = [
+            "\"file\":",
+            "\"function\":",
+            "\"label\":",
+            "\"level\":",
+            "\"line\":",
+            "\"message\":",
+            "\"metadata\":",
+            "\"source\":",
+            "\"timestamp\":",
+        ]
+        .into_iter()
+        .map(|needle| raw_json.find(needle).expect("expected key in JsonLogLine"))
+        .collect();
+        assert!(
+            key_positions.windows(2).all(|w| w[0] < w[1]),
+            "expected sorted JSON keys in: {raw_json}"
+        );
+    }
 
     set_cli_log_level(CliLogLevel::Warning);
     assert_eq!(
@@ -161,7 +186,7 @@ fn parse_stderr_json_logs(stderr: &[u8]) -> Vec<JsonLogLine> {
         .collect()
 }
 
-// Rust-added: end-to-end binary smoke test verifying -v/--verbose, --log-level, and --json-output across all 7 CLI commands
+// Rust-added: end-to-end binary smoke test verifying -v/--verbose, --log-level, and --json-output across CLI commands
 #[test]
 fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -199,7 +224,7 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
             .expect("spawn ariadusage")
     };
 
-    // 1. cost
+    // 1. cost (JSON log output and StreamLogHandler text output)
     let cost_out = run_cmd(&[
         "cost",
         "--provider",
@@ -215,14 +240,35 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     assert!(
         cost_logs.iter().any(|l| {
             l.level == "debug"
+                && l.label == "ariadusage.token-cost"
+                && l.source == "ariadusage_cli::logging"
+                && l.function.is_empty()
                 && l.metadata
                     .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some(LogCategories::TOKEN_COST)
+                    .is_none_or(|m| !m.contains_key("category"))
         }),
-        "expected token-cost JSON log on stderr, got: {}",
+        "expected ariadusage.token-cost JSON log on stderr, got: {}",
         String::from_utf8_lossy(&cost_out.stderr)
+    );
+
+    let cost_text_out = run_cmd(&[
+        "cost",
+        "--provider",
+        "codex",
+        "--json",
+        "-v",
+        "--log-level",
+        "debug",
+    ]);
+    assert!(cost_text_out.status.success());
+    let cost_stderr_text = String::from_utf8_lossy(&cost_text_out.stderr);
+    assert!(
+        cost_stderr_text.lines().any(|line| {
+            line.contains(
+                " debug ariadusage.token-cost : period=rolling:30 provider=codex refresh=false [ariadusage_cli::logging] Loading local cost snapshot",
+            )
+        }),
+        "expected StreamLogHandler text layout on stderr, got: {cost_stderr_text}"
     );
 
     // 2. config
@@ -238,42 +284,27 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     assert!(config_out.status.success());
     let config_logs = parse_stderr_json_logs(&config_out.stderr);
     assert!(
-        config_logs.iter().any(|l| {
-            l.level == "debug"
-                && l.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some(LogCategories::CONFIG_STORE)
-        }),
-        "expected config-store JSON log on stderr, got: {}",
+        config_logs
+            .iter()
+            .any(|l| l.level == "debug" && l.label == "ariadusage.config-store"),
+        "expected ariadusage.config-store JSON log on stderr, got: {}",
         String::from_utf8_lossy(&config_out.stderr)
     );
 
-    // 3. hooks
-    let hooks_out = run_cmd(&[
-        "hooks",
-        "list",
-        "--json",
-        "-v",
-        "--log-level",
-        "debug",
-        "--json-output",
-    ]);
-    assert!(hooks_out.status.success());
-    let hooks_logs = parse_stderr_json_logs(&hooks_out.stderr);
-    assert!(
-        hooks_logs.iter().any(|l| {
-            l.level == "debug"
-                && l.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some(LogCategories::HOOKS)
-        }),
-        "expected hooks JSON log on stderr, got: {}",
-        String::from_utf8_lossy(&hooks_out.stderr)
-    );
+    // 3. hooks has no logging flags (-v/--verbose, --json-output, --log-level are rejected)
+    for rejected_flag in [
+        &["hooks", "list", "-v"][..],
+        &["hooks", "list", "--verbose"][..],
+        &["hooks", "list", "--json-output"][..],
+        &["hooks", "list", "--log-level", "debug"][..],
+    ] {
+        let out = run_cmd(rejected_flag);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "expected hooks to reject {rejected_flag:?} with exit 2"
+        );
+    }
 
     // 4. cache clear
     let cache_out = run_cmd(&[
@@ -289,19 +320,14 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     assert!(cache_out.status.success());
     let cache_logs = parse_stderr_json_logs(&cache_out.stderr);
     assert!(
-        cache_logs.iter().any(|l| {
-            l.level == "debug"
-                && l.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some(LogCategories::CACHE)
-        }),
-        "expected cache JSON log on stderr, got: {}",
+        cache_logs
+            .iter()
+            .any(|l| l.level == "debug" && l.label == "ariadusage.cache"),
+        "expected ariadusage.cache JSON log on stderr, got: {}",
         String::from_utf8_lossy(&cache_out.stderr)
     );
 
-    // 5. cookie refresh
+    // 5. cookie refresh accepts -v and --json-output, and rejects --log-level
     let cookie_out = run_cmd(&[
         "cookie",
         "refresh",
@@ -309,23 +335,25 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
         "claude",
         "--json",
         "-v",
-        "--log-level",
-        "debug",
         "--json-output",
     ]);
     let cookie_logs = parse_stderr_json_logs(&cookie_out.stderr);
     assert!(
-        cookie_logs.iter().any(|l| {
-            l.level == "debug"
-                && l.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some(LogCategories::COOKIE_REFRESH)
-        }),
-        "expected cookie-refresh JSON log on stderr, got: {}",
+        cookie_logs
+            .iter()
+            .any(|l| l.level == "debug" && l.label == "ariadusage.cookie-refresh"),
+        "expected ariadusage.cookie-refresh JSON log on stderr, got: {}",
         String::from_utf8_lossy(&cookie_out.stderr)
     );
+    let cookie_rejected = run_cmd(&[
+        "cookie",
+        "refresh",
+        "--provider",
+        "claude",
+        "--log-level",
+        "debug",
+    ]);
+    assert_eq!(cookie_rejected.status.code(), Some(2));
 
     // 6. usage
     let usage_out = run_cmd(&[
@@ -339,15 +367,10 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     ]);
     let usage_logs = parse_stderr_json_logs(&usage_out.stderr);
     assert!(
-        usage_logs.iter().any(|l| {
-            l.level == "debug"
-                && l.metadata
-                    .as_ref()
-                    .and_then(|m| m.get("category"))
-                    .map(String::as_str)
-                    == Some("provider.antigravity")
-        }),
-        "expected provider.antigravity JSON log on stderr, got: {}",
+        usage_logs
+            .iter()
+            .any(|l| l.level == "debug" && l.label == "ariadusage.provider.antigravity"),
+        "expected ariadusage.provider.antigravity JSON log on stderr, got: {}",
         String::from_utf8_lossy(&usage_out.stderr)
     );
 

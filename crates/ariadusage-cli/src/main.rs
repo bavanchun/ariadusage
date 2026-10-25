@@ -185,8 +185,6 @@ enum CookieCommands {
         verbose: bool,
         #[arg(long)]
         json_output: bool,
-        #[arg(long)]
-        log_level: Option<String>,
     },
 }
 
@@ -397,7 +395,6 @@ fn main() {
                     pretty,
                     verbose,
                     json_output,
-                    log_level,
                 },
         }) => {
             let parsed_format = match format {
@@ -413,7 +410,6 @@ fn main() {
             let opts = CookieRefreshOptions {
                 verbose,
                 json_output,
-                log_level,
                 json_shortcut: json,
                 json_only,
                 pretty,
