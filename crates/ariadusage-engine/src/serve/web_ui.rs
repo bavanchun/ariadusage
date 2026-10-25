@@ -9,113 +9,12 @@ use super::http_server::CliLocalHttpResponse;
 use super::provider_icons;
 
 pub const PROVIDER_ICON_BY_PROVIDER_ID: &[(&str, &str)] = &[
-    ("abacus", "ProviderIcon-abacus"),
-    ("aerostack", "ProviderIcon-aerostack"),
-    ("aiand", "ProviderIcon-aiand"),
-    ("aixy", "ProviderIcon-aixy"),
-    ("alibaba", "ProviderIcon-alibaba"),
-    ("alibabatokenplan", "ProviderIcon-alibaba"),
-    ("amp", "ProviderIcon-amp"),
     ("antigravity", "ProviderIcon-antigravity"),
-    ("atlascloud", "ProviderIcon-atlascloud"),
-    ("augment", "ProviderIcon-augment"),
-    ("azureopenai", "ProviderIcon-codex"),
-    ("bedrock", "ProviderIcon-bedrock"),
-    ("bifrost", "ProviderIcon-bifrost"),
-    ("chutes", "ProviderIcon-chutes"),
     ("claude", "ProviderIcon-claude"),
-    ("claudeplatform", "ProviderIcon-claudeplatform"),
-    ("clawrouter", "ProviderIcon-clawrouter"),
-    ("clinepass", "ProviderIcon-clinepass"),
-    ("codebuff", "ProviderIcon-codebuff"),
-    ("coderabbit", "ProviderIcon-coderabbit"),
     ("codex", "ProviderIcon-codex"),
-    ("commandcode", "ProviderIcon-commandcode"),
-    ("copilot", "ProviderIcon-copilot"),
-    ("cosmic", "ProviderIcon-cosmic"),
-    ("cursor", "ProviderIcon-cursor"),
-    ("deepgram", "ProviderIcon-deepgram"),
-    ("deepinfra", "ProviderIcon-deepinfra"),
-    ("deepseek", "ProviderIcon-deepseek"),
-    ("devin", "ProviderIcon-devin"),
-    ("devpass", "ProviderIcon-devpass"),
-    ("doubao", "ProviderIcon-doubao"),
-    ("elevenlabs", "ProviderIcon-elevenlabs"),
-    ("exa", "ProviderIcon-exa"),
-    ("factory", "ProviderIcon-factory"),
-    ("fal", "ProviderIcon-fal"),
-    ("fireworks", "ProviderIcon-fireworks"),
-    ("flora", "ProviderIcon-flora"),
-    ("futureagi", "ProviderIcon-futureagi"),
-    ("gemini", "ProviderIcon-gemini"),
-    ("gitkraken", "ProviderIcon-gitkraken"),
-    ("grok", "ProviderIcon-grok"),
-    ("groq", "ProviderIcon-groq"),
-    ("helmcode", "ProviderIcon-helmcode"),
-    ("huggingface", "ProviderIcon-huggingface"),
-    ("hyper", "ProviderIcon-hyper"),
-    ("ibmbob", "ProviderIcon-ibmbob"),
-    ("jetbrains", "ProviderIcon-jetbrains"),
-    ("kilo", "ProviderIcon-kilo"),
-    ("kimi", "ProviderIcon-kimi"),
-    ("kiro", "ProviderIcon-kiro"),
-    ("langdock", "ProviderIcon-langdock"),
-    ("linkup", "ProviderIcon-linkup"),
-    ("litellm", "ProviderIcon-litellm"),
-    ("lithosai", "ProviderIcon-lithosai"),
-    ("llmman", "ProviderIcon-llmman"),
-    ("llmproxy", "ProviderIcon-llmproxy"),
-    ("longcat", "ProviderIcon-longcat"),
-    ("manus", "ProviderIcon-manus"),
-    ("mimo", "ProviderIcon-mimo"),
-    ("minimax", "ProviderIcon-minimax"),
-    ("mistral", "ProviderIcon-mistral"),
-    ("moonshot", "ProviderIcon-kimi"),
-    ("munito", "ProviderIcon-munito"),
-    ("muse", "ProviderIcon-muse"),
-    ("museai", "ProviderIcon-museai"),
-    ("neuralwatt", "ProviderIcon-neuralwatt"),
-    ("notion", "ProviderIcon-notion"),
-    ("nous", "ProviderIcon-nous"),
-    ("ollama", "ProviderIcon-ollama"),
-    ("openai", "ProviderIcon-codex"),
-    ("opencode", "ProviderIcon-opencode"),
-    ("opencodego", "ProviderIcon-opencodego"),
-    ("openrouter", "ProviderIcon-openrouter"),
-    ("parallel", "ProviderIcon-parallel"),
-    ("perplexity", "ProviderIcon-perplexity"),
-    ("pi", "ProviderIcon-pi"),
-    ("poe", "ProviderIcon-poe"),
-    ("qoder", "ProviderIcon-qoder"),
-    ("qwencloud", "ProviderIcon-qwencloud"),
-    ("raycast", "ProviderIcon-raycast"),
-    ("replicate", "ProviderIcon-replicate"),
-    ("sailresearch", "ProviderIcon-sailresearch"),
-    ("sakana", "ProviderIcon-sakana"),
-    ("sofya", "ProviderIcon-sofya"),
-    ("stepfun", "ProviderIcon-stepfun"),
-    ("sub2api", "ProviderIcon-sub2api"),
-    ("synthetic", "ProviderIcon-synthetic"),
-    ("t3chat", "ProviderIcon-t3chat"),
-    ("tavily", "ProviderIcon-tavily"),
-    ("tinyapi", "ProviderIcon-tinyapi"),
-    ("typesafe", "ProviderIcon-typesafe"),
-    ("v0", "ProviderIcon-v0"),
-    ("venice", "ProviderIcon-venice"),
-    ("vercel", "ProviderIcon-vercel"),
-    ("vertexai", "ProviderIcon-vertexai"),
-    ("warp", "ProviderIcon-warp"),
-    ("wayfinder", "ProviderIcon-wayfinder"),
-    ("windsurf", "ProviderIcon-windsurf"),
-    ("workbuddy", "ProviderIcon-workbuddy"),
-    ("xai", "ProviderIcon-xai"),
-    ("xapi", "ProviderIcon-xapi"),
-    ("xkiro", "ProviderIcon-xkiro"),
-    ("zai", "ProviderIcon-zai"),
-    ("zed", "ProviderIcon-zed"),
-    ("zenmux", "ProviderIcon-zenmux"),
-    ("zoommate", "ProviderIcon-zoommate"),
 ];
+
+pub const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Serves the built-in static web dashboard at `GET /`.
 #[must_use]
@@ -124,7 +23,13 @@ pub fn response() -> CliLocalHttpResponse {
         status_code: 200,
         reason_phrase: "OK".to_string(),
         content_type: "text/html; charset=utf-8".to_string(),
-        headers: BTreeMap::from([("Cache-Control".to_string(), "no-store".to_string())]),
+        headers: BTreeMap::from([
+            ("Cache-Control".to_string(), "no-store".to_string()),
+            (
+                "Content-Security-Policy".to_string(),
+                CONTENT_SECURITY_POLICY.to_string(),
+            ),
+        ]),
         body: html().into_bytes(),
         usage_cache_keys: None,
     }
@@ -157,14 +62,13 @@ pub fn icon_response(name: &str) -> Option<CliLocalHttpResponse> {
 
 #[must_use]
 pub fn provider_icon_urls_json() -> String {
-    let mut entries = Vec::with_capacity(PROVIDER_ICON_BY_PROVIDER_ID.len());
-    for (id, name) in PROVIDER_ICON_BY_PROVIDER_ID {
+    let mut entries = BTreeMap::new();
+    for &(id, name) in PROVIDER_ICON_BY_PROVIDER_ID {
         if provider_icons::svg_data(name).is_some() {
-            entries.push(format!("\"{id}\":\"/icons/{name}.svg\""));
+            entries.insert(id, format!("/icons/{name}.svg"));
         }
     }
-    entries.sort();
-    format!("{{{}}}", entries.join(","))
+    serde_json::to_string(&entries).unwrap_or_else(|_| "{}".to_string())
 }
 
 #[must_use]
@@ -179,7 +83,7 @@ pub const HTML_TEMPLATE: &str = r#####"<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <link rel="icon" href="data:,">
-  <title>CodexBar Dashboard</title>
+  <title>AriadUsage Dashboard</title>
   <style>
     :root {
       color-scheme: light dark;
@@ -754,7 +658,7 @@ pub const HTML_TEMPLATE: &str = r#####"<!doctype html>
     <header class="topbar">
       <div class="brand">
         <span class="mark" aria-hidden="true"></span>
-        <h1>CodexBar</h1>
+        <h1>AriadUsage</h1>
         <span id="version" class="version"></span>
       </div>
       <div class="meta" aria-live="polite">
@@ -775,7 +679,7 @@ pub const HTML_TEMPLATE: &str = r#####"<!doctype html>
 
     <section id="auth" class="notice" aria-labelledby="auth-title">
       <h2 id="auth-title">This server requires a dashboard token</h2>
-      <p>Enter the bearer token configured for this CodexBar server.</p>
+      <p>Enter the bearer token configured for this AriadUsage server.</p>
       <form id="token-form" class="auth-actions">
         <input id="token" type="password" name="token" autocomplete="current-password"
           aria-label="Dashboard token" required>
@@ -795,9 +699,9 @@ pub const HTML_TEMPLATE: &str = r#####"<!doctype html>
   <script>
     "use strict";
 
-    const tokenKey = "codexbar.dashboardToken";
-    const snapshotKey = "codexbar.lastSnapshot";
-    const usageDisplayKey = "codexbar.dashboard.usageDisplay";
+    const tokenKey = "ariadusage.dashboardToken";
+    const snapshotKey = "ariadusage.lastSnapshot";
+    const usageDisplayKey = "ariadusage.dashboard.usageDisplay";
     const providerIconURLs = __PROVIDER_ICON_URLS__;
     const state = {
       snapshot: null,
@@ -1239,7 +1143,7 @@ pub const HTML_TEMPLATE: &str = r#####"<!doctype html>
       const host = snapshot.host || {};
       const interval = finiteNumber(host.refreshIntervalSeconds, 15);
       state.refreshSeconds = Math.max(interval, 15);
-      elements.version.textContent = host.codexBarVersion ? `v${host.codexBarVersion}` : "";
+      elements.version.textContent = host.ariadusageVersion ? `v${host.ariadusageVersion}` : "";
       elements.auth.classList.remove("visible");
       elements.error.classList.remove("visible");
       elements.signOut.classList.toggle("visible", Boolean(storedToken()));

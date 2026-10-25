@@ -90,6 +90,12 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
         "OPENAI_API_KEY",
         "CODEX_HOME",
         "GEMINI_CLI_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "ARIADUSAGE_DASHBOARD_TOKEN",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
     ] {
         if let Ok(val) = std::env::var(key) {
             base_env.insert(key.to_owned(), SecretString::new(val));

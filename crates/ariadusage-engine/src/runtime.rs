@@ -784,6 +784,34 @@ impl EngineRuntime {
         &self.coordinator
     }
 
+    /// Returns a reference to the shared [`SecretStore`].
+    pub fn secret_store(&self) -> &Arc<SecretStore> {
+        &self.secret_store
+    }
+
+    /// Returns a reference to the shared [`NetBroker`].
+    pub fn net_broker(&self) -> &Arc<NetBroker> {
+        &self.net
+    }
+
+    /// Returns a clone of the configured [`ProviderStatusFetcher`].
+    pub fn status_fetcher(&self) -> ProviderStatusFetcher {
+        self.status_fetcher
+            .read()
+            .expect("status_fetcher lock")
+            .clone()
+    }
+
+    /// Returns a clone of the configured [`ProviderRegistry`].
+    pub fn registry_snapshot(&self) -> ProviderRegistry {
+        self.registry.read().expect("registry lock").clone()
+    }
+
+    /// Returns a clone of the allowlisted base environment map.
+    pub fn base_environment(&self) -> BTreeMap<String, SecretString> {
+        self.base_environment.read().expect("base_env lock").clone()
+    }
+
     fn now(&self) -> Timestamp {
         (self.clock)()
     }

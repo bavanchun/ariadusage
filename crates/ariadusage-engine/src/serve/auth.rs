@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ariadusage_protocol::secret::SecretString;
 use sha2::{Digest, Sha256};
 
 use super::http_server::{CliLocalHttpAllowedHosts, CliLocalHttpResponse};
@@ -18,8 +19,11 @@ pub struct CliServeDashboardAuth {
 
 impl CliServeDashboardAuth {
     #[must_use]
-    pub fn new(token: Option<&str>) -> Self {
-        let normalized = token.map(str::trim).filter(|s| !s.is_empty());
+    pub fn new(token: Option<&SecretString>) -> Self {
+        let normalized = token
+            .map(SecretString::expose_secret)
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
         let expected_token_digest = normalized.map(|value| Sha256::digest(value.as_bytes()).into());
         Self {
             expected_token_digest,
@@ -76,7 +80,8 @@ impl CliServeDashboardAuth {
 pub enum CliServeStartupError {
     #[error(
         "Refusing to bind serve to non-loopback host '{host}' without a dashboard token. \
-         Set ARIADUSAGE_DASHBOARD_TOKEN (recommended) or pass --dashboard-token <token>, \
+         Set serve.dashboardToken with `ariadusage secret set --id serve.dashboardToken` \
+         or set ARIADUSAGE_DASHBOARD_TOKEN, \
          and pass --allow-plain-http to acknowledge cleartext HTTP transport, \
          or use --host 127.0.0.1."
     )]

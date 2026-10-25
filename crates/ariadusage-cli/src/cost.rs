@@ -3614,3 +3614,116 @@ fn compare_cost_token_name(
     }
     l_name.cmp(r_name)
 }
+
+pub fn load_serve_cost_payload(
+    provider_raw: &str,
+    env: BTreeMap<String, String>,
+    config_path: Option<PathBuf>,
+) -> ariadusage_engine::serve::dashboard::CostPayload {
+    let Some(provider) = CostProvider::from_raw(provider_raw) else {
+        return ariadusage_engine::serve::serve_cost_error_payload(
+            provider_raw,
+            &format!("cost is not supported for {provider_raw}"),
+        );
+    };
+    let now = Timestamp::now();
+    let timezone = TimeZone::system();
+    let period = CostReportingPeriod::Rolling { days: 30 };
+    let history_days = period.days(now, &timezone, None);
+    let env_overrides = CostRunEnvironment {
+        env: Some(env),
+        config_path,
+        now: Some(now),
+        timezone: Some(timezone.clone()),
+        ..CostRunEnvironment::default()
+    };
+    let snap = load_local_provider_snapshot(
+        provider,
+        period,
+        history_days,
+        now,
+        &timezone,
+        false,
+        &env_overrides,
+    );
+    let cp = make_cost_payload(
+        provider,
+        snap.as_ref().ok(),
+        snap.as_ref().err().map(String::as_str),
+        &timezone,
+    );
+    convert_serve_cost_payload(cp)
+}
+
+fn convert_serve_cost_payload(cp: CostPayload) -> ariadusage_engine::serve::dashboard::CostPayload {
+    use ariadusage_engine::serve::dashboard as srv;
+
+    let map_daily = |d: CostDailyEntryPayload| srv::CostDailyEntryPayload {
+        date: d.date,
+        input_tokens: d.input_tokens,
+        output_tokens: d.output_tokens,
+        cache_read_tokens: d.cache_read_tokens,
+        cache_creation_tokens: d.cache_creation_tokens,
+        total_tokens: d.total_tokens,
+        cost_usd: d.cost_usd,
+        incomplete_request_count: d.incomplete_request_count,
+        models_used: d.models_used,
+        model_breakdowns: d.model_breakdowns.map(|bds| {
+            bds.into_iter()
+                .map(|b| srv::CostModelBreakdownPayload {
+                    model_name: b.model_name,
+                    cost_usd: b.cost_usd,
+                    total_tokens: b.total_tokens,
+                })
+                .collect()
+        }),
+    };
+
+    srv::CostPayload {
+        provider: cp.provider,
+        source: cp.source,
+        updated_at: cp.updated_at,
+        session_tokens: cp.session_tokens,
+        session_cost_usd: cp.session_cost_usd,
+        history_days: cp.history_days.and_then(|d| i32::try_from(d).ok()),
+        history_label: cp.history_label,
+        cost_provenance: cp.provenance,
+        last_30_days_tokens: cp.last_30_days_tokens,
+        last_30_days_cost_usd: cp.last_30_days_cost_usd,
+        incomplete_request_count: cp.incomplete_request_count,
+        daily: cp.daily.into_iter().map(map_daily).collect(),
+        projects: (!cp.projects.is_empty()).then(|| {
+            cp.projects
+                .into_iter()
+                .map(|p| srv::CostProjectPayload {
+                    name: p.name,
+                    path: p.path.unwrap_or_default(),
+                    total_tokens: p.total_tokens,
+                    total_cost_usd: p.total_cost_usd,
+                    daily: p.daily.into_iter().map(map_daily).collect(),
+                    model_breakdowns: p.model_breakdowns.map(|bds| {
+                        bds.into_iter()
+                            .map(|b| srv::CostModelBreakdownPayload {
+                                model_name: b.model_name,
+                                cost_usd: b.cost_usd,
+                                total_tokens: b.total_tokens,
+                            })
+                            .collect()
+                    }),
+                })
+                .collect()
+        }),
+        totals: cp.totals.map(|t| srv::CostTotalsPayload {
+            input_tokens: t.total_input_tokens,
+            output_tokens: t.total_output_tokens,
+            cache_read_tokens: t.cache_read_tokens,
+            cache_creation_tokens: t.cache_creation_tokens,
+            total_tokens: t.total_tokens,
+            total_cost_usd: t.total_cost_usd,
+            incomplete_request_count: t.incomplete_request_count,
+        }),
+        error: cp
+            .error
+            .map(|e| srv::ProviderErrorPayload::new(e.code, e.message, e.kind.as_deref())),
+    }
+}

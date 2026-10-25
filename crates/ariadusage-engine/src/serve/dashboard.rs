@@ -17,7 +17,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use ariadusage_core::config::{Config, CookieSource, ProviderEntry, TokenAccountMeta};
+use ariadusage_core::config::{Config, ProviderEntry, TokenAccountMeta};
 use ariadusage_core::model::{ProviderCostSnapshot, RateWindow, UsageSnapshot};
 use ariadusage_core::pace::{
     DEFAULT_SESSION_WINDOW_MINUTES, DEFAULT_WEEKLY_WINDOW_MINUTES, UsagePace,
@@ -113,7 +113,8 @@ pub struct DashboardSnapshotPayload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DashboardHostPayload {
-    pub codex_bar_version: Option<String>,
+    #[serde(alias = "codexBarVersion")]
+    pub ariadusage_version: Option<String>,
     pub refresh_interval_seconds: i64,
     pub usage_bars_show_used: bool,
 }
@@ -900,7 +901,7 @@ impl DashboardSnapshotBuilder {
         identity_mode: DashboardIdentityMode,
         generated_at: Timestamp,
         refresh_interval: f64,
-        codex_bar_version: Option<String>,
+        ariadusage_version: Option<String>,
         account_collections: &BTreeMap<String, DashboardAccountsInput>,
         usage_bars_show_used: bool,
         all_accounts: bool,
@@ -957,7 +958,7 @@ impl DashboardSnapshotBuilder {
             generated_at,
             stale_after_seconds: (refresh_seconds.saturating_mul(3)).max(180),
             host: DashboardHostPayload {
-                codex_bar_version,
+                ariadusage_version,
                 refresh_interval_seconds: refresh_seconds,
                 usage_bars_show_used,
             },
@@ -971,7 +972,7 @@ impl DashboardSnapshotBuilder {
         requested_providers: Option<&[String]>,
         generated_at: Timestamp,
         refresh_interval: f64,
-        codex_bar_version: Option<String>,
+        ariadusage_version: Option<String>,
         usage_bars_show_used: bool,
     ) -> DashboardSnapshotPayload {
         let enabled_list: Vec<String> = match requested_providers {
@@ -1010,7 +1011,7 @@ impl DashboardSnapshotBuilder {
             generated_at,
             stale_after_seconds: (refresh_seconds.saturating_mul(3)).max(180),
             host: DashboardHostPayload {
-                codex_bar_version,
+                ariadusage_version,
                 refresh_interval_seconds: refresh_seconds,
                 usage_bars_show_used,
             },
@@ -1174,7 +1175,7 @@ impl DashboardSnapshotBuilder {
         }
         let supports_tokens = providers::find_by_id_str(provider)
             .is_some_and(|d| d.token_account_support)
-            || matches!(provider, "claude" | "antigravity" | "openai" | "cursor");
+            || matches!(provider, "claude" | "antigravity");
         if !supports_tokens {
             return false;
         }
@@ -1401,12 +1402,6 @@ impl DashboardSnapshotBuilder {
             "codex" => "Codex".to_string(),
             "claude" => "Claude".to_string(),
             "antigravity" => "Antigravity".to_string(),
-            "cursor" => "Cursor".to_string(),
-            "gemini" => "Gemini".to_string(),
-            "copilot" => "Copilot".to_string(),
-            "openrouter" => "OpenRouter".to_string(),
-            "amp" => "Amp".to_string(),
-            "kilo" => "Kilo".to_string(),
             other => other.to_string(),
         }
     }
@@ -1580,13 +1575,6 @@ impl DashboardSnapshotBuilder {
         if provider_id == "codex" {
             return Some(Self::codex_plan_display_name(trimmed));
         }
-        if provider_id == "kilo" {
-            let first_segment = trimmed
-                .split('·')
-                .map(str::trim)
-                .find(|s| !s.is_empty() && !s.to_ascii_lowercase().starts_with("auto top-up:"));
-            return first_segment.map(Self::clean_plan_name);
-        }
         Some(Self::clean_plan_name(trimmed))
     }
 
@@ -1631,21 +1619,19 @@ impl DashboardSnapshotBuilder {
             return windows;
         }
         let (primary_label, secondary_label, tertiary_label) =
-            Self::rate_window_labels(provider_id, usage);
+            Self::rate_window_labels(provider_id);
         let mut windows = Vec::new();
-        let is_amp_subscription = provider_id == "amp" && usage.secondary.is_some();
 
         if let Some(primary) = &usage.primary {
-            let kind = if is_amp_subscription {
-                "other"
-            } else {
-                "session"
-            };
-            windows.push(Self::make_window(kind, &primary_label, primary, false));
+            windows.push(Self::make_window("session", &primary_label, primary, false));
         }
         if let Some(secondary) = &usage.secondary {
-            let kind = if is_amp_subscription { "orb" } else { "weekly" };
-            windows.push(Self::make_window(kind, &secondary_label, secondary, false));
+            windows.push(Self::make_window(
+                "weekly",
+                &secondary_label,
+                secondary,
+                false,
+            ));
         }
         if let Some(tertiary) = &usage.tertiary {
             windows.push(Self::make_window(
@@ -1723,14 +1709,7 @@ impl DashboardSnapshotBuilder {
         idle
     }
 
-    fn rate_window_labels(provider_id: &str, usage: &UsageSnapshot) -> (String, String, String) {
-        if provider_id == "amp" && usage.secondary.is_some() {
-            return (
-                "Other usage".to_string(),
-                "Orb usage".to_string(),
-                "Tertiary".to_string(),
-            );
-        }
+    fn rate_window_labels(provider_id: &str) -> (String, String, String) {
         if let Some(desc) = providers::find_by_id_str(provider_id) {
             return (
                 desc.session_label.to_string(),
@@ -2418,7 +2397,7 @@ impl DashboardSnapshotProducer {
         &self,
         config: &Config,
         refresh_interval: f64,
-        codex_bar_version: Option<String>,
+        ariadusage_version: Option<String>,
         identity_mode: Option<DashboardIdentityMode>,
         requested_providers: Option<&[String]>,
     ) -> Result<DashboardSnapshotResult, String> {
@@ -2455,7 +2434,7 @@ impl DashboardSnapshotProducer {
             resolved_mode,
             generated_at,
             refresh_interval,
-            codex_bar_version,
+            ariadusage_version,
             &account_collections,
             (self.usage_bars_show_used)(),
             self.all_accounts,
@@ -2552,9 +2531,19 @@ where
         if index > 0
             && let Some(delay) = minimum_delay
         {
-            tokio::time::sleep(delay).await;
-            if publish_partial.is_some_and(CliServeOperationProgressSink::is_cancelled) {
-                return fallback;
+            if let Some(sink) = publish_partial {
+                let token = sink.cancel_token();
+                tokio::select! {
+                    () = tokio::time::sleep(delay) => {}
+                    () = token.cancelled() => {
+                        return fallback;
+                    }
+                }
+                if sink.is_cancelled() {
+                    return fallback;
+                }
+            } else {
+                tokio::time::sleep(delay).await;
             }
         }
         let mut result = fetch(index).await;
@@ -2567,78 +2556,19 @@ where
 /// Mirrors `CodexBarCLI.collectConfiguredCostPayloads` (`CLICostCommand.swift`).
 pub async fn collect_configured_cost_payloads<F>(
     providers: &[String],
-    config: &Config,
+    _config: &Config,
     context: &super::ServeCostCollectionContext,
     fetch: F,
 ) -> Vec<CostPayload>
 where
-    F: Fn(String, Option<String>) -> Pin<Box<dyn Future<Output = CostPayload> + Send>>
-        + Send
-        + Sync
-        + 'static,
+    F: Fn(String) -> Pin<Box<dyn Future<Output = CostPayload> + Send>> + Send + Sync + 'static,
 {
     let fetch = Arc::new(fetch);
-    let cfg = config.clone();
-    super::serve_collect_cost_payloads(providers, context, move |prov| {
+    super::serve_collect_cost_payloads(providers, context, move |prov, _sink| {
         let fetch = Arc::clone(&fetch);
-        let cfg = cfg.clone();
-        async move {
-            if prov == "cursor" {
-                let cookie_source =
-                    DashboardSnapshotBuilder::provider_cookie_source(&cfg, "cursor");
-                if cookie_source == Some(CookieSource::Off) {
-                    let mut item = CostPayload::new("cursor", "local");
-                    item.error = Some(ProviderErrorPayload::provider(
-                        "Cursor cookie source is set to Off.",
-                    ));
-                    return item;
-                }
-                let manual_cookie = if cookie_source == Some(CookieSource::Manual) {
-                    DashboardSnapshotBuilder::provider_cookie_header(&cfg, "cursor")
-                } else {
-                    None
-                };
-                return fetch(prov, manual_cookie).await;
-            }
-            fetch(prov, None).await
-        }
+        async move { fetch(prov).await }
     })
     .await
-}
-
-impl DashboardSnapshotBuilder {
-    fn provider_cookie_source(config: &Config, provider_id: &str) -> Option<CookieSource> {
-        match config.provider_entry(provider_id)? {
-            ProviderEntry::Typed(pc) => pc.cookie_source,
-            ProviderEntry::Opaque { raw, .. } => {
-                let val: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
-                match val.get("cookieSource")?.as_str()? {
-                    "off" => Some(CookieSource::Off),
-                    "manual" => Some(CookieSource::Manual),
-                    "auto" => Some(CookieSource::Auto),
-                    _ => None,
-                }
-            }
-        }
-    }
-
-    fn provider_cookie_header(config: &Config, provider_id: &str) -> Option<String> {
-        match config.provider_entry(provider_id)? {
-            ProviderEntry::Typed(pc) => pc
-                .extra
-                .get("cookieHeader")
-                .and_then(|r| serde_json::from_str::<String>(r.get()).ok())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()),
-            ProviderEntry::Opaque { raw, .. } => {
-                let val: serde_json::Value = serde_json::from_str(raw.get()).ok()?;
-                val.get("cookieHeader")?
-                    .as_str()
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            }
-        }
-    }
 }
 
 /// Visible Codex account projection used for stable cache account keys (`CodexVisibleAccount`).
@@ -2744,23 +2674,69 @@ pub fn write_dashboard_snapshot_atomically(bytes: &[u8], output_path: &Path) -> 
         .and_then(|s| s.to_str())
         .unwrap_or("snapshot.json");
     let staged = parent.join(format!(
-        ".{file_name}.codexbar-dashboard-{}",
+        ".{file_name}.ariadusage-dashboard-{}",
         uuid::Uuid::new_v4().hyphenated()
     ));
-    std::fs::write(&staged, bytes)
-        .map_err(|err| format!("Could not write --output file {}: {err}", staged.display()))?;
+
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(err) = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644))
-        {
+        use std::io::Write;
+        let fd = rustix::fs::open(
+            &staged,
+            rustix::fs::OFlags::RDWR
+                | rustix::fs::OFlags::CREATE
+                | rustix::fs::OFlags::EXCL
+                | rustix::fs::OFlags::NOFOLLOW
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::from_bits_retain(0o644),
+        )
+        .map_err(|err| {
+            format!(
+                "Could not write --output file {}: {}",
+                staged.display(),
+                std::io::Error::from(err)
+            )
+        })?;
+        if let Err(err) = rustix::fs::fchmod(&fd, rustix::fs::Mode::from_bits_retain(0o644)) {
+            drop(fd);
+            let _ = std::fs::remove_file(&staged);
+            return Err(format!(
+                "Could not write --output file {}: {}",
+                staged.display(),
+                std::io::Error::from(err)
+            ));
+        }
+        let mut file = std::fs::File::from(fd);
+        if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            drop(file);
             let _ = std::fs::remove_file(&staged);
             return Err(format!(
                 "Could not write --output file {}: {err}",
                 staged.display()
             ));
         }
+        drop(file);
     }
+
+    #[cfg(not(unix))]
+    {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged)
+            .map_err(|err| format!("Could not write --output file {}: {err}", staged.display()))?;
+        if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+            drop(file);
+            let _ = std::fs::remove_file(&staged);
+            return Err(format!(
+                "Could not write --output file {}: {err}",
+                staged.display()
+            ));
+        }
+        drop(file);
+    }
+
     if let Err(err) = std::fs::rename(&staged, output_path) {
         let _ = std::fs::remove_file(&staged);
         return Err(format!(
@@ -2768,6 +2744,12 @@ pub fn write_dashboard_snapshot_atomically(bytes: &[u8], output_path: &Path) -> 
             output_path.display()
         ));
     }
+
+    #[cfg(unix)]
+    if let Ok(parent_dir) = std::fs::File::open(parent) {
+        let _ = parent_dir.sync_all();
+    }
+
     Ok(())
 }
 

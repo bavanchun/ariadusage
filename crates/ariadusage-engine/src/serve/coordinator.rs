@@ -7,11 +7,11 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::{AbortHandle, JoinHandle};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub type BoxOperationFuture<Value> = Pin<Box<dyn Future<Output = Value> + Send>>;
@@ -42,23 +42,23 @@ pub struct CoordinatorSnapshot {
 }
 
 /// Progress sink passed to an in-flight operation so it can publish partial snapshots
-/// that timed-out waiters may return.
+/// that timed-out waiters may return, and observe cooperative cancellation.
 #[derive(Clone)]
 pub struct CliServeOperationProgressSink<Value: Clone + Send + Sync + 'static> {
     publish: PublishProgressFn<Value>,
-    cancelled: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
 }
 
 impl<Value: Clone + Send + Sync + 'static> CliServeOperationProgressSink<Value> {
     #[must_use]
-    pub fn new<F, Fut>(publish: F, cancelled: Arc<AtomicBool>) -> Self
+    pub fn new<F, Fut>(publish: F, cancel_token: CancellationToken) -> Self
     where
         F: Fn(Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         Self {
             publish: Arc::new(move |val| Box::pin(publish(val))),
-            cancelled,
+            cancel_token,
         }
     }
 
@@ -72,7 +72,12 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationProgressSink<Value> 
 
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.cancel_token.is_cancelled()
+    }
+
+    #[must_use]
+    pub fn cancel_token(&self) -> CancellationToken {
+        self.cancel_token.clone()
     }
 }
 
@@ -95,7 +100,7 @@ struct Operation<Value: Clone + Send + Sync + 'static> {
     deadline: Option<Instant>,
     make_value: OperationWithProgressFn<Value>,
     accept_value: AcceptTransformFn<Value>,
-    cancelled: Arc<AtomicBool>,
+    cancel_token: CancellationToken,
     deadline_abort: Option<AbortHandle>,
     waiters: Vec<Waiter<Value>>,
     phase: OperationPhase,
@@ -387,13 +392,13 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
     ) {
         guard.next_generation = guard.next_generation.wrapping_add(1);
         let generation = guard.next_generation;
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_token = CancellationToken::new();
         let deadline_abort = self.make_deadline_task(key.to_string(), generation, deadline);
         self.spawn_source_task(
             key.to_string(),
             generation,
             Arc::clone(&make_value),
-            Arc::clone(&cancelled),
+            cancel_token.clone(),
         );
         let op = Operation {
             generation,
@@ -401,7 +406,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
             deadline,
             make_value,
             accept_value,
-            cancelled,
+            cancel_token,
             deadline_abort,
             waiters: vec![waiter],
             phase: OperationPhase::Running,
@@ -441,7 +446,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
         }
         guard.next_generation = guard.next_generation.wrapping_add(1);
         let generation = guard.next_generation;
-        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_token = CancellationToken::new();
         let deadline_abort = self.make_deadline_task(key.to_string(), generation, deadline);
         let op = Operation {
             generation,
@@ -449,7 +454,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
             deadline,
             make_value,
             accept_value,
-            cancelled,
+            cancel_token,
             deadline_abort,
             waiters: vec![waiter],
             phase: OperationPhase::Running,
@@ -537,7 +542,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
         key: String,
         generation: u64,
         make_value: OperationWithProgressFn<Value>,
-        cancelled: Arc<AtomicBool>,
+        cancel_token: CancellationToken,
     ) {
         let coord = self.clone();
         let key_for_partial = key.clone();
@@ -549,7 +554,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
                     coord.publish_partial(&k, generation, partial).await;
                 }
             },
-            cancelled,
+            cancel_token,
         );
         let coord_for_task = self.clone();
         let _: JoinHandle<()> = tokio::spawn(async move {
@@ -627,6 +632,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
                 let _ = tx.send(waiter.timeout_value);
             }
             if pending.waiters.is_empty() {
+                pending.cancel_token.cancel();
                 if let Some(abort) = pending.deadline_abort.take() {
                     abort.abort();
                 }
@@ -688,7 +694,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
             return;
         }
         op.phase = OperationPhase::TimedOut;
-        op.cancelled.store(true, Ordering::SeqCst);
+        op.cancel_token.cancel();
         if let Some(abort) = op.deadline_abort.take() {
             abort.abort();
         }
@@ -722,7 +728,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
             && let Some(op) = slot.active.as_mut()
         {
             op.phase = OperationPhase::TimedOut;
-            op.cancelled.store(true, Ordering::SeqCst);
+            op.cancel_token.cancel();
             let waiters = std::mem::take(&mut op.waiters);
             let partial = op.partial_value.clone();
             for mut waiter in waiters {
@@ -744,6 +750,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
             return;
         }
         let mut op = slot.pending.take().expect("pending exists");
+        op.cancel_token.cancel();
         if let Some(abort) = op.deadline_abort.take() {
             abort.abort();
         }
@@ -862,7 +869,7 @@ impl<Value: Clone + Send + Sync + 'static> CliServeOperationCoordinator<Value> {
                 key.to_string(),
                 pending.generation,
                 Arc::clone(&pending.make_value),
-                Arc::clone(&pending.cancelled),
+                pending.cancel_token.clone(),
             );
             slot.active = Some(pending);
         }

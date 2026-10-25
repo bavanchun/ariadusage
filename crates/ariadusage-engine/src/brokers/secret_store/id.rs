@@ -9,6 +9,7 @@ pub enum SecretKind {
     ApiKey,
     CookieHeader,
     AccountToken,
+    DashboardToken,
 }
 
 impl SecretKind {
@@ -17,6 +18,7 @@ impl SecretKind {
             Self::ApiKey => "apiKey",
             Self::CookieHeader => "cookieHeader",
             Self::AccountToken => "token",
+            Self::DashboardToken => "dashboardToken",
         }
     }
 
@@ -25,6 +27,7 @@ impl SecretKind {
             Self::ApiKey => "API key",
             Self::CookieHeader => "cookie header",
             Self::AccountToken => "account token",
+            Self::DashboardToken => "dashboard token",
         }
     }
 }
@@ -45,9 +48,23 @@ pub struct SecretId {
 }
 
 impl SecretId {
-    /// Accepts only known providers and the three supported secret-setting shapes.
+    /// Builds the [`SecretId`] for the `ariadusage serve` dashboard bearer token (`serve.dashboardToken`).
+    #[must_use]
+    pub fn serve_dashboard_token() -> Self {
+        Self {
+            setting_id: SettingId::new("serve.dashboardToken").expect("valid setting id"),
+            provider: ProviderId::new("serve").expect("valid provider id"),
+            kind: SecretKind::DashboardToken,
+            account_id: None,
+        }
+    }
+
+    /// Accepts only known providers and the supported secret-setting shapes (`providers.<id>.*` and `serve.dashboardToken`).
     pub fn from_setting_id(setting_id: &SettingId) -> Result<Self, SecretIdError> {
         let parts: Vec<_> = setting_id.as_str().split('.').collect();
+        if parts.as_slice() == ["serve", "dashboardToken"] {
+            return Ok(Self::serve_dashboard_token());
+        }
         let (provider, kind, account_id) = match parts.as_slice() {
             ["providers", provider, "apiKey"] => (provider, SecretKind::ApiKey, None),
             ["providers", provider, "cookieHeader"] => (provider, SecretKind::CookieHeader, None),
@@ -139,6 +156,9 @@ impl SecretId {
 
     /// A stable display label that never includes an account label or secret value.
     pub fn label(&self) -> String {
+        if self.kind == SecretKind::DashboardToken {
+            return "AriadUsage Serve dashboard token".to_owned();
+        }
         let name = ariadusage_core::providers::find_by_id(&self.provider)
             .map(|descriptor| descriptor.display_name)
             .unwrap_or("Provider");
