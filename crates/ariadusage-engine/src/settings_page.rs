@@ -80,7 +80,7 @@ impl Default for AppPreferences {
             menu_bar_show_used: false,
             menu_bar_merge_icons: false,
             menu_bar_color_by_provider: false,
-            adaptive_activity_scan_consent: "allowed".to_string(),
+            adaptive_activity_scan_consent: "undecided".to_string(),
             background_work_low_power_mode_preference: "automatic".to_string(),
         }
     }
@@ -88,7 +88,7 @@ impl Default for AppPreferences {
 
 impl AppPreferences {
     /// Returns whether local coding-activity scanning is enabled (`SettingsStore.adaptiveActivityScanningEnabled`,
-    /// `SettingsStore+Defaults.swift:825-828`).
+    /// `SettingsStore+Defaults.swift:68-70`).
     pub fn adaptive_activity_scanning_enabled(&self) -> bool {
         self.refresh_frequency.uses_coding_activity()
             && self.adaptive_activity_scan_consent == "allowed"
@@ -351,6 +351,19 @@ fn build_app_settings_page(registry: &ProviderRegistry, config: &Config) -> Sett
             },
         )
         .with_help("Background usage polling frequency."),
+        SettingDescriptor::new(
+            SettingId::new("app.refresh.adaptiveActivityScanConsent").expect("valid setting id"),
+            "Adaptive Activity Scan Consent",
+            DescriptorKind::Choice {
+                selected: prefs.adaptive_activity_scan_consent,
+                options: vec![
+                    ChoiceOption::new("undecided", "Ask"),
+                    ChoiceOption::new("allowed", "Allowed"),
+                    ChoiceOption::new("declined", "Declined"),
+                ],
+            },
+        )
+        .with_help("Consent to scan local coding-agent session activity for adaptive refresh."),
         SettingDescriptor::new(
             SettingId::new("refreshInterval").expect("valid setting id"),
             "Refresh Interval",
@@ -752,6 +765,15 @@ pub fn apply_setting_mutation(
                 "refreshFrequency",
                 Value::String(freq.as_str().to_string()),
             );
+            if freq.uses_coding_activity()
+                && AppPreferences::from_config(config).adaptive_activity_scan_consent == "declined"
+            {
+                update_settings_json_field(
+                    config,
+                    "adaptiveActivityScanConsent",
+                    Value::String("undecided".to_string()),
+                );
+            }
             if let Some(interval) = freq.duration() {
                 update_settings_json_field(
                     config,

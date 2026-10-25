@@ -706,8 +706,14 @@ pub fn build_default_runtime_with_env(
             ipc_notifier
         }
     };
+    let env_home_os = base_env
+        .get("HOME")
+        .map(|s| std::ffi::OsString::from(s.expose_secret()));
+    let resolved_home =
+        crate::paths::resolve_cli_home_dir(env_home_os.as_deref(), etcetera::home_dir().ok());
     let mut runtime = runtime
         .with_base_environment(base_env)
+        .with_home_dir(resolved_home)
         .with_notifier(notifier)
         .with_hook_runner(Arc::new(HookRunner::new_process_broker()));
     if let Ok(state_dir) = crate::paths::state_dir() {

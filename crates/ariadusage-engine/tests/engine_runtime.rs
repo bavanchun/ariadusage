@@ -2477,7 +2477,8 @@ async fn host_power_thermal_and_coding_activity_observers_feed_engine_runtime() 
     let t0 = Timestamp::now();
     let (runtime, _) = test_runtime(&tmp, ProviderRegistry::empty(), t0);
 
-    // 1. Configure adaptiveAgentAware cadence.
+    // 1. Configure adaptiveAgentAware cadence: default consent is "undecided", so local scanning
+    // stays off until "allowed" is set (`SettingsStore.swift:768-776`).
     runtime
         .set_setting(
             &SettingId::new("app.refresh.cadence").unwrap(),
@@ -2485,9 +2486,82 @@ async fn host_power_thermal_and_coding_activity_observers_feed_engine_runtime() 
         )
         .await
         .unwrap();
+    assert!(!runtime.should_scan_coding_activity_locally());
+    assert!(!runtime.refresh_coding_activity_once().await);
 
-    // 2. Inject a fake coding session + transcript and verify refresh_coding_activity_once feeds note_coding_activity_observed_at.
+    // Setting consent to "declined" and switching back to "adaptiveAgentAware" resets it to "undecided"
+    // (`SettingsStore+Defaults.swift:44-52`).
+    runtime
+        .set_setting(
+            &SettingId::new("app.refresh.adaptiveActivityScanConsent").unwrap(),
+            &json!("declined"),
+        )
+        .await
+        .unwrap();
+    runtime
+        .set_setting(
+            &SettingId::new("app.refresh.cadence").unwrap(),
+            &json!("adaptiveAgentAware"),
+        )
+        .await
+        .unwrap();
+    let app_page = runtime.get_settings(&SettingsScope::App).await.unwrap();
+    let consent_desc = app_page
+        .sections
+        .iter()
+        .flat_map(|s| &s.descriptors)
+        .find(|d| d.id.as_str() == "app.refresh.adaptiveActivityScanConsent")
+        .expect("app.refresh.adaptiveActivityScanConsent descriptor");
+    match &consent_desc.kind {
+        DescriptorKind::Choice { options, selected } => {
+            assert_eq!(options.len(), 3);
+            assert_eq!(selected, "undecided");
+        }
+        other => panic!("expected Choice descriptor, got {other:?}"),
+    }
+
+    runtime
+        .set_setting(
+            &SettingId::new("app.refresh.adaptiveActivityScanConsent").unwrap(),
+            &json!("allowed"),
+        )
+        .await
+        .unwrap();
+    assert!(runtime.should_scan_coding_activity_locally());
+
+    // 2. Drive `start_host_observers` with an injected home directory (`set_home_dir`) and a
+    // fixture Codex rollout file (`<home>/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`).
     let home = tmp.path().join("home");
+    let tz = jiff::tz::TimeZone::try_system().unwrap_or(jiff::tz::TimeZone::UTC);
+    let today = t0.to_zoned(tz).date();
+    let codex_day_dir = home
+        .join(".codex")
+        .join("sessions")
+        .join(format!("{:04}", today.year()))
+        .join(format!("{:02}", today.month()))
+        .join(format!("{:02}", today.day()));
+    std::fs::create_dir_all(&codex_day_dir).unwrap();
+    std::fs::write(
+        codex_day_dir.join("rollout-2026-10-25T05-00-00-fixture.jsonl"),
+        "{}\n",
+    )
+    .unwrap();
+    runtime.set_home_dir(Some(home.clone()));
+    runtime.start_host_observers();
+    for _ in 0..40 {
+        if runtime.last_coding_activity_at().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    runtime.stop_host_observers();
+    assert!(
+        runtime.last_coding_activity_at().is_some(),
+        "start_host_observers must observe activity from injected home rollout file"
+    );
+    runtime.clear_coding_activity_observation();
+
+    // 3. Inject a fake coding session + transcript and verify refresh_coding_activity_once feeds note_coding_activity_observed_at.
     let project_cwd = "/Users/alex/work/observer-smoke";
     let escaped =
         ariadusage_engine::ClaudeSessionProjectMapper::escaped_directory_name(project_cwd);
@@ -2522,24 +2596,38 @@ async fn host_power_thermal_and_coding_activity_observers_feed_engine_runtime() 
     assert!(runtime.refresh_coding_activity_once().await);
     assert!(runtime.last_coding_activity_at().is_some());
 
-    // 3. Verify IPC actions for power and thermal state feed set_low_power_mode / set_thermal_pressure
-    // and gate local coding-activity scanning (`should_scan_coding_activity_locally`).
+    // 4. Verify IPC actions for power and thermal state feed set_low_power_mode / set_thermal_pressure
+    // on macOS (and are ignored on Linux where the engine has its own probe).
     runtime
         .run_action(&ActionId::new("setLowPowerMode.on").unwrap(), None)
         .await
         .unwrap();
-    assert!(runtime.is_low_power_mode());
-    assert!(!runtime.should_scan_coding_activity_locally());
-    assert!(!runtime.refresh_coding_activity_once().await);
+    #[cfg(not(target_os = "linux"))]
+    {
+        assert!(runtime.is_low_power_mode());
+        assert!(!runtime.should_scan_coding_activity_locally());
+        assert!(!runtime.refresh_coding_activity_once().await);
 
-    runtime
-        .run_action(&ActionId::new("setLowPowerMode.off").unwrap(), None)
-        .await
-        .unwrap();
-    assert!(!runtime.is_low_power_mode());
-    assert!(runtime.should_scan_coding_activity_locally());
+        runtime
+            .run_action(&ActionId::new("setLowPowerMode.off").unwrap(), None)
+            .await
+            .unwrap();
+        assert!(!runtime.is_low_power_mode());
+        assert!(runtime.should_scan_coding_activity_locally());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(!runtime.is_low_power_mode());
+        runtime.set_low_power_mode(true, t0);
+        assert!(runtime.is_low_power_mode());
+        assert!(!runtime.should_scan_coding_activity_locally());
+        assert!(!runtime.refresh_coding_activity_once().await);
+        runtime.set_low_power_mode(false, t0);
+        assert!(!runtime.is_low_power_mode());
+        assert!(runtime.should_scan_coding_activity_locally());
+    }
 
-    // 4. Verify thermal sysfs probe feeds set_thermal_pressure on EngineRuntime.
+    // 5. Verify thermal sysfs probe feeds set_thermal_pressure on EngineRuntime.
     let sysfs_dir = tmp.path().join("sysfs-thermal");
     let zone0 = sysfs_dir.join("thermal_zone0");
     std::fs::create_dir_all(&zone0).unwrap();
@@ -2557,5 +2645,12 @@ async fn host_power_thermal_and_coding_activity_observers_feed_engine_runtime() 
         .run_action(&ActionId::new("setThermalPressure.nominal").unwrap(), None)
         .await
         .unwrap();
+    #[cfg(not(target_os = "linux"))]
     assert_eq!(runtime.thermal_pressure(), ThermalPressure::Nominal);
+    #[cfg(target_os = "linux")]
+    {
+        assert_eq!(runtime.thermal_pressure(), ThermalPressure::Constrained);
+        runtime.set_thermal_pressure(ThermalPressure::Nominal, t0);
+        assert_eq!(runtime.thermal_pressure(), ThermalPressure::Nominal);
+    }
 }

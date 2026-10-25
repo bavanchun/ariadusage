@@ -110,6 +110,28 @@ pub fn config_path() -> Result<PathBuf, PathError> {
     )
 }
 
+/// Resolves the user home directory for daemon/CLI runtime construction, failing closed (`None`)
+/// when neither `HOME` nor the OS home directory resolves so callers never fall back to the
+/// current working directory.
+pub fn resolve_cli_home_dir(
+    env_home: Option<&std::ffi::OsStr>,
+    fallback_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    env_home
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| fallback_home.filter(|p| !p.as_os_str().is_empty()))
+}
+
+/// Resolves the current user's home directory using [`resolve_cli_home_dir`] over `HOME` and
+/// `etcetera::home_dir()`.
+pub fn user_home_dir() -> Option<PathBuf> {
+    resolve_cli_home_dir(
+        std::env::var_os("HOME").as_deref(),
+        etcetera::home_dir().ok(),
+    )
+}
+
 /// Resolves the XDG state directory from an injected environment lookup and home path.
 ///
 /// Priority:

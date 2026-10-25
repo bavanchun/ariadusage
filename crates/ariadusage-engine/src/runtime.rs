@@ -395,6 +395,9 @@ pub struct EngineRuntime {
     hook_runner: Option<Arc<HookRunner>>,
     clock: Arc<dyn Fn() -> Timestamp + Send + Sync>,
     base_environment: RwLock<BTreeMap<String, SecretString>>,
+    home_dir: RwLock<Option<std::path::PathBuf>>,
+    process_registry: Arc<crate::brokers::process::ProcessRegistry>,
+    launch_gate: Arc<ariadusage_core::gates::LaunchGate>,
     hooks_config: RwLock<Option<HooksConfig>>,
     providers: Mutex<HashMap<ProviderId, ProviderRuntimeState>>,
     batch_state: Mutex<BatchRefreshState>,
@@ -557,6 +560,9 @@ impl EngineRuntime {
             hook_runner: None,
             clock,
             base_environment: RwLock::new(BTreeMap::new()),
+            home_dir: RwLock::new(None),
+            process_registry: Arc::new(crate::brokers::process::ProcessRegistry::new()),
+            launch_gate: Arc::new(ariadusage_core::gates::LaunchGate::default()),
             hooks_config: RwLock::new(None),
             providers: Mutex::new(provider_states),
             batch_state: Mutex::new(BatchRefreshState::default()),
@@ -701,6 +707,17 @@ impl EngineRuntime {
         }
         drop(states);
         self
+    }
+
+    /// Sets the resolved user home directory passed into [`crate::host_observers::LocalAgentSessionScanner`].
+    pub fn with_home_dir(self, home_dir: Option<std::path::PathBuf>) -> Self {
+        *self.home_dir.write().expect("home_dir lock") = home_dir;
+        self
+    }
+
+    /// Updates the resolved user home directory passed into [`crate::host_observers::LocalAgentSessionScanner`].
+    pub fn set_home_dir(&self, home_dir: Option<std::path::PathBuf>) {
+        *self.home_dir.write().expect("home_dir lock") = home_dir;
     }
 
     /// Seeds a cached [`UsageSnapshot`] and reset-backfill snapshot for `id` (mirrors upstream
@@ -2347,11 +2364,23 @@ impl EngineRuntime {
                 .clone()
                 .unwrap_or_else(|| {
                     let base_env = self.base_environment.read().expect("base_env lock").clone();
+                    let home_dir = self.home_dir.read().expect("home_dir lock").clone();
+                    let cancel = self
+                        .observer_cancel
+                        .lock()
+                        .expect("observer_cancel lock")
+                        .clone()
+                        .unwrap_or_default();
                     crate::host_observers::LocalAgentSessionScanner::new(
                         crate::host_observers::SessionScanConfig::default(),
                         crate::brokers::local_probe::LocalProbe::new(),
                         base_env,
-                        None,
+                        home_dir,
+                    )
+                    .with_process_context(
+                        Arc::clone(&self.process_registry),
+                        Arc::clone(&self.launch_gate),
+                        cancel,
                     )
                 });
             let now = self.now();
@@ -2852,38 +2881,101 @@ impl EngineRuntime {
                 Ok(None)
             }
             "setLowPowerMode.on" => {
-                let advanced = self.set_low_power_mode(true, self.now());
-                Ok(Some(serde_json::json!({
-                    "lowPowerMode": true,
-                    "advanced": advanced,
-                })))
+                #[cfg(target_os = "linux")]
+                {
+                    tracing::debug!(
+                        action = id.as_str(),
+                        "ignoring IPC power override on Linux; engine samples PowerProfiles directly"
+                    );
+                    Ok(Some(serde_json::json!({
+                        "lowPowerMode": self.is_low_power_mode(),
+                        "advanced": false,
+                    })))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let advanced = self.set_low_power_mode(true, self.now());
+                    Ok(Some(serde_json::json!({
+                        "lowPowerMode": true,
+                        "advanced": advanced,
+                    })))
+                }
             }
             "setLowPowerMode.off" => {
-                let advanced = self.set_low_power_mode(false, self.now());
-                if self.host_observers_active.load(Ordering::SeqCst) {
-                    let _ = self.refresh_coding_activity_once().await;
+                #[cfg(target_os = "linux")]
+                {
+                    tracing::debug!(
+                        action = id.as_str(),
+                        "ignoring IPC power override on Linux; engine samples PowerProfiles directly"
+                    );
+                    Ok(Some(serde_json::json!({
+                        "lowPowerMode": self.is_low_power_mode(),
+                        "advanced": false,
+                    })))
                 }
-                Ok(Some(serde_json::json!({
-                    "lowPowerMode": false,
-                    "advanced": advanced,
-                })))
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let advanced = self.set_low_power_mode(false, self.now());
+                    if self.host_observers_active.load(Ordering::SeqCst) {
+                        let _ = self.refresh_coding_activity_once().await;
+                    }
+                    Ok(Some(serde_json::json!({
+                        "lowPowerMode": false,
+                        "advanced": advanced,
+                    })))
+                }
             }
             "setThermalPressure.nominal" => {
-                let advanced = self.set_thermal_pressure(ThermalPressure::Nominal, self.now());
-                if self.host_observers_active.load(Ordering::SeqCst) {
-                    let _ = self.refresh_coding_activity_once().await;
+                #[cfg(target_os = "linux")]
+                {
+                    tracing::debug!(
+                        action = id.as_str(),
+                        "ignoring IPC thermal override on Linux; engine samples sysfs thermal_zone* directly"
+                    );
+                    Ok(Some(serde_json::json!({
+                        "thermalPressure": match self.thermal_pressure() {
+                            ThermalPressure::Nominal => "nominal",
+                            ThermalPressure::Constrained => "constrained",
+                        },
+                        "advanced": false,
+                    })))
                 }
-                Ok(Some(serde_json::json!({
-                    "thermalPressure": "nominal",
-                    "advanced": advanced,
-                })))
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let advanced = self.set_thermal_pressure(ThermalPressure::Nominal, self.now());
+                    if self.host_observers_active.load(Ordering::SeqCst) {
+                        let _ = self.refresh_coding_activity_once().await;
+                    }
+                    Ok(Some(serde_json::json!({
+                        "thermalPressure": "nominal",
+                        "advanced": advanced,
+                    })))
+                }
             }
             "setThermalPressure.constrained" => {
-                let advanced = self.set_thermal_pressure(ThermalPressure::Constrained, self.now());
-                Ok(Some(serde_json::json!({
-                    "thermalPressure": "constrained",
-                    "advanced": advanced,
-                })))
+                #[cfg(target_os = "linux")]
+                {
+                    tracing::debug!(
+                        action = id.as_str(),
+                        "ignoring IPC thermal override on Linux; engine samples sysfs thermal_zone* directly"
+                    );
+                    Ok(Some(serde_json::json!({
+                        "thermalPressure": match self.thermal_pressure() {
+                            ThermalPressure::Nominal => "nominal",
+                            ThermalPressure::Constrained => "constrained",
+                        },
+                        "advanced": false,
+                    })))
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let advanced =
+                        self.set_thermal_pressure(ThermalPressure::Constrained, self.now());
+                    Ok(Some(serde_json::json!({
+                        "thermalPressure": "constrained",
+                        "advanced": advanced,
+                    })))
+                }
             }
             "scanCodingActivity" => {
                 let scanned = self.refresh_coding_activity_once().await;

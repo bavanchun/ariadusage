@@ -92,16 +92,6 @@ define_class!(
         fn flash_timer_fired(&self, _timer: &NSTimer) {
             on_flash_timer_tick();
         }
-
-        #[unsafe(method(powerStateDidChange:))]
-        fn power_state_did_change(&self, _notification: &NSObject) {
-            on_power_or_thermal_state_changed();
-        }
-
-        #[unsafe(method(thermalStateDidChange:))]
-        fn thermal_state_did_change(&self, _notification: &NSObject) {
-            on_power_or_thermal_state_changed();
-        }
     }
 );
 
@@ -130,6 +120,28 @@ pub const fn thermal_pressure_action_id(raw_state: isize) -> &'static str {
         0 | 1 => "setThermalPressure.nominal",
         _ => "setThermalPressure.constrained",
     }
+}
+
+/// Computes which IPC actions (`setLowPowerMode.on`/`off`, `setThermalPressure.nominal`/`constrained`)
+/// need to be forwarded when the sampled macOS power or thermal state changes, updating the cached
+/// last-forwarded state in place.
+pub fn power_and_thermal_actions_to_forward(
+    last_low_power: &mut Option<bool>,
+    last_thermal_action: &mut Option<&'static str>,
+    low_power: bool,
+    raw_thermal_state: isize,
+) -> Vec<&'static str> {
+    let mut actions = Vec::new();
+    if *last_low_power != Some(low_power) {
+        *last_low_power = Some(low_power);
+        actions.push(low_power_mode_action_id(low_power));
+    }
+    let thermal_action = thermal_pressure_action_id(raw_thermal_state);
+    if *last_thermal_action != Some(thermal_action) {
+        *last_thermal_action = Some(thermal_action);
+        actions.push(thermal_action);
+    }
+    actions
 }
 
 /// Reads `NSProcessInfo.processInfo.isLowPowerModeEnabled` (`SettingsStore.swift:771-790`,
@@ -168,43 +180,19 @@ pub fn forward_power_and_thermal_state(client: &EngineClient) {
     }
 }
 
-fn register_power_and_thermal_observers(target: &StatusItemTimerTarget) {
-    let power_name = NSString::from_str("NSProcessInfoPowerStateDidChangeNotification");
-    let thermal_name = NSString::from_str("NSProcessInfoThermalStateDidChangeNotification");
-    // SAFETY: `[NSNotificationCenter defaultCenter]` returns the process-wide notification center;
-    // `target` lives in `STATE` for the lifetime of the application and both selectors take a
-    // single `NSNotification *` argument.
-    unsafe {
-        let center: Retained<NSObject> =
-            msg_send![objc2::class!(NSNotificationCenter), defaultCenter];
-        let null_obj: Option<&NSObject> = None;
-        let _: () = msg_send![
-            &*center,
-            addObserver: target,
-            selector: sel!(powerStateDidChange:),
-            name: &*power_name,
-            object: null_obj
-        ];
-        let _: () = msg_send![
-            &*center,
-            addObserver: target,
-            selector: sel!(thermalStateDidChange:),
-            name: &*thermal_name,
-            object: null_obj
-        ];
+fn sync_power_and_thermal_state(state: &mut AppState) {
+    if !state.connected {
+        return;
     }
-}
-
-fn on_power_or_thermal_state_changed() {
-    let client = STATE.with(|cell| {
-        let Ok(guard) = cell.try_borrow() else {
-            return None;
-        };
-        let state = guard.as_ref()?;
-        state.connected.then(|| state.client.clone())
-    });
-    if let Some(client) = client {
-        forward_power_and_thermal_state(&client);
+    for action in power_and_thermal_actions_to_forward(
+        &mut state.last_forwarded_low_power,
+        &mut state.last_forwarded_thermal_action,
+        current_low_power_mode_enabled(),
+        current_thermal_state_raw(),
+    ) {
+        if let Ok(action_id) = ariadusage_protocol::ids::ActionId::new(action) {
+            state.client.run_action(action_id, None);
+        }
     }
 }
 
@@ -220,6 +208,8 @@ struct AppState {
     snapshot: Option<EngineSnapshot>,
     settings_state: SettingsState,
     connected: bool,
+    last_forwarded_low_power: Option<bool>,
+    last_forwarded_thermal_action: Option<&'static str>,
     global_loading: bool,
     provider_loading: HashSet<String>,
     selected_tab: Option<SwitcherSelection>,
@@ -291,7 +281,6 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
 
     let status_item = make_status_item(mtm);
     let timer_target = StatusItemTimerTarget::new(mtm);
-    register_power_and_thermal_observers(&timer_target);
     let settings_window = SettingsWindowController::new(mtm, Some(client.clone()));
     settings_window
         .view()
@@ -329,6 +318,8 @@ pub fn run(socket: PathBuf) -> Result<(), String> {
             snapshot: None,
             settings_state,
             connected: false,
+            last_forwarded_low_power: None,
+            last_forwarded_thermal_action: None,
             global_loading: false,
             provider_loading: HashSet::new(),
             selected_tab: None,
@@ -573,7 +564,6 @@ fn record_snapshot_quota_warnings(state: &mut AppState, snapshot: &EngineSnapsho
 pub fn handle_event(event: EngineEvent) {
     match event {
         EngineEvent::Connected { engine_version } => {
-            let mut connected_client = None;
             let contended = STATE.with(|cell| {
                 let Ok(mut guard) = cell.try_borrow_mut() else {
                     return true;
@@ -582,7 +572,9 @@ pub fn handle_event(event: EngineEvent) {
                     return false;
                 };
                 state.connected = true;
-                connected_client = Some(state.client.clone());
+                state.last_forwarded_low_power = None;
+                state.last_forwarded_thermal_action = None;
+                sync_power_and_thermal_state(state);
                 false
             });
             if contended {
@@ -590,9 +582,6 @@ pub fn handle_event(event: EngineEvent) {
                     handle_event(EngineEvent::Connected { engine_version });
                 });
                 return;
-            }
-            if let Some(client) = connected_client {
-                forward_power_and_thermal_state(&client);
             }
             refresh_ui();
         }
@@ -671,6 +660,8 @@ pub fn handle_event(event: EngineEvent) {
                     return false;
                 };
                 state.connected = false;
+                state.last_forwarded_low_power = None;
+                state.last_forwarded_thermal_action = None;
                 state.global_loading = false;
                 state.provider_loading.clear();
                 state.last_render_signature = None;
@@ -762,6 +753,7 @@ fn provider_needs_loading_animation(state: &AppState, provider_id: Option<&str>)
 }
 
 fn sync_animation_timers(state: &mut AppState) {
+    sync_power_and_thermal_state(state);
     let now = now_secs();
     let selected_provider_id = match state.selected_tab.as_ref() {
         Some(SwitcherSelection::Provider(id)) => Some(id.as_str()),
@@ -905,6 +897,8 @@ fn on_loading_timer_tick() {
         let needs_loading = provider_needs_loading_animation(state, target_id);
         if !state.animation.advance_loading_frame(needs_loading, now) {
             sync_animation_timers(state);
+        } else {
+            sync_power_and_thermal_state(state);
         }
         render_status_item_icon(mtm, state);
         false
@@ -1122,7 +1116,7 @@ fn refresh_ui() {
 mod tests {
     use super::*;
 
-    // Rust-added: smoke test for macOS NSProcessInfo power and thermal state readers and IPC action mapping.
+    // Rust-added: smoke test for macOS NSProcessInfo power and thermal state readers, IPC action mapping, and change-only forwarding.
     #[test]
     fn macos_process_info_power_and_thermal_actions_map_cleanly() {
         assert_eq!(low_power_mode_action_id(true), "setLowPowerMode.on");
@@ -1136,6 +1130,25 @@ mod tests {
         assert_eq!(
             thermal_pressure_action_id(3),
             "setThermalPressure.constrained"
+        );
+
+        let mut last_low = None;
+        let mut last_thermal = None;
+        assert_eq!(
+            power_and_thermal_actions_to_forward(&mut last_low, &mut last_thermal, false, 0),
+            vec!["setLowPowerMode.off", "setThermalPressure.nominal"]
+        );
+        assert_eq!(
+            power_and_thermal_actions_to_forward(&mut last_low, &mut last_thermal, false, 1),
+            Vec::<&str>::new()
+        );
+        assert_eq!(
+            power_and_thermal_actions_to_forward(&mut last_low, &mut last_thermal, true, 2),
+            vec!["setLowPowerMode.on", "setThermalPressure.constrained"]
+        );
+        assert_eq!(
+            power_and_thermal_actions_to_forward(&mut last_low, &mut last_thermal, true, 3),
+            Vec::<&str>::new()
         );
 
         let _ = current_low_power_mode_enabled();

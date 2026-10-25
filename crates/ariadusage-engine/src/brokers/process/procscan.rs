@@ -116,7 +116,12 @@ pub fn process_cwd(root: &Path, pid: i32) -> Option<PathBuf> {
     if is_live_proc_root(root) {
         return darwin_process_cwd(pid);
     }
-    std::fs::read_link(root.join(pid.to_string()).join("cwd")).ok()
+    let before = proc_fs_owned_identity(root, pid)?;
+    let cwd = std::fs::read_link(root.join(pid.to_string()).join("cwd")).ok()?;
+    if proc_fs_owned_identity(root, pid) != Some(before) {
+        return None;
+    }
+    Some(cwd)
 }
 
 fn fd_targets_from_proc_fs(root: &Path, pid: i32) -> Vec<PathBuf> {
@@ -327,11 +332,35 @@ pub fn process_uid(root: &Path, pid: i32) -> Option<u32> {
 }
 
 fn process_uid_from_proc_fs(root: &Path, pid: i32) -> Option<u32> {
+    process_ruid_euid_from_proc_fs(root, pid).map(|(ruid, _)| ruid)
+}
+
+fn process_ruid_euid_from_proc_fs(root: &Path, pid: i32) -> Option<(u32, u32)> {
     let status = std::fs::read_to_string(root.join(pid.to_string()).join("status")).ok()?;
     status.lines().find_map(|line| {
         let mut values = line.strip_prefix("Uid:")?.split_whitespace();
-        values.next()?.parse().ok()
+        let ruid = values.next()?.parse().ok()?;
+        let euid = values.next()?.parse().ok()?;
+        Some((ruid, euid))
     })
+}
+
+fn proc_fs_owned_identity(root: &Path, pid: i32) -> Option<ProcessIdentity> {
+    #[cfg(unix)]
+    {
+        let my_ruid = rustix::process::getuid().as_raw();
+        let my_euid = rustix::process::geteuid().as_raw();
+        let (ruid, euid) = process_ruid_euid_from_proc_fs(root, pid)?;
+        if ruid != my_ruid || euid != my_euid {
+            return None;
+        }
+        process_identity_from_proc_fs(root, pid)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, pid);
+        None
+    }
 }
 
 pub fn read_marker_environment(root: &Path, pid: i32, key: &str) -> Option<Zeroizing<Vec<u8>>> {
@@ -363,6 +392,9 @@ pub fn read_selected_environment(
     if is_live_proc_root(root) {
         return darwin_read_selected_environment(pid, names);
     }
+    let Some(before) = proc_fs_owned_identity(root, pid) else {
+        return BTreeMap::new();
+    };
     let path = root.join(pid.to_string()).join("environ");
     let Ok(file) = std::fs::File::open(path) else {
         return BTreeMap::new();
@@ -375,7 +407,11 @@ pub fn read_selected_environment(
     {
         return BTreeMap::new();
     }
-    parse_nul_environment(&bytes, names).unwrap_or_default()
+    let selected = parse_nul_environment(&bytes, names).unwrap_or_default();
+    if proc_fs_owned_identity(root, pid) != Some(before) {
+        return BTreeMap::new();
+    }
+    selected
 }
 
 pub fn parse_marker_environment(bytes: &[u8], key: &str) -> Option<Zeroizing<Vec<u8>>> {
@@ -737,6 +773,17 @@ fn darwin_fd_targets(pid: i32) -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
+fn darwin_owned_identity(pid: i32) -> Option<ProcessIdentity> {
+    let my_ruid = rustix::process::getuid().as_raw();
+    let my_euid = rustix::process::geteuid().as_raw();
+    let info = darwin_bsd_info(pid)?;
+    if info.pbi_ruid != my_ruid || info.pbi_uid != my_euid {
+        return None;
+    }
+    Some(darwin_identity_from_bsd(pid, &info))
+}
+
+#[cfg(target_os = "macos")]
 fn darwin_process_cwd(pid: i32) -> Option<PathBuf> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, UpdateKind};
 
@@ -744,8 +791,7 @@ fn darwin_process_cwd(pid: i32) -> Option<PathBuf> {
     if pid_u32 == 0 {
         return None;
     }
-    let before_info = darwin_bsd_info(pid)?;
-    let before_identity = darwin_identity_from_bsd(pid, &before_info);
+    let before_identity = darwin_owned_identity(pid)?;
     let sys_pid = Pid::from_u32(pid_u32);
     let cwd = {
         let mut system = DARWIN_ARGV_SYSTEM
@@ -762,8 +808,7 @@ fn darwin_process_cwd(pid: i32) -> Option<PathBuf> {
         *system = sysinfo::System::new();
         resolved
     }?;
-    let after_info = darwin_bsd_info(pid)?;
-    if darwin_identity_from_bsd(pid, &after_info) != before_identity {
+    if darwin_owned_identity(pid) != Some(before_identity) {
         return None;
     }
     (!cwd.as_os_str().is_empty()).then_some(cwd)
@@ -779,10 +824,9 @@ fn darwin_read_selected_environment(pid: i32, names: &[&str]) -> BTreeMap<String
     if pid_u32 == 0 {
         return BTreeMap::new();
     }
-    let Some(before_info) = darwin_bsd_info(pid) else {
+    let Some(before_identity) = darwin_owned_identity(pid) else {
         return BTreeMap::new();
     };
-    let before_identity = darwin_identity_from_bsd(pid, &before_info);
     let sys_pid = Pid::from_u32(pid_u32);
     let selected = {
         let mut system = DARWIN_ENVIRON_SYSTEM
@@ -814,10 +858,7 @@ fn darwin_read_selected_environment(pid: i32, names: &[&str]) -> BTreeMap<String
         *system = sysinfo::System::new();
         result
     };
-    let Some(after_info) = darwin_bsd_info(pid) else {
-        return BTreeMap::new();
-    };
-    if darwin_identity_from_bsd(pid, &after_info) != before_identity {
+    if darwin_owned_identity(pid) != Some(before_identity) {
         return BTreeMap::new();
     }
     selected
@@ -896,7 +937,9 @@ fn darwin_read_marker_environment(pid: i32, key: &str) -> Option<Zeroizing<Vec<u
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{ProcessIdentity, process_descendants_with_hook};
+    use super::{
+        ProcessIdentity, process_cwd, process_descendants_with_hook, read_selected_environment,
+    };
 
     #[test]
     fn descendant_walk_rejects_a_stale_root_identity() {
@@ -938,12 +981,67 @@ mod tests {
         assert!(descendants.is_empty());
     }
 
+    // Rust-added: verify `process_cwd` and `read_selected_environment` enforce ruid/euid
+    // ownership equality and identity presence on `/proc`.
+    #[test]
+    fn process_cwd_and_selected_env_enforce_ruid_euid_and_identity() {
+        let proc_root = tempfile::tempdir().unwrap();
+        let ruid = rustix::process::getuid().as_raw();
+        let euid = rustix::process::geteuid().as_raw();
+        let other_uid = ruid.wrapping_add(1);
+
+        write_fake_process_with_uids(proc_root.path(), 701, 9_000, &[], ruid, euid);
+        let p701 = proc_root.path().join("701");
+        std::os::unix::fs::symlink("/workspace/alpha", p701.join("cwd")).unwrap();
+        std::fs::write(
+            p701.join("environ"),
+            b"PI_CODING_AGENT_DIR=/custom/pi\0UNRELATED=1\0",
+        )
+        .unwrap();
+
+        assert_eq!(
+            process_cwd(proc_root.path(), 701).as_deref(),
+            Some(std::path::Path::new("/workspace/alpha"))
+        );
+        assert_eq!(
+            read_selected_environment(proc_root.path(), 701, &["PI_CODING_AGENT_DIR"])
+                .get("PI_CODING_AGENT_DIR")
+                .map(String::as_str),
+            Some("/custom/pi")
+        );
+
+        // Mismatched effective UID must be rejected.
+        write_fake_process_with_uids(proc_root.path(), 701, 9_000, &[], ruid, other_uid);
+        assert_eq!(process_cwd(proc_root.path(), 701), None);
+        assert!(
+            read_selected_environment(proc_root.path(), 701, &["PI_CODING_AGENT_DIR"]).is_empty()
+        );
+
+        // Mismatched real UID must be rejected.
+        write_fake_process_with_uids(proc_root.path(), 701, 9_000, &[], other_uid, euid);
+        assert_eq!(process_cwd(proc_root.path(), 701), None);
+        assert!(
+            read_selected_environment(proc_root.path(), 701, &["PI_CODING_AGENT_DIR"]).is_empty()
+        );
+    }
+
     fn write_fake_process(
         root: &std::path::Path,
         pid: i32,
         start_ticks: u64,
         children: &[i32],
         uid: u32,
+    ) {
+        write_fake_process_with_uids(root, pid, start_ticks, children, uid, uid);
+    }
+
+    fn write_fake_process_with_uids(
+        root: &std::path::Path,
+        pid: i32,
+        start_ticks: u64,
+        children: &[i32],
+        ruid: u32,
+        euid: u32,
     ) {
         let process = root.join(pid.to_string());
         let task = process.join("task").join(pid.to_string());
@@ -969,7 +1067,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             process.join("status"),
-            format!("Name:\tsynthetic\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\n"),
+            format!("Name:\tsynthetic\nUid:\t{ruid}\t{euid}\t{euid}\t{euid}\n"),
         )
         .unwrap();
     }
