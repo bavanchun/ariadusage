@@ -2730,3 +2730,147 @@ sources = [
     "TestsLinux/DashboardServeScopeTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-protocol/src/cli.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIPayloads.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexExtraUsageCost.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/cards_brief_renderer.rs"
+sources = ["Sources/CodexBarCLI/CLICardsBriefRenderer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/cards_renderer.rs"
+sources = ["Sources/CodexBarCLI/CLICardsRenderer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/claude_swap_cards.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIClaudeSwapCards.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapAccountList.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapAccountProjection.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapAccountReader.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapAccountSource.swift",
+    "Sources/CodexBarCore/Providers/Claude/ClaudeSwap/ClaudeSwapRetainedUsageStore.swift",
+    "Sources/CodexBarCLI/CLIUsageCommand.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/exit_code.rs"
+sources = ["Sources/CodexBarCLI/CLIExitCode.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/format.rs"
+sources = [
+    "Sources/CodexBarCore/UsageFormatter.swift",
+    "Sources/CodexBarCore/Providers/Codex/CodexPlanFormatting.swift",
+    "Sources/CodexBarCore/TextParsing.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/help.rs"
+sources = ["Sources/CodexBarCLI/CLIHelp.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/options.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIOptions.swift",
+    "Sources/CodexBarCLI/CLIUsageFetchSetup.swift",
+    "Sources/CodexBarCLI/CLIHelpers.swift",
+    "Sources/CodexBarCLI/CLIErrorReporting.swift",
+    "Sources/CodexBarCLI/CLIEntry.swift",
+    "Sources/CodexBarCLI/CLIUsageCommand.swift",
+    "Sources/CodexBarCLI/TokenAccountCLI.swift",
+    "Sources/CodexBarCLI/CLIIO.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/output_preferences.rs"
+sources = ["Sources/CodexBarCLI/CLIOutputPreferences.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/provider_meta.rs"
+sources = [
+    "Sources/CodexBarCore/Providers/Providers.swift",
+    "Sources/CodexBarCore/Providers/ProviderUsagePresentation.swift",
+    "Sources/CodexBarCLI/CLIOptions.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/renderer.rs"
+sources = ["Sources/CodexBarCLI/CLIRenderer.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/terminal.rs"
+sources = ["Sources/CodexBarCLI/CLITerminalCapabilities.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/toon.rs"
+sources = ["Sources/CodexBarCLI/ToonFormatter.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/src/usage_command.rs"
+sources = [
+    "Sources/CodexBarCLI/CLIUsageCommand.swift",
+    "Sources/CodexBarCLI/CLICardsCommand.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/toon.rs"
+sources = [
+    "Tests/CodexBarTests/ToonFormatterTests.swift",
+    "Tests/CodexBarTests/ToonScalarEncodingTests.swift",
+    "Tests/CodexBarTests/CLIToonSnapshotTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_options_and_output.rs"
+sources = [
+    "Tests/CodexBarTests/CLIOutputTests.swift",
+    "Tests/CodexBarTests/CLIArgumentParsingTests.swift",
+    "Tests/CodexBarTests/CLIProviderSelectionTests.swift",
+    "Tests/CodexBarTests/CLIProviderWindowLabelTests.swift",
+    "Tests/CodexBarTests/CLIUsageFetchSetupTests.swift",
+    "Tests/CodexBarTests/CLIAntigravityFallbackSummaryTests.swift",
+    "Tests/CodexBarTests/CLIParallelUsageTests.swift",
+    "Tests/CodexBarTests/CLIEntryTests.swift",
+    "Tests/CodexBarTests/TokenAccountCLISelectionTests.swift",
+    "Tests/CodexBarTests/CLICommonOptionsTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_snapshot.rs"
+sources = [
+    "Tests/CodexBarTests/CLISnapshotTests.swift",
+    "Tests/CodexBarTests/CLIUnificationGoldenTests.swift",
+    "Tests/CodexBarTests/AntigravityCLILaneParityTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_cards.rs"
+sources = [
+    "Tests/CodexBarTests/CLICardsRendererTests.swift",
+    "Tests/CodexBarTests/CLICardsClaudeSwapTests.swift",
+    "Tests/CodexBarTests/CLIUsageClaudeSwapTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"

@@ -1,19 +1,21 @@
 pub mod serve;
 
-#[cfg(target_os = "macos")]
-use ariadusage_cli::launch_agent;
-use ariadusage_cli::{
-    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, config, cost,
-    execute_cache_clear, execute_cookie_refresh, execute_diagnose, execute_usage_with_logging,
-    hooks,
-};
-
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 use std::io::Write;
 
+use ariadusage_cli::hooks;
+#[cfg(target_os = "macos")]
+use ariadusage_cli::launch_agent;
+use ariadusage_cli::options::UsageOptions;
+use ariadusage_cli::status_command::run_status_live;
+use ariadusage_cli::usage_command::run_usage_or_cards_live;
+use ariadusage_cli::{
+    CacheClearOptions, CookieRefreshOptions, DiagnoseOptions, OutputFormat, config, cost,
+    execute_cache_clear, execute_cookie_refresh, execute_diagnose,
+};
 use ariadusage_core::pipeline::FetchInteraction;
 use ariadusage_engine::brokers::call::BrokerCall;
 #[cfg(target_os = "linux")]
@@ -29,7 +31,7 @@ use ariadusage_engine::hardening::harden_process;
 use ariadusage_engine::paths;
 use ariadusage_protocol::ids::SettingId;
 use ariadusage_protocol::secret::SecretString;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 use zeroize::Zeroizing;
 
@@ -39,15 +41,157 @@ const MAX_SECRET_BYTES: usize = 64 * 1024;
 #[command(
     name = "ariadusage",
     version = env!("CARGO_PKG_VERSION"),
-    about = "Track usage and quotas for AI coding assistants"
+    about = "Track usage and quotas for AI coding assistants",
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
+    #[command(flatten)]
+    usage: UsageCliArgs,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
 
+#[derive(Args, Debug, Clone, Default)]
+struct UsageCliArgs {
+    /// Optional socket path override
+    #[arg(long)]
+    socket: Option<PathBuf>,
+
+    /// Provider to query (codex | claude | antigravity | both | all)
+    #[arg(long)]
+    provider: Option<String>,
+
+    /// Account label or email to select
+    #[arg(long)]
+    account: Option<String>,
+
+    /// 1-based account index to select
+    #[arg(long)]
+    account_index: Option<usize>,
+
+    /// Query all configured accounts for the provider
+    #[arg(long)]
+    all_accounts: bool,
+
+    /// Output format: text | json | toon
+    #[arg(long)]
+    format: Option<String>,
+
+    /// Shortcut for --format json
+    #[arg(long = "json")]
+    json_shortcut: bool,
+
+    /// Emit JSON only (suppress stderr diagnostics)
+    #[arg(long)]
+    json_only: bool,
+
+    /// Data source: auto | web | cli | oauth | api
+    #[arg(long)]
+    source: Option<String>,
+
+    /// Shortcut for --source web
+    #[arg(long)]
+    web: bool,
+
+    /// Web fetch timeout in seconds
+    #[arg(long)]
+    web_timeout: Option<f64>,
+
+    /// Unsupported (web strategies use JSON APIs; rejected with exit 64)
+    #[arg(long)]
+    web_debug_dump_html: bool,
+
+    /// Print Antigravity plan info to stderr
+    #[arg(long)]
+    antigravity_plan_debug: bool,
+
+    /// Include provider status indicator
+    #[arg(long)]
+    status: bool,
+
+    /// Pretty-print JSON output
+    #[arg(long)]
+    pretty: bool,
+
+    /// Disable ANSI colors in text output
+    #[arg(long)]
+    no_color: bool,
+
+    /// Skip Codex credits line in text output
+    #[arg(long)]
+    no_credits: bool,
+
+    /// Enable verbose logging
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
+    /// Log level (trace|verbose|debug|info|warning|error|critical)
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Emit machine-readable logs (JSONL) to stderr
+    #[arg(long)]
+    json_output: bool,
+}
+
+impl UsageCliArgs {
+    fn into_options(self) -> (Option<PathBuf>, UsageOptions) {
+        let opts = UsageOptions {
+            provider: self.provider,
+            account: self.account,
+            account_index: self.account_index,
+            all_accounts: self.all_accounts,
+            format: self.format,
+            json_shortcut: self.json_shortcut,
+            json_only: self.json_only,
+            source: self.source,
+            web: self.web,
+            web_timeout: self.web_timeout,
+            web_debug_dump_html: self.web_debug_dump_html,
+            antigravity_plan_debug: self.antigravity_plan_debug,
+            status: self.status,
+            pretty: self.pretty,
+            no_color: self.no_color,
+            no_credits: self.no_credits,
+            brief: false,
+            verbose: self.verbose,
+            log_level: self.log_level,
+            json_output: self.json_output,
+            app_auto_verifier: false,
+            help: false,
+            version: false,
+        };
+        (self.socket, opts)
+    }
+}
+
+#[derive(Args, Debug, Clone, Default)]
+struct CardsCliArgs {
+    #[command(flatten)]
+    usage: UsageCliArgs,
+
+    /// Render compact one-line-per-window summary
+    #[arg(long)]
+    brief: bool,
+}
+
+impl CardsCliArgs {
+    fn into_options(self) -> (Option<PathBuf>, UsageOptions) {
+        let (socket, mut opts) = self.usage.into_options();
+        opts.brief = self.brief;
+        (socket, opts)
+    }
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Print usage as text, rich terminal cards, JSON, or TOON
+    Usage(UsageCliArgs),
+
+    /// Print usage as rich ANSI terminal cards (or --brief summary)
+    Cards(CardsCliArgs),
+
     /// Manage sensitive secrets
     Secret {
         #[command(subcommand)]
@@ -64,15 +208,35 @@ enum Commands {
         action: Option<DaemonCommands>,
     },
 
-    /// Query the running engine daemon over IPC v1 for its current snapshot
+    /// Query the running engine daemon over IPC v1 for its current snapshot and status
     Status {
         /// Optional socket path override
         #[arg(long)]
         socket: Option<PathBuf>,
 
+        /// Provider to query (codex | claude | antigravity | both | all)
+        #[arg(long)]
+        provider: Option<String>,
+
+        /// Output format: text | json
+        #[arg(long)]
+        format: Option<String>,
+
         /// Output the full Snapshot v1 JSON document
         #[arg(long)]
         json: bool,
+
+        /// Emit JSON only
+        #[arg(long)]
+        json_only: bool,
+
+        /// Pretty-print JSON output
+        #[arg(long)]
+        pretty: bool,
+
+        /// Disable ANSI colors
+        #[arg(long)]
+        no_color: bool,
     },
 
     /// Print local token cost usage without refreshing web/CLI sources
@@ -117,20 +281,6 @@ enum Commands {
     Cookie {
         #[command(subcommand)]
         command: CookieCommands,
-    },
-
-    /// Fetch provider usage metrics directly for CLI inspection
-    Usage {
-        #[arg(long)]
-        provider: Option<String>,
-        #[arg(short = 'v', long)]
-        verbose: bool,
-        #[arg(long)]
-        pretty: bool,
-        #[arg(long)]
-        json_output: bool,
-        #[arg(long)]
-        log_level: Option<String>,
     },
 
     /// Start the local HTTP server and built-in web dashboard
@@ -263,6 +413,20 @@ fn main() {
 
     let cli = Cli::parse();
     match cli.command {
+        Some(Commands::Usage(args)) => {
+            let (socket, opts) = args.into_options();
+            let parsed = opts.to_parsed_values();
+            if let Err(code) = run_usage_or_cards_live(socket, &opts, &parsed, false) {
+                std::process::exit(code);
+            }
+        }
+        Some(Commands::Cards(args)) => {
+            let (socket, opts) = args.into_options();
+            let parsed = opts.to_parsed_values();
+            if let Err(code) = run_usage_or_cards_live(socket, &opts, &parsed, true) {
+                std::process::exit(code);
+            }
+        }
         Some(Commands::Secret {
             command:
                 SecretCommands::Set {
@@ -279,9 +443,24 @@ fn main() {
                 report(error);
             }
         }
-        Some(Commands::Status { socket, json }) => {
-            if let Err(error) = run_status_command(socket, json) {
-                report(error);
+        Some(Commands::Status {
+            socket,
+            provider,
+            format,
+            json,
+            json_only,
+            pretty,
+            no_color: _,
+        }) => {
+            if let Err((code, msg)) = run_status_live(
+                socket,
+                provider.as_deref(),
+                format.as_deref(),
+                json,
+                json_only,
+                pretty,
+            ) {
+                report(CliError::new(code, msg));
             }
         }
         Some(Commands::Cost(args)) => {
@@ -444,25 +623,6 @@ fn main() {
                 }
             }
         }
-        Some(Commands::Usage {
-            provider,
-            verbose,
-            pretty,
-            json_output,
-            log_level,
-        }) => match execute_usage_with_logging(
-            provider.as_deref(),
-            verbose,
-            pretty,
-            json_output,
-            log_level.as_deref(),
-        ) {
-            Ok(rendered) => println!("{rendered}"),
-            Err((code, msg)) => {
-                eprintln!("{msg}");
-                std::process::exit(i32::from(code));
-            }
-        },
         Some(Commands::Serve(args)) => {
             if let Err(error) = serve::run_serve_command(args) {
                 let mut stdout = io::stdout();
@@ -479,7 +639,13 @@ fn main() {
                 std::process::exit(i32::from(error.code));
             }
         }
-        None => {}
+        None => {
+            let (socket, opts) = cli.usage.into_options();
+            let parsed = opts.to_parsed_values();
+            if let Err(code) = run_usage_or_cards_live(socket, &opts, &parsed, false) {
+                std::process::exit(code);
+            }
+        }
     }
 }
 
@@ -790,95 +956,6 @@ fn run_foreground_daemon(socket: Option<PathBuf>) -> Result<(), CliError> {
         Err(CliError::new(
             19,
             "engine daemon is unsupported on this platform",
-        ))
-    }
-}
-
-fn run_status_command(socket: Option<PathBuf>, json: bool) -> Result<(), CliError> {
-    #[cfg(unix)]
-    {
-        use std::io::{BufRead, BufReader, Write};
-        use std::os::unix::net::UnixStream;
-        use std::time::Duration;
-
-        use ariadusage_protocol::ipc::{
-            ClientInfo, ClientMessage, PROTOCOL_V1, ServerMessage, parse_server_message,
-        };
-
-        let sock = match socket {
-            Some(p) => {
-                paths::validate_socket_path_len(&p)
-                    .map_err(|_| CliError::new(2, "socket path exceeds sun_path limit"))?;
-                p
-            }
-            None => paths::socket_path()
-                .map_err(|_| CliError::new(16, "trusted runtime socket unavailable"))?,
-        };
-
-        let mut stream = UnixStream::connect(&sock)
-            .map_err(|_| CliError::new(16, "could not connect to engine daemon socket"))?;
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .map_err(|_| CliError::new(16, "could not configure socket timeout"))?;
-        stream
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|_| CliError::new(16, "could not configure socket timeout"))?;
-
-        let hello = ClientMessage::Hello {
-            protocols: vec![PROTOCOL_V1.to_string()],
-            client: ClientInfo::new("ariadusage-cli", env!("CARGO_PKG_VERSION")),
-            id: None,
-        };
-        let get_snap = ClientMessage::GetSnapshot { id: None };
-        for msg in [&hello, &get_snap] {
-            let mut line =
-                serde_json::to_vec(msg).map_err(|_| CliError::new(16, "ipc encode failed"))?;
-            line.push(b'\n');
-            stream
-                .write_all(&line)
-                .map_err(|_| CliError::new(16, "ipc write failed"))?;
-        }
-        stream
-            .flush()
-            .map_err(|_| CliError::new(16, "ipc flush failed"))?;
-
-        let mut reader = BufReader::new(stream);
-        let mut line = String::new();
-        while reader
-            .read_line(&mut line)
-            .map_err(|_| CliError::new(16, "ipc read failed"))?
-            > 0
-        {
-            let trimmed = line.trim_end_matches(['\r', '\n']);
-            if let Ok(ServerMessage::Snapshot { snapshot }) = parse_server_message(trimmed) {
-                if json {
-                    let text = serde_json::to_string_pretty(&snapshot)
-                        .map_err(|_| CliError::new(16, "snapshot format failed"))?;
-                    println!("{text}");
-                } else {
-                    println!("engine {}", snapshot.engine.version);
-                    for p in &snapshot.providers {
-                        println!(
-                            "{}: enabled={} source={}",
-                            p.id.as_str(),
-                            p.enabled,
-                            p.source_mode
-                        );
-                    }
-                }
-                return Ok(());
-            }
-            line.clear();
-        }
-
-        Err(CliError::new(16, "did not receive snapshot from daemon"))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (socket, json);
-        Err(CliError::new(
-            19,
-            "engine status is unsupported on this platform",
         ))
     }
 }
