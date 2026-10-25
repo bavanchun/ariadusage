@@ -162,11 +162,13 @@ async fn live_codex_status() {
         temp.path().to_string_lossy().into_owned(),
     );
 
+    let state_dir = temp.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
     let now = system_date(2026, 11, 26, 8, 0).unwrap();
     let probe = CodexStatusProbe::new()
         .with_environment(env)
         .with_home_directory(Some(temp.path().to_path_buf()))
-        .with_state_directory(temp.path().join("state"))
+        .with_state_directory(&state_dir)
         .with_executable(bin)
         .with_timeout(Duration::from_secs(5));
 
@@ -278,11 +280,13 @@ printf 'Credits: 1\\n'
     // upstream-assert: CodexCLIDiscoveryTests.swift:45 #expect
     assert_eq!(resolver(&environment), None);
 
+    let state_dir = root.path().join("state");
+    fs::create_dir_all(&state_dir).unwrap();
     for entrypoint in ["pty", "status"] {
         let probe = CodexStatusProbe::new()
             .with_environment(environment.clone())
             .with_home_directory(Some(root.path().to_path_buf()))
-            .with_state_directory(root.path().join("state"))
+            .with_state_directory(&state_dir)
             .with_timeout(Duration::from_secs(5))
             .with_keep_cli_sessions_alive(entrypoint == "pty");
         let err = probe
@@ -532,6 +536,7 @@ async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_se
     let codex_home = temp.path().join(".codex");
     let state_dir = temp.path().join("state");
     fs::create_dir_all(&codex_home).unwrap();
+    fs::create_dir_all(&state_dir).unwrap();
 
     let status_file = codex_home.join("test-pty-status.json");
     let invocations_file = codex_home.join("test-pty-invocations.jsonl");
@@ -726,13 +731,23 @@ async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_se
 #[tokio::test]
 async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign_owners_and_plumbs_runtime_broker()
  {
+    use ariadusage_engine::brokers::secret_store::{SecretStore, service::ServiceBackend};
+    use ariadusage_engine::config_store::ConfigStore;
+    use ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig;
+    use ariadusage_engine::providers::codex::CodexStrategyConfig;
+    use ariadusage_engine::registry::ProviderRegistry;
+    use ariadusage_engine::runtime::EngineRuntime;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     let temp = TempDir::new().unwrap();
     let runtime_base = temp.path().join("runtime");
     let state_base = temp.path().join("state");
+    fs::create_dir_all(&runtime_base).unwrap();
+    fs::set_permissions(&runtime_base, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::create_dir_all(&state_base).unwrap();
+    fs::set_permissions(&state_base, fs::Permissions::from_mode(0o755)).unwrap();
 
-    // 1. Creates and verifies a 0700 directory under runtime_dir first, then falls back to state_dir.
+    // 1. Base set to 0755 stays 0755 while `<base>/ariadusage` and `<base>/ariadusage/CodexStatusProbe` are 0700.
     let resolved_rt = CodexStatusProbeIsolation::resolve_support_directory(
         Some(&runtime_base),
         Some(&state_base),
@@ -767,6 +782,18 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
             .join("ariadusage")
             .join("CodexStatusProbe")
     );
+    let state_base_mode = fs::symlink_metadata(&state_base)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(state_base_mode, 0o755);
+    let state_app_mode = fs::symlink_metadata(resolved_state.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(state_app_mode, 0o700);
     let state_mode = fs::symlink_metadata(&resolved_state)
         .unwrap()
         .permissions()
@@ -774,20 +801,96 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
         & 0o777;
     assert_eq!(state_mode, 0o700);
 
-    // 2. Rejects symlinked base, intermediate `ariadusage`, or leaf `CodexStatusProbe`, and fails closed.
+    // 2. A symlinked base works when its canonical target passes EUID + non-group/world-writable checks,
+    // without chmodding the target; symlinks at `<base>/ariadusage` or `CodexStatusProbe` are rejected.
     let symlink_target = temp.path().join("symlink-target");
     fs::create_dir_all(&symlink_target).unwrap();
-    fs::set_permissions(&symlink_target, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&symlink_target, fs::Permissions::from_mode(0o755)).unwrap();
 
     let symlink_base = temp.path().join("symlink-base");
     symlink(&symlink_target, &symlink_base).unwrap();
-    assert!(
-        CodexStatusProbeIsolation::resolve_support_directory(Some(&symlink_base), None).is_err()
+    let resolved_symlink_base =
+        CodexStatusProbeIsolation::resolve_support_directory(Some(&symlink_base), None).unwrap();
+    assert_eq!(
+        resolved_symlink_base,
+        fs::canonicalize(&symlink_target)
+            .unwrap()
+            .join("ariadusage")
+            .join("CodexStatusProbe")
+    );
+    assert_eq!(
+        fs::symlink_metadata(&symlink_target)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
+    assert_eq!(
+        fs::symlink_metadata(&resolved_symlink_base)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
     );
 
+    // World-writable base (`0777`) and group-writable base (`0775`) fail closed without chmodding the base.
+    let world_writable_base = temp.path().join("world-writable-base");
+    fs::create_dir_all(&world_writable_base).unwrap();
+    fs::set_permissions(&world_writable_base, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(Some(&world_writable_base), None)
+            .is_err()
+    );
+    assert_eq!(
+        fs::symlink_metadata(&world_writable_base)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o777
+    );
+
+    let group_writable_base = temp.path().join("group-writable-base");
+    fs::create_dir_all(&group_writable_base).unwrap();
+    fs::set_permissions(&group_writable_base, fs::Permissions::from_mode(0o775)).unwrap();
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(None, Some(&group_writable_base))
+            .is_err()
+    );
+    assert_eq!(
+        fs::symlink_metadata(&group_writable_base)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o775
+    );
+
+    // A symlinked base pointing to a world-writable target fails closed.
+    let symlink_to_world_writable = temp.path().join("symlink-to-world-writable");
+    symlink(&world_writable_base, &symlink_to_world_writable).unwrap();
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(
+            Some(&symlink_to_world_writable),
+            None
+        )
+        .is_err()
+    );
+
+    // Non-existent base fails closed and never creates parent directories.
+    let missing_parent = temp.path().join("missing-parent");
+    let missing_base = missing_parent.join("missing-base");
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(None, Some(&missing_base)).is_err()
+    );
+    assert!(!missing_parent.exists());
+
+    // Symlinks at `<base>/ariadusage` or `<base>/ariadusage/CodexStatusProbe` are rejected.
     let intermediate_base = temp.path().join("intermediate-symlink-base");
     fs::create_dir_all(&intermediate_base).unwrap();
-    fs::set_permissions(&intermediate_base, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&intermediate_base, fs::Permissions::from_mode(0o755)).unwrap();
     symlink(&symlink_target, intermediate_base.join("ariadusage")).unwrap();
     assert!(
         CodexStatusProbeIsolation::resolve_support_directory(None, Some(&intermediate_base))
@@ -797,14 +900,14 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
     let leaf_base = temp.path().join("leaf-symlink-base");
     let leaf_app = leaf_base.join("ariadusage");
     fs::create_dir_all(&leaf_app).unwrap();
-    fs::set_permissions(&leaf_base, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&leaf_base, fs::Permissions::from_mode(0o755)).unwrap();
     fs::set_permissions(&leaf_app, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(&symlink_target, leaf_app.join("CodexStatusProbe")).unwrap();
     assert!(CodexStatusProbeIsolation::resolve_support_directory(None, Some(&leaf_base)).is_err());
 
-    // Falls back from a rejected symlinked runtime_dir to a valid 0700 state_dir.
+    // Falls back from a rejected world-writable runtime_dir to a valid 0755 state_dir.
     let fallback_dir = CodexStatusProbeIsolation::resolve_support_directory(
-        Some(&symlink_base),
+        Some(&world_writable_base),
         Some(&state_base),
     )
     .unwrap();
@@ -812,6 +915,80 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
 
     // Fails closed when neither runtime_dir nor state_dir resolves.
     assert!(CodexStatusProbeIsolation::resolve_support_directory(None, None).is_err());
+
+    // Hermetic `support_directory_with_home_and_trusted_runtime_resolver`:
+    // (a) When `runtime_dir` is injected, it uses the injected `runtime_dir` without invoking the trusted-runtime resolver.
+    let mut resolver_called = false;
+    let hermetic_rt =
+        CodexStatusProbeIsolation::support_directory_with_home_and_trusted_runtime_resolver(
+            &BTreeMap::new(),
+            Some(temp.path()),
+            Some(&runtime_base),
+            || {
+                resolver_called = true;
+                None
+            },
+        )
+        .unwrap();
+    assert!(!resolver_called);
+    assert_eq!(hermetic_rt, resolved_rt);
+
+    // (b) With `home_dir` set (even when `<home>/.local/state` does not exist) and no `runtime_dir` injected,
+    // resolution goes through the trusted-runtime resolver closure.
+    let home_without_state = temp.path().join("home-without-local-state");
+    fs::create_dir_all(&home_without_state).unwrap();
+    let trusted_runtime_base = temp.path().join("trusted-runtime-base");
+    fs::create_dir_all(&trusted_runtime_base).unwrap();
+    fs::set_permissions(&trusted_runtime_base, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut trusted_resolver_called = false;
+    let resolved_via_trusted_runtime =
+        CodexStatusProbeIsolation::support_directory_with_home_and_trusted_runtime_resolver(
+            &BTreeMap::new(),
+            Some(&home_without_state),
+            None,
+            || {
+                trusted_resolver_called = true;
+                Some(trusted_runtime_base.clone())
+            },
+        )
+        .unwrap();
+    assert!(trusted_resolver_called);
+    assert_eq!(
+        resolved_via_trusted_runtime,
+        fs::canonicalize(&trusted_runtime_base)
+            .unwrap()
+            .join("ariadusage")
+            .join("CodexStatusProbe")
+    );
+    assert!(!home_without_state.join(".local").exists());
+
+    // (c) When the trusted-runtime resolver returns `None`, it falls back to `<home>/.local/state` without chmodding it.
+    let default_xdg_state = temp.path().join(".local").join("state");
+    fs::create_dir_all(&default_xdg_state).unwrap();
+    fs::set_permissions(&default_xdg_state, fs::Permissions::from_mode(0o755)).unwrap();
+    let hermetic_state =
+        CodexStatusProbeIsolation::support_directory_with_home_and_trusted_runtime_resolver(
+            &BTreeMap::new(),
+            Some(temp.path()),
+            None,
+            || None,
+        )
+        .unwrap();
+    assert_eq!(
+        hermetic_state,
+        fs::canonicalize(&default_xdg_state)
+            .unwrap()
+            .join("ariadusage")
+            .join("CodexStatusProbe")
+    );
+    assert_eq!(
+        fs::symlink_metadata(&default_xdg_state)
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o755
+    );
 
     // 3. Rejects a foreign-owned directory (e.g. `/` or `/tmp` owned by root when EUID != 0).
     let root_meta = fs::symlink_metadata("/").unwrap();
@@ -834,7 +1011,7 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
         }
     }
 
-    // 4. CodexStatusProbe fails closed when configured with a symlinked state_directory.
+    // 4. CodexStatusProbe fails closed when configured with a world-writable or symlinked-ariadusage state_directory.
     let codex_home = temp.path().join(".codex");
     fs::create_dir_all(&codex_home).unwrap();
     let status_file = codex_home.join("test-pty-status.json");
@@ -861,7 +1038,7 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
     let rejected_probe = CodexStatusProbe::new()
         .with_environment(env.clone())
         .with_home_directory(Some(temp.path().to_path_buf()))
-        .with_state_directory(&symlink_base)
+        .with_state_directory(&world_writable_base)
         .with_executable(bin.clone());
     let rejected_err = rejected_probe.fetch(now).await.unwrap_err();
     assert!(matches!(
@@ -869,25 +1046,86 @@ async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign
         CodexStatusProbeError::ParseFailed(_)
     ));
 
-    // 5. Runtime ProcessRegistry and LaunchGate plumbed into CodexCLIUsageFetcher / CodexStatusProbe / CodexCLISession
-    // register the warm PTY session on that shared ProcessRegistry and honor its shutdown fence.
-    let shared_registry = Arc::new(ProcessRegistry::new());
-    let shared_gate = Arc::new(LaunchGate::default());
+    // 5. EngineRuntime, ProviderRegistry, LocalAgentSessionScanner, and CodexCLISession share ONE ProcessRegistry/LaunchGate pair.
+    let net = Arc::new(
+        ariadusage_engine::brokers::net::NetBroker::new(
+            ariadusage_engine::brokers::net::NetConfig::default(),
+        )
+        .unwrap(),
+    );
+    let claude_cfg = ClaudeOAuthStrategyConfig::new(
+        Arc::clone(&net),
+        state_base.clone(),
+        temp.path().to_path_buf(),
+    );
+    let codex_cfg = CodexStrategyConfig::new(
+        Arc::clone(&net),
+        env.clone(),
+        temp.path().to_path_buf(),
+        state_base.clone(),
+    );
+    let provider_registry = ProviderRegistry::with_claude_and_codex_config(claude_cfg, codex_cfg);
+    let runtime = EngineRuntime::new(
+        ConfigStore::new(temp.path().join("config.json")),
+        Arc::new(SecretStore::new(ServiceBackend::new(true))),
+        Arc::clone(&net),
+        provider_registry.clone(),
+    );
+
+    let scanner = runtime.session_scanner();
+    assert!(Arc::ptr_eq(
+        &runtime.process_registry(),
+        provider_registry.process_registry()
+    ));
+    assert!(Arc::ptr_eq(
+        &runtime.launch_gate(),
+        provider_registry.launch_gate()
+    ));
+    assert!(Arc::ptr_eq(
+        &runtime.process_registry(),
+        scanner.process_registry()
+    ));
+    assert!(Arc::ptr_eq(&runtime.launch_gate(), scanner.launch_gate()));
+
     let fetcher =
         CodexCLIUsageFetcher::new(env, Some(temp.path().to_path_buf()), state_base.clone())
             .with_state_directory(&state_base)
-            .with_process_broker(Arc::clone(&shared_registry), Arc::clone(&shared_gate))
+            .with_process_broker(runtime.process_registry(), runtime.launch_gate())
             .with_executable(bin);
+    let agy_cfg = ariadusage_engine::providers::antigravity::AntigravityStrategyConfig::new(
+        Arc::clone(&net),
+        state_base.clone(),
+        temp.path().to_path_buf(),
+    )
+    .with_process_broker(runtime.process_registry(), runtime.launch_gate());
+    assert!(Arc::ptr_eq(
+        scanner.process_registry(),
+        fetcher.cli_session.process_registry()
+    ));
+    assert!(Arc::ptr_eq(
+        scanner.launch_gate(),
+        fetcher.cli_session.launch_gate()
+    ));
+    assert!(Arc::ptr_eq(
+        scanner.process_registry(),
+        &agy_cfg.cli.registry
+    ));
+    assert!(Arc::ptr_eq(scanner.launch_gate(), &agy_cfg.cli.gate));
 
     let warm_probe = fetcher.status_probe(true);
     let snap = warm_probe.fetch(now).await.unwrap();
     assert_eq!(snap.credits, Some(88.0));
     assert!(fetcher.cli_session.is_running().await);
-    assert_eq!(shared_registry.active_launches(), 1);
+    assert_eq!(runtime.process_registry().active_launches(), 1);
+    assert_eq!(scanner.process_registry().active_launches(), 1);
+    assert_eq!(agy_cfg.cli.registry.active_launches(), 1);
 
-    fetcher.cli_session.reset().await;
-    assert_eq!(shared_registry.active_launches(), 0);
-    shared_registry.shutdown().await;
-    assert!(shared_registry.is_fenced());
+    // `runtime.shutdown_processes()` (invoked by daemon shutdown) terminates the warm PTY session and fences the shared registry.
+    runtime.shutdown_processes().await;
+    assert_eq!(runtime.process_registry().active_launches(), 0);
+    assert!(scanner.process_registry().is_fenced());
+    assert!(fetcher.cli_session.process_registry().is_fenced());
+    assert!(agy_cfg.cli.registry.is_fenced());
     assert!(warm_probe.fetch(now).await.is_err());
+    fetcher.cli_session.reset().await;
 }
