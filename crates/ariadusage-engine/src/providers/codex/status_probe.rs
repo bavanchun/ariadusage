@@ -57,20 +57,53 @@ pub struct CodexStatusProbeIsolation;
 
 impl CodexStatusProbeIsolation {
     /// Resolves and verifies `<base>/ariadusage/CodexStatusProbe` as a private `0700` directory
-    /// owned by the current effective UID, trying `paths::trusted_runtime_dir()` first and falling
-    /// back to the state directory (`paths::resolve_state_dir` / `paths::state_dir()`).
-    /// Fails closed if neither resolves as a valid non-symlink `0700` directory.
+    /// owned by the current effective UID, trying `XDG_RUNTIME_DIR` in `environment` or
+    /// `paths::trusted_runtime_dir()` first and falling back to the state directory
+    /// (`paths::resolve_state_dir` / `paths::state_dir()`).
+    /// Fails closed if neither resolves as a valid support directory.
     pub fn support_directory(environment: &BTreeMap<String, String>) -> std::io::Result<PathBuf> {
-        Self::support_directory_with_home(environment, None)
+        let env_home = environment
+            .get("HOME")
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let fallback_home = if env_home.is_none() {
+            etcetera::home_dir().ok()
+        } else {
+            None
+        };
+        Self::support_directory_with_home(
+            environment,
+            env_home.as_deref().or(fallback_home.as_deref()),
+            None,
+        )
     }
 
-    /// Resolves `<base>/ariadusage/CodexStatusProbe` using `paths::trusted_runtime_dir()` first and
-    /// falling back to `paths::resolve_state_dir` (from `environment` and `home_dir`) or `paths::state_dir()`.
+    /// Resolves `<base>/ariadusage/CodexStatusProbe` from an injected `runtime_dir` (or
+    /// `XDG_RUNTIME_DIR` in `environment`, or `paths::trusted_runtime_dir()` when neither is set)
+    /// first and falls back to `paths::resolve_state_dir` from `environment` and `home_dir`.
     pub fn support_directory_with_home(
         environment: &BTreeMap<String, String>,
         home_dir: Option<&Path>,
+        runtime_dir: Option<&Path>,
     ) -> std::io::Result<PathBuf> {
-        let runtime_dir = crate::paths::trusted_runtime_dir();
+        Self::support_directory_with_home_and_trusted_runtime_resolver(
+            environment,
+            home_dir,
+            runtime_dir,
+            crate::paths::trusted_runtime_dir,
+        )
+    }
+
+    /// Resolves `<base>/ariadusage/CodexStatusProbe` like [`Self::support_directory_with_home`],
+    /// calling `trusted_runtime_resolver` when neither `runtime_dir` nor `XDG_RUNTIME_DIR` in
+    /// `environment` provides a runtime directory.
+    pub fn support_directory_with_home_and_trusted_runtime_resolver(
+        environment: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+        runtime_dir: Option<&Path>,
+        trusted_runtime_resolver: impl FnOnce() -> Option<PathBuf>,
+    ) -> std::io::Result<PathBuf> {
         let env_home = home_dir.map(Path::to_path_buf).or_else(|| {
             environment
                 .get("HOME")
@@ -78,18 +111,30 @@ impl CodexStatusProbeIsolation {
                 .filter(|s| !s.is_empty())
                 .map(PathBuf::from)
         });
+        let resolved_runtime_dir = runtime_dir
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                crate::paths::resolve_runtime_dir(
+                    |key| environment.get(key).map(OsString::from),
+                    env_home.as_deref(),
+                )
+            })
+            .or_else(trusted_runtime_resolver);
         let state_dir = crate::paths::resolve_state_dir(
             |key| environment.get(key).map(OsString::from),
             env_home.as_deref(),
         )
-        .ok()
-        .or_else(|| crate::paths::state_dir().ok());
-        Self::resolve_support_directory(runtime_dir.as_deref(), state_dir.as_deref())
+        .ok();
+        Self::resolve_support_directory(resolved_runtime_dir.as_deref(), state_dir.as_deref())
     }
 
     /// Resolves and verifies `<base>/ariadusage/CodexStatusProbe` from an explicit runtime-directory
-    /// candidate and state-directory fallback using [`crate::private_tempdir::ensure_private_0700_dir`].
-    /// Fails closed when neither candidate resolves to a non-symlink directory owned by EUID with mode `0700`.
+    /// candidate and state-directory fallback.
+    ///
+    /// For the base directory itself (following symlinks on the base), only checks that the canonical
+    /// target is an existing directory owned by the current effective UID and is not group- or
+    /// world-writable (`(mode & 0o022) == 0`), without `chmod`ing the base or creating its parents.
+    /// Applies [`crate::private_tempdir::ensure_private_0700_dir`] from `<base>/ariadusage` down.
     pub fn resolve_support_directory(
         runtime_dir: Option<&Path>,
         state_dir: Option<&Path>,
@@ -106,8 +151,37 @@ impl CodexStatusProbeIsolation {
         ))
     }
 
+    fn verify_support_base_dir(base_dir: &Path) -> Option<PathBuf> {
+        #[cfg(unix)]
+        {
+            use rustix::fs::{FileType, stat};
+            use rustix::process::geteuid;
+
+            if !base_dir.is_absolute() {
+                return None;
+            }
+            let canonical = std::fs::canonicalize(base_dir).ok()?;
+            let dir_stat = stat(&canonical).ok()?;
+            if FileType::from_raw_mode(dir_stat.st_mode) != FileType::Directory {
+                return None;
+            }
+            if dir_stat.st_uid != geteuid().as_raw() {
+                return None;
+            }
+            if (dir_stat.st_mode & 0o022) != 0 {
+                return None;
+            }
+            Some(canonical)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = base_dir;
+            None
+        }
+    }
+
     fn ensure_private_probe_dir(base_dir: &Path) -> Option<PathBuf> {
-        let base = crate::private_tempdir::ensure_private_0700_dir(base_dir)?;
+        let base = Self::verify_support_base_dir(base_dir)?;
         let app_dir = crate::private_tempdir::ensure_private_0700_dir(&base.join("ariadusage"))?;
         crate::private_tempdir::ensure_private_0700_dir(&app_dir.join("CodexStatusProbe"))
     }
@@ -1073,6 +1147,7 @@ pub struct CodexStatusProbe {
     pub keep_cli_sessions_alive: bool,
     pub environment: BTreeMap<String, String>,
     pub home_dir: Option<PathBuf>,
+    pub runtime_dir: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
     pub session: CodexCLISession,
     pub process_registry: Arc<ProcessRegistry>,
@@ -1122,6 +1197,7 @@ impl CodexStatusProbe {
             keep_cli_sessions_alive: false,
             environment: BTreeMap::new(),
             home_dir: None,
+            runtime_dir: None,
             state_dir: None,
             session: CodexCLISession::live(
                 Arc::clone(&process_registry),
@@ -1151,6 +1227,12 @@ impl CodexStatusProbe {
     #[must_use]
     pub fn with_home_directory(mut self, home_dir: Option<PathBuf>) -> Self {
         self.home_dir = home_dir;
+        self
+    }
+
+    #[must_use]
+    pub fn with_runtime_directory(mut self, runtime_directory: impl AsRef<Path>) -> Self {
+        self.runtime_dir = Some(runtime_directory.as_ref().to_path_buf());
         self
     }
 
@@ -1320,14 +1402,30 @@ impl CodexStatusProbe {
         timeout: Duration,
         now: Timestamp,
     ) -> Result<CodexStatusSnapshot, CodexStatusProbeError> {
-        let state_home = match &self.state_dir {
-            Some(state_dir) => {
-                CodexStatusProbeIsolation::resolve_support_directory(None, Some(state_dir))
+        let state_home = match (&self.runtime_dir, &self.state_dir) {
+            (rt, Some(state_dir)) => {
+                CodexStatusProbeIsolation::resolve_support_directory(rt.as_deref(), Some(state_dir))
             }
-            None => CodexStatusProbeIsolation::support_directory_with_home(
+            (Some(rt), None) => CodexStatusProbeIsolation::support_directory_with_home(
                 &self.environment,
                 self.home_dir.as_deref(),
+                Some(rt.as_path()),
             ),
+            (None, None) => {
+                if self.home_dir.is_some()
+                    || self.environment.contains_key("HOME")
+                    || self.environment.contains_key("XDG_RUNTIME_DIR")
+                    || self.environment.contains_key("XDG_STATE_HOME")
+                {
+                    CodexStatusProbeIsolation::support_directory_with_home(
+                        &self.environment,
+                        self.home_dir.as_deref(),
+                        None,
+                    )
+                } else {
+                    CodexStatusProbeIsolation::support_directory(&self.environment)
+                }
+            }
         }
         .map_err(|e| CodexStatusProbeError::ParseFailed(e.to_string()))?;
         let extra_args = CodexStatusProbeIsolation::codex_arguments(&state_home);
