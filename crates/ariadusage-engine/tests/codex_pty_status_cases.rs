@@ -525,6 +525,7 @@ GET https://chatgpt.com/backend-api/wham/usage failed: 500; body={\"error\":{}}"
 // Additional PTY /status session, retry, launch-gate, and secret-redaction tests
 // ============================================================================
 
+// Rust-added:
 #[tokio::test]
 async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_secret_stripping() {
     let temp = TempDir::new().unwrap();
@@ -544,10 +545,6 @@ async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_se
     env.insert(
         "CODEX_HOME".to_owned(),
         codex_home.to_string_lossy().into_owned(),
-    );
-    env.insert(
-        "TMPDIR".to_owned(),
-        temp.path().to_string_lossy().into_owned(),
     );
     // Secrets that must be stripped by ProcessEnv::from_allowlist
     env.insert(
@@ -583,6 +580,7 @@ async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_se
     let probe = CodexStatusProbe::new()
         .with_environment(env.clone())
         .with_home_directory(Some(temp.path().to_path_buf()))
+        .with_state_directory(&state_dir)
         .with_executable(bin.clone())
         .with_timeout(Duration::from_secs(6))
         .with_keep_cli_sessions_alive(true)
@@ -711,12 +709,185 @@ async fn codex_pty_warm_session_reuse_retry_on_parse_failed_update_prompt_and_se
     assert_eq!(fg_snap.five_hour_percent_left, Some(50));
 
     // 5. CodexCLIUsageFetcher::load_latest_status delegates to status_probe()
-    let fetcher = CodexCLIUsageFetcher::new(env, Some(temp.path().to_path_buf()), state_dir)
-        .with_executable(bin);
+    let fetcher =
+        CodexCLIUsageFetcher::new(env, Some(temp.path().to_path_buf()), state_dir.clone())
+            .with_state_directory(&state_dir)
+            .with_executable(bin);
     let fetcher_status = fetcher.load_latest_status(now, false).await.unwrap();
     assert_eq!(fetcher_status.credits, Some(100.0));
     assert_eq!(fetcher_status.five_hour_percent_left, Some(50));
 
     let empty_errors = CodexUserFacingErrors::default();
     assert_eq!(empty_errors.credits_hint_copy_text(), None);
+}
+
+// Rust-added:
+#[cfg(unix)]
+#[tokio::test]
+async fn codex_status_probe_isolation_enforces_0700_rejects_symlinks_and_foreign_owners_and_plumbs_runtime_broker()
+ {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+    let temp = TempDir::new().unwrap();
+    let runtime_base = temp.path().join("runtime");
+    let state_base = temp.path().join("state");
+
+    // 1. Creates and verifies a 0700 directory under runtime_dir first, then falls back to state_dir.
+    let resolved_rt = CodexStatusProbeIsolation::resolve_support_directory(
+        Some(&runtime_base),
+        Some(&state_base),
+    )
+    .unwrap();
+    assert_eq!(
+        resolved_rt,
+        fs::canonicalize(&runtime_base)
+            .unwrap()
+            .join("ariadusage")
+            .join("CodexStatusProbe")
+    );
+    let rt_mode = fs::symlink_metadata(&resolved_rt)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(rt_mode, 0o700);
+    let rt_app_mode = fs::symlink_metadata(resolved_rt.parent().unwrap())
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(rt_app_mode, 0o700);
+
+    let resolved_state =
+        CodexStatusProbeIsolation::resolve_support_directory(None, Some(&state_base)).unwrap();
+    assert_eq!(
+        resolved_state,
+        fs::canonicalize(&state_base)
+            .unwrap()
+            .join("ariadusage")
+            .join("CodexStatusProbe")
+    );
+    let state_mode = fs::symlink_metadata(&resolved_state)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(state_mode, 0o700);
+
+    // 2. Rejects symlinked base, intermediate `ariadusage`, or leaf `CodexStatusProbe`, and fails closed.
+    let symlink_target = temp.path().join("symlink-target");
+    fs::create_dir_all(&symlink_target).unwrap();
+    fs::set_permissions(&symlink_target, fs::Permissions::from_mode(0o700)).unwrap();
+
+    let symlink_base = temp.path().join("symlink-base");
+    symlink(&symlink_target, &symlink_base).unwrap();
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(Some(&symlink_base), None).is_err()
+    );
+
+    let intermediate_base = temp.path().join("intermediate-symlink-base");
+    fs::create_dir_all(&intermediate_base).unwrap();
+    fs::set_permissions(&intermediate_base, fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&symlink_target, intermediate_base.join("ariadusage")).unwrap();
+    assert!(
+        CodexStatusProbeIsolation::resolve_support_directory(None, Some(&intermediate_base))
+            .is_err()
+    );
+
+    let leaf_base = temp.path().join("leaf-symlink-base");
+    let leaf_app = leaf_base.join("ariadusage");
+    fs::create_dir_all(&leaf_app).unwrap();
+    fs::set_permissions(&leaf_base, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&leaf_app, fs::Permissions::from_mode(0o700)).unwrap();
+    symlink(&symlink_target, leaf_app.join("CodexStatusProbe")).unwrap();
+    assert!(CodexStatusProbeIsolation::resolve_support_directory(None, Some(&leaf_base)).is_err());
+
+    // Falls back from a rejected symlinked runtime_dir to a valid 0700 state_dir.
+    let fallback_dir = CodexStatusProbeIsolation::resolve_support_directory(
+        Some(&symlink_base),
+        Some(&state_base),
+    )
+    .unwrap();
+    assert_eq!(fallback_dir, resolved_state);
+
+    // Fails closed when neither runtime_dir nor state_dir resolves.
+    assert!(CodexStatusProbeIsolation::resolve_support_directory(None, None).is_err());
+
+    // 3. Rejects a foreign-owned directory (e.g. `/` or `/tmp` owned by root when EUID != 0).
+    let root_meta = fs::symlink_metadata("/").unwrap();
+    let current_uid = fs::symlink_metadata(temp.path()).unwrap().uid();
+    if root_meta.uid() != current_uid {
+        assert!(
+            CodexStatusProbeIsolation::resolve_support_directory(Some(Path::new("/")), None)
+                .is_err()
+        );
+        if let Ok(tmp_meta) = fs::symlink_metadata("/tmp")
+            && tmp_meta.uid() != current_uid
+        {
+            assert!(
+                CodexStatusProbeIsolation::resolve_support_directory(
+                    None,
+                    Some(Path::new("/tmp")),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    // 4. CodexStatusProbe fails closed when configured with a symlinked state_directory.
+    let codex_home = temp.path().join(".codex");
+    fs::create_dir_all(&codex_home).unwrap();
+    let status_file = codex_home.join("test-pty-status.json");
+    fs::write(
+        &status_file,
+        serde_json::to_vec(&json!({
+            "status_output": "Credits: 88 credits\r\n5h limit: [#####] 55% left\r\n"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut env = BTreeMap::new();
+    env.insert(
+        "HOME".to_owned(),
+        temp.path().to_string_lossy().into_owned(),
+    );
+    env.insert(
+        "CODEX_HOME".to_owned(),
+        codex_home.to_string_lossy().into_owned(),
+    );
+    let bin = AbsolutePath::new(env!("CARGO_BIN_EXE_ariadusage-test-child")).unwrap();
+    let now = system_date(2026, 11, 26, 8, 0).unwrap();
+
+    let rejected_probe = CodexStatusProbe::new()
+        .with_environment(env.clone())
+        .with_home_directory(Some(temp.path().to_path_buf()))
+        .with_state_directory(&symlink_base)
+        .with_executable(bin.clone());
+    let rejected_err = rejected_probe.fetch(now).await.unwrap_err();
+    assert!(matches!(
+        rejected_err,
+        CodexStatusProbeError::ParseFailed(_)
+    ));
+
+    // 5. Runtime ProcessRegistry and LaunchGate plumbed into CodexCLIUsageFetcher / CodexStatusProbe / CodexCLISession
+    // register the warm PTY session on that shared ProcessRegistry and honor its shutdown fence.
+    let shared_registry = Arc::new(ProcessRegistry::new());
+    let shared_gate = Arc::new(LaunchGate::default());
+    let fetcher =
+        CodexCLIUsageFetcher::new(env, Some(temp.path().to_path_buf()), state_base.clone())
+            .with_state_directory(&state_base)
+            .with_process_broker(Arc::clone(&shared_registry), Arc::clone(&shared_gate))
+            .with_executable(bin);
+
+    let warm_probe = fetcher.status_probe(true);
+    let snap = warm_probe.fetch(now).await.unwrap();
+    assert_eq!(snap.credits, Some(88.0));
+    assert!(fetcher.cli_session.is_running().await);
+    assert_eq!(shared_registry.active_launches(), 1);
+
+    fetcher.cli_session.reset().await;
+    assert_eq!(shared_registry.active_launches(), 0);
+    shared_registry.shutdown().await;
+    assert!(shared_registry.is_fenced());
+    assert!(warm_probe.fetch(now).await.is_err());
 }

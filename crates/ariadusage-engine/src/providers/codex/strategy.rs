@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ariadusage_core::config::CookieSource;
+use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_core::model::identity::ProviderIdentitySnapshot;
 use ariadusage_core::model::snapshot::UsageSnapshot;
 use ariadusage_core::pipeline::{
@@ -31,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::brokers::call::BrokerCall;
 use crate::brokers::cookie_cache::CacheScope;
 use crate::brokers::net::NetBroker;
+use crate::brokers::process::ProcessRegistry;
 
 use super::cli_rpc::{CodexCLIFetchError, CodexCLIUsageFetcher, UsageError};
 use super::credentials::{
@@ -501,6 +503,25 @@ impl CodexStrategyConfig {
 
     pub fn with_web_timeout(mut self, timeout: Duration) -> Self {
         self.web_timeout = timeout;
+        self
+    }
+
+    pub fn with_process_registry(mut self, registry: Arc<ProcessRegistry>) -> Self {
+        self.cli_fetcher = self.cli_fetcher.with_process_registry(registry);
+        self
+    }
+
+    pub fn with_core_launch_gate(mut self, gate: Arc<LaunchGate>) -> Self {
+        self.cli_fetcher = self.cli_fetcher.with_core_launch_gate(gate);
+        self
+    }
+
+    pub fn with_process_broker(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.cli_fetcher = self.cli_fetcher.with_process_broker(registry, gate);
         self
     }
 }

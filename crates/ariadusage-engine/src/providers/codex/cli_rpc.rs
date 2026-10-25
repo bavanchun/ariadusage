@@ -33,7 +33,7 @@ use super::credits::{CodexCreditLimitSnapshot, CreditsSnapshot};
 use super::identity::CodexAuthBackedAccount;
 use super::normalizer::WindowSnapshot;
 use super::reconciled::CodexReconciledState;
-use super::status_probe::CodexStatusProbe;
+use super::status_probe::{CodexCLISession, CodexStatusProbe};
 use super::usage_fetcher::{CodexSpendControlNumber, CreditDetails, RateLimitDetails};
 
 pub const DEFAULT_CODEX_APP_SERVER_ARGS: &[&str] =
@@ -489,6 +489,7 @@ struct RPCRateLimitsErrorBody {
 pub struct CodexCLIUsageFetcher {
     pub environment: BTreeMap<String, String>,
     pub home_dir: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
     pub working_directory: PathBuf,
     pub initialize_timeout: Duration,
     pub request_timeout: Duration,
@@ -496,6 +497,7 @@ pub struct CodexCLIUsageFetcher {
     pub resolved_executable: Option<AbsolutePath>,
     pub process_registry: Arc<ProcessRegistry>,
     pub core_launch_gate: Arc<LaunchGate>,
+    pub cli_session: CodexCLISession,
     pub cli_launch_gate: Arc<CodexCLILaunchGate>,
     pub interaction: FetchInteraction,
     pub cancel: CancellationToken,
@@ -526,9 +528,14 @@ impl CodexCLIUsageFetcher {
         home_dir: Option<PathBuf>,
         working_directory: PathBuf,
     ) -> Self {
+        let process_registry = Arc::new(ProcessRegistry::new());
+        let core_launch_gate = Arc::new(LaunchGate::default());
+        let cli_session =
+            CodexCLISession::live(Arc::clone(&process_registry), Arc::clone(&core_launch_gate));
         Self {
             environment,
             home_dir,
+            state_dir: None,
             working_directory,
             initialize_timeout: Duration::from_secs(8),
             request_timeout: Duration::from_secs(3),
@@ -537,8 +544,9 @@ impl CodexCLIUsageFetcher {
                 .map(|s| (*s).to_owned())
                 .collect(),
             resolved_executable: None,
-            process_registry: Arc::new(ProcessRegistry::new()),
-            core_launch_gate: Arc::new(LaunchGate::default()),
+            process_registry,
+            core_launch_gate,
+            cli_session,
             cli_launch_gate: Arc::new(CodexCLILaunchGate::new()),
             interaction: FetchInteraction::UserInitiated,
             cancel: CancellationToken::new(),
@@ -564,6 +572,47 @@ impl CodexCLIUsageFetcher {
 
     pub fn with_executable(mut self, executable: AbsolutePath) -> Self {
         self.resolved_executable = Some(executable);
+        self
+    }
+
+    pub fn with_state_directory(mut self, state_directory: impl AsRef<Path>) -> Self {
+        let dir = state_directory.as_ref().to_path_buf();
+        self.state_dir = Some(dir.clone());
+        self.cli_session = self.cli_session.with_state_directory(Ok(dir));
+        self
+    }
+
+    pub fn with_process_registry(mut self, registry: Arc<ProcessRegistry>) -> Self {
+        self.cli_session = self
+            .cli_session
+            .with_process_registry(Arc::clone(&registry));
+        self.process_registry = registry;
+        self
+    }
+
+    pub fn with_core_launch_gate(mut self, gate: Arc<LaunchGate>) -> Self {
+        self.cli_session = self.cli_session.with_launch_gate(Arc::clone(&gate));
+        self.core_launch_gate = gate;
+        self
+    }
+
+    pub fn with_process_broker(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.cli_session = self
+            .cli_session
+            .with_process_broker(Arc::clone(&registry), Arc::clone(&gate));
+        self.process_registry = registry;
+        self.core_launch_gate = gate;
+        self
+    }
+
+    pub fn with_cli_session(mut self, session: CodexCLISession) -> Self {
+        self.process_registry = Arc::clone(session.process_registry());
+        self.core_launch_gate = Arc::clone(session.launch_gate());
+        self.cli_session = session;
         self
     }
 
@@ -652,14 +701,22 @@ impl CodexCLIUsageFetcher {
 
     #[must_use]
     pub fn status_probe(&self, keep_cli_sessions_alive: bool) -> CodexStatusProbe {
+        let session = self.cli_session.clone().with_process_broker(
+            Arc::clone(&self.process_registry),
+            Arc::clone(&self.core_launch_gate),
+        );
         let mut probe = CodexStatusProbe::new()
             .with_environment(self.environment.clone())
             .with_home_dir(self.home_dir.clone())
             .with_timeout(self.initialize_timeout)
             .with_keep_cli_sessions_alive(keep_cli_sessions_alive)
+            .with_session(session)
             .with_process_registry(Arc::clone(&self.process_registry))
             .with_core_launch_gate(Arc::clone(&self.core_launch_gate))
             .with_cli_launch_gate(Arc::clone(&self.cli_launch_gate));
+        if let Some(state_dir) = &self.state_dir {
+            probe = probe.with_state_directory(state_dir);
+        }
         if let Some(exec) = &self.resolved_executable {
             probe = probe.with_executable(exec.clone());
         }

@@ -56,17 +56,60 @@ impl CodexStatusMarkers {
 pub struct CodexStatusProbeIsolation;
 
 impl CodexStatusProbeIsolation {
+    /// Resolves and verifies `<base>/ariadusage/CodexStatusProbe` as a private `0700` directory
+    /// owned by the current effective UID, trying `paths::trusted_runtime_dir()` first and falling
+    /// back to the state directory (`paths::resolve_state_dir` / `paths::state_dir()`).
+    /// Fails closed if neither resolves as a valid non-symlink `0700` directory.
     pub fn support_directory(environment: &BTreeMap<String, String>) -> std::io::Result<PathBuf> {
-        let base_dir = environment
-            .get("TMPDIR")
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+        Self::support_directory_with_home(environment, None)
+    }
 
-        let directory = base_dir.join("ariadusage").join("CodexStatusProbe");
-        std::fs::create_dir_all(&directory)?;
-        Ok(directory)
+    /// Resolves `<base>/ariadusage/CodexStatusProbe` using `paths::trusted_runtime_dir()` first and
+    /// falling back to `paths::resolve_state_dir` (from `environment` and `home_dir`) or `paths::state_dir()`.
+    pub fn support_directory_with_home(
+        environment: &BTreeMap<String, String>,
+        home_dir: Option<&Path>,
+    ) -> std::io::Result<PathBuf> {
+        let runtime_dir = crate::paths::trusted_runtime_dir();
+        let env_home = home_dir.map(Path::to_path_buf).or_else(|| {
+            environment
+                .get("HOME")
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        });
+        let state_dir = crate::paths::resolve_state_dir(
+            |key| environment.get(key).map(OsString::from),
+            env_home.as_deref(),
+        )
+        .ok()
+        .or_else(|| crate::paths::state_dir().ok());
+        Self::resolve_support_directory(runtime_dir.as_deref(), state_dir.as_deref())
+    }
+
+    /// Resolves and verifies `<base>/ariadusage/CodexStatusProbe` from an explicit runtime-directory
+    /// candidate and state-directory fallback using [`crate::private_tempdir::ensure_private_0700_dir`].
+    /// Fails closed when neither candidate resolves to a non-symlink directory owned by EUID with mode `0700`.
+    pub fn resolve_support_directory(
+        runtime_dir: Option<&Path>,
+        state_dir: Option<&Path>,
+    ) -> std::io::Result<PathBuf> {
+        if let Some(dir) = runtime_dir.and_then(Self::ensure_private_probe_dir) {
+            return Ok(dir);
+        }
+        if let Some(dir) = state_dir.and_then(Self::ensure_private_probe_dir) {
+            return Ok(dir);
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "CodexStatusProbe support directory unavailable or failed 0700 ownership/symlink checks",
+        ))
+    }
+
+    fn ensure_private_probe_dir(base_dir: &Path) -> Option<PathBuf> {
+        let base = crate::private_tempdir::ensure_private_0700_dir(base_dir)?;
+        let app_dir = crate::private_tempdir::ensure_private_0700_dir(&base.join("ariadusage"))?;
+        crate::private_tempdir::ensure_private_0700_dir(&app_dir.join("CodexStatusProbe"))
     }
 
     #[must_use]
@@ -422,6 +465,39 @@ impl CodexCLISession {
             identity_provider: None,
             launch_lock: None,
         }
+    }
+
+    #[must_use]
+    pub fn process_registry(&self) -> &Arc<ProcessRegistry> {
+        &self.registry
+    }
+
+    #[must_use]
+    pub fn launch_gate(&self) -> &Arc<LaunchGate> {
+        &self.gate
+    }
+
+    #[must_use]
+    pub fn with_process_registry(mut self, registry: Arc<ProcessRegistry>) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    #[must_use]
+    pub fn with_launch_gate(mut self, gate: Arc<LaunchGate>) -> Self {
+        self.gate = gate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_process_broker(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.registry = registry;
+        self.gate = gate;
+        self
     }
 
     #[must_use]
@@ -997,6 +1073,7 @@ pub struct CodexStatusProbe {
     pub keep_cli_sessions_alive: bool,
     pub environment: BTreeMap<String, String>,
     pub home_dir: Option<PathBuf>,
+    pub state_dir: Option<PathBuf>,
     pub session: CodexCLISession,
     pub process_registry: Arc<ProcessRegistry>,
     pub core_launch_gate: Arc<LaunchGate>,
@@ -1045,6 +1122,7 @@ impl CodexStatusProbe {
             keep_cli_sessions_alive: false,
             environment: BTreeMap::new(),
             home_dir: None,
+            state_dir: None,
             session: CodexCLISession::live(
                 Arc::clone(&process_registry),
                 Arc::clone(&core_launch_gate),
@@ -1078,9 +1156,9 @@ impl CodexStatusProbe {
 
     #[must_use]
     pub fn with_state_directory(mut self, state_directory: impl AsRef<Path>) -> Self {
-        self.session = self
-            .session
-            .with_state_directory(Ok(state_directory.as_ref().to_path_buf()));
+        let dir = state_directory.as_ref().to_path_buf();
+        self.state_dir = Some(dir.clone());
+        self.session = self.session.with_state_directory(Ok(dir));
         self
     }
 
@@ -1116,6 +1194,8 @@ impl CodexStatusProbe {
 
     #[must_use]
     pub fn with_session(mut self, session: CodexCLISession) -> Self {
+        self.process_registry = Arc::clone(session.process_registry());
+        self.core_launch_gate = Arc::clone(session.launch_gate());
         self.session = session;
         self
     }
@@ -1134,12 +1214,28 @@ impl CodexStatusProbe {
 
     #[must_use]
     pub fn with_process_registry(mut self, registry: Arc<ProcessRegistry>) -> Self {
+        self.session = self.session.with_process_registry(Arc::clone(&registry));
         self.process_registry = registry;
         self
     }
 
     #[must_use]
     pub fn with_core_launch_gate(mut self, gate: Arc<LaunchGate>) -> Self {
+        self.session = self.session.with_launch_gate(Arc::clone(&gate));
+        self.core_launch_gate = gate;
+        self
+    }
+
+    #[must_use]
+    pub fn with_process_broker(
+        mut self,
+        registry: Arc<ProcessRegistry>,
+        gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.session = self
+            .session
+            .with_process_broker(Arc::clone(&registry), Arc::clone(&gate));
+        self.process_registry = registry;
         self.core_launch_gate = gate;
         self
     }
@@ -1224,8 +1320,16 @@ impl CodexStatusProbe {
         timeout: Duration,
         now: Timestamp,
     ) -> Result<CodexStatusSnapshot, CodexStatusProbeError> {
-        let state_home = CodexStatusProbeIsolation::support_directory(&self.environment)
-            .map_err(|e| CodexStatusProbeError::ParseFailed(e.to_string()))?;
+        let state_home = match &self.state_dir {
+            Some(state_dir) => {
+                CodexStatusProbeIsolation::resolve_support_directory(None, Some(state_dir))
+            }
+            None => CodexStatusProbeIsolation::support_directory_with_home(
+                &self.environment,
+                self.home_dir.as_deref(),
+            ),
+        }
+        .map_err(|e| CodexStatusProbeError::ParseFailed(e.to_string()))?;
         let extra_args = CodexStatusProbeIsolation::codex_arguments(&state_home);
         let working_directory = CodexStatusProbeIsolation::working_directory(&self.environment);
         let binary_str = binary.as_path().to_string_lossy().to_string();
@@ -1243,8 +1347,11 @@ impl CodexStatusProbe {
             options.settle_after_status = self.settle_after_status;
             options.output_cap = self.output_cap;
 
-            match self
-                .session
+            let session = self.session.clone().with_process_broker(
+                Arc::clone(&self.process_registry),
+                Arc::clone(&self.core_launch_gate),
+            );
+            match session
                 .capture_status_with_call(call, binary.as_path(), options)
                 .await
             {
