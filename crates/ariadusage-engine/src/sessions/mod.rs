@@ -25,10 +25,12 @@ use ariadusage_protocol::secret::SecretString;
 use jiff::civil::{Date, DateTime, Time};
 use jiff::tz::TimeZone;
 use jiff::{SignedDuration, Timestamp};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::brokers::browser::sqlite_copy::copy_database;
 use crate::brokers::call::BrokerCall;
 use crate::brokers::exec_resolver::{RealResolverFs, resolve_absolute_candidates};
@@ -37,6 +39,7 @@ use crate::brokers::process::{
     self, AbsolutePath, Command, LaunchMode, Output as BrokerOutput, ProcessEnv, ProcessRegistry,
     StdinSpec, StreamPolicy, process_ppid_and_start_secs, procscan,
 };
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::private_tempdir::{create_in, ensure_private_0700_dir};
 
 /// Upstream 30-second periodic local activity scan cadence (`AgentSessionsStore.localActivityScanInterval`).
@@ -1720,67 +1723,72 @@ impl CodexThreadMetadataReader {
             .map(|(k, v)| (k.clone(), CodexThreadMetadata::new(Some(v.clone()), None)))
             .collect();
 
-        let Some(ref copy_parent) = self.copy_parent else {
-            return result;
-        };
-        let Some(temp_parent) = ensure_private_0700_dir(copy_parent) else {
-            return result;
-        };
-        let Ok(temp_dir) = create_in(&temp_parent) else {
-            return result;
-        };
-        let Ok(copied_path) = copy_database(&self.database_url, temp_dir.path()) else {
-            return result;
-        };
-        #[cfg(unix)]
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        #[cfg(not(unix))]
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        let Ok(conn) = Connection::open_with_flags(&copied_path, flags) else {
-            return result;
-        };
-        let _ = conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
-        let _ = conn.pragma_update(None, "trusted_schema", false);
-        let _ = conn.busy_timeout(Duration::from_millis(100));
-
-        let queries = [
-            "SELECT substr(title, 1, 256), agent_path FROM threads WHERE id = ?1 LIMIT 1",
-            "SELECT substr(title, 1, 256), NULL FROM threads WHERE id = ?1 LIMIT 1",
-        ];
-        let mut stmt = None;
-        for q in queries {
-            if let Ok(prepared) = conn.prepare(q) {
-                stmt = Some(prepared);
-                break;
-            }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = (&self.database_url, &self.copy_parent);
+            result
         }
-        let Some(mut stmt) = stmt else {
-            return result;
-        };
-
-        for session_id in session_ids {
-            let Ok(row) = stmt.query_row([session_id.as_str()], |row| {
-                let db_title: Option<String> = row.get(0).ok().flatten();
-                let db_agent_path: Option<String> = row.get(1).ok().flatten();
-                Ok((db_title, db_agent_path))
-            }) else {
-                continue;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let Some(ref copy_parent) = self.copy_parent else {
+                return result;
             };
-            let title = indexed_names
-                .get(session_id)
-                .cloned()
-                .or_else(|| row.0.filter(|s| !s.is_empty()));
-            let agent_path = row.1.filter(|s| !s.is_empty());
-            if title.is_some() || agent_path.is_some() {
-                result.insert(
-                    session_id.clone(),
-                    CodexThreadMetadata::new(title, agent_path),
-                );
+            let Some(temp_parent) = ensure_private_0700_dir(copy_parent) else {
+                return result;
+            };
+            let Ok(temp_dir) = create_in(&temp_parent) else {
+                return result;
+            };
+            let Ok(copied_path) = copy_database(&self.database_url, temp_dir.path()) else {
+                return result;
+            };
+            let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX
+                | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+            let Ok(conn) = Connection::open_with_flags(&copied_path, flags) else {
+                return result;
+            };
+            let _ = conn.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_DEFENSIVE, true);
+            let _ = conn.pragma_update(None, "trusted_schema", false);
+            let _ = conn.busy_timeout(Duration::from_millis(100));
+
+            let queries = [
+                "SELECT substr(title, 1, 256), agent_path FROM threads WHERE id = ?1 LIMIT 1",
+                "SELECT substr(title, 1, 256), NULL FROM threads WHERE id = ?1 LIMIT 1",
+            ];
+            let mut stmt = None;
+            for q in queries {
+                if let Ok(prepared) = conn.prepare(q) {
+                    stmt = Some(prepared);
+                    break;
+                }
             }
+            let Some(mut stmt) = stmt else {
+                return result;
+            };
+
+            for session_id in session_ids {
+                let Ok(row) = stmt.query_row([session_id.as_str()], |row| {
+                    let db_title: Option<String> = row.get(0).ok().flatten();
+                    let db_agent_path: Option<String> = row.get(1).ok().flatten();
+                    Ok((db_title, db_agent_path))
+                }) else {
+                    continue;
+                };
+                let title = indexed_names
+                    .get(session_id)
+                    .cloned()
+                    .or_else(|| row.0.filter(|s| !s.is_empty()));
+                let agent_path = row.1.filter(|s| !s.is_empty());
+                if title.is_some() || agent_path.is_some() {
+                    result.insert(
+                        session_id.clone(),
+                        CodexThreadMetadata::new(title, agent_path),
+                    );
+                }
+            }
+            result
         }
-        result
     }
 }
 
