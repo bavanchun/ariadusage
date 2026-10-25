@@ -165,14 +165,13 @@ pub fn register_cli_providers_with_web_timeout(
     let process_registry = runtime.process_registry();
     let launch_gate = runtime.launch_gate();
 
-    let mut claude_cfg = build_cli_claude_strategy_config(
+    let claude_cfg = build_cli_claude_strategy_config(
         Arc::clone(&net),
         working_dir.clone(),
         effective_home.clone(),
         web_timeout_seconds,
-    );
-    claude_cfg.process_registry = Arc::clone(&process_registry);
-    claude_cfg.launch_gate = Arc::clone(&launch_gate);
+    )
+    .with_process_broker(Arc::clone(&process_registry), Arc::clone(&launch_gate));
     if let Ok(claude_id) = ProviderId::new("claude") {
         runtime.register_provider_factory(
             claude_id,
