@@ -50,10 +50,14 @@ must pass `--allow-file-fallback`; later calls honor the saved
 | `cookie refresh` | 2 | Invalid flags, neither or both of `--provider` and `--all`, unknown provider, or provider does not support browser cookie refresh |
 | `cookie refresh` | 16 | Configuration, data path, or runtime initialization failed |
 | `cookie refresh` | 18 | Process hardening failed |
+| `sessions` / `sessions list` | 0 | Live local coding agent sessions rendered as a table, legacy v1 JSON (`--json`), or v2 JSON (`--json-v2`) |
+| `sessions` / `sessions list` | 2 | Invalid command-line flags |
+| `sessions focus` | 1 | Missing session ID (`"Missing session id."`) or unknown session ID (`"Unknown session: <id>"`) |
+| `sessions focus` | 2 | Session ID exists, but terminal/window focus is unsupported on this CLI frontend (`"Session focus is unsupported on this frontend."`) |
 
-Argument-validation and flag errors across `diagnose`, `cache clear`, and
-`cookie refresh` return exit code `2` (matching AriadUsage's CLI convention for
-invalid command-line syntax, whereas upstream returns `1`).
+Argument-validation and flag errors across `diagnose`, `cache clear`,
+`cookie refresh`, and `sessions` return exit code `2` (matching AriadUsage's CLI
+convention for invalid command-line syntax, whereas upstream returns `1`).
 
 ## `ariadusage config` and `ariadusage cost`
 

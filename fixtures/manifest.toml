@@ -2544,6 +2544,7 @@ sources = [
     "Sources/CodexBarCLI/CLIDiagnoseCommand.swift",
     "Sources/CodexBarCLI/CLICacheCommand.swift",
     "Sources/CodexBarCLI/CLICookieCommand.swift",
+    "Sources/CodexBarCLI/CLISessionsCommand.swift",
     "Sources/CodexBarCLI/CLIHelp.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
@@ -2628,6 +2629,7 @@ sources = [
     "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
     "Sources/CodexBarCore/PiFamilySessionScanner.swift",
     "Sources/CodexBarCore/PiFamilySessionRootResolver.swift",
+    "Sources/CodexBarCLI/CLISessionsCommand.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
 
@@ -2874,3 +2876,45 @@ sources = [
     "Tests/CodexBarTests/CLIUsageClaudeSwapTests.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-cli/tests/cli_sessions.rs"
+sources = ["Tests/CodexBarTests/AgentSessionJSONTests.swift"]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/tests/agent_sessions.rs"
+sources = [
+    "Tests/CodexBarTests/AgentSessionParserTests.swift",
+    "Tests/CodexBarTests/AgentSessionExecutableTests.swift",
+    "Tests/CodexBarTests/ClaudeSessionMappingTests.swift",
+    "Tests/CodexBarTests/DirectoryMetadataScanBudgetTests.swift",
+    "Tests/CodexBarTests/CodexSessionRolloutTests.swift",
+    "Tests/CodexBarTests/AdaptiveRolloutActivityTests.swift",
+    "Tests/CodexBarTests/PiFamilySessionTests.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[fixture]]
+path = "codexbar/agent-sessions-ps.txt"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/agent-sessions-ps.txt"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/agent-sessions-lsof.txt"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/agent-sessions-lsof.txt"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
+
+[[fixture]]
+path = "codexbar/agent-session-rollout.jsonl"
+origin = "codexbar"
+source = "Tests/CodexBarTests/Fixtures/agent-session-rollout.jsonl"
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+license = "MIT"
+changes = "Copied byte-for-byte from the baseline."
