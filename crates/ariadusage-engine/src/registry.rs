@@ -326,6 +326,10 @@ impl ProviderRegistry {
         codex_config: CodexStrategyConfig,
     ) -> Self {
         let mut registry = Self::with_claude_config(claude_config);
+        let codex_config = codex_config.with_process_broker(
+            Arc::clone(&registry.process_registry),
+            Arc::clone(&registry.launch_gate),
+        );
         let codex_id = ProviderId::new("codex").expect("valid provider id");
         registry.register_factory(
             codex_id,

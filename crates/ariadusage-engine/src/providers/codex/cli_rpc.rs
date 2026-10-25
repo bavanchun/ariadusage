@@ -489,6 +489,7 @@ struct RPCRateLimitsErrorBody {
 pub struct CodexCLIUsageFetcher {
     pub environment: BTreeMap<String, String>,
     pub home_dir: Option<PathBuf>,
+    pub runtime_dir: Option<PathBuf>,
     pub state_dir: Option<PathBuf>,
     pub working_directory: PathBuf,
     pub initialize_timeout: Duration,
@@ -535,6 +536,7 @@ impl CodexCLIUsageFetcher {
         Self {
             environment,
             home_dir,
+            runtime_dir: None,
             state_dir: None,
             working_directory,
             initialize_timeout: Duration::from_secs(8),
@@ -572,6 +574,11 @@ impl CodexCLIUsageFetcher {
 
     pub fn with_executable(mut self, executable: AbsolutePath) -> Self {
         self.resolved_executable = Some(executable);
+        self
+    }
+
+    pub fn with_runtime_directory(mut self, runtime_directory: impl AsRef<Path>) -> Self {
+        self.runtime_dir = Some(runtime_directory.as_ref().to_path_buf());
         self
     }
 
@@ -714,6 +721,9 @@ impl CodexCLIUsageFetcher {
             .with_process_registry(Arc::clone(&self.process_registry))
             .with_core_launch_gate(Arc::clone(&self.core_launch_gate))
             .with_cli_launch_gate(Arc::clone(&self.cli_launch_gate));
+        if let Some(runtime_dir) = &self.runtime_dir {
+            probe = probe.with_runtime_directory(runtime_dir);
+        }
         if let Some(state_dir) = &self.state_dir {
             probe = probe.with_state_directory(state_dir);
         }

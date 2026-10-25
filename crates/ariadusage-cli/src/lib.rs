@@ -187,7 +187,7 @@ pub fn register_cli_providers_with_web_timeout(
         effective_home,
         web_timeout_seconds,
     )
-    .with_process_broker(process_registry, launch_gate);
+    .with_process_broker(Arc::clone(&process_registry), Arc::clone(&launch_gate));
     if let Ok(codex_id) = ProviderId::new("codex") {
         runtime.register_provider_factory(
             codex_id,
@@ -201,7 +201,8 @@ pub fn register_cli_providers_with_web_timeout(
             net,
             working_dir,
             home_dir,
-        );
+        )
+        .with_process_broker(process_registry, launch_gate);
         runtime.register_provider_plan(
             agy_id,
             Arc::new(

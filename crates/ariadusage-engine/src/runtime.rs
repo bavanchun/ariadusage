@@ -545,6 +545,9 @@ impl EngineRuntime {
             );
         }
 
+        let process_registry = Arc::clone(registry.process_registry());
+        let launch_gate = Arc::clone(registry.launch_gate());
+
         Self {
             config_store,
             secret_store,
@@ -562,8 +565,8 @@ impl EngineRuntime {
             clock,
             base_environment: RwLock::new(BTreeMap::new()),
             home_dir: RwLock::new(None),
-            process_registry: Arc::new(crate::brokers::process::ProcessRegistry::new()),
-            launch_gate: Arc::new(ariadusage_core::gates::LaunchGate::default()),
+            process_registry,
+            launch_gate,
             hooks_config: RwLock::new(None),
             providers: Mutex::new(provider_states),
             batch_state: Mutex::new(BatchRefreshState::default()),
@@ -606,24 +609,19 @@ impl EngineRuntime {
         &self.cookie_cache
     }
 
-    /// Returns the shared [`ProcessRegistry`] from the runtime's [`ProviderRegistry`].
+    /// Returns the shared [`ProcessRegistry`] used by this runtime, its session scanner, and its [`ProviderRegistry`].
     pub fn process_registry(&self) -> Arc<ProcessRegistry> {
-        Arc::clone(
-            self.registry
-                .read()
-                .expect("registry lock")
-                .process_registry(),
-        )
+        Arc::clone(&self.process_registry)
     }
 
-    /// Returns the shared [`LaunchGate`](ariadusage_core::gates::launch::LaunchGate) from the runtime's [`ProviderRegistry`].
+    /// Returns the shared [`LaunchGate`](ariadusage_core::gates::launch::LaunchGate) used by this runtime, its session scanner, and its [`ProviderRegistry`].
     pub fn launch_gate(&self) -> Arc<ariadusage_core::gates::launch::LaunchGate> {
-        Arc::clone(self.registry.read().expect("registry lock").launch_gate())
+        Arc::clone(&self.launch_gate)
     }
 
     /// Shuts down all child processes tracked by the runtime's [`ProcessRegistry`].
     pub async fn shutdown_processes(&self) {
-        self.process_registry().shutdown().await;
+        self.process_registry.shutdown().await;
     }
 
     /// Overrides the cache root directory (`<root>/cost-usage`) used when clearing cost usage caches (`clearCostCache`).
@@ -2341,6 +2339,36 @@ impl EngineRuntime {
             .expect("session_scanner_override lock") = scanner;
     }
 
+    /// Builds or returns the configured [`crate::host_observers::LocalAgentSessionScanner`] wired
+    /// to the runtime's shared [`ProcessRegistry`] and [`LaunchGate`].
+    pub fn session_scanner(&self) -> crate::host_observers::LocalAgentSessionScanner {
+        self.session_scanner_override
+            .read()
+            .expect("session_scanner_override lock")
+            .clone()
+            .unwrap_or_else(|| {
+                let base_env = self.base_environment.read().expect("base_env lock").clone();
+                let home_dir = self.home_dir.read().expect("home_dir lock").clone();
+                let cancel = self
+                    .observer_cancel
+                    .lock()
+                    .expect("observer_cancel lock")
+                    .clone()
+                    .unwrap_or_default();
+                crate::host_observers::LocalAgentSessionScanner::new(
+                    crate::host_observers::SessionScanConfig::default(),
+                    crate::brokers::local_probe::LocalProbe::new(),
+                    base_env,
+                    home_dir,
+                )
+                .with_process_context(
+                    Arc::clone(&self.process_registry),
+                    Arc::clone(&self.launch_gate),
+                    cancel,
+                )
+            })
+    }
+
     /// Returns whether background local coding-activity scanning is currently permitted
     /// (`AgentSessionsStore.shouldScanLocally`).
     pub fn should_scan_coding_activity_locally(&self) -> bool {
@@ -2418,32 +2446,7 @@ impl EngineRuntime {
                 break;
             }
 
-            let scanner = self
-                .session_scanner_override
-                .read()
-                .expect("session_scanner_override lock")
-                .clone()
-                .unwrap_or_else(|| {
-                    let base_env = self.base_environment.read().expect("base_env lock").clone();
-                    let home_dir = self.home_dir.read().expect("home_dir lock").clone();
-                    let cancel = self
-                        .observer_cancel
-                        .lock()
-                        .expect("observer_cancel lock")
-                        .clone()
-                        .unwrap_or_default();
-                    crate::host_observers::LocalAgentSessionScanner::new(
-                        crate::host_observers::SessionScanConfig::default(),
-                        crate::brokers::local_probe::LocalProbe::new(),
-                        base_env,
-                        home_dir,
-                    )
-                    .with_process_context(
-                        Arc::clone(&self.process_registry),
-                        Arc::clone(&self.launch_gate),
-                        cancel,
-                    )
-                });
+            let scanner = self.session_scanner();
             let now = self.now();
             let result = scanner.scan_with_activity(now, false, true).await;
             executed = true;
@@ -3446,6 +3449,14 @@ impl IpcBackend for EngineRuntime {
     ) -> Pin<Box<dyn Future<Output = Result<Option<serde_json::Value>, IpcError>> + Send + '_>>
     {
         Box::pin(async move { self.run_action_with_payload(&id, confirm).await })
+    }
+
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            self.stop_host_observers();
+            self.stop_timer();
+            self.shutdown_processes().await;
+        })
     }
 }
 

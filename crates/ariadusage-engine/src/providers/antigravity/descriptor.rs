@@ -587,6 +587,24 @@ impl AntigravityStrategyConfig {
         self
     }
 
+    pub fn with_process_broker(
+        self,
+        registry: Arc<crate::brokers::process::ProcessRegistry>,
+        gate: Arc<ariadusage_core::gates::launch::LaunchGate>,
+    ) -> Self {
+        let mut cli = super::cli_https::CliRuntime::with_process_broker(registry, gate);
+        cli.runner = self.cli.runner.clone();
+        #[cfg(feature = "test-hooks")]
+        {
+            cli.spawn_fetch = self.cli.spawn_fetch.clone();
+        }
+        cli.binary_resolver = self.cli.binary_resolver.clone();
+        cli.warm_dependencies = self.cli.warm_dependencies.clone();
+        cli.persists_cli_sessions = self.cli.persists_cli_sessions;
+        cli.idle_window = self.cli.idle_window;
+        self.with_cli_runtime(Arc::new(cli))
+    }
+
     pub fn with_probe_timeout(mut self, timeout: Duration) -> Self {
         self.probe_timeout = timeout;
         self
