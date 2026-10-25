@@ -601,7 +601,7 @@ async fn scanner_keeps_command_only_cli_rows_before_a_transcript_exists() {
         let sessions = scanner.scan_with_env(Timestamp::now(), &env, false).await;
 
         assert_eq!(sessions.len(), 1);
-        assert!(sessions.first().is_some());
+        assert!(!sessions.is_empty());
         let session = &sessions[0];
         assert_eq!(session.id, "pid:101");
         assert_eq!(session.pid, Some(101));
@@ -1014,7 +1014,7 @@ async fn trusted_chatgpt_app_server_projects_recent_codex_rollout_activity_witho
             .scanner
             .scan_with_env(now, &fixture.environment, false)
             .await;
-        assert!(sessions.first().is_some());
+        assert!(!sessions.is_empty());
         let session = sessions.first().expect("first session");
 
         assert_eq!(sessions.len(), 1);

@@ -82,7 +82,7 @@ fn sessions_json_round_trip_preserves_stable_schema() {
     let object: Vec<serde_json::Map<String, serde_json::Value>> =
         serde_json::from_slice(&data).expect("decode json map");
     assert_eq!(object.len(), 1);
-    assert!(object.first().is_some());
+    assert!(!object.is_empty());
     let keys: HashSet<&str> = object[0].keys().map(String::as_str).collect();
     let expected: HashSet<&str> = [
         "id",
@@ -107,7 +107,7 @@ fn sessions_json_round_trip_preserves_stable_schema() {
         .expect("decode AgentSession");
     assert_eq!(decoded, vec![session.clone()]);
 
-    assert!(object.first().is_some());
+    assert!(!object.is_empty());
     let mut legacy_object = object[0].clone();
     legacy_object.remove("sessionName");
     let legacy_data = serde_json::to_vec(&vec![legacy_object]).expect("encode legacy");
