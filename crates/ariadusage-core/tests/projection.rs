@@ -807,3 +807,182 @@ fn test_unknown_provider_has_no_presentation() {
     let input = sample_projection_input("example-provider", RefreshState::Fresh);
     assert!(provider_snapshot(&snap, &input).presentation.is_none());
 }
+
+// Rust-added: verifies multi-lane pace projection across primary, secondary, tertiary, and extra windows
+#[test]
+fn test_multi_lane_pace_projection_for_claude_codex_and_antigravity() {
+    let now = sample_timestamp();
+    let resets_2h = now + jiff::Span::new().hours(2);
+    let resets_4d = now + jiff::Span::new().hours(4 * 24);
+    let resets_20d = now + jiff::Span::new().hours(20 * 24);
+
+    // Claude: 5h primary, 7d secondary, 7d tertiary, 30d monthly spend cap extra
+    let mut claude_snap = UsageSnapshot::new(
+        Some(RateWindow::new(80.0, Some(300), Some(resets_2h), None, None, false).unwrap()),
+        Some(RateWindow::new(50.0, Some(10_080), Some(resets_4d), None, None, false).unwrap()),
+        Some(RateWindow::new(50.0, Some(10_080), Some(resets_4d), None, None, false).unwrap()),
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        now,
+        None,
+        Confidence::Exact,
+    )
+    .unwrap();
+    claude_snap.extra_rate_windows = Some(vec![NamedRateWindow::new(
+        "claude-monthly-spend-cap",
+        "Monthly spend cap ($42 / $100)",
+        RateWindow::new(42.0, Some(43_200), Some(resets_20d), None, None, false).unwrap(),
+    )]);
+    let claude_input = sample_projection_input("claude", RefreshState::Fresh);
+    let claude_proj = provider_snapshot(&claude_snap, &claude_input);
+    let claude_prim_pace = claude_proj
+        .windows
+        .primary
+        .unwrap()
+        .value
+        .unwrap()
+        .pace
+        .expect("claude primary session pace");
+    assert!(claude_prim_pace.summary.contains("Projected empty in 45m"));
+    assert!(
+        claude_proj
+            .windows
+            .secondary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_some()
+    );
+    assert!(
+        claude_proj
+            .windows
+            .tertiary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_some()
+    );
+    assert!(
+        claude_proj.windows.extra[0]
+            .window
+            .value
+            .as_ref()
+            .unwrap()
+            .pace
+            .is_some()
+    );
+
+    // Claude exhausted weekly binding quota suppresses primary session pace
+    let claude_capped_snap = UsageSnapshot::new(
+        Some(RateWindow::new(48.0, Some(300), Some(resets_2h), None, None, false).unwrap()),
+        Some(RateWindow::new(100.0, Some(10_080), Some(resets_4d), None, None, false).unwrap()),
+        None,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        now,
+        None,
+        Confidence::Exact,
+    )
+    .unwrap();
+    let claude_capped_proj = provider_snapshot(&claude_capped_snap, &claude_input);
+    assert!(
+        claude_capped_proj
+            .windows
+            .primary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_none()
+    );
+
+    // Estimated confidence is allowed by default for first-party providers (`allowsEstimatedUsage == true`),
+    // and gated when `allows_estimated_usage` is false (`ProviderPaceCapability::allows_pace`).
+    let estimated_snap = UsageSnapshot::new(
+        Some(RateWindow::new(80.0, Some(300), Some(resets_2h), None, None, false).unwrap()),
+        Some(RateWindow::new(50.0, Some(10_080), Some(resets_4d), None, None, false).unwrap()),
+        None,
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        now,
+        None,
+        Confidence::Estimated,
+    )
+    .unwrap();
+    let estimated_proj = provider_snapshot(&estimated_snap, &claude_input);
+    assert!(
+        estimated_proj
+            .windows
+            .primary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_some()
+    );
+    let strict_cap = ProviderPaceCapability {
+        allows_estimated_usage: false,
+        ..ProviderPaceCapability::calendar_month_reset_window()
+    };
+    assert!(!strict_cap.allows_pace(Confidence::Estimated));
+    assert!(strict_cap.allows_pace(Confidence::Exact));
+
+    // Antigravity: 300m primary gets Session pace, 10080m secondary gets Weekly pace, nil-duration tertiary gets None
+    let anti_snap = UsageSnapshot::new(
+        Some(RateWindow::new(80.0, Some(300), Some(resets_2h), None, None, false).unwrap()),
+        Some(RateWindow::new(50.0, Some(10_080), Some(resets_4d), None, None, false).unwrap()),
+        Some(RateWindow::new(50.0, None, Some(resets_2h), None, None, false).unwrap()),
+        None,
+        None,
+        Vec::new(),
+        None,
+        None,
+        now,
+        None,
+        Confidence::Exact,
+    )
+    .unwrap();
+    let anti_input = sample_projection_input("antigravity", RefreshState::Fresh);
+    let anti_proj = provider_snapshot(&anti_snap, &anti_input);
+    assert!(
+        anti_proj
+            .windows
+            .primary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_some()
+    );
+    assert!(
+        anti_proj
+            .windows
+            .secondary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_some()
+    );
+    assert!(
+        anti_proj
+            .windows
+            .tertiary
+            .unwrap()
+            .value
+            .unwrap()
+            .pace
+            .is_none()
+    );
+}

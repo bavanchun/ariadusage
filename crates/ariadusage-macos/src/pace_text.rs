@@ -2,9 +2,13 @@
 
 //! Pace labels under a usage bar: `7% in deficit · Runs out in 3d`.
 
-use ariadusage_protocol::usage::{PaceStage, SessionEquivalentForecast};
+use ariadusage_protocol::usage::{PaceStage, RateWindow, SessionEquivalentForecast};
+use jiff::Timestamp;
 
 use crate::format::{self, DateTexts};
+
+/// Minimum expected usage percentage before session/weekly pace is shown (`UsagePaceText.swift:160`).
+pub const MINIMUM_EXPECTED_PERCENT: f64 = 3.0;
 
 /// The pace facts the labels are built from (`UsagePace`).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -161,4 +165,133 @@ pub fn session_equivalent_detail(
     let left = format!("Est. {displayed} {unit} left");
     let right = format!("{} windows until reset", forecast.windows_until_reset);
     SessionEquivalentDetail { left, right }
+}
+
+/// Returns whether the provider's pace capability shows the `1.5× headroom` hint
+/// (`UsagePaceText.swift:120-127`, Codex only at the baseline).
+pub fn shows_headroom_hint(provider_id: &str) -> bool {
+    provider_id == "codex"
+}
+
+/// Returns whether `window` supports session-style pace for `provider_id`
+/// (`ProviderPaceCapability.supportsSessionPace`, `UsagePaceText.swift:155-157`).
+pub fn supports_session_pace(provider_id: &str, window: &RateWindow) -> bool {
+    match provider_id {
+        "claude" => true,
+        // Codex suppresses weekly (10080) and monthly (43200) windows on the session lane,
+        // while keeping 5h (300) and fallback/unknown durations (`CodexProviderDescriptor.swift:56-63`).
+        "codex" => !matches!(window.window_minutes, Some(10_080 | 43_200)),
+        // Antigravity requires an explicit 5h (300-minute) window (`AntigravityProviderDescriptor.swift:71`).
+        "antigravity" => window.window_minutes == Some(300),
+        _ => false,
+    }
+}
+
+/// Computes session pace facts for `window` when supported by `provider_id`
+/// (`UsagePaceText.sessionPace`, `UsagePaceText.swift:155-162`).
+pub fn session_pace(provider_id: &str, window: &RateWindow, now: Timestamp) -> Option<PaceFacts> {
+    if !supports_session_pace(provider_id, window) {
+        return None;
+    }
+    if (100.0 - window.used_percent).max(0.0) <= 0.0 {
+        return None;
+    }
+    let resets_at = window.resets_at?;
+    let minutes = window.window_minutes.unwrap_or(300);
+    if minutes == 0 {
+        return None;
+    }
+    let duration = f64::from(minutes) * 60.0;
+    let time_until_reset = now.duration_until(resets_at).as_secs_f64();
+    if time_until_reset <= 0.0 || time_until_reset > duration {
+        return None;
+    }
+    let elapsed = (duration - time_until_reset).clamp(0.0, duration);
+    let expected = ((elapsed / duration) * 100.0).clamp(0.0, 100.0);
+    if elapsed == 0.0 && window.used_percent > 0.0 {
+        return None;
+    }
+    if expected < MINIMUM_EXPECTED_PERCENT {
+        return None;
+    }
+    let actual = window.used_percent.clamp(0.0, 100.0);
+    let delta = actual - expected;
+    let stage = stage_for_delta(delta);
+
+    let mut eta_seconds = None;
+    let mut will_last_to_reset = false;
+    let mut speed_multiplier_to_reset = None;
+    if elapsed > 0.0 && actual > 0.0 {
+        let rate = actual / elapsed;
+        if rate > 0.0 {
+            let remaining = (100.0 - actual).max(0.0);
+            let candidate = remaining / rate;
+            if candidate >= time_until_reset {
+                will_last_to_reset = true;
+                if time_until_reset > 0.0 {
+                    let required_rate = remaining / time_until_reset;
+                    let multiplier = required_rate / rate;
+                    if multiplier.is_finite() && multiplier > 0.0 {
+                        speed_multiplier_to_reset = Some(multiplier);
+                    }
+                }
+            } else {
+                eta_seconds = Some(candidate);
+            }
+        }
+    } else if elapsed > 0.0 && actual == 0.0 {
+        will_last_to_reset = true;
+    }
+
+    Some(PaceFacts {
+        stage,
+        delta_percent: delta,
+        expected_used_percent: expected,
+        will_last_to_reset,
+        eta_seconds,
+        run_out_probability: None,
+        speed_multiplier_to_reset,
+    })
+}
+
+/// Builds the session pace detail for `window` (`UsagePaceText.sessionDetail`, `UsagePaceText.swift:164-171`).
+pub fn session_detail(
+    provider_id: &str,
+    window: &RateWindow,
+    now: Timestamp,
+) -> Option<PaceDetail> {
+    let pace = session_pace(provider_id, window, now)?;
+    Some(detail(
+        &pace,
+        shows_headroom_hint(provider_id),
+        PaceContext::Session,
+    ))
+}
+
+/// Builds the single-line session pace summary (`UsagePaceText.sessionSummary`, `UsagePaceText.swift:173-179`).
+pub fn session_summary(provider_id: &str, window: &RateWindow, now: Timestamp) -> Option<String> {
+    Some(session_detail(provider_id, window, now)?.summary())
+}
+
+fn stage_for_delta(delta: f64) -> PaceStage {
+    let abs_delta = delta.abs();
+    if abs_delta <= 2.0 {
+        PaceStage::OnTrack
+    } else if abs_delta <= 6.0 {
+        if delta >= 0.0 {
+            PaceStage::SlightlyAhead
+        } else {
+            PaceStage::SlightlyBehind
+        }
+    } else if abs_delta <= 12.0 {
+        if delta >= 0.0 {
+            PaceStage::Ahead
+        } else {
+            PaceStage::Behind
+        }
+    } else if delta >= 0.0 {
+        PaceStage::FarAhead
+    } else {
+        PaceStage::FarBehind
+    }
 }

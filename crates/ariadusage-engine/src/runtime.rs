@@ -20,13 +20,12 @@ use ariadusage_core::notifications::{
     CodexSessionQuotaOwnerKey, CredentialFetchOutcome, CredentialNotificationAction,
     NotificationPolicyEngine, NotificationPost, ProviderCredentialError, ProviderFetchErrorKind,
 };
-use ariadusage_core::pace::UsagePace;
 use ariadusage_core::pipeline::{
     BoxFuture, FetchContext, FetchError, FetchInteraction, FetchPhase, FetchRuntime, Sleeper,
     error_kind_to_category, fetch_outcome,
 };
 use ariadusage_core::projection::{
-    ProjectedError, ProjectionInput, RefreshState, provider_snapshot,
+    ProjectedError, ProjectionInput, RefreshState, provider_snapshot_with_tz,
 };
 use ariadusage_core::providers::{ProviderDescriptor, SourceMode};
 use ariadusage_core::refresh::{
@@ -961,29 +960,6 @@ impl EngineRuntime {
         now: Timestamp,
     ) -> ProviderSnapshot {
         let mut projected = if let Some(usage) = &state.snapshot {
-            let pace = usage.secondary.as_ref().and_then(|secondary| {
-                let is_weekly = secondary.window_minutes.is_none()
-                    || secondary.window_minutes
-                        == Some(ariadusage_core::pace::DEFAULT_WEEKLY_WINDOW_MINUTES);
-                if !is_weekly
-                    && !descriptor
-                        .pace_capability
-                        .supports_reset_window_pace(secondary, now)
-                {
-                    return None;
-                }
-                let resolved = descriptor
-                    .pace_capability
-                    .resolved_reset_window_for_pace(secondary);
-                UsagePace::weekly(
-                    &resolved,
-                    now,
-                    resolved.window_minutes,
-                    None,
-                    &TimeZone::system(),
-                )
-            });
-
             let input = ProjectionInput {
                 provider: descriptor.id.clone(),
                 display_name: descriptor.display_name.to_string(),
@@ -995,9 +971,9 @@ impl EngineRuntime {
                 source_kind: state.source_kind,
                 source_label: state.source_label.clone(),
                 error: state.last_error.clone(),
-                pace,
+                pace: None,
             };
-            provider_snapshot(usage, &input)
+            provider_snapshot_with_tz(usage, &input, now, None, &TimeZone::system())
         } else {
             let mut empty = ProviderSnapshot::new(
                 descriptor.id.clone(),

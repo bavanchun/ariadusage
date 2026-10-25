@@ -1,10 +1,12 @@
 // Ported from CodexBar Sources/CodexBarCore/UsagePace.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCore/Providers/ProviderDescriptor.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/RateWindow+BindingCap.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
-use ariadusage_protocol::PaceStage;
+use ariadusage_protocol::{Confidence, PaceStage};
 use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
+use crate::model::UsageSnapshot;
 use crate::model::window::RateWindow;
 
 /// Default weekly quota window duration in minutes (7 days).
@@ -13,6 +15,8 @@ pub const DEFAULT_WEEKLY_WINDOW_MINUTES: i64 = 7 * 24 * 60; // 10080
 pub const DEFAULT_SESSION_WINDOW_MINUTES: i64 = 5 * 60; // 300
 /// Monthly rate window sentinel duration in minutes (30 days).
 pub const MONTHLY_WINDOW_SENTINEL_MINUTES: i64 = 30 * 24 * 60; // 43200
+/// Minimum expected used percentage before session or weekly pace is shown (`UsagePaceText.swift:6`).
+pub const MINIMUM_EXPECTED_PERCENT: f64 = 3.0;
 
 /// Core usage pacing computation comparing quota consumption to time progression.
 #[derive(Debug, Clone, PartialEq)]
@@ -341,34 +345,241 @@ impl WorkdayProgress {
     }
 }
 
-/// Rule for matching a rate window to reset-window pace.
+/// Which window horizon a pace lane describes (`ProviderPaceKind`, `ProviderDescriptor.swift:155-169`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPaceKind {
+    Session,
+    Weekly,
+}
+
+impl ProviderPaceKind {
+    pub const fn default_window_minutes(self) -> i64 {
+        match self {
+            Self::Session => DEFAULT_SESSION_WINDOW_MINUTES,
+            Self::Weekly => DEFAULT_WEEKLY_WINDOW_MINUTES,
+        }
+    }
+}
+
+/// Positional rate window slot (`ProviderPaceSlot`, `ProviderDescriptor.swift:171-177`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPaceSlot {
+    Primary,
+    Secondary,
+    Tertiary,
+}
+
+/// Rule for matching a rate window to a pace lane (`ProviderPaceWindowRule`,
+/// `ProviderDescriptor.swift:179-225`).
+#[derive(Debug, Clone, Copy)]
 pub enum ProviderPaceWindowRule {
     Unsupported,
-    WindowDuration(i64),
+    Always,
+    ResetDatePresent,
     WindowDurationPresent,
+    WindowDuration(i64),
+    WindowDurationAtMost {
+        maximum_minutes: i64,
+        requires_duration: bool,
+    },
+    Custom(fn(&RateWindow, Timestamp) -> bool),
 }
 
-/// Rule for inferring monthly calendar duration for a rate window.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl PartialEq for ProviderPaceWindowRule {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unsupported, Self::Unsupported)
+            | (Self::Always, Self::Always)
+            | (Self::ResetDatePresent, Self::ResetDatePresent)
+            | (Self::WindowDurationPresent, Self::WindowDurationPresent) => true,
+            (Self::WindowDuration(a), Self::WindowDuration(b)) => a == b,
+            (
+                Self::WindowDurationAtMost {
+                    maximum_minutes: a_max,
+                    requires_duration: a_req,
+                },
+                Self::WindowDurationAtMost {
+                    maximum_minutes: b_max,
+                    requires_duration: b_req,
+                },
+            ) => a_max == b_max && a_req == b_req,
+            (Self::Custom(a), Self::Custom(b)) => std::ptr::fn_addr_eq(*a, *b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ProviderPaceWindowRule {}
+
+impl ProviderPaceWindowRule {
+    pub const fn unsupported() -> Self {
+        Self::Unsupported
+    }
+
+    pub const fn always() -> Self {
+        Self::Always
+    }
+
+    pub const fn reset_date_present() -> Self {
+        Self::ResetDatePresent
+    }
+
+    pub const fn window_duration_present() -> Self {
+        Self::WindowDurationPresent
+    }
+
+    pub const fn window_duration(minutes: i64) -> Self {
+        Self::WindowDuration(minutes)
+    }
+
+    pub const fn window_duration_at_most(maximum_minutes: i64, requires_duration: bool) -> Self {
+        Self::WindowDurationAtMost {
+            maximum_minutes,
+            requires_duration,
+        }
+    }
+
+    pub fn matches(&self, window: &RateWindow, now: Timestamp) -> bool {
+        match self {
+            Self::Unsupported => false,
+            Self::Always => true,
+            Self::ResetDatePresent => window.resets_at.is_some(),
+            Self::WindowDurationPresent => window.window_minutes.is_some(),
+            Self::WindowDuration(minutes) => window.window_minutes == Some(*minutes),
+            Self::WindowDurationAtMost {
+                maximum_minutes,
+                requires_duration,
+            } => match window.window_minutes {
+                Some(window_minutes) => window_minutes <= *maximum_minutes,
+                None => !*requires_duration,
+            },
+            Self::Custom(predicate) => predicate(window, now),
+        }
+    }
+}
+
+/// Rule for inferring monthly calendar duration for a rate window
+/// (`ProviderPaceDurationRule`, `ProviderDescriptor.swift:227-263`).
+#[derive(Debug, Clone, Copy)]
 pub enum ProviderPaceDurationRule {
     Unsupported,
+    WindowDurationMissing,
     WindowDuration(i64),
+    Custom(fn(&RateWindow) -> bool),
 }
 
-/// Capabilities and rules governing pacing computation for a provider.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl PartialEq for ProviderPaceDurationRule {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Unsupported, Self::Unsupported)
+            | (Self::WindowDurationMissing, Self::WindowDurationMissing) => true,
+            (Self::WindowDuration(a), Self::WindowDuration(b)) => a == b,
+            (Self::Custom(a), Self::Custom(b)) => std::ptr::fn_addr_eq(*a, *b),
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ProviderPaceDurationRule {}
+
+impl ProviderPaceDurationRule {
+    pub const fn unsupported() -> Self {
+        Self::Unsupported
+    }
+
+    pub const fn window_duration_missing() -> Self {
+        Self::WindowDurationMissing
+    }
+
+    pub const fn window_duration(minutes: i64) -> Self {
+        Self::WindowDuration(minutes)
+    }
+
+    pub fn matches(&self, window: &RateWindow) -> bool {
+        match self {
+            Self::Unsupported => false,
+            Self::WindowDurationMissing => window.window_minutes.is_none(),
+            Self::WindowDuration(minutes) => window.window_minutes == Some(*minutes),
+            Self::Custom(predicate) => predicate(window),
+        }
+    }
+}
+
+/// Standard positional pace lane rule (`ProviderStandardPaceLane`,
+/// `ProviderDescriptor.swift:265-289`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderStandardPaceLane {
+    pub kind: ProviderPaceKind,
+    pub window_rule: ProviderPaceWindowRule,
+}
+
+impl ProviderStandardPaceLane {
+    pub const fn new(kind: ProviderPaceKind, window_rule: ProviderPaceWindowRule) -> Self {
+        Self { kind, window_rule }
+    }
+
+    pub const fn session(maximum_minutes: i64, requires_duration: bool) -> Self {
+        Self {
+            kind: ProviderPaceKind::Session,
+            window_rule: ProviderPaceWindowRule::window_duration_at_most(
+                maximum_minutes,
+                requires_duration,
+            ),
+        }
+    }
+
+    pub const fn weekly() -> Self {
+        Self {
+            kind: ProviderPaceKind::Weekly,
+            window_rule: ProviderPaceWindowRule::always(),
+        }
+    }
+
+    pub const fn weekly_with_duration() -> Self {
+        Self {
+            kind: ProviderPaceKind::Weekly,
+            window_rule: ProviderPaceWindowRule::window_duration_present(),
+        }
+    }
+
+    pub const fn exact(kind: ProviderPaceKind, minutes: i64) -> Self {
+        Self {
+            kind,
+            window_rule: ProviderPaceWindowRule::window_duration(minutes),
+        }
+    }
+}
+
+/// Capabilities and rules governing pacing computation for a provider
+/// (`ProviderPaceCapability`, `ProviderDescriptor.swift:291-332`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProviderPaceCapability {
     pub reset_window_pace: ProviderPaceWindowRule,
     pub inferred_monthly_duration: ProviderPaceDurationRule,
+    pub primary: Option<ProviderStandardPaceLane>,
+    pub secondary: Option<ProviderStandardPaceLane>,
+    pub tertiary: Option<ProviderStandardPaceLane>,
     pub shows_headroom_hint: bool,
+    pub session_pace_window_rule: ProviderPaceWindowRule,
+    pub allows_estimated_usage: bool,
+}
+
+impl Default for ProviderPaceCapability {
+    fn default() -> Self {
+        Self::UNSUPPORTED
+    }
 }
 
 impl ProviderPaceCapability {
     pub const UNSUPPORTED: Self = Self {
         reset_window_pace: ProviderPaceWindowRule::Unsupported,
         inferred_monthly_duration: ProviderPaceDurationRule::Unsupported,
+        primary: None,
+        secondary: None,
+        tertiary: None,
         shows_headroom_hint: false,
+        session_pace_window_rule: ProviderPaceWindowRule::Unsupported,
+        allows_estimated_usage: true,
     };
 
     pub const CALENDAR_MONTH_RESET_WINDOW: Self = Self {
@@ -376,7 +587,15 @@ impl ProviderPaceCapability {
         inferred_monthly_duration: ProviderPaceDurationRule::WindowDuration(
             MONTHLY_WINDOW_SENTINEL_MINUTES,
         ),
+        primary: Some(ProviderStandardPaceLane::session(
+            DEFAULT_SESSION_WINDOW_MINUTES,
+            false,
+        )),
+        secondary: Some(ProviderStandardPaceLane::weekly()),
+        tertiary: Some(ProviderStandardPaceLane::weekly()),
         shows_headroom_hint: false,
+        session_pace_window_rule: ProviderPaceWindowRule::Always,
+        allows_estimated_usage: true,
     };
 
     pub const fn unsupported() -> Self {
@@ -387,19 +606,16 @@ impl ProviderPaceCapability {
         Self::CALENDAR_MONTH_RESET_WINDOW
     }
 
-    pub fn supports_reset_window_pace(&self, window: &RateWindow, _now: Timestamp) -> bool {
-        match self.reset_window_pace {
-            ProviderPaceWindowRule::Unsupported => false,
-            ProviderPaceWindowRule::WindowDuration(m) => window.window_minutes == Some(m),
-            ProviderPaceWindowRule::WindowDurationPresent => window.window_minutes.is_some(),
-        }
+    pub const fn allows_pace(&self, data_confidence: Confidence) -> bool {
+        !matches!(data_confidence, Confidence::Estimated) || self.allows_estimated_usage
+    }
+
+    pub fn supports_reset_window_pace(&self, window: &RateWindow, now: Timestamp) -> bool {
+        self.reset_window_pace.matches(window, now)
     }
 
     pub fn uses_inferred_monthly_duration(&self, window: &RateWindow) -> bool {
-        match self.inferred_monthly_duration {
-            ProviderPaceDurationRule::Unsupported => false,
-            ProviderPaceDurationRule::WindowDuration(m) => window.window_minutes == Some(m),
-        }
+        self.inferred_monthly_duration.matches(window)
     }
 
     pub fn resolved_reset_window_for_pace(&self, window: &RateWindow) -> RateWindow {
@@ -420,6 +636,51 @@ impl ProviderPaceCapability {
         }
     }
 
+    pub fn resolved_kind(
+        &self,
+        slot: ProviderPaceSlot,
+        window: &RateWindow,
+        now: Timestamp,
+    ) -> Option<ProviderPaceKind> {
+        if self.supports_reset_window_pace(window, now) {
+            return Some(ProviderPaceKind::Weekly);
+        }
+        let lane = match slot {
+            ProviderPaceSlot::Primary => self.primary?,
+            ProviderPaceSlot::Secondary => self.secondary?,
+            ProviderPaceSlot::Tertiary => self.tertiary?,
+        };
+        lane.window_rule.matches(window, now).then_some(lane.kind)
+    }
+
+    pub fn supports_session_pace(&self, window: &RateWindow, now: Timestamp) -> bool {
+        self.session_pace_window_rule.matches(window, now)
+    }
+
+    /// Computes session pace for a 5-hour session window (`UsagePaceText.sessionPace`,
+    /// `UsagePaceText.swift:92-104`).
+    pub fn session_pace(
+        &self,
+        window: &RateWindow,
+        now: Timestamp,
+        time_zone: &TimeZone,
+    ) -> Option<UsagePace> {
+        if !self.supports_session_pace(window, now) {
+            return None;
+        }
+        if window.remaining_percent() <= 0.0 {
+            return None;
+        }
+        let pace = UsagePace::weekly(
+            window,
+            now,
+            Some(DEFAULT_SESSION_WINDOW_MINUTES),
+            None,
+            time_zone,
+        )?;
+        (pace.expected_used_percent >= MINIMUM_EXPECTED_PERCENT).then_some(pace)
+    }
+
     pub fn inferred_monthly_window_minutes(ending_at: Timestamp) -> Option<i64> {
         let resets_zdt = ending_at.to_zoned(TimeZone::UTC);
         let starts_zdt = resets_zdt.checked_sub(jiff::Span::new().months(1)).ok()?;
@@ -434,5 +695,311 @@ impl ProviderPaceCapability {
         } else {
             None
         }
+    }
+}
+
+/// Displayed primary percentage and reset when an exhausted longer-horizon binding quota caps
+/// the primary session lane (`RateWindowBindingQuotaProjection`, `RateWindow+BindingCap.swift:3-65`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RateWindowBindingQuotaProjection {
+    pub used_percent: f64,
+    pub resets_at: Option<Timestamp>,
+    pub reset_description: Option<String>,
+}
+
+/// Projects the displayed primary percentage and reset through exhausted longer binding lanes
+/// (`RateWindow.bindingQuotaProjection`, `RateWindow+BindingCap.swift:21-65`).
+pub fn binding_quota_projection(
+    primary: &RateWindow,
+    binding_lanes: &[RateWindow],
+    now: Timestamp,
+) -> Option<RateWindowBindingQuotaProjection> {
+    let primary_minutes = primary
+        .window_minutes
+        .unwrap_or(DEFAULT_SESSION_WINDOW_MINUTES);
+    let mut blockers: Vec<&RateWindow> = binding_lanes
+        .iter()
+        .filter(|lane| {
+            lane.window_minutes
+                .is_some_and(|minutes| minutes > primary_minutes)
+                && is_actively_exhausted(lane, now)
+        })
+        .collect();
+    if blockers.is_empty() {
+        return None;
+    }
+    if is_actively_exhausted(primary, now) {
+        blockers.push(primary);
+    }
+    let (resets_at, reset_description) = effective_binding_reset(&blockers);
+    Some(RateWindowBindingQuotaProjection {
+        used_percent: 100.0,
+        resets_at,
+        reset_description,
+    })
+}
+
+fn is_actively_exhausted(window: &RateWindow, now: Timestamp) -> bool {
+    window.remaining_percent() <= 0.0 && window.resets_at.is_none_or(|reset| reset > now)
+}
+
+fn effective_binding_reset(blockers: &[&RateWindow]) -> (Option<Timestamp>, Option<String>) {
+    let unknown_reset_blockers: Vec<&&RateWindow> =
+        blockers.iter().filter(|b| b.resets_at.is_none()).collect();
+    if !unknown_reset_blockers.is_empty() {
+        if blockers.len() == 1
+            && let Some(desc) = unknown_reset_blockers[0]
+                .reset_description
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        {
+            return (None, Some(desc.to_string()));
+        }
+        return (None, None);
+    }
+    let latest = blockers.iter().filter_map(|b| b.resets_at).max();
+    (latest, None)
+}
+
+/// Resolved pace and its window horizon kind for one rate window.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedWindowPace {
+    pub pace: UsagePace,
+    pub kind: ProviderPaceKind,
+}
+
+/// Computed paces across all windows of a [`UsageSnapshot`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SnapshotWindowPaces {
+    pub primary: Option<ResolvedWindowPace>,
+    pub secondary: Option<ResolvedWindowPace>,
+    pub tertiary: Option<ResolvedWindowPace>,
+    pub extra: Vec<Option<ResolvedWindowPace>>,
+}
+
+impl SnapshotWindowPaces {
+    /// Computes displayable pace for every window (`primary`, `secondary`, `tertiary`, and
+    /// `extra_rate_windows`) of `snapshot` according to `provider_id`'s [`ProviderPaceCapability`]
+    /// and upstream menu-card/CLI rules (`MenuCardView.swift:1254-1389`,
+    /// `MenuCardView+ModelHelpers.swift:127-165, 852-899, 1125-1175`).
+    pub fn compute(
+        provider_id: &str,
+        snapshot: &UsageSnapshot,
+        now: Timestamp,
+        work_days: Option<u32>,
+        time_zone: &TimeZone,
+    ) -> Self {
+        let extra_len = snapshot
+            .extra_rate_windows
+            .as_ref()
+            .map_or(0, std::vec::Vec::len);
+        let capability = crate::providers::find_by_id_str(provider_id)
+            .map(|d| d.pace_capability)
+            .unwrap_or_default();
+        if !capability.allows_pace(snapshot.data_confidence) {
+            return Self {
+                primary: None,
+                secondary: None,
+                tertiary: None,
+                extra: vec![None; extra_len],
+            };
+        }
+
+        let primary = snapshot.primary.as_ref().and_then(|prim| {
+            if prim.is_synthetic_placeholder {
+                return None;
+            }
+            if provider_id == "claude"
+                && let Some(sec) = snapshot.secondary.as_ref()
+                && binding_quota_projection(prim, std::slice::from_ref(sec), now).is_some()
+            {
+                return None;
+            }
+            if provider_id == "antigravity" {
+                return antigravity_window_pace(&capability, prim, now, work_days, time_zone);
+            }
+            reset_window_pace(&capability, prim, now, work_days, time_zone)
+                .or_else(|| session_window_pace(&capability, prim, now, time_zone))
+        });
+
+        let secondary = snapshot.secondary.as_ref().and_then(|sec| {
+            if sec.is_synthetic_placeholder {
+                return None;
+            }
+            if provider_id == "antigravity" {
+                return antigravity_window_pace(&capability, sec, now, work_days, time_zone);
+            }
+            match capability.resolved_kind(ProviderPaceSlot::Secondary, sec, now)? {
+                ProviderPaceKind::Weekly => {
+                    reset_window_pace(&capability, sec, now, work_days, time_zone).or_else(|| {
+                        displayable_weekly_pace(sec, now, work_days, time_zone).map(|pace| {
+                            ResolvedWindowPace {
+                                pace,
+                                kind: ProviderPaceKind::Weekly,
+                            }
+                        })
+                    })
+                }
+                ProviderPaceKind::Session => session_window_pace(&capability, sec, now, time_zone),
+            }
+        });
+
+        let tertiary = snapshot.tertiary.as_ref().and_then(|tert| {
+            if tert.is_synthetic_placeholder {
+                return None;
+            }
+            if provider_id == "antigravity" {
+                return antigravity_window_pace(&capability, tert, now, work_days, time_zone);
+            }
+            match capability.resolved_kind(ProviderPaceSlot::Tertiary, tert, now)? {
+                ProviderPaceKind::Weekly => {
+                    reset_window_pace(&capability, tert, now, work_days, time_zone).or_else(|| {
+                        displayable_weekly_pace(tert, now, work_days, time_zone).map(|pace| {
+                            ResolvedWindowPace {
+                                pace,
+                                kind: ProviderPaceKind::Weekly,
+                            }
+                        })
+                    })
+                }
+                ProviderPaceKind::Session => session_window_pace(&capability, tert, now, time_zone),
+            }
+        });
+
+        let extra = snapshot
+            .extra_rate_windows
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|named| {
+                if !named.usage_known || named.window.is_synthetic_placeholder {
+                    return None;
+                }
+                extra_rate_window_pace(
+                    provider_id,
+                    &capability,
+                    &named.window,
+                    now,
+                    work_days,
+                    time_zone,
+                )
+            })
+            .collect();
+
+        Self {
+            primary,
+            secondary,
+            tertiary,
+            extra,
+        }
+    }
+}
+
+fn displayable_weekly_pace(
+    window: &RateWindow,
+    now: Timestamp,
+    work_days: Option<u32>,
+    time_zone: &TimeZone,
+) -> Option<UsagePace> {
+    if window.is_synthetic_placeholder || window.remaining_percent() <= 0.0 {
+        return None;
+    }
+    let pace = UsagePace::weekly(
+        window,
+        now,
+        Some(DEFAULT_WEEKLY_WINDOW_MINUTES),
+        work_days,
+        time_zone,
+    )?;
+    (pace.expected_used_percent >= MINIMUM_EXPECTED_PERCENT || pace.eta_seconds == Some(0.0))
+        .then_some(pace)
+}
+
+fn reset_window_pace(
+    capability: &ProviderPaceCapability,
+    window: &RateWindow,
+    now: Timestamp,
+    work_days: Option<u32>,
+    time_zone: &TimeZone,
+) -> Option<ResolvedWindowPace> {
+    if window.is_synthetic_placeholder
+        || window.remaining_percent() <= 0.0
+        || !capability.supports_reset_window_pace(window, now)
+    {
+        return None;
+    }
+    let pace_window = capability.resolved_reset_window_for_pace(window);
+    displayable_weekly_pace(&pace_window, now, work_days, time_zone).map(|pace| {
+        ResolvedWindowPace {
+            pace,
+            kind: ProviderPaceKind::Weekly,
+        }
+    })
+}
+
+fn session_window_pace(
+    capability: &ProviderPaceCapability,
+    window: &RateWindow,
+    now: Timestamp,
+    time_zone: &TimeZone,
+) -> Option<ResolvedWindowPace> {
+    if window.is_synthetic_placeholder {
+        return None;
+    }
+    capability
+        .session_pace(window, now, time_zone)
+        .map(|pace| ResolvedWindowPace {
+            pace,
+            kind: ProviderPaceKind::Session,
+        })
+}
+
+fn antigravity_window_pace(
+    capability: &ProviderPaceCapability,
+    window: &RateWindow,
+    now: Timestamp,
+    work_days: Option<u32>,
+    time_zone: &TimeZone,
+) -> Option<ResolvedWindowPace> {
+    if window.window_minutes.is_none() {
+        return session_window_pace(capability, window, now, time_zone);
+    }
+    extra_rate_window_pace("antigravity", capability, window, now, work_days, time_zone)
+}
+
+fn extra_rate_window_pace(
+    provider_id: &str,
+    capability: &ProviderPaceCapability,
+    window: &RateWindow,
+    now: Timestamp,
+    work_days: Option<u32>,
+    time_zone: &TimeZone,
+) -> Option<ResolvedWindowPace> {
+    if window.is_synthetic_placeholder || window.remaining_percent() <= 0.0 {
+        return None;
+    }
+    if let Some(rw) = reset_window_pace(capability, window, now, work_days, time_zone) {
+        return Some(rw);
+    }
+    if provider_id == "claude" && window.window_minutes != Some(DEFAULT_WEEKLY_WINDOW_MINUTES) {
+        return None;
+    }
+    if !matches!(provider_id, "codex" | "claude" | "antigravity") {
+        return None;
+    }
+    match window.window_minutes {
+        Some(DEFAULT_SESSION_WINDOW_MINUTES) => {
+            session_window_pace(capability, window, now, time_zone)
+        }
+        Some(DEFAULT_WEEKLY_WINDOW_MINUTES) => {
+            displayable_weekly_pace(window, now, work_days, time_zone).map(|pace| {
+                ResolvedWindowPace {
+                    pace,
+                    kind: ProviderPaceKind::Weekly,
+                }
+            })
+        }
+        _ => None,
     }
 }

@@ -4,7 +4,8 @@
 use ariadusage_core::RateWindow;
 use ariadusage_core::pace::{
     DEFAULT_WEEKLY_WINDOW_MINUTES, MONTHLY_WINDOW_SENTINEL_MINUTES, ProviderPaceCapability,
-    UsagePace,
+    ProviderPaceDurationRule, ProviderPaceKind, ProviderPaceSlot, ProviderPaceWindowRule,
+    ProviderStandardPaceLane, UsagePace,
 };
 use ariadusage_core::providers::first_party_order;
 use ariadusage_protocol::PaceStage;
@@ -38,6 +39,7 @@ fn sub_seconds(ts: Timestamp, seconds: i64) -> Timestamp {
         .expect("valid sub")
 }
 
+// upstream: UsagePaceTests.swift:6 weekly pace computes delta and eta
 #[test]
 fn weekly_pace_computes_delta_and_eta() {
     let now = Timestamp::from_second(0).unwrap();
@@ -64,6 +66,7 @@ fn weekly_pace_computes_delta_and_eta() {
     assert!((pace.eta_seconds.unwrap() - (3.0 * 24.0 * 3600.0)).abs() < 1.0);
 }
 
+// upstream: UsagePaceTests.swift:28 weekly pace marks lasts to reset when usage is low
 #[test]
 fn weekly_pace_marks_lasts_to_reset_when_usage_is_low() {
     let now = Timestamp::from_second(0).unwrap();
@@ -88,6 +91,7 @@ fn weekly_pace_marks_lasts_to_reset_when_usage_is_low() {
     assert!((pace.speed_multiplier_to_reset.unwrap() - 14.25).abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:48 weekly pace speed headroom uses remaining burn capacity
 #[test]
 fn weekly_pace_speed_headroom_uses_remaining_burn_capacity() {
     let now = Timestamp::from_second(0).unwrap();
@@ -108,6 +112,7 @@ fn weekly_pace_speed_headroom_uses_remaining_burn_capacity() {
     assert!((pace.speed_multiplier_to_reset.unwrap() - 3.857).abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:64 historical pace speed headroom uses projected remaining usage
 #[test]
 fn historical_pace_speed_headroom_uses_projected_remaining_usage() {
     let pace = UsagePace::historical(45.0, 20.0, None, true, Some(0.0), Some(20.0));
@@ -115,6 +120,7 @@ fn historical_pace_speed_headroom_uses_projected_remaining_usage() {
     assert_eq!(pace.speed_multiplier_to_reset, Some(4.0));
 }
 
+// upstream: UsagePaceTests.swift:77 weekly pace hides when reset missing or outside window
 #[test]
 fn weekly_pace_hides_when_reset_missing_or_outside_window() {
     let now = Timestamp::from_second(0).unwrap();
@@ -133,6 +139,7 @@ fn weekly_pace_hides_when_reset_missing_or_outside_window() {
     assert!(UsagePace::weekly(&too_far, now, None, None, &TimeZone::UTC).is_none());
 }
 
+// upstream: UsagePaceTests.swift:95 weekly pace hides when usage exists but no elapsed
 #[test]
 fn weekly_pace_hides_when_usage_exists_but_no_elapsed() {
     let now = Timestamp::from_second(0).unwrap();
@@ -150,6 +157,7 @@ fn weekly_pace_hides_when_usage_exists_but_no_elapsed() {
     assert!(pace.is_none());
 }
 
+// upstream: UsagePaceTests.swift:111 workday aware pace shows on track for five day user on friday
 #[test]
 fn workday_aware_pace_shows_on_track_for_five_day_user_on_friday() {
     let calendar = TimeZone::UTC;
@@ -168,6 +176,7 @@ fn workday_aware_pace_shows_on_track_for_five_day_user_on_friday() {
     assert!(pace5.delta_percent.abs() <= 5.0);
 }
 
+// upstream: UsagePaceTests.swift:154 six work days includes Saturday and excludes Sunday
 #[test]
 fn six_work_days_includes_saturday_and_excludes_sunday() {
     let calendar = TimeZone::UTC;
@@ -195,6 +204,7 @@ fn six_work_days_includes_saturday_and_excludes_sunday() {
     assert_eq!(sunday.expected_used_percent, 100.0);
 }
 
+// upstream: UsagePaceTests.swift:179 workday aware pace shows on track midweek
 #[test]
 fn workday_aware_pace_shows_on_track_midweek() {
     let calendar = TimeZone::UTC;
@@ -210,6 +220,7 @@ fn workday_aware_pace_shows_on_track_midweek() {
     assert!(pace5.delta_percent.abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:217 workday aware exhausted quota does not last through weekend
 #[test]
 fn workday_aware_exhausted_quota_does_not_last_through_weekend() {
     let calendar = TimeZone::UTC;
@@ -225,6 +236,7 @@ fn workday_aware_exhausted_quota_does_not_last_through_weekend() {
     assert_eq!(pace.eta_seconds, Some(0.0));
 }
 
+// upstream: UsagePaceTests.swift:250 workday aware eta excludes non workday elapsed time
 #[test]
 fn workday_aware_eta_excludes_non_workday_elapsed_time() {
     let calendar = TimeZone::UTC;
@@ -240,6 +252,7 @@ fn workday_aware_eta_excludes_non_workday_elapsed_time() {
     assert!((pace.eta_seconds.unwrap() - (48.0 * 3600.0)).abs() < 1.0);
 }
 
+// upstream: UsagePaceTests.swift:283 workday aware eta maps work time across a weekend
 #[test]
 fn workday_aware_eta_maps_work_time_across_a_weekend() {
     let calendar = TimeZone::UTC;
@@ -255,6 +268,7 @@ fn workday_aware_eta_maps_work_time_across_a_weekend() {
     assert!((pace.eta_seconds.unwrap() - (88.0 * 3600.0)).abs() < 1.0);
 }
 
+// upstream: UsagePaceTests.swift:315 workday aware pace stays flat on non workdays
 #[test]
 fn workday_aware_pace_stays_flat_on_non_workdays() {
     let calendar = TimeZone::UTC;
@@ -276,6 +290,7 @@ fn workday_aware_pace_stays_flat_on_non_workdays() {
     );
 }
 
+// upstream: UsagePaceTests.swift:357 zero usage becomes safe only after the first configured workday begins
 #[test]
 fn zero_usage_becomes_safe_only_after_the_first_configured_workday_begins() {
     let tz = TimeZone::get("America/Los_Angeles").expect("America/Los_Angeles timezone");
@@ -305,6 +320,7 @@ fn zero_usage_becomes_safe_only_after_the_first_configured_workday_begins() {
     assert!(after.will_last_to_reset);
 }
 
+// upstream: UsagePaceTests.swift:403 workday aware pace does not declare zero usage safe before first workday
 #[test]
 fn workday_aware_pace_does_not_declare_zero_usage_safe_before_first_workday() {
     let calendar = TimeZone::UTC;
@@ -321,6 +337,7 @@ fn workday_aware_pace_does_not_declare_zero_usage_safe_before_first_workday() {
     assert_eq!(pace.eta_seconds, None);
 }
 
+// upstream: UsagePaceTests.swift:437 workday aware exhausted quota stays exhausted before first workday
 #[test]
 fn workday_aware_exhausted_quota_stays_exhausted_before_first_workday() {
     let calendar = TimeZone::UTC;
@@ -336,6 +353,7 @@ fn workday_aware_exhausted_quota_stays_exhausted_before_first_workday() {
     assert_eq!(pace.eta_seconds, Some(0.0));
 }
 
+// upstream: UsagePaceTests.swift:470 workday aware pace splits a non midnight reset at local day boundaries
 #[test]
 fn workday_aware_pace_splits_a_non_midnight_reset_at_local_day_boundaries() {
     let calendar = TimeZone::UTC;
@@ -351,6 +369,7 @@ fn workday_aware_pace_splits_a_non_midnight_reset_at_local_day_boundaries() {
     assert!(pace.delta_percent.abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:506 workday aware pace falls back to linear when workDays is nil or 7
 #[test]
 fn workday_aware_pace_falls_back_to_linear_when_work_days_is_nil_or_7() {
     let now = Timestamp::from_second(0).unwrap();
@@ -375,6 +394,7 @@ fn workday_aware_pace_falls_back_to_linear_when_work_days_is_nil_or_7() {
     assert!((pace_7.expected_used_percent - pace_default.expected_used_percent).abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:524 workdays off linear weekly pace keeps deficit sign
 #[test]
 fn workdays_off_linear_weekly_pace_keeps_deficit_sign() {
     let now = Timestamp::from_second(0).unwrap();
@@ -396,6 +416,7 @@ fn workdays_off_linear_weekly_pace_keeps_deficit_sign() {
     assert!(!pace.will_last_to_reset);
 }
 
+// upstream: UsagePaceTests.swift:541 workday aware pace ignores non weekly windows
 #[test]
 fn workday_aware_pace_ignores_non_weekly_windows() {
     let now = Timestamp::from_second(0).unwrap();
@@ -417,6 +438,7 @@ fn workday_aware_pace_ignores_non_weekly_windows() {
     assert!((pace_no_work.expected_used_percent - pace_work_5.expected_used_percent).abs() < 0.01);
 }
 
+// upstream: UsagePaceTests.swift:559 session pace computes delta and eta for five hour window
 #[test]
 fn session_pace_computes_delta_and_eta_for_five_hour_window() {
     let now = Timestamp::from_second(0).unwrap();
@@ -440,6 +462,7 @@ fn session_pace_computes_delta_and_eta_for_five_hour_window() {
     assert!(pace.will_last_to_reset);
 }
 
+// upstream: UsagePaceTests.swift:578 one work day falls back to linear pace
 #[test]
 fn one_work_day_falls_back_to_linear_pace() {
     let now = Timestamp::from_second(0).unwrap();
@@ -461,6 +484,46 @@ fn one_work_day_falls_back_to_linear_pace() {
     assert!((pace_one.expected_used_percent - pace_nil.expected_used_percent).abs() < 0.01);
 }
 
+// upstream: ProviderPaceCapabilityTests.swift:56 amp monthly pace is limited to subscription windows
+#[test]
+fn amp_monthly_pace_is_limited_to_subscription_windows() {
+    let now = Timestamp::from_second(1_750_000_000).unwrap();
+    let capability = ProviderPaceCapability {
+        reset_window_pace: ProviderPaceWindowRule::Custom(|window, _| {
+            window.window_minutes.is_some()
+                && window
+                    .reset_description
+                    .as_deref()
+                    .is_some_and(|d| d.starts_with("renews in "))
+        }),
+        ..ProviderPaceCapability::default()
+    };
+    let free_tier = RateWindow::new(
+        50.0,
+        Some(24 * 60),
+        Some(add_seconds(now, 12 * 60 * 60)),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let subscription = RateWindow::new(
+        50.0,
+        Some(MONTHLY_WINDOW_SENTINEL_MINUTES),
+        Some(add_seconds(now, 20 * 24 * 60 * 60)),
+        Some("renews in 20 days".to_string()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    assert!(!capability.supports_reset_window_pace(&free_tier, now));
+    assert!(!capability.uses_inferred_monthly_duration(&free_tier));
+    assert!(capability.supports_reset_window_pace(&subscription, now));
+    assert!(!capability.uses_inferred_monthly_duration(&subscription));
+}
+
+// upstream: ProviderPaceCapabilityTests.swift:74 calendar month pace resolves the real cycle duration
 #[test]
 fn calendar_month_pace_resolves_the_real_cycle_duration() {
     let resets_at = utc_date(2026, 3, 1, 0, 0);
@@ -482,6 +545,111 @@ fn calendar_month_pace_resolves_the_real_cycle_duration() {
     assert_eq!(resolved.used_percent, window.used_percent);
 }
 
+// upstream: ProviderPaceCapabilityTests.swift:95 zai pace maps only verified coding windows
+#[test]
+fn zai_pace_maps_only_verified_coding_windows() {
+    let now = Timestamp::from_second(1_750_000_000).unwrap();
+    let capability = ProviderPaceCapability {
+        primary: Some(ProviderStandardPaceLane::exact(
+            ProviderPaceKind::Session,
+            5 * 60,
+        )),
+        secondary: Some(ProviderStandardPaceLane::exact(
+            ProviderPaceKind::Weekly,
+            DEFAULT_WEEKLY_WINDOW_MINUTES,
+        )),
+        tertiary: None,
+        shows_headroom_hint: false,
+        session_pace_window_rule: ProviderPaceWindowRule::WindowDuration(5 * 60),
+        reset_window_pace: ProviderPaceWindowRule::Custom(|window, _| {
+            window.window_minutes == Some(MONTHLY_WINDOW_SENTINEL_MINUTES)
+                && window.reset_description.as_deref() == Some("MCP")
+        }),
+        inferred_monthly_duration: ProviderPaceDurationRule::Custom(|window| {
+            window.window_minutes == Some(MONTHLY_WINDOW_SENTINEL_MINUTES)
+                && window.reset_description.as_deref() == Some("MCP")
+        }),
+        allows_estimated_usage: false,
+    };
+    let session = RateWindow::new(
+        50.0,
+        Some(5 * 60),
+        Some(add_seconds(now, 2 * 60 * 60)),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let weekly = RateWindow::new(
+        50.0,
+        Some(DEFAULT_WEEKLY_WINDOW_MINUTES),
+        Some(add_seconds(now, 4 * 24 * 60 * 60)),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let unknown = RateWindow::new(
+        50.0,
+        None,
+        Some(add_seconds(now, 2 * 60 * 60)),
+        None,
+        None,
+        false,
+    )
+    .unwrap();
+    let monthly_mcp = RateWindow::new(
+        50.0,
+        Some(MONTHLY_WINDOW_SENTINEL_MINUTES),
+        Some(add_seconds(now, 20 * 24 * 60 * 60)),
+        Some("MCP".to_string()),
+        None,
+        false,
+    )
+    .unwrap();
+    let rolling_thirty_day = RateWindow::new(
+        50.0,
+        Some(MONTHLY_WINDOW_SENTINEL_MINUTES),
+        Some(add_seconds(now, 20 * 24 * 60 * 60)),
+        Some("30 days window".to_string()),
+        None,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(
+        capability.resolved_kind(ProviderPaceSlot::Primary, &session, now),
+        Some(ProviderPaceKind::Session)
+    );
+    assert_eq!(
+        capability.resolved_kind(ProviderPaceSlot::Secondary, &weekly, now),
+        Some(ProviderPaceKind::Weekly)
+    );
+    assert_eq!(
+        capability.resolved_kind(ProviderPaceSlot::Primary, &weekly, now),
+        None
+    );
+    assert_eq!(
+        capability.resolved_kind(ProviderPaceSlot::Secondary, &session, now),
+        None
+    );
+    assert!(capability.supports_session_pace(&session, now));
+    assert!(!capability.supports_session_pace(&unknown, now));
+    assert!(capability.supports_reset_window_pace(&monthly_mcp, now));
+    assert!(capability.uses_inferred_monthly_duration(&monthly_mcp));
+    assert!(!capability.supports_reset_window_pace(&rolling_thirty_day, now));
+    assert!(!capability.uses_inferred_monthly_duration(&rolling_thirty_day));
+    assert_eq!(
+        capability.resolved_kind(ProviderPaceSlot::Primary, &rolling_thirty_day, now),
+        None
+    );
+    assert_eq!(
+        capability.resolved_reset_window_for_pace(&rolling_thirty_day),
+        rolling_thirty_day
+    );
+}
+
+// upstream: ProviderPaceCapabilityTests.swift:9 descriptor pace capabilities match the supported provider mapping
 #[test]
 fn descriptor_pace_capabilities_match_the_supported_provider_mapping() {
     let now = Timestamp::from_second(1_750_000_000).unwrap();

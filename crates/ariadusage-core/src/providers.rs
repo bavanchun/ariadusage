@@ -8,7 +8,11 @@ use std::sync::LazyLock;
 use ariadusage_protocol::{ProviderId, ProviderPresentation};
 use serde::{Deserialize, Serialize};
 
-use crate::pace::{ProviderPaceCapability, ProviderPaceDurationRule, ProviderPaceWindowRule};
+use crate::pace::{
+    DEFAULT_SESSION_WINDOW_MINUTES, DEFAULT_WEEKLY_WINDOW_MINUTES, MONTHLY_WINDOW_SENTINEL_MINUTES,
+    ProviderPaceCapability, ProviderPaceDurationRule, ProviderPaceWindowRule,
+    ProviderStandardPaceLane,
+};
 
 /// Mode through which usage metrics are acquired.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -87,6 +91,15 @@ impl ProviderDescriptor {
     }
 }
 
+fn codex_session_pace_window_rule(
+    window: &crate::model::window::RateWindow,
+    _now: jiff::Timestamp,
+) -> bool {
+    window.window_minutes.is_none_or(|minutes| {
+        minutes != DEFAULT_WEEKLY_WINDOW_MINUTES && minutes != MONTHLY_WINDOW_SENTINEL_MINUTES
+    })
+}
+
 static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::new(|| {
     [
         // Codex (CodexBar Sources/CodexBarCore/Providers/Codex/CodexProviderDescriptor.swift:31, 34-37, 43, 62-64, 68, 86-93, 138)
@@ -116,7 +129,17 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             pace_capability: ProviderPaceCapability {
                 reset_window_pace: ProviderPaceWindowRule::Unsupported,
                 inferred_monthly_duration: ProviderPaceDurationRule::Unsupported,
+                primary: Some(ProviderStandardPaceLane::session(
+                    DEFAULT_SESSION_WINDOW_MINUTES,
+                    false,
+                )),
+                secondary: Some(ProviderStandardPaceLane::weekly()),
+                tertiary: None,
                 shows_headroom_hint: true,
+                session_pace_window_rule: ProviderPaceWindowRule::Custom(
+                    codex_session_pace_window_rule,
+                ),
+                allows_estimated_usage: true,
             },
             cli_name: "codex",
             toggle_title: "Show Codex usage",
@@ -181,7 +204,12 @@ static FIRST_PARTY_DESCRIPTORS: LazyLock<[ProviderDescriptor; 3]> = LazyLock::ne
             supports_workspace: false,
             supports_enterprise_host: false,
             token_account_support: true,
-            pace_capability: ProviderPaceCapability::unsupported(),
+            pace_capability: ProviderPaceCapability {
+                session_pace_window_rule: ProviderPaceWindowRule::WindowDuration(
+                    DEFAULT_SESSION_WINDOW_MINUTES,
+                ),
+                ..ProviderPaceCapability::unsupported()
+            },
             cli_name: "antigravity",
             toggle_title: "Show Antigravity usage (experimental)",
             dashboard_url: None,

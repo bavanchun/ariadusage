@@ -182,41 +182,71 @@ impl CodexFetchOutcome {
         let conf = self.usage.data_confidence;
         let as_of = Some(self.usage.updated_at);
 
-        let map_win = |w: &ariadusage_core::model::window::RateWindow| -> WireRateWindow {
+        let computed_paces = ariadusage_core::pace::SnapshotWindowPaces::compute(
+            "codex",
+            &self.usage,
+            now,
+            None,
+            &jiff::tz::TimeZone::system(),
+        );
+        let map_win = |w: &ariadusage_core::model::window::RateWindow,
+                       resolved: Option<&ariadusage_core::pace::ResolvedWindowPace>|
+         -> WireRateWindow {
             let mut wire = WireRateWindow::new(w.used_percent);
             wire.window_minutes = w.window_minutes.and_then(|m| u32::try_from(m).ok());
             wire.resets_at = w.resets_at;
             wire.reset_description = w.reset_description.clone();
             wire.next_regen_percent = w.next_regen_percent;
+            wire.pace = resolved.map(|r| {
+                ariadusage_core::projection::project_pace_with_kind(&r.pace, r.kind, &codex_id, now)
+            });
             wire
         };
 
         snap.windows = ProviderWindows {
-            primary: self
-                .usage
-                .primary
-                .as_ref()
-                .map(|w| Metric::value(map_win(w), as_of, Some(src.clone()), conf)),
-            secondary: self
-                .usage
-                .secondary
-                .as_ref()
-                .map(|w| Metric::value(map_win(w), as_of, Some(src.clone()), conf)),
-            tertiary: self
-                .usage
-                .tertiary
-                .as_ref()
-                .map(|w| Metric::value(map_win(w), as_of, Some(src.clone()), conf)),
+            primary: self.usage.primary.as_ref().map(|w| {
+                Metric::value(
+                    map_win(w, computed_paces.primary.as_ref()),
+                    as_of,
+                    Some(src.clone()),
+                    conf,
+                )
+            }),
+            secondary: self.usage.secondary.as_ref().map(|w| {
+                Metric::value(
+                    map_win(w, computed_paces.secondary.as_ref()),
+                    as_of,
+                    Some(src.clone()),
+                    conf,
+                )
+            }),
+            tertiary: self.usage.tertiary.as_ref().map(|w| {
+                Metric::value(
+                    map_win(w, computed_paces.tertiary.as_ref()),
+                    as_of,
+                    Some(src.clone()),
+                    conf,
+                )
+            }),
             extra: self
                 .usage
                 .extra_rate_windows
                 .as_deref()
                 .unwrap_or_default()
                 .iter()
-                .map(|nw| NamedWindow {
-                    id: nw.id.clone(),
-                    title: nw.title.clone(),
-                    window: Metric::value(map_win(&nw.window), as_of, Some(src.clone()), conf),
+                .enumerate()
+                .map(|(idx, nw)| {
+                    let resolved = computed_paces.extra.get(idx).and_then(Option::as_ref);
+                    NamedWindow {
+                        id: nw.id.clone(),
+                        title: nw.title.clone(),
+                        window: Metric::value(
+                            map_win(&nw.window, resolved),
+                            as_of,
+                            Some(src.clone()),
+                            conf,
+                        ),
+                    }
                 })
                 .collect(),
         };

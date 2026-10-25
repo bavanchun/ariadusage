@@ -1,3 +1,8 @@
+// Ported from CodexBar Tests/CodexBarTests/MenuCardClaudeSwapAccountTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/MenuCardBindingQuotaTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/ClaudeMenuCardCostTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Tests/CodexBarTests/PaceVisibilityTests.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+
 mod common;
 
 use ariadusage_macos::card::{
@@ -673,7 +678,7 @@ fn session_and_weekly_pace_respect_upstream_minimum_progress_and_provider_gates(
         Some("48% in deficit · Runs out now")
     );
 
-    // Non-Codex/Claude provider does not show session pace even when expected >= 3%.
+    // Antigravity shows session pace for 300-minute windows, and hides it when duration is missing.
     let mut anti = provider("antigravity", "Antigravity");
     let mut anti_primary = window(40.0, 300, 2 * 3600);
     anti_primary.pace = Some(Pace {
@@ -686,9 +691,17 @@ fn session_and_weekly_pace_respect_upstream_minimum_progress_and_provider_gates(
         run_out_probability: None,
         summary: String::new(),
     });
-    anti.windows.primary = Some(value(anti_primary));
+    anti.windows.primary = Some(value(anti_primary.clone()));
     let anti_card = build(&anti, &CardPreferences::default());
-    assert_eq!(anti_card.metrics[0].meta_text(), None);
+    assert_eq!(
+        anti_card.metrics[0].meta_text().as_deref(),
+        Some("10% in deficit · Projected empty in 1h")
+    );
+
+    anti_primary.window_minutes = None;
+    anti.windows.primary = Some(value(anti_primary));
+    let anti_no_duration_card = build(&anti, &CardPreferences::default());
+    assert_eq!(anti_no_duration_card.metrics[0].meta_text(), None);
 }
 
 #[test]
@@ -736,4 +749,280 @@ fn limit_reset_credits_hide_zero_count_and_respect_reset_style_and_subscription_
         &FrenchDates::utc(),
     );
     assert_eq!(fr_card.usage_notes, ["Plan renews: 1 nov. 2026"]);
+}
+
+fn sample_pace(
+    stage: PaceStage,
+    delta: f64,
+    expected: f64,
+    will_last: bool,
+    eta: Option<u64>,
+) -> Pace {
+    Pace {
+        stage,
+        delta_percent: delta,
+        expected_used_percent: expected,
+        will_last_to_reset: will_last,
+        eta_seconds: eta,
+        speed_multiplier_to_reset: None,
+        run_out_probability: None,
+        summary: String::new(),
+    }
+}
+
+// upstream: MenuCardClaudeSwapAccountTests.swift:728 claudeSessionPaceShowsWhenWeeklyHasRemainingCapacity
+#[test]
+fn claude_session_pace_shows_when_weekly_has_remaining_capacity() {
+    let mut p = provider("claude", "Claude");
+    let mut primary = window(80.0, 300, 2 * 3600);
+    primary.pace = Some(sample_pace(
+        PaceStage::FarAhead,
+        20.0,
+        60.0,
+        false,
+        Some(45 * 60),
+    ));
+    let mut secondary = window(50.0, 10_080, 4 * 24 * 3600);
+    secondary.pace = Some(sample_pace(
+        PaceStage::Ahead,
+        7.0,
+        43.0,
+        false,
+        Some(3 * 24 * 3600),
+    ));
+    p.windows.primary = Some(value(primary));
+    p.windows.secondary = Some(value(secondary));
+
+    let card = build(&p, &CardPreferences::default());
+    assert_eq!(
+        card.metrics[0].detail_left_text.as_deref(),
+        Some("20% in deficit")
+    );
+    assert_eq!(
+        card.metrics[0].detail_right_text.as_deref(),
+        Some("Projected empty in 45m")
+    );
+    assert_eq!(card.metrics[0].pace_percent, Some(40.0));
+}
+
+// upstream: MenuCardClaudeSwapAccountTests.swift:768 claudeSessionPaceSuppressedWhenWeeklyQuotaIsExhausted
+#[test]
+fn claude_session_pace_suppressed_when_weekly_quota_is_exhausted() {
+    let mut p = provider("claude", "Claude");
+    let mut primary = window(48.0, 300, 2 * 3600);
+    primary.pace = Some(sample_pace(PaceStage::Behind, -12.0, 60.0, true, None));
+    let secondary = window(100.0, 10_080, 3 * 24 * 3600);
+    p.windows.primary = Some(value(primary));
+    p.windows.secondary = Some(value(secondary));
+
+    let card = build(&p, &CardPreferences::default());
+    assert_eq!(card.metrics[0].percent, 0.0);
+    assert_eq!(card.metrics[0].detail_left_text, None);
+    assert_eq!(card.metrics[0].detail_right_text, None);
+    assert_eq!(card.metrics[0].pace_percent, None);
+}
+
+// upstream: MenuCardBindingQuotaTests.swift:49 claudeZeroPercentSessionWhenWeeklyExhaustedEvenWithSessionCapacity
+// upstream: MenuCardBindingQuotaTests.swift:69 claudeFullSessionUsedWhenWeeklyExhaustedInUsedMode
+// upstream: MenuCardBindingQuotaTests.swift:87 claudeWeeklyExhaustedWithoutSessionResetStillUsesWeeklyCountdown
+// upstream: MenuCardBindingQuotaTests.swift:104 claudeExpiredWeeklyQuotaDoesNotCapSessionRow
+// upstream: MenuCardBindingQuotaTests.swift:121 claudeBothExhaustedUsesLatestResetDate
+// upstream: MenuCardBindingQuotaTests.swift:273 claudeMonthlyQuotaOnSecondaryDoesNotCapWhenNotExhausted
+// upstream: MenuCardBindingQuotaTests.swift:291 claudeMonthlyQuotaOnSecondaryCapsSessionWhenExhausted
+// upstream: MenuCardBindingQuotaTests.swift:310 claudeWeeklyResetTextDescriptionUsedWhenResetDateNilAndExhausted
+// upstream: MenuCardBindingQuotaTests.swift:347 codexWeeklyExhaustedDoesNotCapSessionRow
+#[test]
+fn claude_binding_quota_caps_session_when_longer_horizon_is_actively_exhausted() {
+    // 1. Weekly exhausted caps session in left mode and used mode
+    let mut claude = provider("claude", "Claude");
+    claude.windows.primary = Some(value(window(35.0, 300, 2 * 3600)));
+    claude.windows.secondary = Some(value(window(100.0, 10_080, 3 * 24 * 3600)));
+
+    let left_card = build(&claude, &CardPreferences::default());
+    assert_eq!(left_card.metrics[0].title_text(), "Session 0% left");
+    assert_eq!(left_card.metrics[0].percent, 0.0);
+    assert_eq!(
+        left_card.metrics[0].reset_text.as_deref(),
+        Some("Resets in 3d")
+    );
+
+    let used_prefs = CardPreferences {
+        show_used: true,
+        ..CardPreferences::default()
+    };
+    let used_card = build(&claude, &used_prefs);
+    assert_eq!(used_card.metrics[0].title_text(), "Session 100% used");
+    assert_eq!(used_card.metrics[0].percent, 100.0);
+
+    // 2. Expired weekly quota (resets_at <= now) does not cap session row
+    claude.windows.secondary = Some(value(window(100.0, 10_080, -60)));
+    let expired_card = build(&claude, &CardPreferences::default());
+    assert_eq!(expired_card.metrics[0].percent, 65.0);
+
+    // 3. Both exhausted uses latest reset date
+    claude.windows.primary = Some(value(window(100.0, 300, 4 * 24 * 3600)));
+    claude.windows.secondary = Some(value(window(100.0, 10_080, 2 * 24 * 3600)));
+    let both_card = build(&claude, &CardPreferences::default());
+    assert_eq!(
+        both_card.metrics[0].reset_text.as_deref(),
+        Some("Resets in 4d")
+    );
+
+    // 4. Monthly quota on secondary caps session only when exhausted
+    claude.windows.primary = Some(value(window(20.0, 300, 2 * 3600)));
+    claude.windows.secondary = Some(value(window(80.0, 43_200, 10 * 24 * 3600)));
+    assert_eq!(
+        build(&claude, &CardPreferences::default()).metrics[0].percent,
+        80.0
+    );
+    claude.windows.secondary = Some(value(window(100.0, 43_200, 10 * 24 * 3600)));
+    assert_eq!(
+        build(&claude, &CardPreferences::default()).metrics[0].percent,
+        0.0
+    );
+
+    // 5. Weekly reset_description used when resets_at is None and exhausted
+    let mut desc_weekly = RateWindow::new(100.0);
+    desc_weekly.window_minutes = Some(10_080);
+    desc_weekly.reset_description = Some("Oct 30 at 4:00 PM".to_string());
+    claude.windows.secondary = Some(value(desc_weekly));
+    let desc_card = build(&claude, &CardPreferences::default());
+    assert_eq!(
+        desc_card.metrics[0].reset_text.as_deref(),
+        Some("Resets Oct 30 at 4:00 PM")
+    );
+
+    // 6. Codex weekly exhausted does not cap session row
+    let mut codex = provider("codex", "Codex");
+    codex.windows.primary = Some(value(window(35.0, 300, 2 * 3600)));
+    codex.windows.secondary = Some(value(window(100.0, 10_080, 3 * 24 * 3600)));
+    let codex_card = build(&codex, &CardPreferences::default());
+    assert_eq!(codex_card.metrics[0].percent, 65.0);
+}
+
+// upstream: ClaudeMenuCardCostTests.swift:71 claudeMonthlyPrimarySpendRowIncludesPaceDetail
+// upstream: ClaudeMenuCardCostTests.swift:95 claudeMonthlySecondarySpendRowIncludesPaceDetail
+// upstream: ClaudeMenuCardCostTests.swift:118 claudeMonthlySpendCapExtraRowIncludesPaceDetail
+// upstream: ClaudeMenuCardCostTests.swift:139 claudeModelScopedWeeklyExtraRowIncludesPaceDetail
+#[test]
+fn claude_monthly_and_scoped_weekly_rows_include_weekly_pace_detail() {
+    let mut claude = provider("claude", "Claude");
+    let mut monthly_primary = window(60.0, 43_200, 15 * 24 * 3600);
+    monthly_primary.pace = Some(sample_pace(
+        PaceStage::Ahead,
+        10.0,
+        50.0,
+        false,
+        Some(10 * 24 * 3600),
+    ));
+    let mut monthly_secondary = window(60.0, 43_200, 15 * 24 * 3600);
+    monthly_secondary.pace = Some(sample_pace(
+        PaceStage::Ahead,
+        10.0,
+        50.0,
+        false,
+        Some(10 * 24 * 3600),
+    ));
+    let mut monthly_extra = window(60.0, 43_200, 15 * 24 * 3600);
+    monthly_extra.pace = Some(sample_pace(
+        PaceStage::Ahead,
+        10.0,
+        50.0,
+        false,
+        Some(10 * 24 * 3600),
+    ));
+    let mut scoped_weekly = window(70.0, 10_080, 3 * 24 * 3600);
+    scoped_weekly.pace = Some(sample_pace(
+        PaceStage::FarAhead,
+        13.0,
+        57.0,
+        false,
+        Some(2 * 24 * 3600),
+    ));
+
+    claude.windows.primary = Some(value(monthly_primary));
+    claude.windows.secondary = Some(value(monthly_secondary));
+    claude.windows.extra = vec![
+        NamedWindow {
+            id: "claude-monthly-spend-cap".to_string(),
+            title: "Monthly spend cap ($60 / $100)".to_string(),
+            window: value(monthly_extra),
+        },
+        NamedWindow {
+            id: "claude-weekly-scoped-opus".to_string(),
+            title: "Opus only".to_string(),
+            window: value(scoped_weekly),
+        },
+    ];
+
+    let card = build(&claude, &CardPreferences::default());
+    assert_eq!(card.metrics.len(), 4);
+    for idx in 0..3 {
+        assert_eq!(
+            card.metrics[idx].detail_left_text.as_deref(),
+            Some("10% in deficit")
+        );
+        assert_eq!(
+            card.metrics[idx].detail_right_text.as_deref(),
+            Some("Runs out in 10d")
+        );
+    }
+    assert_eq!(card.metrics[3].title_text(), "Opus weekly 30% left");
+    assert_eq!(
+        card.metrics[3].detail_left_text.as_deref(),
+        Some("13% in deficit")
+    );
+    assert_eq!(
+        card.metrics[3].detail_right_text.as_deref(),
+        Some("Runs out in 2d")
+    );
+}
+
+// upstream: PaceVisibilityTests.swift:8 menuCardHidesPaceAndSessionEquivalentWhenDisabled
+// upstream: PaceVisibilityTests.swift:28 menuCardKeepsPaceAndSessionEquivalentWhenEnabled
+#[test]
+fn pace_visibility_preference_gates_pace_and_session_equivalent_details() {
+    let mut codex = provider("codex", "Codex");
+    let mut primary = window(80.0, 300, 2 * 3600);
+    primary.pace = Some(sample_pace(
+        PaceStage::FarAhead,
+        20.0,
+        60.0,
+        false,
+        Some(45 * 60),
+    ));
+    let mut secondary = window(50.0, 10_080, 4 * 24 * 3600);
+    secondary.pace = Some(sample_pace(
+        PaceStage::Ahead,
+        7.0,
+        43.0,
+        false,
+        Some(3 * 24 * 3600),
+    ));
+    secondary.session_equivalent = Some(
+        ariadusage_protocol::usage::SessionEquivalentForecast::new(2.5, 19, None),
+    );
+    codex.windows.primary = Some(value(primary));
+    codex.windows.secondary = Some(value(secondary));
+
+    let enabled = build(&codex, &CardPreferences::default());
+    assert!(enabled.metrics[0].detail_left_text.is_some());
+    assert!(enabled.metrics[1].detail_left_text.is_some());
+    assert!(enabled.metrics[1].session_equivalent_left_text.is_some());
+
+    let disabled = build(
+        &codex,
+        &CardPreferences {
+            pace_visible: false,
+            ..CardPreferences::default()
+        },
+    );
+    assert!(disabled.metrics[0].detail_left_text.is_none());
+    assert!(disabled.metrics[0].detail_right_text.is_none());
+    assert!(disabled.metrics[0].pace_percent.is_none());
+    assert!(disabled.metrics[1].detail_left_text.is_none());
+    assert!(disabled.metrics[1].detail_right_text.is_none());
+    assert!(disabled.metrics[1].pace_percent.is_none());
+    assert!(disabled.metrics[1].session_equivalent_left_text.is_none());
+    assert!(disabled.metrics[1].session_equivalent_right_text.is_none());
 }
