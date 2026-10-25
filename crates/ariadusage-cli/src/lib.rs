@@ -3,11 +3,26 @@
 // Ported from CodexBar Sources/CodexBarCLI/CLICookieCommand.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBarCLI/CLIHelp.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
+pub mod cards_brief_renderer;
+pub mod cards_renderer;
+pub mod claude_swap_cards;
 pub mod config;
 pub mod cost;
+pub mod exit_code;
+pub mod format;
+pub mod help;
 pub mod hooks;
+pub mod ipc_client;
 pub mod launch_agent;
 pub mod logging;
+pub mod options;
+pub mod output_preferences;
+pub mod provider_meta;
+pub mod renderer;
+pub mod status_command;
+pub mod terminal;
+pub mod toon;
+pub mod usage_command;
 
 pub use logging::{
     CliLogDestination, CliLogLevel, CliLogger, CliLoggingConfiguration, CliLoggingOptions,
@@ -99,9 +114,104 @@ where
     base_env
 }
 
+/// Builds a [`ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig`] for the CLI
+/// in-process runtime, applying `with_web_timeout_seconds` when `web_timeout_seconds` is provided
+/// (defaulting to 60.0 s per `CLIUsageFetchSetup.swift:20`).
+pub fn build_cli_claude_strategy_config(
+    net: Arc<ariadusage_engine::brokers::net::NetBroker>,
+    working_dir: PathBuf,
+    home_dir: PathBuf,
+    web_timeout_seconds: Option<f64>,
+) -> ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig {
+    ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig::new(net, working_dir, home_dir)
+        .with_web_timeout_seconds(web_timeout_seconds.unwrap_or(60.0))
+}
+
+/// Builds a [`ariadusage_engine::providers::codex::CodexStrategyConfig`] for the CLI
+/// in-process runtime, applying `with_web_timeout` when `web_timeout_seconds` is provided
+/// (defaulting to 60.0 s per `CLIUsageFetchSetup.swift:20` and `CodexWebDashboardStrategy.swift:35,51`).
+pub fn build_cli_codex_strategy_config(
+    net: Arc<ariadusage_engine::brokers::net::NetBroker>,
+    working_dir: PathBuf,
+    home_dir: PathBuf,
+    web_timeout_seconds: Option<f64>,
+) -> ariadusage_engine::providers::codex::CodexStrategyConfig {
+    let timeout_secs = web_timeout_seconds.unwrap_or(60.0).max(0.0);
+    ariadusage_engine::providers::codex::CodexStrategyConfig::new(
+        net,
+        BTreeMap::new(),
+        home_dir,
+        working_dir,
+    )
+    .with_web_timeout(std::time::Duration::from_secs_f64(timeout_secs))
+}
+
+/// Registers the CLI provider factories (`claude`, `codex`) and `antigravity` plan on `runtime`,
+/// wiring `web_timeout_seconds` into both
+/// [`ariadusage_engine::providers::claude::ClaudeOAuthStrategyConfig::with_web_timeout_seconds`]
+/// and [`ariadusage_engine::providers::codex::CodexStrategyConfig::with_web_timeout`].
+pub fn register_cli_providers_with_web_timeout(
+    runtime: &EngineRuntime,
+    net: Arc<ariadusage_engine::brokers::net::NetBroker>,
+    working_dir: PathBuf,
+    home_dir: Option<PathBuf>,
+    web_timeout_seconds: Option<f64>,
+) {
+    let effective_home = home_dir.clone().unwrap_or_else(|| working_dir.clone());
+    if let Ok(claude_id) = ProviderId::new("claude") {
+        let claude_cfg = build_cli_claude_strategy_config(
+            Arc::clone(&net),
+            working_dir.clone(),
+            effective_home.clone(),
+            web_timeout_seconds,
+        );
+        runtime.register_provider_factory(
+            claude_id,
+            Arc::new(ariadusage_engine::registry::ClaudeProviderPlanFactory::new(
+                claude_cfg,
+            )),
+        );
+    }
+    if let Ok(codex_id) = ProviderId::new("codex") {
+        let codex_cfg = build_cli_codex_strategy_config(
+            Arc::clone(&net),
+            working_dir.clone(),
+            effective_home,
+            web_timeout_seconds,
+        );
+        runtime.register_provider_factory(
+            codex_id,
+            Arc::new(ariadusage_engine::registry::CodexProviderPlanFactory::new(
+                codex_cfg,
+            )),
+        );
+    }
+    if let (Some(home_dir), Ok(agy_id)) = (home_dir, ProviderId::new("antigravity")) {
+        let agy_cfg = ariadusage_engine::providers::antigravity::AntigravityStrategyConfig::new(
+            net,
+            working_dir,
+            home_dir,
+        );
+        runtime.register_provider_plan(
+            agy_id,
+            Arc::new(
+                ariadusage_engine::providers::antigravity::AntigravityProviderPlan::new(agy_cfg),
+            ),
+        );
+    }
+}
+
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
 /// active or when a command executes directly in the CLI process.
 pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
+    build_cli_runtime_with_web_timeout(None)
+}
+
+/// Builds an in-process [`EngineRuntime`] configured for CLI commands, wiring `web_timeout_seconds`
+/// into `ClaudeOAuthStrategyConfig::with_web_timeout_seconds` and `CodexStrategyConfig::with_web_timeout`.
+pub fn build_cli_runtime_with_web_timeout(
+    web_timeout_seconds: Option<f64>,
+) -> Result<Arc<EngineRuntime>, String> {
     let cfg_path = paths::config_path().map_err(|e| e.to_string())?;
     let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
         == Some(std::ffi::OsStr::new("1"));
@@ -118,23 +228,15 @@ pub fn build_cli_runtime() -> Result<Arc<EngineRuntime>, String> {
     let runtime =
         build_default_runtime_with_env(ConfigStore::new(cfg_path), disable_keyring, base_env)
             .map_err(|e| e.to_string())?;
-    if let (Some(home_dir), Ok(agy_id), Ok(net)) = (
-        home_dir,
-        ProviderId::new("antigravity"),
-        ariadusage_engine::brokers::net::NetBroker::new(
-            ariadusage_engine::brokers::net::NetConfig::default(),
-        ),
+    if let Ok(net) = ariadusage_engine::brokers::net::NetBroker::new(
+        ariadusage_engine::brokers::net::NetConfig::default(),
     ) {
-        let agy_cfg = ariadusage_engine::providers::antigravity::AntigravityStrategyConfig::new(
+        register_cli_providers_with_web_timeout(
+            &runtime,
             Arc::new(net),
             working_dir,
             home_dir,
-        );
-        runtime.register_provider_plan(
-            agy_id,
-            Arc::new(
-                ariadusage_engine::providers::antigravity::AntigravityProviderPlan::new(agy_cfg),
-            ),
+            web_timeout_seconds,
         );
     }
     Ok(runtime)
@@ -734,126 +836,6 @@ pub fn execute_diagnose(opts: &DiagnoseOptions) -> Result<String, (u8, String)> 
             .map_err(|e| (16, format!("Error encoding diagnostic: {e}")))?;
     }
     Ok(redacted)
-}
-
-/// Runs `ariadusage usage --provider <name> [--verbose]`, logging safe strategy attempt categories
-/// on terminal failure without exposing raw error descriptions (`CLIEntryTests.swift:865`).
-pub fn execute_usage(
-    provider: Option<&str>,
-    verbose: bool,
-    pretty: bool,
-) -> Result<String, (u8, String)> {
-    execute_usage_with_logging(provider, verbose, pretty, false, None)
-}
-
-/// Runs `ariadusage usage` with explicit logging flags (`-v`/`--verbose`, `--json-output`, `--log-level`).
-pub fn execute_usage_with_logging(
-    provider: Option<&str>,
-    verbose: bool,
-    pretty: bool,
-    json_output: bool,
-    log_level: Option<&str>,
-) -> Result<String, (u8, String)> {
-    bootstrap_cli_logging(CliLoggingConfiguration::for_command(
-        verbose,
-        json_output,
-        false,
-        log_level,
-        &["usage"],
-    ));
-    let raw = provider.unwrap_or("codex");
-    let normalized = raw.trim().to_ascii_lowercase();
-    let Ok(pid) = ProviderId::new(&normalized) else {
-        return Err((2, format!("Error: unknown provider '{raw}'")));
-    };
-    if !first_party_order().iter().any(|d| d.id == pid) {
-        return Err((2, format!("Error: unknown provider '{raw}'")));
-    }
-
-    let provider_cat = LogCategories::provider(pid.as_str());
-    logger(&provider_cat).debug(
-        "Fetching provider usage",
-        Some(BTreeMap::from([("provider", pid.as_str().to_owned())])),
-    );
-
-    let runtime = build_cli_runtime().map_err(|e| (16, format!("Error: {e}")))?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| (16, format!("Error: {e}")))?;
-
-    let Some((_spec, _inputs, outcome)) = rt.block_on(runtime.fetch_provider_for_cli(
-        &pid,
-        FetchRuntime::Cli,
-        FetchInteraction::UserInitiated,
-    )) else {
-        return Err((2, format!("Error: unknown provider '{raw}'")));
-    };
-
-    match &outcome.result {
-        Ok(fetched) => {
-            logger(&provider_cat).debug(
-                "Fetched provider usage",
-                Some(BTreeMap::from([("provider", pid.as_str().to_owned())])),
-            );
-            let rendered = if pretty {
-                serde_json::to_string_pretty(&fetched.usage)
-            } else {
-                serde_json::to_string(&fetched.usage)
-            }
-            .unwrap_or_else(|_| "{}".to_owned());
-            Ok(rendered)
-        }
-        Err(_err) => {
-            let summary = outcome
-                .attempts
-                .iter()
-                .map(|attempt| {
-                    let diag =
-                        ariadusage_core::pipeline::DiagnosticFetchAttempt::from_attempt(attempt);
-                    let strategy = diag.strategy_id.as_deref().unwrap_or("unknown");
-                    match diag.error_category.as_deref() {
-                        Some(cat) => {
-                            format!("{strategy} ({}): {}: {cat}", diag.kind, diag.outcome)
-                        }
-                        None => format!("{strategy} ({}): {}", diag.kind, diag.outcome),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            let error_category = outcome
-                .attempts
-                .last()
-                .and_then(|attempt| {
-                    ariadusage_core::pipeline::DiagnosticFetchAttempt::from_attempt(attempt)
-                        .error_category
-                })
-                .unwrap_or_else(|| "unknown".to_owned());
-
-            let logged_debug = will_log_to_stderr(CliLogLevel::Debug);
-            logger(&provider_cat).debug(
-                &format!("Provider fetch failed: {summary}"),
-                Some(BTreeMap::from([
-                    ("provider", pid.as_str().to_owned()),
-                    ("errorCategory", error_category.clone()),
-                ])),
-            );
-
-            if logged_debug {
-                Err((
-                    1,
-                    format!(
-                        "Error: {} usage unavailable ({error_category})",
-                        pid.as_str()
-                    ),
-                ))
-            } else if verbose {
-                Err((1, format!("Provider fetch failed: {summary}")))
-            } else {
-                Err((1, "Provider fetch failed".to_owned()))
-            }
-        }
-    }
 }
 
 // ============================================================================

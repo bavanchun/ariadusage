@@ -780,6 +780,18 @@ impl EngineRuntime {
             .register_plan(id, plan);
     }
 
+    /// Registers or replaces a [`crate::registry::ProviderPlanFactory`] for `id` in the registry.
+    pub fn register_provider_factory(
+        &self,
+        id: ProviderId,
+        factory: Arc<dyn crate::registry::ProviderPlanFactory>,
+    ) {
+        self.registry
+            .write()
+            .expect("registry lock")
+            .register_factory(id, factory);
+    }
+
     /// Returns a reference to the underlying [`SnapshotStore`].
     pub fn snapshot_store(&self) -> &Arc<SnapshotStore> {
         &self.snapshot_store
@@ -3163,16 +3175,38 @@ impl EngineRuntime {
         ariadusage_core::pipeline::FetchOutcome,
     )> {
         let config = self.load_config();
-        let prefs = AppPreferences::from_config(&config);
+        self.fetch_provider_for_cli_with_config(id, &config, runtime_kind, interaction, None, None)
+            .await
+    }
+
+    /// Executes a live fetch outcome for `id` using `config` and optional CLI source/credits
+    /// overrides without mutating the daemon's cached snapshot state.
+    pub async fn fetch_provider_for_cli_with_config(
+        &self,
+        id: &ProviderId,
+        config: &Config,
+        runtime_kind: FetchRuntime,
+        interaction: FetchInteraction,
+        source_mode_override: Option<SourceMode>,
+        include_credits_override: Option<bool>,
+    ) -> Option<(
+        ResolvedProviderSpec,
+        ProviderPlanInputs,
+        ariadusage_core::pipeline::FetchOutcome,
+    )> {
+        let prefs = AppPreferences::from_config(config);
         let request_state = self.coordinator.begin_replacing_request(id.clone()).state;
         let inputs = self
-            .resolve_plan_inputs(id, &config, &prefs, interaction, &request_state)
+            .resolve_plan_inputs(id, config, &prefs, interaction, &request_state)
             .await;
-        let spec = self
+        let mut spec = self
             .registry
             .read()
             .expect("registry lock")
-            .resolve_spec(id, &config, &inputs)?;
+            .resolve_spec(id, config, &inputs)?;
+        if let Some(mode) = source_mode_override {
+            spec.source_mode = mode;
+        }
         let req_seq = self.next_request_seq.fetch_add(1, Ordering::Relaxed);
         let cx = FetchContext {
             provider: id.clone(),
@@ -3182,7 +3216,8 @@ impl EngineRuntime {
             request_id: format!("cli-{}-{req_seq}", id.as_str()),
             source_mode: spec.source_mode,
             env: spec.environment.clone(),
-            include_credits: prefs.show_optional_credits_and_extra_usage,
+            include_credits: include_credits_override
+                .unwrap_or(prefs.show_optional_credits_and_extra_usage),
             selected_token_account: spec.selected_account.as_ref().map(|a| a.id.clone()),
             cancel: CancellationToken::new(),
         };

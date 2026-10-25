@@ -8,6 +8,7 @@ extend-ignore-re = [
     '(?m)^// upstream: AntigravityWarmAgyReuseTests\.swift:91 ide process ignored not reuseable as warm CLI$',
     '(?m)^// upstream: AntigravityLocalReaderTests\.swift:824 unparseable generation occurrence cannot shift a later reused step timestamp$',
     '(?m)^// upstream: AntigravityLocalReaderTests\.swift:843 unparseable step occurrence cannot shift later timestamps$',
+    '(?m)^// upstream: Tests/CodexBarTests/CLICardsRendererTests\.swift:433 brief summary ignores unparseable reset labels and fits narrow terminals$',
 ]
 
 [default.extend-words]

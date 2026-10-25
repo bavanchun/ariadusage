@@ -1,0 +1,1241 @@
+{
+  "$defs": {
+    "AntigravityPlanInfoSummary": {
+      "description": "Antigravity plan metadata summary in [`ProviderPayload`].",
+      "properties": {
+        "availableFlowCredits": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "availablePromptCredits": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "monthlyFlowCredits": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "monthlyPromptCredits": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "planDisplayName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "planName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "planShortName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "productName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Chart": {
+      "description": "A chart embedded in a detail section.",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ChartKind"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/ChartPoint"
+          },
+          "maxItems": 120,
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "unit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "points"
+      ],
+      "type": "object"
+    },
+    "ChartKind": {
+      "description": "Kind of chart to render.",
+      "enum": [
+        "bars",
+        "line"
+      ],
+      "type": "string"
+    },
+    "ChartPoint": {
+      "description": "A data point in a chart.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "value": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "CliCodexCreditLimitSnapshot": {
+      "description": "Monthly credit limit snapshot embedded in [`CliCreditsSnapshot`] (`CodexCreditLimitSnapshot` in `CreditsModels.swift`).",
+      "properties": {
+        "limit": {
+          "format": "double",
+          "type": "number"
+        },
+        "remaining": {
+          "format": "double",
+          "type": "number"
+        },
+        "remainingPercent": {
+          "format": "double",
+          "type": "number"
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "title",
+        "used",
+        "limit",
+        "remaining",
+        "remainingPercent",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "CliCodexRateLimitResetCredit": {
+      "description": "Single Codex rate-limit reset credit entry (`CodexRateLimitResetCredit` in `CreditsModels.swift`).",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "expires_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "granted_at": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "redeem_started_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "redeemed_at": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reset_type": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "reset_type",
+        "status",
+        "granted_at"
+      ],
+      "type": "object"
+    },
+    "CliCodexRateLimitResetCreditsSnapshot": {
+      "description": "Snapshot of Codex rate-limit reset credits (`CodexRateLimitResetCreditsSnapshot` in `CreditsModels.swift`).",
+      "properties": {
+        "availableCount": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "credits": {
+          "items": {
+            "$ref": "#/$defs/CliCodexRateLimitResetCredit"
+          },
+          "type": "array"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "credits",
+        "availableCount",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "CliCreditEvent": {
+      "description": "Credit usage event in [`OpenAiDashboardSnapshot`] (`CreditEvent` in `CreditsModels.swift`).",
+      "properties": {
+        "creditsUsed": {
+          "format": "double",
+          "type": "number"
+        },
+        "date": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "date",
+        "service",
+        "creditsUsed"
+      ],
+      "type": "object"
+    },
+    "CliCreditsSnapshot": {
+      "description": "Credits snapshot embedded in [`ProviderPayload`] (`CreditsSnapshot` in `CreditsModels.swift`).",
+      "properties": {
+        "balanceIsWorkspace": {
+          "default": false,
+          "type": "boolean"
+        },
+        "balanceReadSucceeded": {
+          "default": true,
+          "type": "boolean"
+        },
+        "codexCreditLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliCodexCreditLimitSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "creditsAvailable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/CliCreditEvent"
+          },
+          "type": "array"
+        },
+        "remaining": {
+          "format": "double",
+          "type": "number"
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "remaining",
+        "events",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "CliErrorKind": {
+      "description": "CLI error classification kind (`CLIErrorKind` in `CLIPayloads.swift`).",
+      "enum": [
+        "args",
+        "config",
+        "provider",
+        "runtime"
+      ],
+      "type": "string"
+    },
+    "CliNamedRateWindow": {
+      "description": "Named extra rate window matching upstream `CodexBarCore.NamedRateWindow`.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "usageKnown": {
+          "type": "boolean"
+        },
+        "window": {
+          "$ref": "#/$defs/CliRateWindow"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "window"
+      ],
+      "type": "object"
+    },
+    "CliProviderCostSnapshot": {
+      "description": "Provider cost snapshot matching upstream `CodexBarCore.ProviderCostSnapshot`.",
+      "properties": {
+        "balance": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "balanceIsUnavailable": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "balanceIsWorkspace": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "balanceUpdatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currencyCode": {
+          "type": "string"
+        },
+        "limit": {
+          "format": "double",
+          "type": "number"
+        },
+        "nextRegenAmount": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "period": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "personalUsed": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "used",
+        "limit",
+        "currencyCode",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "CliProviderIdentitySnapshot": {
+      "description": "Provider identity snapshot matching upstream `CodexBarCore.ProviderIdentitySnapshot`.",
+      "properties": {
+        "accountEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountID": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountOrganization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "loginMethod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "providerID": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CliRateWindow": {
+      "description": "Rate window payload matching upstream `CodexBarCore.RateWindow` JSON encoding.",
+      "properties": {
+        "isSyntheticPlaceholder": {
+          "type": "boolean"
+        },
+        "nextRegenPercent": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "resetDescription": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resetsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usedPercent": {
+          "format": "double",
+          "type": "number"
+        },
+        "windowMinutes": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "usedPercent"
+      ],
+      "type": "object"
+    },
+    "CliUsageSnapshot": {
+      "description": "Usage snapshot embedded in [`ProviderPayload`], preserving exact upstream `CodingKeys` order.",
+      "properties": {
+        "accountEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountOrganization": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codexResetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliCodexRateLimitResetCreditsSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "copilotMeteredZeroCredits": {
+          "type": "boolean"
+        },
+        "dataConfidence": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "details": {
+          "items": {
+            "$ref": "#/$defs/DetailSection"
+          },
+          "type": "array"
+        },
+        "extraRateWindows": {
+          "items": {
+            "$ref": "#/$defs/CliNamedRateWindow"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliProviderIdentitySnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "loginMethod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "primary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "providerCost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliProviderCostSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "subscriptionExpiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionExpiresAtIsDateOnly": {
+          "type": "boolean"
+        },
+        "subscriptionRenewsAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subscriptionRenewsAtIsDateOnly": {
+          "type": "boolean"
+        },
+        "tertiary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "updatedAt": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "DetailRow": {
+      "description": "A row within a detail section.",
+      "properties": {
+        "id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "type": "string"
+        },
+        "progress": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowProgress"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondaryValue": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "severity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RowSeverity"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usageValue": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "value": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "type": "object"
+    },
+    "DetailSection": {
+      "description": "A section of detailed rows and optional chart.",
+      "properties": {
+        "chart": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Chart"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/DetailRow"
+          },
+          "maxItems": 24,
+          "type": "array"
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "rows"
+      ],
+      "type": "object"
+    },
+    "OpenAiDashboardDailyBreakdown": {
+      "description": "Single day breakdown inside [`OpenAiDashboardSnapshot`].",
+      "properties": {
+        "day": {
+          "type": "string"
+        },
+        "services": {
+          "items": {
+            "$ref": "#/$defs/OpenAiDashboardServiceUsage"
+          },
+          "type": "array"
+        },
+        "totalCreditsUsed": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "day",
+        "services",
+        "totalCreditsUsed"
+      ],
+      "type": "object"
+    },
+    "OpenAiDashboardServiceUsage": {
+      "description": "Service usage entry inside [`OpenAiDashboardDailyBreakdown`].",
+      "properties": {
+        "creditsUsed": {
+          "format": "double",
+          "type": "number"
+        },
+        "service": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "creditsUsed"
+      ],
+      "type": "object"
+    },
+    "OpenAiDashboardSnapshot": {
+      "description": "OpenAI web dashboard snapshot in [`ProviderPayload`] (`OpenAIDashboardSnapshot` in `OpenAIDashboardModels.swift`).",
+      "properties": {
+        "accountPlan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "codeReviewLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "codeReviewRemainingPercent": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "creditEvents": {
+          "items": {
+            "$ref": "#/$defs/CliCreditEvent"
+          },
+          "type": "array"
+        },
+        "creditsPurchaseURL": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "creditsRemaining": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "creditsUnlimited": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "dailyBreakdown": {
+          "items": {
+            "$ref": "#/$defs/OpenAiDashboardDailyBreakdown"
+          },
+          "type": "array"
+        },
+        "primaryLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondaryLimit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliRateWindow"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "signedInEmail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "usageBreakdown": {
+          "items": {
+            "$ref": "#/$defs/OpenAiDashboardDailyBreakdown"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "creditEvents",
+        "dailyBreakdown",
+        "usageBreakdown",
+        "updatedAt"
+      ],
+      "type": "object"
+    },
+    "PacePayload": {
+      "description": "Pace details for a single rate window in [`ProviderPacePayload`] (`PacePayload` in `CLIPayloads.swift`).",
+      "properties": {
+        "deltaPercent": {
+          "description": "Rounded (`used - expected`); positive = deficit, negative = reserve.",
+          "format": "double",
+          "type": "number"
+        },
+        "etaSeconds": {
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "expectedUsedPercent": {
+          "format": "double",
+          "type": "number"
+        },
+        "runOutProbability": {
+          "description": "Always absent in CLI output; kept for schema parity.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "stage": {
+          "$ref": "#/$defs/PaceStage"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "willLastToReset": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "stage",
+        "deltaPercent",
+        "expectedUsedPercent",
+        "willLastToReset",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "PaceStage": {
+      "description": "Progression stage for usage pace.",
+      "enum": [
+        "onTrack",
+        "slightlyAhead",
+        "ahead",
+        "farAhead",
+        "slightlyBehind",
+        "behind",
+        "farBehind",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "ProviderErrorPayload": {
+      "description": "Structured error payload for JSON output (`ProviderErrorPayload` in `CLIErrorReporting.swift`).",
+      "properties": {
+        "code": {
+          "format": "int32",
+          "type": "integer"
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliErrorKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ProviderPacePayload": {
+      "description": "Per-lane pace payload in [`ProviderPayload`].",
+      "properties": {
+        "primary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PacePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "secondary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PacePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tertiary": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PacePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ProviderPayload": {
+      "description": "Top-level per-provider payload for `ariadusage usage --format json` and `--format toon`\n(`ProviderPayload` in `CLIPayloads.swift`), preserving exact `CodingKeys` field order.",
+      "properties": {
+        "account": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ageSeconds": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "antigravityPlanInfo": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AntigravityPlanInfoSummary"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "credits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliCreditsSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "diagnostic": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderErrorPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "openaiDashboard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpenAiDashboardSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderPacePayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "rateWindowLabels": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderWindowLabelsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "resetCredits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderResetCreditsPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProviderStatusPayload"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CliUsageSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "provider",
+        "source"
+      ],
+      "type": "object"
+    },
+    "ProviderResetCreditsPayload": {
+      "description": "Top-level reset credits summary payload in [`ProviderPayload`] (`ProviderResetCreditsPayload` in `CLIPayloads.swift`).",
+      "properties": {
+        "available": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "nextExpiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "available"
+      ],
+      "type": "object"
+    },
+    "ProviderStatusPayload": {
+      "description": "Status payload in [`ProviderPayload`].",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "indicator": {
+          "$ref": "#/$defs/StatusIndicator"
+        },
+        "updatedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "indicator",
+        "url"
+      ],
+      "type": "object"
+    },
+    "ProviderWindowLabelsPayload": {
+      "description": "Rate window label metadata in [`ProviderPayload`].",
+      "properties": {
+        "primary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "secondary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tertiary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RowProgress": {
+      "description": "Numeric ratio progress for a detail row.",
+      "properties": {
+        "total": {
+          "format": "double",
+          "type": "number"
+        },
+        "used": {
+          "format": "double",
+          "type": "number"
+        }
+      },
+      "required": [
+        "used",
+        "total"
+      ],
+      "type": "object"
+    },
+    "RowSeverity": {
+      "description": "Display emphasis a provider assigns to a detail row.",
+      "enum": [
+        "normal",
+        "warning",
+        "critical",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "StatusIndicator": {
+      "description": "High-level service status indicator.",
+      "enum": [
+        "none",
+        "minor",
+        "major",
+        "critical",
+        "maintenance",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "$id": "https://github.com/bavanchun/ariadusage/schemas/cli-usage.v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "items": {
+    "$ref": "#/$defs/ProviderPayload"
+  },
+  "title": "Array_of_ProviderPayload",
+  "type": "array"
+}

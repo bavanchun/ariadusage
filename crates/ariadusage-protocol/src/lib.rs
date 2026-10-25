@@ -1,5 +1,6 @@
 //! Protocol types, schemas, and framing for AriadUsage.
 
+pub mod cli;
 pub mod cli_cost_config;
 pub mod ids;
 pub mod ipc;
@@ -16,6 +17,16 @@ pub mod codec;
 #[cfg(all(feature = "fixture", unix))]
 pub mod fixture;
 
+pub use cli::{
+    AntigravityPlanInfoSummary, CliClaudeRateLimitResetCreditsSnapshot,
+    CliCodexCreditLimitSnapshot, CliCodexRateLimitResetCredit,
+    CliCodexRateLimitResetCreditsSnapshot, CliCostUsageDailyEntry, CliCostUsageTokenSnapshot,
+    CliCreditEvent, CliCreditsSnapshot, CliErrorKind, CliNamedRateWindow, CliProviderCostSnapshot,
+    CliProviderIdentitySnapshot, CliRateWindow, CliUsageSnapshot, OpenAiDashboardDailyBreakdown,
+    OpenAiDashboardServiceUsage, OpenAiDashboardSnapshot, PacePayload, ProviderErrorPayload,
+    ProviderPacePayload, ProviderPayload, ProviderResetCreditsPayload, ProviderStatusPayload,
+    ProviderWindowLabelsPayload, status_indicator_cli_label,
+};
 pub use cli_cost_config::{
     CliConfigPayload, ConfigIssueSeverity, ConfigProviderStatusResult, ConfigProviderToggleResult,
     ConfigSetSourceResult, ConfigValidationIssuePayload, CostDailyEntryPayload, CostErrorPayload,

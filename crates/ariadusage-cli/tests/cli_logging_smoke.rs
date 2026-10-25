@@ -355,7 +355,7 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
     ]);
     assert_eq!(cookie_rejected.status.code(), Some(2));
 
-    // 6. usage
+    // 6. usage and cards
     let usage_out = run_cmd(&[
         "usage",
         "--provider",
@@ -372,6 +372,38 @@ fn cli_logging_flags_configure_stderr_json_logs_across_all_commands() {
             .any(|l| l.level == "debug" && l.label == "ariadusage.provider.antigravity"),
         "expected ariadusage.provider.antigravity JSON log on stderr, got: {}",
         String::from_utf8_lossy(&usage_out.stderr)
+    );
+
+    let cards_out = run_cmd(&[
+        "cards",
+        "--provider",
+        "antigravity",
+        "--log-level",
+        "debug",
+        "--json-output",
+    ]);
+    let cards_logs = parse_stderr_json_logs(&cards_out.stderr);
+    assert!(
+        cards_logs
+            .iter()
+            .any(|l| l.level == "debug" && l.label == "ariadusage.provider.antigravity"),
+        "expected ariadusage.provider.antigravity JSON log on stderr for cards, got: {}",
+        String::from_utf8_lossy(&cards_out.stderr)
+    );
+
+    let cards_quiet_out = run_cmd(&[
+        "cards",
+        "--provider",
+        "antigravity",
+        "--log-level",
+        "error",
+        "--json-output",
+    ]);
+    let cards_quiet_logs = parse_stderr_json_logs(&cards_quiet_out.stderr);
+    assert!(
+        cards_quiet_logs.iter().all(|l| l.level != "debug"),
+        "expected --log-level error to suppress debug logs on cards, got: {}",
+        String::from_utf8_lossy(&cards_quiet_out.stderr)
     );
 
     // 7. diagnose routes logging to .discard so stderr remains empty
