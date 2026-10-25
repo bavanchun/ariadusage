@@ -1,6 +1,6 @@
 //! Draws usage cards and menu views offscreen on the main thread, checks
 //! pixel invariants, and compares dark-mode renderings against external
-//! capture PNGs when `ARIADUSAGE_CAPTURES_DIR` is set.
+//! capture PNG files when `ARIADUSAGE_CAPTURES_DIR` is set.
 //!
 //! Set `ARIADUSAGE_CARD_PNG` to a file path to also save the rendering.
 //!
@@ -438,7 +438,7 @@ mod macos {
     }
 
     // Rust-added: pixel-diff harness comparing dark-mode card, menu tab, and submenu
-    // views rendered on fixture data against external golden capture PNGs.
+    // views rendered on fixture data against external golden capture PNG files.
     fn pixel_diff_cards_and_menus_against_captures(mtm: MainThreadMarker) {
         let Some(captures_dir) =
             captures_dir_from_env("pixel_diff_cards_and_menus_against_captures")
