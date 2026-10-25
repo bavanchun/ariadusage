@@ -235,25 +235,27 @@ pub fn process_ppid_and_start_secs(root: &Path, pid: i32) -> Option<(i32, Option
     Some((ppid, start_secs))
 }
 
-fn proc_fs_start_secs(root: &Path, start_ticks: u64) -> Option<i64> {
-    #[cfg(unix)]
+fn proc_fs_clock_ticks_per_second() -> u64 {
+    #[cfg(target_os = "linux")]
     {
-        let clk_tck = rustix::param::clock_ticks_per_second();
-        if clk_tck == 0 {
-            return None;
-        }
-        let btime = proc_fs_boot_time_secs(root)?;
-        let offset_secs = i64::try_from(start_ticks / clk_tck).ok()?;
-        btime.checked_add(offset_secs)
+        rustix::param::clock_ticks_per_second()
     }
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     {
-        let _ = (root, start_ticks);
-        None
+        100
     }
 }
 
-#[cfg(unix)]
+fn proc_fs_start_secs(root: &Path, start_ticks: u64) -> Option<i64> {
+    let clk_tck = proc_fs_clock_ticks_per_second();
+    if clk_tck == 0 {
+        return None;
+    }
+    let btime = proc_fs_boot_time_secs(root)?;
+    let offset_secs = i64::try_from(start_ticks / clk_tck).ok()?;
+    btime.checked_add(offset_secs)
+}
+
 fn proc_fs_boot_time_secs(root: &Path) -> Option<i64> {
     let contents = std::fs::read_to_string(root.join("stat")).ok()?;
     contents.lines().find_map(|line| {
@@ -1093,7 +1095,7 @@ mod tests {
         let proc_root = tempfile::tempdir().unwrap();
         let ruid = rustix::process::getuid().as_raw();
         let euid = rustix::process::geteuid().as_raw();
-        let clk_tck = rustix::param::clock_ticks_per_second();
+        let clk_tck = super::proc_fs_clock_ticks_per_second();
         std::fs::write(
             proc_root.path().join("stat"),
             "cpu  0 0 0 0\nbtime 1700000000\n",
