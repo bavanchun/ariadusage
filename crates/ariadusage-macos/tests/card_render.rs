@@ -1,25 +1,17 @@
-//! Draws a usage card offscreen on the main thread and checks the pixels.
+//! Draws usage cards and menu views offscreen on the main thread, checks
+//! pixel invariants, and compares dark-mode renderings against external
+//! capture PNGs when `ARIADUSAGE_CAPTURES_DIR` is set.
 //!
 //! Set `ARIADUSAGE_CARD_PNG` to a file path to also save the rendering.
 //!
 //! The binary has no libtest harness, so it answers the harness's `--list`
 //! queries itself for cargo test and nextest.
 
-#[cfg(target_os = "macos")]
-const TEST_NAME: &str = "renders_the_card";
+mod common;
 
 #[cfg(target_os = "macos")]
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let has = |flag: &str| args.iter().any(|a| a == flag);
-    if has("--list") {
-        if !has("--ignored") {
-            println!("{TEST_NAME}: test");
-        }
-        return;
-    }
-    macos::run();
-    println!("test {TEST_NAME} ... ok");
+    macos::main();
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -42,6 +34,7 @@ mod macos {
         CostHistoryChartModel, PlanUtilizationChartModel, QuotaBurndownChartModel,
     };
     use ariadusage_macos::geometry::{Point, Rect};
+    use ariadusage_macos::menu_descriptor::{self, MenuEntry, PrimaryContent};
     use ariadusage_macos::switcher::{self, SwitcherSelection};
     use ariadusage_protocol::fixture::generate_scenario_snapshot;
     use ariadusage_protocol::ids::ProviderId;
@@ -52,6 +45,69 @@ mod macos {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAppearance, NSApplication, NSBitmapImageRep};
     use objc2_foundation::NSString;
+
+    use crate::common::pixel_diff::{
+        RgbaImage, captures_dir_from_env, compare_and_write_diff, create_diff_output_dir,
+        render_dark_menu_structure, render_dark_submenu, report_and_assert_suite,
+    };
+
+    type TestFn = fn(MainThreadMarker);
+
+    const TESTS: &[(&str, TestFn)] = &[
+        ("renders_the_card", renders_the_card),
+        (
+            "pixel_diff_cards_and_menus_against_captures",
+            pixel_diff_cards_and_menus_against_captures,
+        ),
+    ];
+
+    pub fn main() {
+        let mtm = MainThreadMarker::new().expect("runs on the main thread");
+        let _app = NSApplication::sharedApplication(mtm);
+
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut list_only = false;
+        let mut ignored_only = false;
+        let mut exact = false;
+        let mut filters: Vec<String> = Vec::new();
+        for arg in args {
+            match arg.as_str() {
+                "--list" => list_only = true,
+                "--ignored" => ignored_only = true,
+                "--exact" => exact = true,
+                "--nocapture" | "--show-output" | "--quiet" | "-q" => {}
+                a if a.starts_with('-') => {}
+                other => filters.push(other.to_string()),
+            }
+        }
+
+        if list_only {
+            if !ignored_only {
+                for (name, _) in TESTS {
+                    println!("{name}: test");
+                }
+            }
+            return;
+        }
+
+        let selected: Vec<&(&str, TestFn)> = TESTS
+            .iter()
+            .filter(|(name, _)| {
+                if filters.is_empty() {
+                    true
+                } else if exact {
+                    filters.iter().any(|f| f == name)
+                } else {
+                    filters.iter().any(|f| name.contains(f))
+                }
+            })
+            .collect();
+
+        for (name, func) in &selected {
+            func(mtm);
+            println!("test {name} ... ok");
+        }
+    }
 
     fn value<T>(v: T) -> Metric<T> {
         Metric::value(v, None, None, Confidence::Exact)
@@ -106,8 +162,7 @@ mod macos {
         color.alphaComponent()
     }
 
-    pub fn run() {
-        let mtm = MainThreadMarker::new().expect("runs on the main thread");
+    fn renders_the_card(mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
         // Render in the light appearance whatever the system uses.
         let aqua = NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameAqua"));
@@ -380,5 +435,233 @@ mod macos {
                 }
             }
         }
+    }
+
+    // Rust-added: pixel-diff harness comparing dark-mode card, menu tab, and submenu
+    // views rendered on fixture data against external golden capture PNGs.
+    fn pixel_diff_cards_and_menus_against_captures(mtm: MainThreadMarker) {
+        let Some(captures_dir) =
+            captures_dir_from_env("pixel_diff_cards_and_menus_against_captures")
+        else {
+            return;
+        };
+        let diff_dir = create_diff_output_dir("card-menu-render");
+
+        let fixture_now: Timestamp = "2026-10-06T12:52:00Z".parse().unwrap();
+        let mut fixture = generate_scenario_snapshot(0);
+        fixture.generated_at = fixture_now;
+        let dates = FoundationDateTexts::new();
+        let prefs = CardPreferences::default();
+
+        let mut rows = Vec::new();
+
+        // 1. Dark-mode Card views compared against their card regions in dark/tab-*-w0.png.
+        let card_cases = [
+            (
+                "card/claude",
+                "claude",
+                "dark/tab-claude-w0.png",
+                (0usize, 104usize, 620usize, 1596usize),
+            ),
+            (
+                "card/codex",
+                "codex",
+                "dark/tab-codex-w0.png",
+                (0usize, 104usize, 620usize, 1400usize),
+            ),
+            (
+                "card/antigravity",
+                "antigravity",
+                "dark/tab-antigravity-w0.png",
+                (0usize, 104usize, 620usize, 246usize),
+            ),
+        ];
+        for (view_name, provider_id, rel_path, (cx, cy, cw, ch)) in card_cases {
+            let p_snap = fixture
+                .providers
+                .iter()
+                .find(|p| p.id.as_str() == provider_id)
+                .expect("provider in fixture");
+            let model = provider_card(p_snap, &prefs, fixture_now, &dates);
+            let card_view = CardView::new(mtm);
+            card_view.update(&model, 310.0);
+            let rep = card_view
+                .render_bitmap_with_appearance(true)
+                .expect("dark card bitmap");
+            let actual = RgbaImage::from_bitmap_rep(&rep);
+            let full_expected =
+                RgbaImage::from_png_file(&captures_dir.join(rel_path)).expect("load capture PNG");
+            let expected = full_expected.crop(cx, cy, cw, ch);
+            rows.push(compare_and_write_diff(
+                view_name,
+                &format!("{rel_path} [crop {cx},{cy} {cw}x{ch}]"),
+                &actual,
+                &expected,
+                &diff_dir,
+            ));
+        }
+
+        // Overview spend summary card compared against top card region in dark/tab-overview-w0.png.
+        {
+            let enabled: Vec<_> = fixture.providers.iter().filter(|p| p.enabled).collect();
+            let summary =
+                menu_descriptor::overview_spend_summary(&enabled).expect("overview spend summary");
+            let summary_view = CardView::new(mtm);
+            summary_view.update_spend_summary(&summary, 310.0);
+            let rep = summary_view
+                .render_bitmap_with_appearance(true)
+                .expect("dark overview spend bitmap");
+            let actual = RgbaImage::from_bitmap_rep(&rep);
+            let rel_path = "dark/tab-overview-w0.png";
+            let full_expected =
+                RgbaImage::from_png_file(&captures_dir.join(rel_path)).expect("load capture PNG");
+            let expected = full_expected.crop(0, 104, 620, 364);
+            rows.push(compare_and_write_diff(
+                "card/overview-spend",
+                "dark/tab-overview-w0.png [crop 0,104 620x364]",
+                &actual,
+                &expected,
+                &diff_dir,
+            ));
+        }
+
+        // 2. Dark-mode full Menu tab views compared against dark/tab-*-w0.png.
+        let menu_tab_cases = [
+            (
+                "menu/tab-overview",
+                SwitcherSelection::Overview,
+                "dark/tab-overview-w0.png",
+            ),
+            (
+                "menu/tab-claude",
+                SwitcherSelection::Provider("claude".to_string()),
+                "dark/tab-claude-w0.png",
+            ),
+            (
+                "menu/tab-codex",
+                SwitcherSelection::Provider("codex".to_string()),
+                "dark/tab-codex-w0.png",
+            ),
+            (
+                "menu/tab-antigravity",
+                SwitcherSelection::Provider("antigravity".to_string()),
+                "dark/tab-antigravity-w0.png",
+            ),
+        ];
+        for (view_name, selection, rel_path) in menu_tab_cases {
+            let structure = menu_descriptor::build(
+                Some(&fixture),
+                true,
+                Some(&selection),
+                &prefs,
+                fixture_now,
+                &dates,
+            );
+            let actual = render_dark_menu_structure(mtm, &structure, 310.0);
+            let expected =
+                RgbaImage::from_png_file(&captures_dir.join(rel_path)).expect("load capture PNG");
+            rows.push(compare_and_write_diff(
+                view_name, rel_path, &actual, &expected, &diff_dir,
+            ));
+        }
+
+        // 3. Dark-mode Submenu views compared against the opened submenu panel in dark/sub-*-w0.png.
+        let submenu_cases = [
+            (
+                "menu/sub-claude-cost",
+                "claude",
+                true,
+                "dark/sub-claude-cost-w0.png",
+                (0usize, 1702usize, 620usize, 980usize),
+            ),
+            (
+                "menu/sub-claude-plan-usage",
+                "claude",
+                false,
+                "dark/sub-claude-plan-usage-w0.png",
+                (0usize, 1702usize, 620usize, 980usize),
+            ),
+            (
+                "menu/sub-codex-cost",
+                "codex",
+                true,
+                "dark/sub-codex-cost-w0.png",
+                (0usize, 1598usize, 620usize, 980usize),
+            ),
+            (
+                "menu/sub-codex-plan-usage",
+                "codex",
+                false,
+                "dark/sub-codex-plan-usage-w0.png",
+                (0usize, 1598usize, 620usize, 980usize),
+            ),
+            (
+                "menu/sub-antigravity-plan-usage",
+                "antigravity",
+                false,
+                "dark/sub-antigravity-plan-usage-w0.png",
+                (0usize, 418usize, 620usize, 440usize),
+            ),
+        ];
+        for (view_name, provider_id, is_cost, rel_path, (cx, cy, cw, ch)) in submenu_cases {
+            let selection = SwitcherSelection::Provider(provider_id.to_string());
+            let structure = menu_descriptor::build(
+                Some(&fixture),
+                true,
+                Some(&selection),
+                &prefs,
+                fixture_now,
+                &dates,
+            );
+            let items = if is_cost {
+                match &structure.primary {
+                    PrimaryContent::Provider { cost_submenu, .. } if !cost_submenu.is_empty() => {
+                        cost_submenu.clone()
+                    }
+                    _ => structure
+                        .history
+                        .iter()
+                        .find_map(|e| match e {
+                            MenuEntry::Submenu { title, items, .. }
+                                if title.to_lowercase().contains("cost") =>
+                            {
+                                Some(items.clone())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default(),
+                }
+            } else {
+                structure
+                    .history
+                    .iter()
+                    .find_map(|e| match e {
+                        MenuEntry::Submenu { title, items, .. }
+                            if title.to_lowercase().contains("usage") =>
+                        {
+                            Some(items.clone())
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or_default()
+            };
+            let actual = render_dark_submenu(mtm, &items, 310.0);
+            let full_expected =
+                RgbaImage::from_png_file(&captures_dir.join(rel_path)).expect("load capture PNG");
+            let expected = full_expected.crop(cx, cy, cw, ch);
+            rows.push(compare_and_write_diff(
+                view_name,
+                &format!("{rel_path} [crop {cx},{cy} {cw}x{ch}]"),
+                &actual,
+                &expected,
+                &diff_dir,
+            ));
+        }
+
+        report_and_assert_suite(
+            "pixel_diff_cards_and_menus_against_captures",
+            &diff_dir,
+            &rows,
+        );
     }
 }

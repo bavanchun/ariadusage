@@ -13,21 +13,11 @@
 //! If `ARIADUSAGE_CBCAP_BIN` is also set to the `cbcap` binary path, dumps the
 //! live Accessibility tree of each pane to `{stem}-ax.txt` next to the PNG files.
 
-#[cfg(target_os = "macos")]
-const TEST_NAME: &str = "renders_settings_panes_in_light_and_dark_appearances";
+mod common;
 
 #[cfg(target_os = "macos")]
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    let has = |flag: &str| args.iter().any(|a| a == flag);
-    if has("--list") {
-        if !has("--ignored") {
-            println!("{TEST_NAME}: test");
-        }
-        return;
-    }
-    macos::run();
-    println!("test {TEST_NAME} ... ok");
+    macos::main();
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -55,6 +45,72 @@ mod macos {
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSAppearance, NSAppearanceCustomization, NSApplication};
     use objc2_foundation::{NSDate, NSRunLoop, NSString};
+
+    use crate::common::pixel_diff::{
+        RgbaImage, captures_dir_from_env, compare_and_write_diff, create_diff_output_dir,
+        report_and_assert_suite,
+    };
+
+    type TestFn = fn(MainThreadMarker);
+
+    const TESTS: &[(&str, TestFn)] = &[
+        (
+            "renders_settings_panes_in_light_and_dark_appearances",
+            renders_settings_panes_in_light_and_dark_appearances,
+        ),
+        (
+            "pixel_diff_settings_panes_against_captures",
+            pixel_diff_settings_panes_against_captures,
+        ),
+    ];
+
+    pub fn main() {
+        let mtm = MainThreadMarker::new().expect("runs on the main thread");
+        let _app = NSApplication::sharedApplication(mtm);
+
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        let mut list_only = false;
+        let mut ignored_only = false;
+        let mut exact = false;
+        let mut filters: Vec<String> = Vec::new();
+        for arg in args {
+            match arg.as_str() {
+                "--list" => list_only = true,
+                "--ignored" => ignored_only = true,
+                "--exact" => exact = true,
+                "--nocapture" | "--show-output" | "--quiet" | "-q" => {}
+                a if a.starts_with('-') => {}
+                other => filters.push(other.to_string()),
+            }
+        }
+
+        if list_only {
+            if !ignored_only {
+                for (name, _) in TESTS {
+                    println!("{name}: test");
+                }
+            }
+            return;
+        }
+
+        let selected: Vec<&(&str, TestFn)> = TESTS
+            .iter()
+            .filter(|(name, _)| {
+                if filters.is_empty() {
+                    true
+                } else if exact {
+                    filters.iter().any(|f| f == name)
+                } else {
+                    filters.iter().any(|f| name.contains(f))
+                }
+            })
+            .collect();
+
+        for (name, func) in &selected {
+            func(mtm);
+            println!("test {name} ... ok");
+        }
+    }
 
     fn sample_app_settings() -> SettingsPage {
         SettingsPage::new(
@@ -173,8 +229,31 @@ mod macos {
         assert!(status.success(), "cbcap dump failed with {status}");
     }
 
-    pub fn run() {
-        let mtm = MainThreadMarker::new().expect("runs on the main thread");
+    const ALL_PANES: &[(SettingsPane, &str)] = &[
+        (SettingsPane::General, "general"),
+        (SettingsPane::ICloudSync, "icloud-sync"),
+        (SettingsPane::UsageSpend, "usage-spend"),
+        (SettingsPane::Notifications, "notifications"),
+        (SettingsPane::MenuBar, "menu-bar"),
+        (SettingsPane::Menu, "menu"),
+        (SettingsPane::Advanced, "advanced"),
+        (SettingsPane::Hooks, "hooks"),
+        (SettingsPane::Plugins, "plugins"),
+        (SettingsPane::About, "about"),
+    ];
+
+    fn all_panes_with_providers() -> Vec<(SettingsPane, &'static str)> {
+        let mut panes = ALL_PANES.to_vec();
+        panes.push((SettingsPane::Provider("codex".to_string()), "codex"));
+        panes.push((SettingsPane::Provider("claude".to_string()), "claude"));
+        panes.push((
+            SettingsPane::Provider("antigravity".to_string()),
+            "antigravity",
+        ));
+        panes
+    }
+
+    fn renders_settings_panes_in_light_and_dark_appearances(mtm: MainThreadMarker) {
         let app = NSApplication::sharedApplication(mtm);
 
         // Verify SettingsWindowController chrome and invariants.
@@ -259,24 +338,7 @@ mod macos {
             pump_runloop(Duration::from_millis(80));
         }
 
-        let panes = [
-            (SettingsPane::General, "general"),
-            (SettingsPane::ICloudSync, "icloud-sync"),
-            (SettingsPane::UsageSpend, "usage-spend"),
-            (SettingsPane::Notifications, "notifications"),
-            (SettingsPane::MenuBar, "menu-bar"),
-            (SettingsPane::Menu, "menu"),
-            (SettingsPane::Advanced, "advanced"),
-            (SettingsPane::Hooks, "hooks"),
-            (SettingsPane::Plugins, "plugins"),
-            (SettingsPane::About, "about"),
-            (SettingsPane::Provider("codex".to_string()), "codex"),
-            (SettingsPane::Provider("claude".to_string()), "claude"),
-            (
-                SettingsPane::Provider("antigravity".to_string()),
-                "antigravity",
-            ),
-        ];
+        let panes = all_panes_with_providers();
 
         if let Some(base) = &capture_dir {
             let _ = std::fs::remove_file(base.join("cursor.png"));
@@ -330,5 +392,58 @@ mod macos {
                 }
             }
         }
+    }
+
+    // Rust-added: pixel-diff harness comparing all 13 dark-mode Settings window panes
+    // rendered on fixture data against external golden capture PNGs.
+    fn pixel_diff_settings_panes_against_captures(mtm: MainThreadMarker) {
+        let Some(captures_dir) =
+            captures_dir_from_env("pixel_diff_settings_panes_against_captures")
+        else {
+            return;
+        };
+        let diff_dir = create_diff_output_dir("settings-render");
+
+        let app = NSApplication::sharedApplication(mtm);
+        let controller = SettingsWindowController::new(mtm, None);
+        let win = controller.window();
+        let view = controller.view();
+        view.set_terminal_launcher(Rc::new(|_args| {}));
+        view.apply_settings_page(&sample_app_settings());
+        view.apply_settings_page(&sample_provider_settings("codex", "auto", false));
+        view.apply_settings_page(&sample_provider_settings("claude", "auto", true));
+        view.apply_settings_page(&sample_provider_settings("antigravity", "auto", false));
+        view.apply_snapshot(sample_snapshot());
+
+        let dark_appearance =
+            NSAppearance::appearanceNamed(&NSString::from_str("NSAppearanceNameDarkAqua"));
+        app.setAppearance(dark_appearance.as_deref());
+        win.setAppearance(dark_appearance.as_deref());
+        view.set_appearance_dark_override(Some(true));
+
+        let mut rows = Vec::new();
+        for (pane, stem) in all_panes_with_providers() {
+            view.select_pane(pane);
+            pump_runloop(Duration::from_millis(30));
+
+            let rep = view.render_bitmap().expect("bitmap representation");
+            let actual = RgbaImage::from_bitmap_rep(&rep);
+            let rel_path = format!("dark/settings/{stem}.png");
+            let expected =
+                RgbaImage::from_png_file(&captures_dir.join(&rel_path)).expect("load capture PNG");
+            rows.push(compare_and_write_diff(
+                &format!("settings/{stem}"),
+                &rel_path,
+                &actual,
+                &expected,
+                &diff_dir,
+            ));
+        }
+
+        report_and_assert_suite(
+            "pixel_diff_settings_panes_against_captures",
+            &diff_dir,
+            &rows,
+        );
     }
 }
