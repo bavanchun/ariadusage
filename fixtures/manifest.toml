@@ -2626,6 +2626,7 @@ sources = [
     "Sources/CodexBar/AgentSessionsStore.swift",
     "Sources/CodexBarCore/LocalAgentSessionScanner.swift",
     "Sources/CodexBarCore/AgentSession.swift",
+    "Sources/CodexBarCore/CodexThreadMetadataReader.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
     "Sources/CodexBarCore/PiFamilySessionScanner.swift",
     "Sources/CodexBarCore/PiFamilySessionRootResolver.swift",
