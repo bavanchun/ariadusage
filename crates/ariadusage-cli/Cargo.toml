@@ -15,6 +15,10 @@ path = "src/lib.rs"
 name = "ariadusage"
 path = "src/main.rs"
 
+[features]
+default = []
+test-hooks = []
+
 [dependencies]
 ariadusage-core = { version = "0.0.0", path = "../ariadusage-core" }
 ariadusage-engine = { version = "0.0.0", path = "../ariadusage-engine" }

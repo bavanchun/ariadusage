@@ -2443,6 +2443,7 @@ pub struct CostRunEnvironment {
     pub now: Option<Timestamp>,
     pub timezone: Option<TimeZone>,
     pub catalog: Option<ModelsDevCatalog>,
+    #[cfg(feature = "test-hooks")]
     pub antigravity_cancelled: bool,
 }
 
@@ -3136,7 +3137,10 @@ fn load_local_provider_snapshot(
                 context = context.with_provider_config(provider_cfg);
             }
             let tz_offset_seconds = now.to_zoned(timezone.clone()).offset().seconds();
+            #[cfg(feature = "test-hooks")]
             let cancelled = env_overrides.antigravity_cancelled;
+            #[cfg(not(feature = "test-hooks"))]
+            let cancelled = false;
             AntigravityLocalReader::load_token_snapshot(
                 &context,
                 now,

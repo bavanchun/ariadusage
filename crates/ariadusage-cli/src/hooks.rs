@@ -151,42 +151,8 @@ pub struct HooksCommandArgs {
     #[command(flatten)]
     pub output: HooksOutputArgs,
 
-    /// Enable verbose logging
-    #[arg(short = 'v', long = "verbose", global = true)]
-    pub verbose: bool,
-
-    /// Emit machine-readable logs
-    #[arg(long = "json-output", global = true)]
-    pub json_output: bool,
-
-    /// Set log level (trace|verbose|debug|info|warning|error|critical)
-    #[arg(long = "log-level", global = true)]
-    pub log_level: Option<String>,
-
     #[command(subcommand)]
     pub subcommand: Option<HooksSubcommand>,
-}
-
-impl HooksCommandArgs {
-    /// Returns the resolved [`crate::logging::CliLoggingConfiguration`] for these flags.
-    #[must_use]
-    pub fn logging_configuration(&self) -> crate::logging::CliLoggingConfiguration {
-        let sub_json_only = match &self.subcommand {
-            Some(HooksSubcommand::List(out))
-            | Some(HooksSubcommand::Enable(out))
-            | Some(HooksSubcommand::Disable(out)) => out.json_only,
-            Some(HooksSubcommand::Test(test)) => test.output.json_only,
-            Some(HooksSubcommand::Watch(watch)) => watch.output.json_only,
-            None => self.output.json_only,
-        };
-        crate::logging::CliLoggingConfiguration::for_command(
-            self.verbose,
-            self.json_output,
-            self.output.json_only || sub_json_only,
-            self.log_level.as_deref(),
-            &["hooks"],
-        )
-    }
 }
 
 /// Subcommands under `ariadusage hooks` (`CLIHooksCommand.swift` + `CLIHooksWatchCommand.swift`).
@@ -233,8 +199,8 @@ pub struct HooksWatchArgs {
     #[arg(long = "provider")]
     pub provider: Vec<String>,
 
-    /// Propagated from global `-v`/`--verbose` on [`HooksCommandArgs`].
-    #[arg(skip)]
+    /// Print fetch diagnostics
+    #[arg(long = "verbose")]
     pub verbose: bool,
 
     /// Hidden flag so `--once` is caught by `validate_hooks_watch_flags` with upstream's error message.
@@ -993,8 +959,6 @@ fn spawn_termination_signal_monitor(stop: Arc<HooksWatchStopSignal>) {
 
 /// Entrypoint for `ariadusage hooks` invoked from `main.rs`.
 pub fn run_hooks_command(args: HooksCommandArgs) -> Result<(), HooksCliError> {
-    crate::logging::bootstrap_cli_logging(args.logging_configuration());
-    let global_verbose = args.verbose;
     match args.subcommand {
         None => {
             let output = HooksOutputPreferences::from_args(&args.output);
@@ -1045,8 +1009,7 @@ pub fn run_hooks_command(args: HooksCommandArgs) -> Result<(), HooksCliError> {
                 &mut stderr,
             ))
         }
-        Some(HooksSubcommand::Watch(mut watch_args)) => {
-            watch_args.verbose |= global_verbose;
+        Some(HooksSubcommand::Watch(watch_args)) => {
             let output = HooksOutputPreferences::from_args(&watch_args.output);
             // Validate CLI flags before resolving or reading the config store so broken configs
             // never mask argument errors (`CLIHooksWatchCommand.swift:12-38`).

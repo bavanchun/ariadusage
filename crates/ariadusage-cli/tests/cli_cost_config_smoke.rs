@@ -259,6 +259,7 @@ fn cost_smoke_renders_text_and_json_and_rejects_unsupported_flags_with_code_21()
         now: Some(now),
         timezone: Some(tz),
         catalog: None,
+        #[cfg(feature = "test-hooks")]
         antigravity_cancelled: false,
     };
 
@@ -600,22 +601,25 @@ fn antigravity_cost_binary_reads_gemini_sqlite_fixture() {
     assert!(text.contains("187"), "text: {text}");
 
     // 3. Forced Antigravity reader error branch returns exit code 1 and populates JSON error payload
-    let mut ag_env_map = BTreeMap::new();
-    ag_env_map.insert("HOME".to_owned(), home_dir.to_string_lossy().into_owned());
-    let err_code = run_cost_command_with_env(
-        &CostCommandArgs {
-            provider: Some("antigravity".to_owned()),
-            json: true,
-            ..CostCommandArgs::default()
-        },
-        &CostRunEnvironment {
-            env: Some(ag_env_map),
-            cache_root: Some(dir.path().join("cache")),
-            antigravity_cancelled: true,
-            ..CostRunEnvironment::default()
-        },
-    );
-    assert_eq!(err_code, ariadusage_cli::cost::EXIT_FAILURE);
+    #[cfg(feature = "test-hooks")]
+    {
+        let mut ag_env_map = BTreeMap::new();
+        ag_env_map.insert("HOME".to_owned(), home_dir.to_string_lossy().into_owned());
+        let err_code = run_cost_command_with_env(
+            &CostCommandArgs {
+                provider: Some("antigravity".to_owned()),
+                json: true,
+                ..CostCommandArgs::default()
+            },
+            &CostRunEnvironment {
+                env: Some(ag_env_map),
+                cache_root: Some(dir.path().join("cache")),
+                antigravity_cancelled: true,
+                ..CostRunEnvironment::default()
+            },
+        );
+        assert_eq!(err_code, ariadusage_cli::cost::EXIT_FAILURE);
+    }
     let err_payload = ariadusage_cli::cost::make_cost_payload(
         CostProvider::Antigravity,
         None,

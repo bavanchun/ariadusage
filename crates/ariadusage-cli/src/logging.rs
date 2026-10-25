@@ -100,13 +100,13 @@ impl CliLogLevel {
         }
     }
 
-    /// Maps to upstream `Logging.Logger.Level.rawValue` (`swiftLogLevel` in `CodexBarLog.swift`,
-    /// where `.trace` and `.verbose` both map to `"trace"`).
+    /// Maps to upstream `Logging.Logger.Level.rawValue` (`asSwiftLogLevel` in `CodexBarLog.swift`,
+    /// where `.verbose` maps to `"debug"`).
     #[must_use]
     pub const fn as_swift_log_level(self) -> &'static str {
         match self {
-            Self::Trace | Self::Verbose => "trace",
-            Self::Debug => "debug",
+            Self::Trace => "trace",
+            Self::Verbose | Self::Debug => "debug",
             Self::Info => "info",
             Self::Warning => "warning",
             Self::Error => "error",
@@ -270,7 +270,7 @@ impl CliLoggingConfiguration {
 pub struct LogCategories;
 
 impl LogCategories {
-    pub const SUBSYSTEM: &'static str = "com.steipete.codexbar";
+    pub const SUBSYSTEM: &'static str = "ariadusage";
     pub const TERMINAL_PTY: &'static str = "terminal-pty";
     pub const CLAUDE_USAGE: &'static str = "claude-usage";
     pub const CODEX_USAGE: &'static str = "codex-usage";
@@ -300,6 +300,12 @@ impl LogCategories {
     pub const COOKIE_REFRESH: &'static str = "cookie-refresh";
     pub const DIAGNOSE: &'static str = "diagnose";
     pub const USAGE: &'static str = "usage";
+
+    /// Returns the qualified logger label (`"ariadusage.<category>"`).
+    #[must_use]
+    pub fn label(category: &str) -> String {
+        format!("{}.{category}", Self::SUBSYSTEM)
+    }
 
     /// Returns the provider log category (`"provider.<id>"`).
     #[must_use]
@@ -646,25 +652,30 @@ fn redact_other_api_tokens(input: &str) -> String {
 }
 
 /// Machine-readable JSON log payload written to `stderr` when `--json-output` or `--json-only`
-/// is enabled (`JSONStderrLogHandler.LogLine` in `JSONStderrLogHandler.swift`).
+/// is enabled (`JSONStderrLogHandler.JSONLogLine` in `JSONStderrLogHandler.swift`).
+///
+/// Fields are declared in alphabetical order (`file`, `function`, `label`, `level`, `line`,
+/// `message`, `metadata`, `source`, `timestamp`) and `metadata` uses [`BTreeMap`] so serialized
+/// JSON keys are always sorted, matching `JSONEncoder.OutputFormatting.sortedKeys`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JsonLogLine {
-    pub timestamp: String,
-    pub level: String,
+    pub file: String,
+    pub function: String,
     pub label: String,
+    pub level: String,
+    pub line: u32,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
     pub source: String,
-    pub file: String,
-    pub function: String,
-    pub line: u32,
+    pub timestamp: String,
 }
 
 #[derive(Debug, Default)]
 struct LoggingState {
     config: Option<CliLoggingConfiguration>,
     startup_logged: bool,
+    #[cfg(feature = "test-hooks")]
     captured: Vec<JsonLogLine>,
 }
 
@@ -674,7 +685,7 @@ fn state_cell() -> &'static Mutex<LoggingState> {
     LOGGING_STATE.get_or_init(|| Mutex::new(LoggingState::default()))
 }
 
-/// Bootstraps or updates the process-wide CLI logging configuration (`CodexBarLog.bootstrapIfNeeded`).
+/// Bootstraps or updates the process-wide CLI logging configuration.
 pub fn bootstrap_cli_logging(config: CliLoggingConfiguration) {
     if let Ok(mut guard) = state_cell().lock() {
         guard.config = Some(config);
@@ -712,7 +723,8 @@ pub fn will_log_to_stderr(level: CliLogLevel) -> bool {
     cfg.destination == CliLogDestination::Stderr && level.rank() >= cfg.level.rank()
 }
 
-/// Clears the in-process captured log buffer (used by tests to inspect emitted log records).
+/// Clears the in-process captured log buffer (test-hooks only).
+#[cfg(feature = "test-hooks")]
 pub fn clear_captured_log_lines() {
     if let Ok(mut guard) = state_cell().lock() {
         guard.captured.clear();
@@ -720,7 +732,8 @@ pub fn clear_captured_log_lines() {
 }
 
 /// Returns a snapshot of log records emitted since the process started or since the last
-/// [`clear_captured_log_lines`] call.
+/// [`clear_captured_log_lines`] call (test-hooks only).
+#[cfg(feature = "test-hooks")]
 #[must_use]
 pub fn captured_log_lines() -> Vec<JsonLogLine> {
     state_cell()
@@ -735,7 +748,8 @@ pub fn logger(category: &str) -> CliLogger {
     CliLogger::new(category)
 }
 
-/// Logs the process startup state once (`CodexBarLog.logStartupState`).
+/// Logs AriadUsage's own CLI startup line once per process (AriadUsage-specific CLI
+/// observability, not a port of upstream `ProviderLogging.logStartupState`).
 pub fn log_startup_state(providers: &[String]) {
     let should_log = state_cell()
         .lock()
@@ -823,7 +837,6 @@ impl CliLogger {
         let caller = std::panic::Location::caller();
         let redacted_message = LogRedactor::redact(message);
         let mut redacted_meta = BTreeMap::new();
-        redacted_meta.insert("category".to_owned(), LogRedactor::redact(&self.category));
         if let Some(meta) = metadata {
             for (k, v) in meta {
                 redacted_meta.insert(k.to_owned(), LogRedactor::redact(&v));
@@ -831,17 +844,22 @@ impl CliLogger {
         }
 
         let record = JsonLogLine {
-            timestamp: Timestamp::now().to_string(),
-            level: level.as_swift_log_level().to_owned(),
-            label: LogCategories::SUBSYSTEM.to_owned(),
-            message: redacted_message.clone(),
-            metadata: Some(redacted_meta.clone()),
-            source: "CodexBar".to_owned(),
             file: caller.file().to_owned(),
-            function: self.category.clone(),
+            function: String::new(),
+            label: LogCategories::label(&self.category),
+            level: level.as_swift_log_level().to_owned(),
             line: caller.line(),
+            message: redacted_message,
+            metadata: if redacted_meta.is_empty() {
+                None
+            } else {
+                Some(redacted_meta)
+            },
+            source: module_path!().to_owned(),
+            timestamp: Timestamp::now().to_string(),
         };
 
+        #[cfg(feature = "test-hooks")]
         if let Ok(mut guard) = state_cell().lock() {
             if guard.captured.len() >= 256 {
                 guard.captured.remove(0);
@@ -860,29 +878,24 @@ impl CliLogger {
                 let _ = stderr.write_all(&encoded);
             }
         } else {
-            let extra_meta: Vec<String> = redacted_meta
-                .iter()
-                .filter(|(k, _)| k.as_str() != "category")
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect();
-            if extra_meta.is_empty() {
-                let _ = writeln!(
-                    stderr,
-                    "[{}] [{}] {}",
-                    level.raw_value(),
-                    self.category,
-                    redacted_message
-                );
-            } else {
-                let _ = writeln!(
-                    stderr,
-                    "[{}] [{}] {} {}",
-                    level.raw_value(),
-                    self.category,
-                    extra_meta.join(" "),
-                    redacted_message
-                );
-            }
+            let pretty_meta = match &record.metadata {
+                Some(meta) if !meta.is_empty() => {
+                    let joined: Vec<String> =
+                        meta.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                    format!(" {}", joined.join(" "))
+                }
+                _ => String::new(),
+            };
+            let _ = writeln!(
+                stderr,
+                "{} {} {} :{} [{}] {}",
+                record.timestamp,
+                record.level,
+                record.label,
+                pretty_meta,
+                record.source,
+                record.message
+            );
         }
     }
 }
