@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ariadusage_core::config::{Config, CookieSource, ProviderConfig, TokenAccountMeta};
+use ariadusage_core::gates::launch::LaunchGate;
 use ariadusage_core::pipeline::{
     AccountTokenProjection, BoxFuture, EnvPrecedence, EnvProjection, FetchContext, FetchStrategy,
     ProviderEnvDescriptor, ProviderEnvironmentResolver, ProviderPlan,
@@ -17,6 +18,7 @@ use ariadusage_protocol::ProviderId;
 use ariadusage_protocol::secret::SecretString;
 
 use crate::brokers::net::{NetBroker, NetConfig};
+use crate::brokers::process::ProcessRegistry;
 use crate::brokers::secret_store::SecretStore;
 use crate::config_store::ConfigStore;
 use crate::error::StoreError;
@@ -270,6 +272,8 @@ pub struct ProviderRegistry {
     working_directory: PathBuf,
     home_directory: PathBuf,
     explicit_directories: bool,
+    process_registry: Arc<ProcessRegistry>,
+    launch_gate: Arc<LaunchGate>,
 }
 
 impl Default for ProviderRegistry {
@@ -283,7 +287,11 @@ impl Default for ProviderRegistry {
             .unwrap_or_else(|| working_dir.clone());
         let claude_config =
             ClaudeOAuthStrategyConfig::new(Arc::clone(&net), working_dir.clone(), home_dir.clone());
-        let codex_config = CodexStrategyConfig::new(net, BTreeMap::new(), home_dir, working_dir);
+        let codex_config = CodexStrategyConfig::new(net, BTreeMap::new(), home_dir, working_dir)
+            .with_process_broker(
+                Arc::clone(&claude_config.process_registry),
+                Arc::clone(&claude_config.launch_gate),
+            );
         let mut registry = Self::with_claude_and_codex_config(claude_config, codex_config);
         registry.explicit_directories = false;
         registry
@@ -294,10 +302,15 @@ impl ProviderRegistry {
     /// Creates a registry with the default descriptors and a `ClaudeProviderPlanFactory`
     /// backed by `claude_config`.
     pub fn with_claude_config(claude_config: ClaudeOAuthStrategyConfig) -> Self {
-        let mut registry = Self::empty().with_directories(
-            claude_config.working_directory.clone(),
-            claude_config.home_directory.clone(),
-        );
+        let mut registry = Self::empty()
+            .with_directories(
+                claude_config.working_directory.clone(),
+                claude_config.home_directory.clone(),
+            )
+            .with_process_broker(
+                Arc::clone(&claude_config.process_registry),
+                Arc::clone(&claude_config.launch_gate),
+            );
         let claude_id = ProviderId::new("claude").expect("valid provider id");
         registry.register_factory(
             claude_id,
@@ -333,7 +346,30 @@ impl ProviderRegistry {
             working_directory,
             home_directory,
             explicit_directories: false,
+            process_registry: Arc::new(ProcessRegistry::new()),
+            launch_gate: Arc::new(LaunchGate::default()),
         }
+    }
+
+    /// Returns the shared [`ProcessRegistry`] associated with this registry.
+    pub fn process_registry(&self) -> &Arc<ProcessRegistry> {
+        &self.process_registry
+    }
+
+    /// Returns the shared [`LaunchGate`] associated with this registry.
+    pub fn launch_gate(&self) -> &Arc<LaunchGate> {
+        &self.launch_gate
+    }
+
+    /// Overrides the shared [`ProcessRegistry`] and [`LaunchGate`] stored on this registry.
+    pub fn with_process_broker(
+        mut self,
+        process_registry: Arc<ProcessRegistry>,
+        launch_gate: Arc<LaunchGate>,
+    ) -> Self {
+        self.process_registry = process_registry;
+        self.launch_gate = launch_gate;
+        self
     }
 
     /// Overrides the working and home directories used when fingerprinting ambient provider credentials.

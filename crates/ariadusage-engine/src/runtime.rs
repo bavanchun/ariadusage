@@ -56,6 +56,7 @@ use tokio_util::sync::CancellationToken;
 use crate::brokers::call::BrokerCall;
 use crate::brokers::cookie_cache::CookieCache;
 use crate::brokers::net::NetBroker;
+use crate::brokers::process::ProcessRegistry;
 use crate::brokers::secret_store::{SecretId, SecretLookup, SecretStore};
 use crate::config_store::ConfigStore;
 use crate::coordinator::{ProviderRefreshCoordinator, WaitResult};
@@ -603,6 +604,26 @@ impl EngineRuntime {
     /// Returns a reference to the runtime's [`CookieCache`].
     pub fn cookie_cache(&self) -> &Arc<CookieCache> {
         &self.cookie_cache
+    }
+
+    /// Returns the shared [`ProcessRegistry`] from the runtime's [`ProviderRegistry`].
+    pub fn process_registry(&self) -> Arc<ProcessRegistry> {
+        Arc::clone(
+            self.registry
+                .read()
+                .expect("registry lock")
+                .process_registry(),
+        )
+    }
+
+    /// Returns the shared [`LaunchGate`](ariadusage_core::gates::launch::LaunchGate) from the runtime's [`ProviderRegistry`].
+    pub fn launch_gate(&self) -> Arc<ariadusage_core::gates::launch::LaunchGate> {
+        Arc::clone(self.registry.read().expect("registry lock").launch_gate())
+    }
+
+    /// Shuts down all child processes tracked by the runtime's [`ProcessRegistry`].
+    pub async fn shutdown_processes(&self) {
+        self.process_registry().shutdown().await;
     }
 
     /// Overrides the cache root directory (`<root>/cost-usage`) used when clearing cost usage caches (`clearCostCache`).
