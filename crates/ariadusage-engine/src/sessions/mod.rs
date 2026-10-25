@@ -742,7 +742,7 @@ impl ClaudeSessionProjectMapper {
                 Some(ClaudeTranscript::new(file, clamped))
             })
             .collect();
-        transcripts.sort_by(|lhs, rhs| rhs.modified_at.cmp(&lhs.modified_at));
+        transcripts.sort_by_key(|lhs| std::cmp::Reverse(lhs.modified_at));
         if let Some(limit) = limit {
             transcripts.truncate(limit);
         }
@@ -2696,7 +2696,7 @@ impl LocalAgentSessionScanner {
             });
             candidates.extend(day_candidates);
         }
-        candidates.sort_by(|lhs, rhs| rhs.1.cmp(&lhs.1));
+        candidates.sort_by_key(|lhs| std::cmp::Reverse(lhs.1));
         candidates.truncate(self.config.max_codex_rollout_count);
         candidates
     }
