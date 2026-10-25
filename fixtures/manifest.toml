@@ -2592,10 +2592,17 @@ sources = [
     "Sources/CodexBar/StatusItemController+AgentSessions.swift",
     "Sources/CodexBar/AdaptiveRefreshPolicy.swift",
     "Sources/CodexBar/SettingsStore.swift",
+]
+commit = "b49d42eb53bbf79785b344492d594760dd163eac"
+
+[[ported]]
+path = "crates/ariadusage-engine/src/sessions/mod.rs"
+sources = [
     "Sources/CodexBarCore/LocalAgentSessionScanner.swift",
     "Sources/CodexBarCore/AgentSession.swift",
     "Sources/CodexBarCore/Providers/Claude/ClaudeDesktopProjectsLocator.swift",
     "Sources/CodexBarCore/PiFamilySessionScanner.swift",
     "Sources/CodexBarCore/PiFamilySessionRootResolver.swift",
+    "Sources/CodexBar/StatusItemController+AgentSessions.swift",
 ]
 commit = "b49d42eb53bbf79785b344492d594760dd163eac"

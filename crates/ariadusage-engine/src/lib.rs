@@ -14,6 +14,7 @@ pub mod private_tempdir;
 pub mod providers;
 pub mod registry;
 pub mod runtime;
+pub mod sessions;
 pub mod settings_page;
 pub mod state_store;
 pub mod status;
@@ -35,19 +36,22 @@ pub use hooks::{
     ProcessBrokerHookExecutor,
 };
 pub use host_observers::{
-    AgentProcessSnapshot, AgentSessionProvider, AgentSessionRefreshGate,
+    AgentPSOutputParser, AgentProcessSnapshot, AgentSessionProvider, AgentSessionRefreshGate,
     ClaudeDesktopProjectsLocator, ClaudeSessionProjectMapper, DefaultHostPowerThermalProbe,
     DirectoryMetadataScanBudget, FutureModificationDateClamp, HostPowerThermalProbe,
     LOCAL_ACTIVITY_SCAN_INTERVAL, LocalActivityScanResult, LocalAgentSessionScanner,
-    ObservedAgentSession, SessionScanConfig, evaluate_upower_low_power_mode,
-    map_macos_thermal_state, read_linux_thermal_pressure_from_sysfs,
+    LocalSessionScanResult, ObservedAgentSession, SessionScanConfig,
+    evaluate_upower_low_power_mode, map_macos_thermal_state,
+    read_linux_thermal_pressure_from_sysfs,
+    read_linux_thermal_pressure_from_sysfs_with_devices_prefix,
 };
 pub use ipc_server::{IpcBackend, IpcServerError, PeerIdentity, verify_peer_uid};
 pub use paths::{
     ENGINE_SOCKET_REL_PATH, PathError, SUN_PATH_MAX_BYTES, canonicalize_macos_var_prefix,
-    config_path, data_dir, resolve_config_path, resolve_data_dir, resolve_macos_runtime_dir_with,
-    resolve_runtime_dir, resolve_socket_path_from_runtime_dir, resolve_state_dir, runtime_dir,
-    socket_path, state_dir, trusted_runtime_dir, validate_socket_path_len,
+    config_path, data_dir, resolve_cli_home_dir, resolve_config_path, resolve_data_dir,
+    resolve_macos_runtime_dir_with, resolve_runtime_dir, resolve_socket_path_from_runtime_dir,
+    resolve_state_dir, runtime_dir, socket_path, state_dir, trusted_runtime_dir, user_home_dir,
+    validate_socket_path_len,
 };
 pub use private_file::{WriteHooks, repair_permissions, write_private};
 pub use private_tempdir::{PrivateTempDir, TempDirError};

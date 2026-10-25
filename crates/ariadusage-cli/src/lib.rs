@@ -61,18 +61,7 @@ impl OutputFormat {
     }
 }
 
-/// Resolves the user home directory for CLI runtime construction, failing closed (`None`)
-/// when neither `HOME` nor the OS home directory resolves so the CLI never falls back to the
-/// current working directory.
-pub fn resolve_cli_home_dir(
-    env_home: Option<&std::ffi::OsStr>,
-    fallback_home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    env_home
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| fallback_home.filter(|p| !p.as_os_str().is_empty()))
-}
+pub use ariadusage_engine::paths::resolve_cli_home_dir;
 
 /// Builds an in-process [`EngineRuntime`] configured for CLI commands when no daemon socket is
 /// active or when a command executes directly in the CLI process.
