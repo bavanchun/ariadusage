@@ -1717,6 +1717,7 @@ impl CodexThreadMetadataReader {
         if session_ids.is_empty() {
             return HashMap::new();
         }
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
         let mut result: HashMap<String, CodexThreadMetadata> = indexed_names
             .iter()
             .filter(|(k, _)| session_ids.contains(*k))
