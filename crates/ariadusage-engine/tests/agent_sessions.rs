@@ -950,12 +950,14 @@ struct AdaptiveChatGPTFixture {
     environment: HashMap<String, String>,
 }
 
+type CustomTrustValidator = Arc<dyn Fn(&AgentProcessRecord) -> bool + Send + Sync>;
+
 fn make_adaptive_chatgpt_fixture(
     now: Timestamp,
     rollout_age_secs: i64,
     app_server_executable: &str,
     app_server_is_trusted: bool,
-    custom_validator: Option<Arc<dyn Fn(&AgentProcessRecord) -> bool + Send + Sync>>,
+    custom_validator: Option<CustomTrustValidator>,
 ) -> AdaptiveChatGPTFixture {
     let root = tempfile::tempdir().expect("tempdir");
     let codex_home = root.path().join("codex-home");
@@ -974,7 +976,7 @@ fn make_adaptive_chatgpt_fixture(
     let ps_line = format!(
         "4234 1 Mon Jul 6 09:03:00 2026 {executable} -c features.code_mode_host=true app-server --analytics-default-enabled"
     );
-    let validator: Arc<dyn Fn(&AgentProcessRecord) -> bool + Send + Sync> =
+    let validator: CustomTrustValidator =
         custom_validator.unwrap_or_else(|| Arc::new(move |_| app_server_is_trusted));
     let scanner =
         LocalAgentSessionScanner::with_providers(move |_| ps_line.clone(), |_, _| HashMap::new())
