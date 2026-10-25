@@ -6,9 +6,13 @@
 
 mod common;
 
-use ariadusage_macos::pace_text::{PaceContext, PaceFacts, detail, session_equivalent_detail};
-use ariadusage_protocol::usage::{PaceStage, SessionEquivalentForecast};
+use ariadusage_macos::pace_text::{
+    PaceContext, PaceFacts, detail, session_detail, session_equivalent_detail, session_pace,
+    session_summary,
+};
+use ariadusage_protocol::usage::{PaceStage, RateWindow, SessionEquivalentForecast};
 use common::{FixedDates, FrenchDates};
+use jiff::Timestamp;
 
 const DAY: f64 = 24.0 * 3600.0;
 
@@ -24,6 +28,17 @@ fn pace(stage: PaceStage, delta: f64, expected: f64) -> PaceFacts {
     }
 }
 
+fn rate_window(used: f64, minutes: Option<u32>, resets_in_seconds: Option<i64>) -> RateWindow {
+    let now = Timestamp::from_second(0).unwrap();
+    RateWindow {
+        window_minutes: minutes,
+        resets_at: resets_in_seconds.map(|s| now + jiff::SignedDuration::from_secs(s)),
+        ..RateWindow::new(used)
+    }
+}
+
+// upstream: UsagePaceTextTests.swift:31 weekly pace detail provides left right labels
+// upstream: UsagePaceTextTests.swift:79 weekly pace summary formats single line text
 #[test]
 fn weekly_pace_detail_provides_left_right_labels() {
     // 50 % used with 4 of 7 days left: 42.9 % expected, out in 3 days.
@@ -37,6 +52,7 @@ fn weekly_pace_detail_provides_left_right_labels() {
     assert_eq!(d.summary(), "Pace: 7% in deficit · Runs out in 3d");
 }
 
+// upstream: UsagePaceTextTests.swift:47 weekly pace detail treats rounded zero delta as on pace
 #[test]
 fn weekly_pace_detail_treats_rounded_zero_delta_as_on_pace() {
     let facts = PaceFacts {
@@ -46,6 +62,9 @@ fn weekly_pace_detail_treats_rounded_zero_delta_as_on_pace() {
     assert_eq!(detail(&facts, true, PaceContext::Weekly).left, "On pace");
 }
 
+// upstream: UsagePaceTextTests.swift:63 weekly pace detail reports lasts until reset
+// upstream: UsagePaceTextTests.swift:94 weekly pace detail reports capped speed headroom when under pace
+// upstream: UsagePaceTextTests.swift:125 weekly pace detail reports remaining headroom late in window
 #[test]
 fn weekly_pace_detail_reports_lasts_until_reset_with_headroom() {
     // 10 % used with 4 of 7 days left.
@@ -62,6 +81,7 @@ fn weekly_pace_detail_reports_lasts_until_reset_with_headroom() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:110 weekly pace detail limits headroom hint to Codex
 #[test]
 fn weekly_pace_detail_limits_headroom_hint_to_providers_that_show_it() {
     let facts = PaceFacts {
@@ -75,6 +95,7 @@ fn weekly_pace_detail_limits_headroom_hint_to_providers_that_show_it() {
     );
 }
 
+// Rust-added: verifies headroom threshold boundaries (-15% delta and 1.5x multiplier)
 #[test]
 fn headroom_needs_a_large_reserve_and_multiplier() {
     let base = PaceFacts {
@@ -102,6 +123,7 @@ fn headroom_needs_a_large_reserve_and_multiplier() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:141 reported weekly state renders deficit and run out headline
 #[test]
 fn reported_weekly_state_renders_deficit_and_run_out_headline() {
     // 88 % used with 2 days 19 hours left: out in 13h 47m.
@@ -114,6 +136,7 @@ fn reported_weekly_state_renders_deficit_and_run_out_headline() {
     assert_eq!(d.right.as_deref(), Some("Runs out in 13h 47m"));
 }
 
+// upstream: UsagePaceTextTests.swift:158 weekly pace detail formats rounded risk when available
 #[test]
 fn weekly_pace_detail_formats_rounded_risk_when_available() {
     let facts = PaceFacts {
@@ -127,6 +150,7 @@ fn weekly_pace_detail_formats_rounded_risk_when_available() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:175 weekly pace detail combines reserve outcome with risk
 #[test]
 fn weekly_pace_detail_combines_reserve_outcome_with_risk() {
     let facts = PaceFacts {
@@ -139,6 +163,7 @@ fn weekly_pace_detail_combines_reserve_outcome_with_risk() {
     assert_eq!(d.right.as_deref(), Some("Lasts until reset (45% risk)"));
 }
 
+// upstream: UsagePaceTextTests.swift:193 weekly pace detail keeps lasts until reset only when rounded risk is zero
 #[test]
 fn weekly_pace_detail_keeps_lasts_until_reset_when_rounded_risk_is_zero() {
     let facts = PaceFacts {
@@ -153,6 +178,7 @@ fn weekly_pace_detail_keeps_lasts_until_reset_when_rounded_risk_is_zero() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:211 weekly pace detail keeps outcome beside material risk
 #[test]
 fn weekly_pace_detail_keeps_outcome_beside_material_risk() {
     let facts = PaceFacts {
@@ -166,6 +192,7 @@ fn weekly_pace_detail_keeps_outcome_beside_material_risk() {
     );
 }
 
+// Rust-added: risk suffix without an ETA/lasts outcome
 #[test]
 fn risk_alone_when_there_is_no_outcome() {
     let facts = PaceFacts {
@@ -178,6 +205,7 @@ fn risk_alone_when_there_is_no_outcome() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:230 session pace detail provides left right labels
 #[test]
 fn session_pace_detail_provides_left_right_labels() {
     // 80 % used, 3 of 5 hours elapsed: 60 % expected, empty in 45 minutes.
@@ -191,6 +219,7 @@ fn session_pace_detail_provides_left_right_labels() {
     assert_eq!(d.summary(), "Pace: 20% in deficit · Projected empty in 45m");
 }
 
+// Rust-added: verifies zero-minute ETA wording for both Session and Weekly contexts
 #[test]
 fn session_and_weekly_wording_for_running_out_now() {
     let facts = PaceFacts {
@@ -207,6 +236,7 @@ fn session_and_weekly_wording_for_running_out_now() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:249 Claude session pace does not show Codex headroom
 #[test]
 fn claude_session_pace_does_not_show_codex_headroom() {
     let facts = PaceFacts {
@@ -219,6 +249,7 @@ fn claude_session_pace_does_not_show_codex_headroom() {
     assert_eq!(d.right.as_deref(), Some("Lasts until reset"));
 }
 
+// upstream: UsagePaceTextTests.swift:267 Codex session pace shows conservative headroom
 #[test]
 fn codex_session_pace_shows_conservative_headroom() {
     let facts = PaceFacts {
@@ -232,6 +263,73 @@ fn codex_session_pace_shows_conservative_headroom() {
     );
 }
 
+// upstream: UsagePaceTextTests.swift:281 Codex session pace suppressed for weekly and monthly durations but kept for fallback shapes
+#[test]
+fn codex_session_pace_suppressed_for_weekly_and_monthly_durations_but_kept_for_fallback_shapes() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = |minutes: Option<u32>| rate_window(50.0, minutes, Some(2 * 3600));
+
+    assert!(session_pace("codex", &window(Some(10_080)), now).is_none());
+    assert!(session_pace("codex", &window(Some(43_200)), now).is_none());
+    assert!(session_pace("codex", &window(Some(540)), now).is_some());
+    assert!(session_pace("codex", &window(None), now).is_some());
+    assert!(session_pace("codex", &window(Some(300)), now).is_some());
+}
+
+// upstream: UsagePaceTextTests.swift:300 session pace summary formats single line text
+#[test]
+fn session_pace_summary_formats_single_line_text() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = rate_window(80.0, Some(300), Some(2 * 3600));
+
+    let summary = session_summary("claude", &window, now);
+
+    assert_eq!(
+        summary.as_deref(),
+        Some("Pace: 20% in deficit · Projected empty in 45m")
+    );
+}
+
+// upstream: UsagePaceTextTests.swift:330 session pace detail supports Antigravity five hour window
+#[test]
+fn session_pace_detail_supports_antigravity_five_hour_window() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = rate_window(80.0, Some(300), Some(2 * 3600));
+
+    let d = session_detail("antigravity", &window, now).expect("session detail expected");
+
+    assert_eq!(d.left, "20% in deficit");
+    assert_eq!(d.right.as_deref(), Some("Projected empty in 45m"));
+}
+
+// upstream: UsagePaceTextTests.swift:344 session pace detail hides Antigravity weekly window
+#[test]
+fn session_pace_detail_hides_antigravity_weekly_window() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = rate_window(80.0, Some(10_080), Some(2 * 24 * 3600));
+
+    assert!(session_detail("antigravity", &window, now).is_none());
+}
+
+// upstream: UsagePaceTextTests.swift:372 session pace detail hides for unsupported provider
+#[test]
+fn session_pace_detail_hides_for_unsupported_provider() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = rate_window(50.0, Some(300), Some(2 * 3600));
+
+    assert!(session_detail("deepseek", &window, now).is_none());
+}
+
+// upstream: UsagePaceTextTests.swift:400 session pace detail hides when reset is missing
+#[test]
+fn session_pace_detail_hides_when_reset_is_missing() {
+    let now = Timestamp::from_second(0).unwrap();
+    let window = rate_window(50.0, Some(300), None);
+
+    assert!(session_detail("claude", &window, now).is_none());
+}
+
+// Rust-added: PaceDetail::summary formats without right label when absent
 #[test]
 fn summary_without_right_half() {
     let d = detail(
@@ -243,6 +341,7 @@ fn summary_without_right_half() {
     assert_eq!(d.summary(), "Pace: 5% in deficit");
 }
 
+// Rust-added: session-equivalent forecast formatting and pluralization
 #[test]
 fn session_equivalent_detail_respects_locale_and_upstream_pluralization() {
     let forecast = SessionEquivalentForecast::new(2.84, 16, None);

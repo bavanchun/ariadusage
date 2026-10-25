@@ -4,6 +4,7 @@
 // Ported from CodexBar Sources/CodexBar/MenuCardView+SessionEquivalent.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/MenuCardView+CodexResetCredits.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 // Ported from CodexBar Sources/CodexBar/InlineUsageDashboardContent.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
+// Ported from CodexBar Sources/CodexBarCore/RateWindow+BindingCap.swift at b49d42eb5; MIT, see LICENSES/CodexBar-MIT.txt
 
 //! The usage menu card's model: what the card shows for one provider.
 //!
@@ -461,8 +462,9 @@ pub fn card_model(
     let windows = &provider.windows;
 
     let mut metrics = Vec::new();
+    let secondary_value = windows.secondary.as_ref().and_then(displayable_value);
     if let Some(primary) = windows.primary.as_ref().and_then(displayable_value) {
-        metrics.push(builder.primary(primary, titles.session.clone()));
+        metrics.push(builder.primary(primary, secondary_value, titles.session.clone()));
     }
     if let Some(weekly) = windows.secondary.as_ref().and_then(displayable_value) {
         metrics.push(builder.secondary(weekly, titles.weekly.clone()));
@@ -564,13 +566,28 @@ impl RowBuilder<'_> {
         row
     }
 
-    /// The session row, with the engine's session pace (`PaceContext::Session`).
-    fn primary(&self, window: &RateWindow, title: String) -> MetricRow {
-        let mut row = self.row("primary", title, window);
-        if let Some(pace) = window.pace.as_ref() {
-            self.apply_pace(&mut row, window, pace, PaceContext::Session);
+    /// The session row, with Claude binding-quota projection (`MenuCardView.swift:1327-1346`)
+    /// and the engine's session or reset-window pace.
+    fn primary(
+        &self,
+        window: &RateWindow,
+        secondary_window: Option<&RateWindow>,
+        title: String,
+    ) -> MetricRow {
+        let (effective_window, capped_by_binding_quota) = if self.provider_id == "claude" {
+            claude_binding_quota_projection(window, secondary_window, self.now)
+        } else {
+            (window.clone(), false)
+        };
+        let mut row = self.row("primary", title, &effective_window);
+        if !capped_by_binding_quota
+            && let Some(pace) = effective_window.pace.as_ref()
+            && let Some(context) =
+                primary_pace_context(self.provider_id, &effective_window, self.now)
+        {
+            self.apply_pace(&mut row, &effective_window, pace, context);
         }
-        self.apply_session_equivalent(&mut row, window);
+        self.apply_session_equivalent(&mut row, &effective_window);
         row.warning_marker_percents = progress_bar::warning_marker_percents(
             &self.prefs.session_warning_thresholds,
             self.prefs.show_used,
@@ -582,8 +599,10 @@ impl RowBuilder<'_> {
     /// session-equivalent forecast when present.
     fn secondary(&self, window: &RateWindow, title: String) -> MetricRow {
         let mut row = self.row("secondary", title, window);
-        if let Some(pace) = window.pace.as_ref() {
-            self.apply_pace(&mut row, window, pace, PaceContext::Weekly);
+        if let Some(pace) = window.pace.as_ref()
+            && let Some(context) = secondary_or_tertiary_pace_context(self.provider_id, window)
+        {
+            self.apply_pace(&mut row, window, pace, context);
         }
         self.apply_session_equivalent(&mut row, window);
         row.warning_marker_percents = progress_bar::warning_marker_percents(
@@ -602,8 +621,10 @@ impl RowBuilder<'_> {
 
     fn tertiary(&self, window: &RateWindow, title: String) -> MetricRow {
         let mut row = self.row("tertiary", title, window);
-        if let Some(pace) = window.pace.as_ref() {
-            self.apply_pace(&mut row, window, pace, PaceContext::Weekly);
+        if let Some(pace) = window.pace.as_ref()
+            && let Some(context) = secondary_or_tertiary_pace_context(self.provider_id, window)
+        {
+            self.apply_pace(&mut row, window, pace, context);
         }
         self.apply_session_equivalent(&mut row, window);
         row.warning_marker_percents = progress_bar::warning_marker_percents(
@@ -634,11 +655,9 @@ impl RowBuilder<'_> {
         ) {
             (_, Some(window)) => {
                 let mut row = self.row(id, title, window);
-                let context = match window.window_minutes {
-                    Some(m) if m <= 300 => PaceContext::Session,
-                    _ => PaceContext::Weekly,
-                };
-                if let Some(pace) = window.pace.as_ref() {
+                if let Some(pace) = window.pace.as_ref()
+                    && let Some(context) = extra_pace_context(self.provider_id, window)
+                {
                     self.apply_pace(&mut row, window, pace, context);
                 }
                 self.apply_session_equivalent(&mut row, window);
@@ -673,12 +692,16 @@ impl RowBuilder<'_> {
         }
         match context {
             PaceContext::Session => {
-                if !supports_session_pace(self.provider_id) || pace.expected_used_percent < 3.0 {
+                if !pace_text::supports_session_pace(self.provider_id, window)
+                    || pace.expected_used_percent < pace_text::MINIMUM_EXPECTED_PERCENT
+                {
                     return;
                 }
             }
             PaceContext::Weekly => {
-                if pace.expected_used_percent < 3.0 && pace.eta_seconds != Some(0) {
+                if pace.expected_used_percent < pace_text::MINIMUM_EXPECTED_PERCENT
+                    && pace.eta_seconds != Some(0)
+                {
                     return;
                 }
             }
@@ -692,7 +715,11 @@ impl RowBuilder<'_> {
             run_out_probability: pace.run_out_probability,
             speed_multiplier_to_reset: pace.speed_multiplier_to_reset,
         };
-        let detail = pace_text::detail(&facts, shows_headroom_hint(self.provider_id), context);
+        let detail = pace_text::detail(
+            &facts,
+            pace_text::shows_headroom_hint(self.provider_id),
+            context,
+        );
         let expected = if self.prefs.show_used {
             pace.expected_used_percent
         } else {
@@ -715,6 +742,130 @@ impl RowBuilder<'_> {
         let detail = pace_text::session_equivalent_detail(forecast, self.dates);
         row.session_equivalent_left_text = Some(detail.left);
         row.session_equivalent_right_text = Some(detail.right);
+    }
+}
+
+/// Resolves the pace context for the primary lane (`MenuCardView.swift:599-630`).
+fn primary_pace_context(
+    provider_id: &str,
+    window: &RateWindow,
+    now: Timestamp,
+) -> Option<PaceContext> {
+    match provider_id {
+        "claude" => {
+            if window.window_minutes == Some(43_200) {
+                if window.resets_at.is_none_or(|resets_at| resets_at > now) {
+                    Some(PaceContext::Weekly)
+                } else {
+                    None
+                }
+            } else {
+                Some(PaceContext::Session)
+            }
+        }
+        "codex" => {
+            pace_text::supports_session_pace(provider_id, window).then_some(PaceContext::Session)
+        }
+        "antigravity" => match window.window_minutes {
+            Some(300) => Some(PaceContext::Session),
+            Some(10_080) => Some(PaceContext::Weekly),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Resolves the pace context for the secondary or tertiary lane (`MenuCardView.swift:618-630`, `MenuCardView+ModelHelpers.swift:1145`).
+fn secondary_or_tertiary_pace_context(
+    provider_id: &str,
+    window: &RateWindow,
+) -> Option<PaceContext> {
+    match provider_id {
+        "antigravity" => match window.window_minutes {
+            Some(300) => Some(PaceContext::Session),
+            Some(10_080) => Some(PaceContext::Weekly),
+            _ => None,
+        },
+        "codex" => (window.window_minutes.is_none() || window.window_minutes == Some(10_080))
+            .then_some(PaceContext::Weekly),
+        "claude" => (window.window_minutes.is_none()
+            || matches!(window.window_minutes, Some(10_080 | 43_200)))
+        .then_some(PaceContext::Weekly),
+        _ => None,
+    }
+}
+
+/// Resolves the pace context for a named extra rate window (`extraRateWindowPaceDetail`, `MenuCardView+ModelHelpers.swift:1125-1160`).
+fn extra_pace_context(provider_id: &str, window: &RateWindow) -> Option<PaceContext> {
+    match (provider_id, window.window_minutes) {
+        ("claude", Some(10_080 | 43_200)) => Some(PaceContext::Weekly),
+        ("codex" | "antigravity", Some(300)) => Some(PaceContext::Session),
+        ("codex" | "antigravity", Some(10_080)) => Some(PaceContext::Weekly),
+        _ => None,
+    }
+}
+
+/// Returns `(effective_primary, is_capped_by_binding_quota)` for Claude's primary lane
+/// (`RateWindow+BindingCap.swift:21-65`, `MenuCardView.swift:1327-1346`).
+fn claude_binding_quota_projection(
+    primary: &RateWindow,
+    secondary: Option<&RateWindow>,
+    now: Timestamp,
+) -> (RateWindow, bool) {
+    let Some(binding) = secondary else {
+        return (primary.clone(), false);
+    };
+    if !is_binding_quota_over(binding, primary, now) {
+        return (primary.clone(), false);
+    }
+    let (resets_at, reset_description) = if is_actively_exhausted(primary, now) {
+        match (primary.resets_at, binding.resets_at) {
+            (Some(pr), Some(br)) => {
+                if br > pr {
+                    (Some(br), binding.reset_description.clone())
+                } else {
+                    (Some(pr), primary.reset_description.clone())
+                }
+            }
+            (None, Some(br)) => (Some(br), binding.reset_description.clone()),
+            (Some(pr), None) => (Some(pr), primary.reset_description.clone()),
+            (None, None) => (
+                None,
+                binding
+                    .reset_description
+                    .clone()
+                    .or_else(|| primary.reset_description.clone()),
+            ),
+        }
+    } else {
+        (binding.resets_at, binding.reset_description.clone())
+    };
+    let mut capped = primary.clone();
+    capped.used_percent = 100.0;
+    capped.resets_at = resets_at;
+    capped.reset_description = reset_description;
+    capped.pace = None;
+    (capped, true)
+}
+
+fn is_actively_exhausted(window: &RateWindow, now: Timestamp) -> bool {
+    if (100.0 - window.used_percent).max(0.0) > 0.0 {
+        return false;
+    }
+    window.resets_at.is_none_or(|resets_at| resets_at > now)
+}
+
+fn is_binding_quota_over(binding: &RateWindow, candidate: &RateWindow, now: Timestamp) -> bool {
+    if !is_actively_exhausted(binding, now) {
+        return false;
+    }
+    match (binding.window_minutes, candidate.window_minutes) {
+        (Some(bw), Some(cw)) => bw > cw,
+        _ => match (binding.resets_at, candidate.resets_at) {
+            (Some(br), Some(cr)) => br > cr,
+            (Some(br), None) => br > now,
+            _ => true,
+        },
     }
 }
 
@@ -743,17 +894,6 @@ fn strip_trailing_only(title: &str) -> &str {
         }
     }
     title
-}
-
-/// Codex is the only v1 provider whose pace shows the headroom hint
-/// (`CodexProviderDescriptor.swift`).
-fn shows_headroom_hint(provider_id: &str) -> bool {
-    provider_id == "codex"
-}
-
-/// Only Codex and Claude enable `supportsSessionPace` (`ProviderDescriptor.swift:320`).
-fn supports_session_pace(provider_id: &str) -> bool {
-    matches!(provider_id, "codex" | "claude")
 }
 
 /// Clears pace output when the user hides pace (`paceGatedMetrics`).

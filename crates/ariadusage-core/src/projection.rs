@@ -11,7 +11,7 @@ use ariadusage_protocol::{
 };
 
 use crate::model::UsageSnapshot;
-use crate::pace::UsagePace;
+use crate::pace::{ProviderPaceKind, SnapshotWindowPaces, UsagePace};
 
 /// Refresh state of a provider fetch operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +68,18 @@ pub fn category_safe_message(category: ProviderErrorCategory) -> &'static str {
 
 /// Project a core `UsageSnapshot` into a protocol `ProviderSnapshot`.
 pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> ProviderSnapshot {
+    provider_snapshot_with_tz(snapshot, input, input.as_of, None, &jiff::tz::TimeZone::UTC)
+}
+
+/// Project a core `UsageSnapshot` into a protocol `ProviderSnapshot` using an explicit
+/// evaluation timestamp, workday count, and time zone for pace computation.
+pub fn provider_snapshot_with_tz(
+    snapshot: &UsageSnapshot,
+    input: &ProjectionInput,
+    now: jiff::Timestamp,
+    work_days: Option<u32>,
+    time_zone: &jiff::tz::TimeZone,
+) -> ProviderSnapshot {
     let source = MetricSource::new(input.source_kind, input.source_label.clone());
     let as_of = Some(input.as_of);
 
@@ -90,13 +102,27 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
         }
     };
 
-    let primary = project_window_metric(
+    let computed_paces =
+        SnapshotWindowPaces::compute(input.provider.as_str(), snapshot, now, work_days, time_zone);
+
+    let mut primary = project_window_metric(
         snapshot.primary.as_ref(),
         data_state,
         as_of,
         &source,
         snapshot.data_confidence,
     );
+    if let (Some(resolved), Some(prim)) = (computed_paces.primary.as_ref(), primary.as_mut())
+        && let Some(ref mut win) = prim.value
+    {
+        win.pace = Some(project_pace_with_kind(
+            &resolved.pace,
+            resolved.kind,
+            &input.provider,
+            now,
+        ));
+    }
+
     let mut secondary = project_window_metric(
         snapshot.secondary.as_ref(),
         data_state,
@@ -107,27 +133,58 @@ pub fn provider_snapshot(snapshot: &UsageSnapshot, input: &ProjectionInput) -> P
     if let (Some(p), Some(sec)) = (input.pace.as_ref(), secondary.as_mut())
         && let Some(ref mut win) = sec.value
     {
-        win.pace = Some(project_pace(p, &input.provider, input.as_of));
+        win.pace = Some(project_pace(p, &input.provider, now));
+    } else if let (Some(resolved), Some(sec)) =
+        (computed_paces.secondary.as_ref(), secondary.as_mut())
+        && let Some(ref mut win) = sec.value
+    {
+        win.pace = Some(project_pace_with_kind(
+            &resolved.pace,
+            resolved.kind,
+            &input.provider,
+            now,
+        ));
     }
-    let tertiary = project_window_metric(
+
+    let mut tertiary = project_window_metric(
         snapshot.tertiary.as_ref(),
         data_state,
         as_of,
         &source,
         snapshot.data_confidence,
     );
+    if let (Some(resolved), Some(tert)) = (computed_paces.tertiary.as_ref(), tertiary.as_mut())
+        && let Some(ref mut win) = tert.value
+    {
+        win.pace = Some(project_pace_with_kind(
+            &resolved.pace,
+            resolved.kind,
+            &input.provider,
+            now,
+        ));
+    }
 
     let extra = if let Some(ref extras) = snapshot.extra_rate_windows {
         extras
             .iter()
-            .map(|extra| {
+            .enumerate()
+            .map(|(idx, extra)| {
                 let state = if !extra.usage_known || extra.window.is_synthetic_placeholder {
                     MetricState::Unknown
                 } else {
                     data_state
                 };
                 let win_val = if matches!(state, MetricState::Value | MetricState::Stale) {
-                    Some(project_rate_window(&extra.window))
+                    let mut win = project_rate_window(&extra.window);
+                    if let Some(Some(resolved)) = computed_paces.extra.get(idx) {
+                        win.pace = Some(project_pace_with_kind(
+                            &resolved.pace,
+                            resolved.kind,
+                            &input.provider,
+                            now,
+                        ));
+                    }
+                    Some(win)
                 } else {
                     None
                 };
@@ -314,12 +371,23 @@ fn project_rate_window(win: &crate::model::RateWindow) -> RateWindow {
 
 /// Project a core `UsagePace` into a `protocol::Pace` structure with formatted summary text.
 pub fn project_pace(pace: &UsagePace, provider: &ProviderId, now: jiff::Timestamp) -> Pace {
+    project_pace_with_kind(pace, ProviderPaceKind::Weekly, provider, now)
+}
+
+/// Project a core `UsagePace` into a `protocol::Pace` structure with formatted summary text
+/// for a specific [`ProviderPaceKind`].
+pub fn project_pace_with_kind(
+    pace: &UsagePace,
+    kind: ProviderPaceKind,
+    provider: &ProviderId,
+    now: jiff::Timestamp,
+) -> Pace {
     let descriptor = crate::providers::find_by_id(provider);
     let shows_headroom_hint = descriptor
         .map(|d| d.pace_capability.shows_headroom_hint)
         .unwrap_or(false);
 
-    let summary = format_pace_summary(pace, shows_headroom_hint, now);
+    let summary = format_pace_summary_with_kind(pace, kind, shows_headroom_hint, now);
 
     Pace {
         stage: pace.stage,
@@ -337,6 +405,16 @@ pub fn project_pace(pace: &UsagePace, provider: &ProviderId, now: jiff::Timestam
 pub fn format_pace_summary(
     pace: &UsagePace,
     shows_headroom_hint: bool,
+    now: jiff::Timestamp,
+) -> String {
+    format_pace_summary_with_kind(pace, ProviderPaceKind::Weekly, shows_headroom_hint, now)
+}
+
+/// Format the human-readable summary string for pace with a specific [`ProviderPaceKind`].
+pub fn format_pace_summary_with_kind(
+    pace: &UsagePace,
+    kind: ProviderPaceKind,
+    shows_headroom_hint: bool,
     _now: jiff::Timestamp,
 ) -> String {
     let expected = pace.expected_used_percent.round() as i64;
@@ -345,7 +423,7 @@ pub fn format_pace_summary(
     parts.push(pace_left_label(pace));
     parts.push(format!("Expected {expected}% used"));
 
-    if let Some(right) = pace_right_label(pace, shows_headroom_hint) {
+    if let Some(right) = pace_right_label(pace, kind, shows_headroom_hint) {
         parts.push(right);
     }
 
@@ -369,7 +447,11 @@ fn pace_left_label(pace: &UsagePace) -> String {
     }
 }
 
-fn pace_right_label(pace: &UsagePace, shows_headroom_hint: bool) -> Option<String> {
+fn pace_right_label(
+    pace: &UsagePace,
+    kind: ProviderPaceKind,
+    shows_headroom_hint: bool,
+) -> Option<String> {
     if pace.will_last_to_reset {
         if shows_headroom_hint
             && pace.delta_percent < -15.0
@@ -381,10 +463,11 @@ fn pace_right_label(pace: &UsagePace, shows_headroom_hint: bool) -> Option<Strin
         }
     } else if let Some(eta_seconds) = pace.eta_seconds {
         let dur = format_countdown_duration(eta_seconds);
-        if dur == "now" {
-            Some("Runs out now".to_string())
-        } else {
-            Some(format!("Runs out in {dur}"))
+        match (kind, dur.as_str()) {
+            (ProviderPaceKind::Session, "now") => Some("Projected empty now".to_string()),
+            (ProviderPaceKind::Session, _) => Some(format!("Projected empty in {dur}")),
+            (ProviderPaceKind::Weekly, "now") => Some("Runs out now".to_string()),
+            (ProviderPaceKind::Weekly, _) => Some(format!("Runs out in {dur}")),
         }
     } else {
         None
