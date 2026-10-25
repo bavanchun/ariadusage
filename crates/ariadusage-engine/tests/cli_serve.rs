@@ -20,7 +20,7 @@ use ariadusage_core::model::{ProviderIdentitySnapshot, UsageSnapshot};
 use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::serve::accounts::{
     CliServeAccountDiscovery, CliServeAccountsPayload, CodexActiveSource,
-    FileManagedCodexAccountStore, ManagedCodexAccount, serve_accounts_route,
+    FileManagedCodexAccountStore, ManagedCodexAccount,
 };
 use ariadusage_engine::serve::auth::{
     CliServeDashboardAuth, CliServeSecurity, CliServeStartupError, serve_unauthorized_response,
@@ -39,9 +39,9 @@ use ariadusage_engine::serve::http_server::{
 use ariadusage_engine::serve::provider_icons;
 use ariadusage_engine::serve::web_ui::{self, PROVIDER_ICON_BY_PROVIDER_ID};
 use ariadusage_engine::serve::{
-    CachePolicy, CliServeCoordinatedResponse, CliServeDashboardTokenResolution,
-    CliServeResponseCache, CliServeRoute, CliServeRouteError, CliServeRouter,
-    CliTerminationSignalMonitor, DASHBOARD_COST_REFRESHES_PRICING_IN_BACKGROUND,
+    CachePolicy, CliServeArgumentError, CliServeCoordinatedResponse,
+    CliServeDashboardTokenResolution, CliServeResponseCache, CliServeRoute, CliServeRouteError,
+    CliServeRouter, CliTerminationSignalMonitor, DASHBOARD_COST_REFRESHES_PRICING_IN_BACKGROUND,
     SERVE_COST_REFRESHES_PRICING_IN_BACKGROUND, ServeCostCollectionContext, ServeRuntime,
     adding_no_store, cached_serve_response, clamped_serve_request_timeout,
     dashboard_identity_flag_present, decode_dashboard_identity_mode, decode_serve_host,
@@ -55,6 +55,7 @@ use ariadusage_engine::serve::{
 };
 use ariadusage_protocol::ids::ProviderId;
 use ariadusage_protocol::metric::Confidence;
+use ariadusage_protocol::secret::SecretString;
 use jiff::Timestamp;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -154,39 +155,6 @@ fn make_usage_with_email(provider: ProviderId, email: &str) -> UsageSnapshot {
     .unwrap()
 }
 
-fn make_request(
-    method: &str,
-    path: &str,
-    query_items: Vec<(&str, Option<&str>)>,
-    headers: Vec<(&str, &str)>,
-) -> CliLocalHttpRequest {
-    let query_str = if query_items.is_empty() {
-        String::new()
-    } else {
-        let joined: Vec<String> = query_items
-            .iter()
-            .map(|(k, v)| match v {
-                Some(val) => format!("{k}={val}"),
-                None => (*k).to_string(),
-            })
-            .collect();
-        format!("?{}", joined.join("&"))
-    };
-    CliLocalHttpRequest {
-        method: method.to_string(),
-        path: path.to_string(),
-        target: format!("{path}{query_str}"),
-        query_items: query_items
-            .into_iter()
-            .map(|(k, v)| (k.to_string(), v.map(ToString::to_string)))
-            .collect(),
-        headers: headers
-            .into_iter()
-            .map(|(k, v)| (k.to_ascii_lowercase(), v.to_string()))
-            .collect(),
-    }
-}
-
 async fn send_raw_http(port: u16, raw: &[u8]) -> Vec<u8> {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
     stream.write_all(raw).await.unwrap();
@@ -207,7 +175,8 @@ fn make_test_runtime(
     let config_path = dir.path().join("config.json");
     let store = ConfigStore::new(config_path);
     store.save(config).unwrap();
-    let auth = CliServeDashboardAuth::new(token);
+    let secret_token = token.map(|value| SecretString::new(value.to_string()));
+    let auth = CliServeDashboardAuth::new(secret_token.as_ref());
     let mut rt = ServeRuntime::new(
         store,
         30.0,
@@ -220,6 +189,23 @@ fn make_test_runtime(
     );
     rt.managed_accounts_store =
         FileManagedCodexAccountStore::new(dir.path().join("codex-accounts.json"));
+    rt.usage_fetcher = Arc::new(|provider, _cfg, _sink| {
+        Box::pin(async move {
+            let mut payload = ProviderPayload::new(provider.clone(), "cli");
+            payload.usage = Some(make_usage_with_email(
+                ProviderId::new(&provider).unwrap_or_else(|_| ProviderId::new("codex").unwrap()),
+                "test@example.com",
+            ));
+            UsageCommandOutput {
+                sections: vec![format!("{provider}: ok")],
+                payload: vec![payload],
+                exit_code: 0,
+            }
+        })
+    });
+    rt.cost_fetcher = Arc::new(|provider, _cfg, _sink| {
+        Box::pin(async move { CostPayload::from_token_snapshot(provider, None, None) })
+    });
     (dir, rt)
 }
 
@@ -707,20 +693,21 @@ fn single_account_response_returns_matching_account_and_unknown_id_returns_404()
 // 2. CLIServeAuthTests.swift (8 tests)
 // ============================================================================
 
-// upstream: CLIServeAuthTests.swift:10 serve help documents dashboard token transport honestly
+// partial-upstream: CLIServeAuthTests.swift:10 serve help documents dashboard token transport honestly
 #[test]
 fn serve_help_documents_dashboard_token_transport_honestly() {
     let serve = serve_help("0.0.0");
     let root = root_help("0.0.0");
 
     assert!(serve.contains("--host <host>"));
-    assert!(serve.contains("--dashboard-token <token>"));
+    assert!(!serve.contains("--dashboard-token <token>"));
+    assert!(serve.contains("ariadusage secret set --id serve.dashboardToken"));
     assert!(serve.contains("--allow-plain-http"));
     assert!(serve.contains("GET /dashboard/v1/snapshot"));
     assert!(serve.contains("ARIADUSAGE_DASHBOARD_TOKEN"));
     assert!(serve.contains("cleartext"));
     assert!(!serve.contains("never traverses the network"));
-    assert!(root.contains("--dashboard-token <token>"));
+    assert!(!root.contains("--dashboard-token <token>"));
     assert!(root.contains("--allow-plain-http"));
 }
 
@@ -777,7 +764,7 @@ fn serve_host_option_parses_and_normalizes() {
     );
 }
 
-// upstream: CLIServeAuthTests.swift:76 serve flags parse through the real commander signature
+// partial-upstream: CLIServeAuthTests.swift:76 serve flags parse through the real commander signature
 #[test]
 fn serve_flags_parse_through_the_real_commander_signature() {
     assert_eq!(
@@ -790,39 +777,49 @@ fn serve_flags_parse_through_the_real_commander_signature() {
         Some(DashboardIdentityMode::Full)
     );
     let empty_env = BTreeMap::new();
+    let secret = SecretString::new("store-secret".to_string());
     assert_eq!(
-        resolve_dashboard_token(Some("cli-secret"), &empty_env),
-        CliServeDashboardTokenResolution::Token("cli-secret".to_string())
+        resolve_dashboard_token(Some(&secret), &empty_env),
+        CliServeDashboardTokenResolution::Token(SecretString::new("store-secret".to_string()))
     );
     assert!(
         CliServeSecurity::validate_startup(
             "192.168.1.42",
-            &CliServeDashboardAuth::new(Some("cli-secret")),
+            &CliServeDashboardAuth::new(Some(&secret)),
             true
         )
         .is_ok()
     );
+    assert_eq!(
+        CliServeArgumentError::UnsupportedDashboardTokenFlag.to_string(),
+        "--dashboard-token is not supported because secrets must not be passed on argv; set serve.dashboardToken with `ariadusage secret set --id serve.dashboardToken` or set ARIADUSAGE_DASHBOARD_TOKEN."
+    );
 }
 
-// upstream: CLIServeAuthTests.swift:97 dashboard token resolution prefers the environment and rejects blanks
+// partial-upstream: CLIServeAuthTests.swift:97 dashboard token resolution prefers the environment and rejects blanks
 #[test]
 fn dashboard_token_resolution_prefers_the_environment_and_rejects_blanks() {
     let mut env = BTreeMap::new();
+    let store_secret = SecretString::new("  store-secret ".to_string());
     assert_eq!(
         resolve_dashboard_token(None, &env),
         CliServeDashboardTokenResolution::Absent
     );
     assert_eq!(
-        resolve_dashboard_token(Some("  flag-secret "), &env),
-        CliServeDashboardTokenResolution::Token("flag-secret".to_string())
+        resolve_dashboard_token(Some(&store_secret), &env),
+        CliServeDashboardTokenResolution::Token(SecretString::new("store-secret".to_string()))
     );
     env.insert(
         "ARIADUSAGE_DASHBOARD_TOKEN".to_string(),
         " env-secret ".to_string(),
     );
     assert_eq!(
-        resolve_dashboard_token(Some("flag-secret"), &env),
-        CliServeDashboardTokenResolution::Token("env-secret".to_string())
+        resolve_dashboard_token(Some(&store_secret), &env),
+        CliServeDashboardTokenResolution::Token(SecretString::new("store-secret".to_string()))
+    );
+    assert_eq!(
+        resolve_dashboard_token(None, &env),
+        CliServeDashboardTokenResolution::Token(SecretString::new("env-secret".to_string()))
     );
     let mut blank_env = BTreeMap::new();
     blank_env.insert("ARIADUSAGE_DASHBOARD_TOKEN".to_string(), "   ".to_string());
@@ -832,17 +829,12 @@ fn dashboard_token_resolution_prefers_the_environment_and_rejects_blanks() {
             source: "ARIADUSAGE_DASHBOARD_TOKEN".to_string()
         }
     );
-    assert_eq!(
-        resolve_dashboard_token(Some("flag-secret"), &blank_env),
-        CliServeDashboardTokenResolution::Empty {
-            source: "ARIADUSAGE_DASHBOARD_TOKEN".to_string()
-        }
-    );
     let empty_env = BTreeMap::new();
+    let blank_store = SecretString::new("   ".to_string());
     assert_eq!(
-        resolve_dashboard_token(Some("   "), &empty_env),
+        resolve_dashboard_token(Some(&blank_store), &empty_env),
         CliServeDashboardTokenResolution::Empty {
-            source: "--dashboard-token".to_string()
+            source: "serve.dashboardToken".to_string()
         }
     );
 }
@@ -851,7 +843,8 @@ fn dashboard_token_resolution_prefers_the_environment_and_rejects_blanks() {
 #[test]
 fn serve_startup_validation_enforces_the_token_and_plain_http_matrix() {
     let unauthenticated = CliServeDashboardAuth::new(None);
-    let authenticated = CliServeDashboardAuth::new(Some("secret-token"));
+    let secret = SecretString::new("secret-token".to_string());
+    let authenticated = CliServeDashboardAuth::new(Some(&secret));
 
     assert_eq!(
         CliServeSecurity::validate_startup("127.0.0.1", &unauthenticated, false),
@@ -865,17 +858,26 @@ fn serve_startup_validation_enforces_the_token_and_plain_http_matrix() {
         CliServeSecurity::validate_startup("127.0.0.1", &authenticated, false),
         Ok(())
     );
+    let missing_err = CliServeStartupError::MissingDashboardToken {
+        host: "192.168.1.42".to_string(),
+    };
+    assert!(
+        missing_err
+            .to_string()
+            .contains("ariadusage secret set --id serve.dashboardToken")
+    );
+    assert!(
+        missing_err
+            .to_string()
+            .contains("ARIADUSAGE_DASHBOARD_TOKEN")
+    );
     assert_eq!(
         CliServeSecurity::validate_startup("192.168.1.42", &unauthenticated, false),
-        Err(CliServeStartupError::MissingDashboardToken {
-            host: "192.168.1.42".to_string()
-        })
+        Err(missing_err.clone())
     );
     assert_eq!(
         CliServeSecurity::validate_startup("192.168.1.42", &unauthenticated, true),
-        Err(CliServeStartupError::MissingDashboardToken {
-            host: "192.168.1.42".to_string()
-        })
+        Err(missing_err)
     );
     assert_eq!(
         CliServeSecurity::validate_startup("192.168.1.42", &authenticated, false),
@@ -897,11 +899,13 @@ fn dashboard_auth_compares_constant_time_digests_and_fails_closed() {
     assert!(!unconfigured.authorizes(Some("Bearer anything")));
     assert!(!unconfigured.authorizes(None));
 
-    let blank = CliServeDashboardAuth::new(Some("   "));
+    let blank_secret = SecretString::new("   ".to_string());
+    let blank = CliServeDashboardAuth::new(Some(&blank_secret));
     assert!(!blank.is_configured());
     assert!(!blank.authorizes(Some("Bearer ")));
 
-    let auth = CliServeDashboardAuth::new(Some("top-secret-token"));
+    let top_secret = SecretString::new("top-secret-token".to_string());
+    let auth = CliServeDashboardAuth::new(Some(&top_secret));
     assert!(auth.is_configured());
     assert!(auth.authorizes(Some("Bearer top-secret-token")));
     assert!(auth.authorizes(Some("bearer   top-secret-token  ")));
@@ -1240,10 +1244,38 @@ async fn raw_server_rejects_duplicate_authorization_headers() {
     assert!(!invoked.load(Ordering::SeqCst));
 }
 
+async fn with_running_runtime_server<F, Fut>(rt: ServeRuntime, body: F)
+where
+    F: FnOnce(u16) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let allowed_hosts = if rt.data_routes_require_auth {
+        CliLocalHttpAllowedHosts::Any
+    } else {
+        CliLocalHttpAllowedHosts::LoopbackOnly
+    };
+    let rt = Arc::new(rt);
+    with_running_test_server(
+        allowed_hosts,
+        Arc::new(move |req| {
+            let rt = Arc::clone(&rt);
+            Box::pin(async move { handle_serve_request(req, &rt).await })
+        }),
+        body,
+    )
+    .await;
+}
+
+fn split_http_response(raw: &str) -> (&str, &str) {
+    raw.split_once("\r\n\r\n")
+        .expect("valid HTTP response with header/body separator")
+}
+
 // upstream: CLIServeRawHTTPTests.swift:107 raw server passes the authorization header to the handler
 #[tokio::test]
 async fn raw_server_passes_the_authorization_header_to_the_handler() {
-    let auth = CliServeDashboardAuth::new(Some("socket-secret"));
+    let secret = SecretString::new("socket-secret".to_string());
+    let auth = CliServeDashboardAuth::new(Some(&secret));
     with_running_test_server(
         CliLocalHttpAllowedHosts::LoopbackOnly,
         Arc::new(move |req| {
@@ -1276,22 +1308,26 @@ async fn raw_server_passes_the_authorization_header_to_the_handler() {
     .await;
 }
 
-// upstream: CLIServeRawHTTPTests.swift:129 web UI returns HTML with no-store
+// partial-upstream: CLIServeRawHTTPTests.swift:129 web UI returns HTML with no-store
 #[tokio::test]
 async fn web_ui_returns_html_with_no_store() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, None, "127.0.0.1", None, false);
-    let req = make_request("GET", "/", vec![], vec![("Host", "127.0.0.1:8080")]);
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.content_type, "text/html; charset=utf-8");
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
-    let body = String::from_utf8(response.body).unwrap();
-    assert!(body.contains("CodexBar Dashboard"));
-    assert!(body.contains("/dashboard/v1/snapshot"));
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        let (headers, body) = split_http_response(&raw);
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("Content-Type: text/html; charset=utf-8"));
+        assert!(headers.contains("Cache-Control: no-store"));
+        assert!(headers.contains("Content-Security-Policy: default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'"));
+        assert!(body.contains("AriadUsage Dashboard"));
+        assert!(body.contains("/dashboard/v1/snapshot"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:144 web UI stays open when a dashboard token is configured
@@ -1299,10 +1335,16 @@ async fn web_ui_returns_html_with_no_store() {
 async fn web_ui_stays_open_when_a_dashboard_token_is_configured() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let req = make_request("GET", "/", vec![], vec![("Host", "127.0.0.1:8080")]);
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 200);
-    assert_eq!(response.content_type, "text/html; charset=utf-8");
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(raw.contains("Content-Type: text/html; charset=utf-8\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:156 snapshot without credentials returns 401 with challenge and no-store
@@ -1322,23 +1364,18 @@ async fn snapshot_without_credentials_returns_401_with_challenge_and_no_store() 
             }
         })
     });
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 401);
-    assert_eq!(
-        response.headers.get("WWW-Authenticate").map(String::as_str),
-        Some("Bearer")
-    );
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
-    assert_eq!(response.body, br#"{"error":"unauthorized"}"#);
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(raw.contains("WWW-Authenticate: Bearer\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+        assert!(raw.ends_with("{\"error\":\"unauthorized\"}"));
+    })
+    .await;
     assert!(!called.load(Ordering::SeqCst));
 }
 
@@ -1359,25 +1396,19 @@ async fn snapshot_with_wrong_token_returns_401() {
             }
         })
     });
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer wrong-token"),
-        ],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 401);
-    assert_eq!(
-        response.headers.get("WWW-Authenticate").map(String::as_str),
-        Some("Bearer")
-    );
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer wrong-token\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(raw.contains("WWW-Authenticate: Bearer\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
     assert!(!called.load(Ordering::SeqCst));
 }
 
@@ -1403,24 +1434,22 @@ async fn snapshot_with_correct_token_returns_decodable_json_with_no_store() {
             }
         })
     });
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 200);
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
-    let obj: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
-    assert_eq!(obj["schemaVersion"], 1);
-    assert_eq!(obj["providers"][0]["id"], "codex");
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        let (headers, body) = split_http_response(&raw);
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("Cache-Control: no-store"));
+        let obj: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(obj["schemaVersion"], 1);
+        assert_eq!(obj["providers"][0]["id"], "codex");
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:203 snapshot shell returns minimal provider rows without invoking fetches
@@ -1446,29 +1475,27 @@ async fn snapshot_shell_returns_minimal_provider_rows_without_invoking_fetches()
             }
         })
     });
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("detail", Some("shell"))],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 200);
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?detail=shell HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        let (headers, body) = split_http_response(&raw);
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(headers.contains("Cache-Control: no-store"));
+        let obj: serde_json::Value = serde_json::from_str(body).unwrap();
+        let providers = obj["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 2);
+        let first = providers[0].as_object().unwrap();
+        let mut keys: Vec<&str> = first.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, vec!["display", "enabled", "id", "name"]);
+    })
+    .await;
     assert!(!called.load(Ordering::SeqCst));
-    let obj: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
-    let providers = obj["providers"].as_array().unwrap();
-    assert_eq!(providers.len(), 2);
-    let first = providers[0].as_object().unwrap();
-    let mut keys: Vec<&str> = first.keys().map(String::as_str).collect();
-    keys.sort_unstable();
-    assert_eq!(keys, vec!["display", "enabled", "id", "name"]);
 }
 
 // upstream: CLIServeRawHTTPTests.swift:237 snapshot shell supports provider filter and rejects invalid query values
@@ -1482,53 +1509,47 @@ async fn snapshot_shell_supports_provider_filter_and_rejects_invalid_query_value
         ]
     }));
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let filtered_req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("detail", Some("shell")), ("provider", Some("claude"))],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let filtered = handle_serve_request(filtered_req, &rt).await;
-    assert_eq!(filtered.status_code, 200);
-    let obj: serde_json::Value = serde_json::from_slice(&filtered.body).unwrap();
-    let providers = obj["providers"].as_array().unwrap();
-    assert_eq!(providers.len(), 1);
-    assert_eq!(providers[0]["id"], "claude");
+    with_running_runtime_server(rt, |port| async move {
+        let filtered_raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?detail=shell&provider=claude HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        let (filtered_headers, filtered_body) = split_http_response(&filtered_raw);
+        assert!(filtered_headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        let obj: serde_json::Value = serde_json::from_str(filtered_body).unwrap();
+        let providers = obj["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0]["id"], "claude");
 
-    let invalid_provider_req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("provider", Some("missing"))],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let invalid_provider = handle_serve_request(invalid_provider_req, &rt).await;
-    assert_eq!(invalid_provider.status_code, 400);
-    assert_eq!(
-        String::from_utf8(invalid_provider.body).unwrap(),
-        r#"{"error":"Unknown provider 'missing'."}"#
-    );
+        let invalid_provider_raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?provider=missing HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        let (inv_prov_headers, inv_prov_body) = split_http_response(&invalid_provider_raw);
+        assert!(inv_prov_headers.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert_eq!(inv_prov_body, r#"{"error":"Unknown provider 'missing'."}"#);
 
-    let invalid_detail_req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("detail", Some("summary"))],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let invalid_detail = handle_serve_request(invalid_detail_req, &rt).await;
-    assert_eq!(invalid_detail.status_code, 400);
-    assert_eq!(
-        String::from_utf8(invalid_detail.body).unwrap(),
-        r#"{"error":"Unknown dashboard detail 'summary'."}"#
-    );
+        let invalid_detail_raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?detail=summary HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        let (inv_det_headers, inv_det_body) = split_http_response(&invalid_detail_raw);
+        assert!(inv_det_headers.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert_eq!(
+            inv_det_body,
+            r#"{"error":"Unknown dashboard detail 'summary'."}"#
+        );
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:269 snapshot never accepts the token from the query string
@@ -1536,24 +1557,37 @@ async fn snapshot_shell_supports_provider_filter_and_rejects_invalid_query_value
 async fn snapshot_never_accepts_the_token_from_the_query_string() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("token", Some("secret-token"))],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 401);
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?token=secret-token HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:281 snapshot with duplicate authorization headers returns 400
 #[tokio::test]
 async fn snapshot_with_duplicate_authorization_headers_returns_400() {
-    let raw = b"GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer secret-token\r\nAuthorization: Bearer secret-token\r\n\r\n";
-    assert_eq!(
-        CliLocalHttpRequest::parse(raw, &CliLocalHttpAllowedHosts::LoopbackOnly),
-        Err(CliLocalHttpRequestError::DuplicateAuthorization)
-    );
+    let cfg = default_config();
+    let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+        assert!(raw.ends_with("{\"error\":\"invalid request\"}"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:300 snapshot rejects non get methods with 405
@@ -1561,18 +1595,16 @@ async fn snapshot_with_duplicate_authorization_headers_returns_400() {
 async fn snapshot_rejects_non_get_methods_with_405() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let req = make_request(
-        "POST",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 405);
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("POST /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 405 Method Not Allowed\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:313 dashboard missing routes return no-store
@@ -1580,18 +1612,16 @@ async fn snapshot_rejects_non_get_methods_with_405() {
 async fn dashboard_missing_routes_return_no_store() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/unknown",
-        vec![],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 404);
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("GET /dashboard/v1/unknown HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:325 snapshot fails closed when no token is configured
@@ -1599,25 +1629,19 @@ async fn dashboard_missing_routes_return_no_store() {
 async fn snapshot_fails_closed_when_no_token_is_configured() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, None, "127.0.0.1", None, false);
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer anything"),
-        ],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 401);
-    assert_eq!(
-        response.headers.get("WWW-Authenticate").map(String::as_str),
-        Some("Bearer")
-    );
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer anything\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(raw.contains("WWW-Authenticate: Bearer\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:338 usage and cost responses carry no-store on the wire
@@ -1628,15 +1652,18 @@ async fn usage_and_cost_responses_carry_no_store_on_the_wire() {
         "providers": [{ "id": "codex", "enabled": true }]
     }));
     let (_dir, rt) = make_test_runtime(&cfg, None, "127.0.0.1", None, false);
-    for path in ["/usage", "/cost"] {
-        let req = make_request("GET", path, vec![], vec![("Host", "127.0.0.1:8080")]);
-        let response = handle_serve_request(req, &rt).await;
-        assert_eq!(response.status_code, 200);
-        assert_eq!(
-            response.headers.get("Cache-Control").map(String::as_str),
-            Some("no-store")
-        );
-    }
+    with_running_runtime_server(rt, |port| async move {
+        for path in ["/usage", "/cost"] {
+            let raw = send_raw_request(
+                port,
+                &format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+            )
+            .await;
+            assert!(raw.starts_with("HTTP/1.1 200 OK\r\n"));
+            assert!(raw.contains("Cache-Control: no-store\r\n"));
+        }
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:358 accounts routes return metadata only with no-store and unknown ids return 404
@@ -1668,47 +1695,37 @@ async fn accounts_routes_return_metadata_only_with_no_store_and_unknown_ids_retu
         false,
     );
 
-    let list_req = make_request("GET", "/accounts", vec![], vec![("Host", "127.0.0.1:8080")]);
-    let list_resp = handle_serve_request(list_req, &rt).await;
-    assert_eq!(list_resp.status_code, 200);
-    assert_eq!(
-        list_resp.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
-    let list_text = String::from_utf8(list_resp.body.clone()).unwrap();
-    assert!(!list_text.contains("sk-ant-secret"));
-    let list_payload: CliServeAccountsPayload = serde_json::from_slice(&list_resp.body).unwrap();
-    assert_eq!(list_payload.accounts.len(), 1);
-    let wire_id = &list_payload.accounts[0].id;
+    with_running_runtime_server(rt, |port| async move {
+        let list_raw = send_raw_request(
+            port,
+            &format!("GET /accounts HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        let (list_headers, list_body) = split_http_response(&list_raw);
+        assert!(list_headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(list_headers.contains("Cache-Control: no-store"));
+        assert!(!list_body.contains("sk-ant-secret"));
+        let list_payload: CliServeAccountsPayload = serde_json::from_str(list_body).unwrap();
+        assert_eq!(list_payload.accounts.len(), 1);
+        let wire_id = &list_payload.accounts[0].id;
 
-    let item_req = make_request(
-        "GET",
-        &format!("/accounts/{wire_id}"),
-        vec![],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let item_resp = handle_serve_request(item_req, &rt).await;
-    assert_eq!(item_resp.status_code, 200);
-    assert_eq!(
-        item_resp.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+        let item_raw = send_raw_request(
+            port,
+            &format!("GET /accounts/{wire_id} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(item_raw.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(item_raw.contains("Cache-Control: no-store\r\n"));
 
-    let missing_req = make_request(
-        "GET",
-        "/accounts/unknown-id",
-        vec![],
-        vec![("Host", "127.0.0.1:8080")],
-    );
-    let missing_resp = handle_serve_request(missing_req, &rt).await;
-    assert_eq!(missing_resp.status_code, 404);
-    assert_eq!(
-        missing_resp
-            .headers
-            .get("Cache-Control")
-            .map(String::as_str),
-        Some("no-store")
-    );
+        let missing_raw = send_raw_request(
+            port,
+            &format!("GET /accounts/unknown-id HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(missing_raw.starts_with("HTTP/1.1 404 Not Found\r\n"));
+        assert!(missing_raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:414 non-loopback binds gate account usage and cost data behind the token
@@ -1720,30 +1737,39 @@ async fn non_loopback_binds_gate_account_usage_and_cost_data_behind_the_token() 
     }));
     let (_dir, rt) = make_test_runtime(&cfg, Some("lan-secret"), "192.168.1.42", None, false);
 
-    for path in ["/accounts", "/usage", "/cost"] {
-        let unauth = make_request("GET", path, vec![], vec![("Host", "192.168.1.42:8080")]);
-        let unauth_resp = handle_serve_request(unauth, &rt).await;
-        assert_eq!(unauth_resp.status_code, 401);
-        assert_eq!(
-            unauth_resp
-                .headers
-                .get("WWW-Authenticate")
-                .map(String::as_str),
-            Some("Bearer")
-        );
+    with_running_runtime_server(rt, |port| async move {
+        for path in ["/accounts", "/usage", "/cost"] {
+            let unauth_raw = send_raw_request(
+                port,
+                &format!("GET {path} HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\n\r\n"),
+            )
+            .await;
+            assert!(unauth_raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+            assert!(unauth_raw.contains("WWW-Authenticate: Bearer\r\n"));
+            assert!(unauth_raw.contains("Cache-Control: no-store\r\n"));
 
-        let auth = make_request(
-            "GET",
-            path,
-            vec![],
-            vec![
-                ("Host", "192.168.1.42:8080"),
-                ("Authorization", "Bearer lan-secret"),
-            ],
-        );
-        let auth_resp = handle_serve_request(auth, &rt).await;
-        assert_eq!(auth_resp.status_code, 200);
-    }
+            let auth_raw = send_raw_request(
+                port,
+                &format!(
+                    "GET {path} HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\nAuthorization: Bearer lan-secret\r\n\r\n"
+                ),
+            )
+            .await;
+            assert!(auth_raw.starts_with("HTTP/1.1 200 OK\r\n"));
+            assert!(auth_raw.contains("Cache-Control: no-store\r\n"));
+        }
+
+        let health_raw = send_raw_request(
+            port,
+            &format!("GET /health HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\n\r\n"),
+        )
+        .await;
+        let (health_headers, health_body) = split_http_response(&health_raw);
+        assert!(health_headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        let health_obj: serde_json::Value = serde_json::from_str(health_body).unwrap();
+        assert_eq!(health_obj["status"], "ok");
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:454 account authentication precedes config reads and errors do not expose storage details
@@ -1757,33 +1783,29 @@ async fn account_authentication_precedes_config_reads_and_errors_do_not_expose_s
     )
     .unwrap();
 
-    let unauth = make_request(
-        "GET",
-        "/accounts",
-        vec![],
-        vec![("Host", "192.168.1.42:8080")],
-    );
-    let unauth_resp = serve_accounts_route(&unauth, None, &rt);
-    assert_eq!(unauth_resp.status_code, 401);
+    with_running_runtime_server(rt, |port| async move {
+        let unauth_raw = send_raw_request(
+            port,
+            &format!("GET /accounts HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\n\r\n"),
+        )
+        .await;
+        assert!(unauth_raw.starts_with("HTTP/1.1 401 Unauthorized\r\n"));
+        assert!(unauth_raw.contains("Cache-Control: no-store\r\n"));
 
-    let auth = make_request(
-        "GET",
-        "/accounts",
-        vec![],
-        vec![
-            ("Host", "192.168.1.42:8080"),
-            ("Authorization", "Bearer lan-secret"),
-        ],
-    );
-    let auth_resp = serve_accounts_route(&auth, None, &rt);
-    assert_eq!(auth_resp.status_code, 500);
-    assert_eq!(
-        auth_resp.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
-    let text = String::from_utf8(auth_resp.body).unwrap();
-    assert_eq!(text, r#"{"error":"could not load accounts"}"#);
-    assert!(!text.contains("/Users/private"));
+        let auth_raw = send_raw_request(
+            port,
+            &format!(
+                "GET /accounts HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\nAuthorization: Bearer lan-secret\r\n\r\n"
+            ),
+        )
+        .await;
+        let (auth_headers, auth_body) = split_http_response(&auth_raw);
+        assert!(auth_headers.starts_with("HTTP/1.1 500 Internal Server Error\r\n"));
+        assert!(auth_headers.contains("Cache-Control: no-store"));
+        assert_eq!(auth_body, r#"{"error":"could not load accounts"}"#);
+        assert!(!auth_body.contains("/Users/private"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:476 dashboard error responses carry no-store
@@ -1791,21 +1813,18 @@ async fn account_authentication_precedes_config_reads_and_errors_do_not_expose_s
 async fn dashboard_error_responses_carry_no_store() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "127.0.0.1", None, false);
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![("provider", Some("not-a-provider"))],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 400);
-    assert_eq!(
-        response.headers.get("Cache-Control").map(String::as_str),
-        Some("no-store")
-    );
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot?provider=not-a-provider HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 400 Bad Request\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:490 health stays open when a dashboard token is configured
@@ -1813,16 +1832,18 @@ async fn dashboard_error_responses_carry_no_store() {
 async fn health_stays_open_when_a_dashboard_token_is_configured() {
     let cfg = default_config();
     let (_dir, rt) = make_test_runtime(&cfg, Some("secret-token"), "192.168.1.42", None, false);
-    let req = make_request(
-        "GET",
-        "/health",
-        vec![],
-        vec![("Host", "192.168.1.42:8080")],
-    );
-    let response = handle_serve_request(req, &rt).await;
-    assert_eq!(response.status_code, 200);
-    let obj: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
-    assert_eq!(obj["status"], "ok");
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!("GET /health HTTP/1.1\r\nHost: 192.168.1.42:{port}\r\n\r\n"),
+        )
+        .await;
+        let (headers, body) = split_http_response(&raw);
+        assert!(headers.starts_with("HTTP/1.1 200 OK\r\n"));
+        let obj: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert_eq!(obj["status"], "ok");
+    })
+    .await;
 }
 
 // upstream: CLIServeRawHTTPTests.swift:504 snapshot response preserves usage cache metadata
@@ -1848,21 +1869,30 @@ async fn snapshot_response_preserves_usage_cache_metadata() {
             }
         })
     });
-    let req = make_request(
-        "GET",
-        "/dashboard/v1/snapshot",
-        vec![],
-        vec![
-            ("Host", "127.0.0.1:8080"),
-            ("Authorization", "Bearer secret-token"),
-        ],
-    );
+    let req = CliLocalHttpRequest::parse(
+        b"GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:8080\r\nAuthorization: Bearer secret-token\r\n\r\n",
+        &CliLocalHttpAllowedHosts::LoopbackOnly,
+    )
+    .unwrap();
     let response = handle_serve_request(req, &rt).await;
     assert_eq!(response.status_code, 200);
     assert_eq!(
         response.usage_cache_keys,
         Some(vec![Some("codex:acct-1".to_string())])
     );
+
+    with_running_runtime_server(rt, |port| async move {
+        let raw = send_raw_request(
+            port,
+            &format!(
+                "GET /dashboard/v1/snapshot HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer secret-token\r\n\r\n"
+            ),
+        )
+        .await;
+        assert!(raw.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(raw.contains("Cache-Control: no-store\r\n"));
+    })
+    .await;
 }
 
 // ============================================================================
@@ -3960,9 +3990,11 @@ async fn timed_out_source_stays_owned_and_later_requests_never_overlap() {
     let gate = ServeFetchGate::new();
     let coordinator: CliServeOperationCoordinator<i32> = make_manual_coordinator(&clock);
     let deadline = clock.now() + Duration::from_secs(30);
+    let source_cancelled = Arc::new(AtomicBool::new(false));
 
     let c1 = coordinator.clone();
     let g1 = gate.clone();
+    let sc1 = Arc::clone(&source_cancelled);
     let first = tokio::spawn(async move {
         c1.value(
             "usage:",
@@ -3970,9 +4002,14 @@ async fn timed_out_source_stays_owned_and_later_requests_never_overlap() {
             Some(deadline),
             -1,
             |v| async move { v },
-            move |_sink| {
+            move |sink| {
                 let g1 = g1.clone();
-                async move { g1.run(1).await }
+                let sc1 = Arc::clone(&sc1);
+                async move {
+                    let v = g1.run(1).await;
+                    sc1.store(sink.cancel_token().is_cancelled(), Ordering::SeqCst);
+                    v
+                }
             },
         )
         .await
@@ -4018,6 +4055,7 @@ async fn timed_out_source_stays_owned_and_later_requests_never_overlap() {
     gate.release_all();
     gate.wait_for_active(0).await;
     wait_for_operation_count(0, &coordinator).await;
+    assert!(source_cancelled.load(Ordering::SeqCst));
 }
 
 // upstream: CLIServeTimeoutTests.swift:92 late source completion feeds a queued same fingerprint successor
@@ -4505,10 +4543,12 @@ async fn waiter_cancellation_unregisters_and_last_waiter_cancels_source() {
     let deadline = clock.now() + Duration::from_secs(30);
     let cancel_leader = TestGate::new();
     let cancel_follower = TestGate::new();
+    let source_cancelled = Arc::new(AtomicBool::new(false));
 
     let c1 = coordinator.clone();
     let g1 = gate.clone();
     let cl = cancel_leader.clone();
+    let sc1 = Arc::clone(&source_cancelled);
     let leader = tokio::spawn(async move {
         tokio::select! {
             v = c1.value(
@@ -4517,9 +4557,14 @@ async fn waiter_cancellation_unregisters_and_last_waiter_cancels_source() {
                 Some(deadline),
                 -1,
                 |v| async move { v },
-                move |_sink| {
+                move |sink| {
                     let g1 = g1.clone();
-                    async move { g1.run(1).await }
+                    let sc1 = Arc::clone(&sc1);
+                    async move {
+                        let v = g1.run(1).await;
+                        sc1.store(sink.cancel_token().is_cancelled(), Ordering::SeqCst);
+                        v
+                    }
                 },
             ) => v,
             () = cl.wait() => -1,
@@ -4566,6 +4611,7 @@ async fn waiter_cancellation_unregisters_and_last_waiter_cancels_source() {
     gate.release_all();
     gate.wait_for_active(0).await;
     wait_for_operation_count(0, &coordinator).await;
+    assert!(source_cancelled.load(Ordering::SeqCst));
 }
 
 // upstream: CLIServeTimeoutTests.swift:455 source completion cancels the operation timer
@@ -4792,9 +4838,11 @@ async fn shutdown_cancels_owned_work_and_rejects_new_operations() {
     let clock = ServeManualDeadlineClock::new();
     let gate = ServeFetchGate::new();
     let coordinator: CliServeOperationCoordinator<i32> = make_manual_coordinator(&clock);
+    let source_cancelled = Arc::new(AtomicBool::new(false));
 
     let c1 = coordinator.clone();
     let g1 = gate.clone();
+    let sc1 = Arc::clone(&source_cancelled);
     let deadline = clock.now() + Duration::from_secs(30);
     let active = tokio::spawn(async move {
         c1.value(
@@ -4803,9 +4851,14 @@ async fn shutdown_cancels_owned_work_and_rejects_new_operations() {
             Some(deadline),
             -1,
             |v| async move { v },
-            move |_sink| {
+            move |sink| {
                 let g1 = g1.clone();
-                async move { g1.run(1).await }
+                let sc1 = Arc::clone(&sc1);
+                async move {
+                    let v = g1.run(1).await;
+                    sc1.store(sink.cancel_token().is_cancelled(), Ordering::SeqCst);
+                    v
+                }
             },
         )
         .await
@@ -4837,6 +4890,7 @@ async fn shutdown_cancels_owned_work_and_rejects_new_operations() {
     gate.release_all();
     gate.wait_for_active(0).await;
     wait_for_operation_count(0, &coordinator).await;
+    assert!(source_cancelled.load(Ordering::SeqCst));
 }
 
 // upstream: CLIServeTimeoutTests.swift:639 provider timeout preserves healthy rows and cannot stack provider work
@@ -4969,7 +5023,7 @@ async fn cost_route_variants_cannot_stack_the_same_provider_scan() {
         serve_collect_cost_payloads(
             &["claude".to_string(), "codex".to_string()],
             &ctx1,
-            move |provider| {
+            move |provider, _sink| {
                 let b1 = b1.clone();
                 let late1 = late1.clone();
                 async move {
@@ -5016,7 +5070,7 @@ async fn cost_route_variants_cannot_stack_the_same_provider_scan() {
         serve_collect_cost_payloads(
             &["claude".to_string()],
             &overlapping_context,
-            move |_provider| {
+            move |_provider, _sink| {
                 let b2 = b2.clone();
                 let late2 = late2.clone();
                 async move { b2.run(late2).await }
@@ -5235,7 +5289,7 @@ async fn config_fingerprint_change_blocks_instead_of_serving_another_keys_stale_
 }
 
 // ============================================================================
-// 7. CLIServeWebUITests.swift (11 non-JSC tests; 13 JSC DOM tests documented in porting.md)
+// 7. CLIServeWebUITests.swift (9 non-JSC tests; 13 JSC DOM tests + 2 proof-export tests documented in porting.md)
 // ============================================================================
 
 fn web_ui_html() -> String {
@@ -5254,32 +5308,6 @@ fn usage_display_control_is_labeled_and_bundled_without_external_resources() {
     assert!(!html.contains(r#"rel="stylesheet""#));
 }
 
-// upstream: CLIServeWebUITests.swift:196 export optional synthetic fill preference proof pages
-#[test]
-fn export_optional_synthetic_fill_preference_proof_pages() {
-    let Some(path) = std::env::var_os("CODEXBAR_SERVE_FILL_PROOF_DIR") else {
-        return;
-    };
-    let output_dir = std::path::PathBuf::from(path);
-    std::fs::create_dir_all(&output_dir).unwrap();
-    let html = web_ui_html();
-    assert!(html.contains("<script>"));
-    assert!(html.contains("</script>"));
-}
-
-// upstream: CLIServeWebUITests.swift:325 render synthetic incomplete cost dashboard proof
-#[test]
-fn render_synthetic_incomplete_cost_dashboard_proof() {
-    let Some(path) = std::env::var_os("CODEXBAR_CLAUDE_INCOMPLETE_PROOF_DIR") else {
-        return;
-    };
-    let output_dir = std::path::PathBuf::from(path);
-    std::fs::create_dir_all(&output_dir).unwrap();
-    let html = web_ui_html();
-    assert!(html.contains("const cached = storedSnapshot();"));
-    assert!(html.contains("startProgressiveFill();"));
-}
-
 // upstream: CLIServeWebUITests.swift:439 web ui renders account cards in titled groups for multi account providers
 #[test]
 fn web_ui_renders_account_cards_in_titled_groups_for_multi_account_providers() {
@@ -5289,7 +5317,7 @@ fn web_ui_renders_account_cards_in_titled_groups_for_multi_account_providers() {
     assert!(html.contains("group-title"));
 }
 
-// upstream: CLIServeWebUITests.swift:488 web ui embeds provider icon urls and serves embedded svgs
+// partial-upstream: CLIServeWebUITests.swift:488 web ui embeds provider icon urls and serves embedded svgs
 #[test]
 fn web_ui_embeds_provider_icon_urls_and_serves_embedded_svgs() {
     let html = web_ui_html();
@@ -5298,8 +5326,11 @@ fn web_ui_embeds_provider_icon_urls_and_serves_embedded_svgs() {
     assert!(web_ui::icon_response("ProviderIcon-claude").is_some());
     assert!(web_ui::icon_response("ProviderIcon-nonexistent").is_none());
     assert!(web_ui::icon_response("../etc/passwd").is_none());
-    assert_eq!(PROVIDER_ICON_BY_PROVIDER_ID.len(), 106);
+    assert_eq!(PROVIDER_ICON_BY_PROVIDER_ID.len(), 3);
+    assert!(provider_icons::svg_data("ProviderIcon-claude").is_some());
     assert!(provider_icons::svg_data("ProviderIcon-codex").is_some());
+    assert!(provider_icons::svg_data("ProviderIcon-antigravity").is_some());
+    assert!(provider_icons::svg_data("ProviderIcon-cursor").is_none());
 }
 
 // upstream: CLIServeWebUITests.swift:499 web ui renders account windows alongside an error note
@@ -5343,11 +5374,11 @@ fn web_ui_renders_daily_spend_charts_from_cost_history() {
     assert!(html.contains("fetch(\"/cost\""));
 }
 
-// upstream: CLIServeWebUITests.swift:540 web ui progressively paints cached shell and provider snapshots
+// partial-upstream: CLIServeWebUITests.swift:540 web ui progressively paints cached shell and provider snapshots
 #[test]
 fn web_ui_progressively_paints_cached_shell_and_provider_snapshots() {
     let html = web_ui_html();
-    assert!(html.contains("codexbar.lastSnapshot"));
+    assert!(html.contains("ariadusage.lastSnapshot"));
     assert!(html.contains("/dashboard/v1/snapshot?detail=shell"));
     assert!(html.contains("card pending"));
     assert!(html.contains("Promise.allSettled"));

@@ -147,19 +147,36 @@ fn identifier_grammar_accepts_only_supported_first_party_secret_shapes() {
         "providers.claude.apiKey",
         "providers.codex.cookieHeader",
         "providers.antigravity.accounts.account_1-token.token",
+        "serve.dashboardToken",
     ] {
         let parsed = secret_id(id);
         assert!(matches!(
             parsed.kind(),
-            SecretKind::ApiKey | SecretKind::CookieHeader | SecretKind::AccountToken
+            SecretKind::ApiKey
+                | SecretKind::CookieHeader
+                | SecretKind::AccountToken
+                | SecretKind::DashboardToken
         ));
     }
+    assert_eq!(
+        secret_id("serve.dashboardToken"),
+        SecretId::serve_dashboard_token()
+    );
+    assert_eq!(
+        SecretId::serve_dashboard_token().keychain_account(),
+        "serve:dashboardToken"
+    );
+    assert_eq!(
+        SecretId::serve_dashboard_token().label(),
+        "AriadUsage Serve dashboard token"
+    );
 
     for id in [
         "providers.unknown.apiKey",
         "providers.claude.secretKey",
         "providers.claude.apiKey.extra",
         "providers.claude.accounts.account.id.token",
+        "serve.otherToken",
     ] {
         let setting = SettingId::new(id).expect("setting id grammar accepts this string");
         assert!(SecretId::from_setting_id(&setting).is_err(), "{id}");

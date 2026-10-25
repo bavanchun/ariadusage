@@ -23,8 +23,8 @@ etcetera = "0.11.0"
 http = "1.5.0"
 http-body-util = "0.1.5"
 httpmock = { version = "0.8.3", default-features = false, features = ["https"] }
-hyper = { version = "1.12.0", features = ["http1", "server"] }
-hyper-util = { version = "0.1.21", features = ["tokio", "http1", "server", "service"] }
+hyper = "1.12.0"
+hyper-util = { version = "0.1.21", features = ["service"] }
 insta = { version = "1.49.0", features = ["json", "glob"] }
 jiff = { version = "0.2.37", features = ["serde"] }
 jsonschema = { version = "0.58.5", default-features = false }

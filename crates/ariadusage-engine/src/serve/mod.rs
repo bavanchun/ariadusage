@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use ariadusage_core::config::{Config, encode, normalize};
+use ariadusage_protocol::secret::SecretString;
 use jiff::Timestamp;
 use serde::Serialize;
 use tokio::task::AbortHandle;
@@ -85,120 +86,10 @@ impl CliTerminationSignalMonitor {
     }
 }
 
-/// All upstream provider slugs recognized by `ProviderSelection(argument:)` in CLI/serve routes.
-pub const KNOWN_PROVIDER_SLUGS: &[&str] = &[
-    "codex",
-    "claude",
-    "cursor",
-    "opencode",
-    "opencodego",
-    "alibabacodingplan",
-    "alibabatokenplan",
-    "factory",
-    "gemini",
-    "antigravity",
-    "copilot",
-    "zai",
-    "minimax",
-    "kimi",
-    "kiro",
-    "vertexai",
-    "augment",
-    "jetbrains",
-    "kimik2",
-    "amp",
-    "synthetic",
-    "warp",
-    "openrouter",
-    "ollama",
-    "Perplexity",
-    "perplexity",
-    "abacus",
-    "aerostack",
-    "aiand",
-    "aixy",
-    "atlascloud",
-    "azureopenai",
-    "bedrock",
-    "bifrost",
-    "chutes",
-    "claudeplatform",
-    "clawrouter",
-    "clinepass",
-    "codebuff",
-    "coderabbit",
-    "commandcode",
-    "cosmic",
-    "deepgram",
-    "deepinfra",
-    "deepseek",
-    "devin",
-    "devpass",
-    "doubao",
-    "elevenlabs",
-    "exa",
-    "fal",
-    "fireworks",
-    "flora",
-    "futureagi",
-    "gitkraken",
-    "grok",
-    "groq",
-    "helmcode",
-    "huggingface",
-    "hyper",
-    "ibmbob",
-    "kilo",
-    "langdock",
-    "linkup",
-    "litellm",
-    "lithosai",
-    "llmman",
-    "llmproxy",
-    "longcat",
-    "manus",
-    "mimo",
-    "mistral",
-    "moonshot",
-    "munito",
-    "muse",
-    "museai",
-    "neuralwatt",
-    "notion",
-    "nous",
-    "openai",
-    "parallel",
-    "pi",
-    "poe",
-    "qoder",
-    "qwencloud",
-    "raycast",
-    "replicate",
-    "sailresearch",
-    "sakana",
-    "sofya",
-    "stepfun",
-    "sub2api",
-    "t3chat",
-    "tavily",
-    "tinyapi",
-    "typesafe",
-    "v0",
-    "venice",
-    "vercel",
-    "wayfinder",
-    "windsurf",
-    "workbuddy",
-    "xai",
-    "xapi",
-    "xkiro",
-    "zed",
-    "zenmux",
-    "zoommate",
-];
+/// v1 provider slugs recognized by `ProviderSelection(argument:)` in CLI/serve routes.
+pub const KNOWN_PROVIDER_SLUGS: &[&str] = &["claude", "codex", "antigravity"];
 
-pub const COST_SUPPORTED_PROVIDERS: &[&str] =
-    &["claude", "codex", "cursor", "antigravity", "muse", "pi"];
+pub const COST_SUPPORTED_PROVIDERS: &[&str] = &["claude", "codex", "antigravity"];
 
 /// Route matched by `CliServeRouter`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -305,6 +196,10 @@ pub enum CliServeArgumentError {
     InvalidRefreshInterval,
     #[error("--request-timeout must be zero or greater.")]
     InvalidRequestTimeout,
+    #[error(
+        "--dashboard-token is not supported because secrets must not be passed on argv; set serve.dashboardToken with `ariadusage secret set --id serve.dashboardToken` or set ARIADUSAGE_DASHBOARD_TOKEN."
+    )]
+    UnsupportedDashboardTokenFlag,
     #[error("{source_name} must not be empty or whitespace.")]
     EmptyDashboardToken { source_name: String },
     #[error("Unknown provider '{0}'.")]
@@ -318,44 +213,36 @@ pub enum CliServeArgumentError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliServeDashboardTokenResolution {
     Absent,
-    Token(String),
+    Token(SecretString),
     Empty { source: String },
 }
 
 #[must_use]
 pub fn resolve_dashboard_token(
-    cli_token: Option<&str>,
+    secret_store_token: Option<&SecretString>,
     environment: &BTreeMap<String, String>,
 ) -> CliServeDashboardTokenResolution {
-    if let Some(raw) = environment
-        .get(DASHBOARD_TOKEN_ENV_VAR)
-        .or_else(|| environment.get("CODEXBAR_DASHBOARD_TOKEN"))
-    {
-        let source = if environment.contains_key(DASHBOARD_TOKEN_ENV_VAR) {
-            DASHBOARD_TOKEN_ENV_VAR
+    if let Some(secret) = secret_store_token {
+        let trimmed = secret.expose_secret().trim();
+        return if trimmed.is_empty() {
+            CliServeDashboardTokenResolution::Empty {
+                source: "serve.dashboardToken".to_string(),
+            }
         } else {
-            "CODEXBAR_DASHBOARD_TOKEN"
+            CliServeDashboardTokenResolution::Token(SecretString::new(trimmed.to_string()))
         };
+    }
+    if let Some(raw) = environment.get(DASHBOARD_TOKEN_ENV_VAR) {
         let trimmed = raw.trim();
         return if trimmed.is_empty() {
             CliServeDashboardTokenResolution::Empty {
-                source: source.to_string(),
+                source: DASHBOARD_TOKEN_ENV_VAR.to_string(),
             }
         } else {
-            CliServeDashboardTokenResolution::Token(trimmed.to_string())
+            CliServeDashboardTokenResolution::Token(SecretString::new(trimmed.to_string()))
         };
     }
-    let Some(raw) = cli_token else {
-        return CliServeDashboardTokenResolution::Absent;
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        CliServeDashboardTokenResolution::Empty {
-            source: "--dashboard-token".to_string(),
-        }
-    } else {
-        CliServeDashboardTokenResolution::Token(trimmed.to_string())
-    }
+    CliServeDashboardTokenResolution::Absent
 }
 
 #[must_use]
@@ -553,7 +440,7 @@ pub fn load_serve_config_snapshot(
 ) -> Result<CliServeConfigSnapshot, String> {
     let config = config_store
         .load_effective()
-        .map_err(|err| err.to_string())?;
+        .map_err(|_| "could not load configuration".to_string())?;
     let cache_token = serve_config_cache_token(&config);
     Ok(CliServeConfigSnapshot {
         config,
@@ -1287,8 +1174,7 @@ pub struct ServeCostCollectionContext {
 
 #[must_use]
 pub fn serve_cost_error_payload(provider: &str, message: &str) -> CostPayload {
-    let source = if provider == "cursor" { "web" } else { "local" };
-    let mut item = CostPayload::new(provider, source);
+    let mut item = CostPayload::new(provider, "local");
     item.updated_at = Some(Timestamp::now());
     item.error = Some(ProviderErrorPayload::provider(message));
     item
@@ -1305,7 +1191,7 @@ pub async fn serve_collect_cost_payloads<F, Fut>(
     fetch: F,
 ) -> Vec<CostPayload>
 where
-    F: Fn(String) -> Fut + Send + Sync + 'static,
+    F: Fn(String, CliServeOperationProgressSink<CostPayload>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = CostPayload> + Send + 'static,
 {
     let fetch = Arc::new(fetch);
@@ -1336,7 +1222,7 @@ where
                 deadline,
                 timeout,
                 |v| async move { v },
-                move |_sink| fetch(p_clone.clone()),
+                move |sink| fetch(p_clone.clone(), sink),
             )
             .await;
         payload.push(item);
@@ -1406,8 +1292,15 @@ pub type UsageFetchCallback = Arc<
         + Sync,
 >;
 
-pub type CostFetchCallback =
-    Arc<dyn Fn(String, Config) -> Pin<Box<dyn Future<Output = CostPayload> + Send>> + Send + Sync>;
+pub type CostFetchCallback = Arc<
+    dyn Fn(
+            String,
+            Config,
+            CliServeOperationProgressSink<CostPayload>,
+        ) -> Pin<Box<dyn Future<Output = CostPayload> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Runtime state for `ariadusage serve` (`ServeRuntime`).
 #[derive(Clone)]
@@ -1445,7 +1338,7 @@ impl ServeRuntime {
     ) -> Self {
         Self {
             config_store: Arc::new(config_store),
-            managed_accounts_store: FileManagedCodexAccountStore::new(
+            managed_accounts_store: FileManagedCodexAccountStore::with_optional_path(
                 FileManagedCodexAccountStore::default_path(),
             ),
             cache: CliServeResponseCache::new(),
@@ -1464,7 +1357,7 @@ impl ServeRuntime {
                 Box::pin(async move {
                     let mut item = ProviderPayload::new(&provider, "auto");
                     item.error = Some(ProviderErrorPayload::provider(format!(
-                        "{provider} credentials not configured"
+                        "{provider} usage fetcher not configured"
                     )));
                     UsageCommandOutput {
                         sections: Vec::new(),
@@ -1473,15 +1366,12 @@ impl ServeRuntime {
                     }
                 })
             }),
-            cost_fetcher: Arc::new(|provider, _cfg| {
+            cost_fetcher: Arc::new(|provider, _cfg, _sink| {
                 Box::pin(async move {
-                    let mut item = CostPayload::new(provider, "local");
-                    item.updated_at = Some(Timestamp::now());
-                    item.session_tokens = Some(0);
-                    item.session_cost_usd = Some(0.0);
-                    item.last_30_days_tokens = Some(0);
-                    item.last_30_days_cost_usd = Some(0.0);
-                    item
+                    serve_cost_error_payload(
+                        &provider,
+                        &format!("{provider} cost fetcher not configured"),
+                    )
                 })
             }),
         }
@@ -1712,8 +1602,8 @@ pub async fn handle_serve_request(
                             provider_operations: rt.cost_operations.clone(),
                         };
                         let fetcher = Arc::clone(&rt.cost_fetcher);
-                        let items = serve_collect_cost_payloads(&provs, &ctx, move |prov| {
-                            fetcher(prov, cfg.clone())
+                        let items = serve_collect_cost_payloads(&provs, &ctx, move |prov, sink| {
+                            fetcher(prov, cfg.clone(), sink)
                         })
                         .await;
                         serve_json(&items)
@@ -1843,19 +1733,19 @@ pub async fn handle_serve_request(
                         };
                         let c_fetcher = Arc::clone(&rt.cost_fetcher);
                         let cfg_c = cfg.clone();
-                        let cost_items =
-                            serve_collect_cost_payloads(&cost_provs, &cost_ctx, move |prov| {
-                                c_fetcher(prov, cfg_c.clone())
-                            })
-                            .await;
+                        let cost_items = serve_collect_cost_payloads(
+                            &cost_provs,
+                            &cost_ctx,
+                            move |prov, sink| c_fetcher(prov, cfg_c.clone(), sink),
+                        )
+                        .await;
 
                         let mut account_collections = BTreeMap::new();
                         if !rt.dashboard_all_accounts
                             && provs.iter().any(|p| p == "codex")
-                            && let Some(coll) = dashboard::DashboardManagedCodexAccounts::collect(
-                                &cfg,
-                                rt.managed_accounts_store.path(),
-                            )
+                            && let Some(store_path) = rt.managed_accounts_store.path()
+                            && let Some(coll) =
+                                dashboard::DashboardManagedCodexAccounts::collect(&cfg, store_path)
                         {
                             account_collections.insert("codex".to_string(), coll);
                         }
@@ -1950,8 +1840,7 @@ pub fn serve_help(version: &str) -> String {
         "AriadUsage {version}\n\n\
          Usage:\n  \
          ariadusage serve [--host <host>] [--port <port>] [--refresh-interval <seconds>]\n                 \
-         [--request-timeout <seconds>]\n                 \
-         [--dashboard-token <token>] [--allow-plain-http]\n                 \
+         [--request-timeout <seconds>] [--allow-plain-http]\n                 \
          [--identity <redacted|full>] [--all-accounts]\n                 \
          [--json-output] [--log-level <trace|verbose|debug|info|warning|error|critical>]\n                 \
          [-v|--verbose]\n\n\
@@ -1961,8 +1850,9 @@ pub fn serve_help(version: &str) -> String {
          is always open; it sends a browser-entered token only when fetching snapshot data.\n  \
          The server binds to 127.0.0.1 by default; `localhost` is normalized to 127.0.0.1.\n  \
          GET /dashboard/v1/snapshot requires \"Authorization: Bearer YOUR_TOKEN\" and fails\n  \
-         closed (401) when no token is configured. Set the token with --dashboard-token or,\n  \
-         preferably, the ARIADUSAGE_DASHBOARD_TOKEN environment variable (argv leaks via ps).\n  \
+         closed (401) when no token is configured. Store the token in SecretStore with\n  \
+         `ariadusage secret set --id serve.dashboardToken` or set the\n  \
+         ARIADUSAGE_DASHBOARD_TOKEN environment variable (secrets are never passed on argv).\n  \
          Transport is plain HTTP: the token crosses the network in cleartext on every\n  \
          request. A non-loopback --host therefore requires both a dashboard token and\n  \
          --allow-plain-http, which records that you accept that trade-off. On a\n  \
@@ -1985,6 +1875,7 @@ pub fn serve_help(version: &str) -> String {
          Examples:\n  \
          ariadusage serve\n  \
          ariadusage serve --port 8080 --refresh-interval 60 --request-timeout 30\n  \
+         ariadusage secret set --id serve.dashboardToken\n  \
          ARIADUSAGE_DASHBOARD_TOKEN=YOUR_TOKEN ariadusage serve\n  \
          ARIADUSAGE_DASHBOARD_TOKEN=... ariadusage serve --host 0.0.0.0 --allow-plain-http\n  \
          curl http://127.0.0.1:8080/usage?provider=all\n  \
@@ -2025,8 +1916,7 @@ pub fn root_help(version: &str) -> String {
          Usage:\n  \
          ariadusage dashboard [--pretty] [--timeout <seconds>] [--output <path>]\n  \
          ariadusage serve [--host <host>] [--port <port>] [--refresh-interval <seconds>]\n                 \
-         [--request-timeout <seconds>]\n                 \
-         [--dashboard-token <token>] [--allow-plain-http]\n                 \
+         [--request-timeout <seconds>] [--allow-plain-http]\n                 \
          [--json-output] [--log-level <trace|verbose|debug|info|warning|error|critical>] [-v|--verbose]"
     )
 }

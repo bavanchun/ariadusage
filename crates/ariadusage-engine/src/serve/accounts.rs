@@ -228,7 +228,7 @@ const fn default_managed_accounts_version() -> i32 {
 /// File-backed metadata store for managed Codex accounts.
 #[derive(Debug, Clone)]
 pub struct FileManagedCodexAccountStore {
-    file_path: PathBuf,
+    file_path: Option<PathBuf>,
 }
 
 impl FileManagedCodexAccountStore {
@@ -237,24 +237,34 @@ impl FileManagedCodexAccountStore {
     #[must_use]
     pub fn new(file_path: impl Into<PathBuf>) -> Self {
         Self {
-            file_path: file_path.into(),
+            file_path: Some(file_path.into()),
         }
     }
 
     #[must_use]
-    pub fn default_path() -> PathBuf {
-        crate::paths::state_dir()
-            .map(|p| p.join("managed-codex-accounts.json"))
-            .unwrap_or_else(|_| PathBuf::from("managed-codex-accounts.json"))
+    pub fn with_optional_path(file_path: Option<PathBuf>) -> Self {
+        Self { file_path }
     }
 
     #[must_use]
-    pub fn path(&self) -> &Path {
-        &self.file_path
+    pub fn default_path() -> Option<PathBuf> {
+        crate::paths::state_dir()
+            .ok()
+            .map(|p| p.join("managed-codex-accounts.json"))
+    }
+
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.file_path.as_deref()
     }
 
     pub fn load_account_metadata(&self) -> Result<ManagedCodexAccountSet, std::io::Error> {
-        match std::fs::read(&self.file_path) {
+        let Some(file_path) = self.file_path.as_deref() else {
+            return Err(std::io::Error::other(
+                "managed Codex account state directory unavailable",
+            ));
+        };
+        match std::fs::read(file_path) {
             Ok(bytes) => {
                 let accounts: ManagedCodexAccountSet = serde_json::from_slice(&bytes)
                     .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
@@ -275,12 +285,19 @@ impl FileManagedCodexAccountStore {
     }
 
     pub fn store_accounts(&self, accounts: &ManagedCodexAccountSet) -> Result<(), std::io::Error> {
-        if let Some(parent) = self.file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
+        let Some(file_path) = self.file_path.as_deref() else {
+            return Err(std::io::Error::other(
+                "managed Codex account state directory unavailable",
+            ));
+        };
         let bytes = serde_json::to_vec_pretty(accounts)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
-        std::fs::write(&self.file_path, bytes)
+        crate::private_file::write_private(
+            file_path,
+            &bytes,
+            &crate::private_file::WriteHooks::default(),
+        )
+        .map_err(|err| std::io::Error::other(err.to_string()))
     }
 }
 

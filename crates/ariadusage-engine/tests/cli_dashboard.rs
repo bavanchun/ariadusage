@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use ariadusage_core::config::{
-    Config, CookieSource, ProviderConfig, ProviderEntry, TokenAccountMeta, TokenAccountsMeta,
+    Config, ProviderConfig, ProviderEntry, TokenAccountMeta, TokenAccountsMeta,
 };
 use ariadusage_core::model::{
     NamedRateWindow, ProviderIdentitySnapshot, RateWindow, UsageSnapshot,
@@ -33,14 +33,14 @@ use ariadusage_engine::serve::dashboard::{
     DashboardManagedCodexAccounts, DashboardSnapshotBuilder, DashboardSnapshotPayload,
     DashboardSnapshotProducer, DashboardUsageAccount, ProviderAccountIdentity,
     ProviderAccountUsageSnapshot, ProviderErrorPayload, ProviderPayload, ProviderStatusPayload,
-    UsageCommandOutput, collect_account_usage, collect_configured_cost_payloads,
-    dashboard_claude_swap_is_eligible, serve_includes_configured_accounts,
+    UsageCommandOutput, collect_account_usage, dashboard_claude_swap_is_eligible,
+    serve_includes_configured_accounts, write_dashboard_snapshot_atomically,
 };
 use ariadusage_engine::serve::http_server::CliLocalHttpResponse;
 use ariadusage_engine::serve::{
-    CliServeResponseCache, ServeCostCollectionContext, cached_serve_response,
-    decode_dashboard_identity_mode, decode_dashboard_output_path, resolve_dashboard_identity_mode,
-    serve_collect_usage_outputs, serve_dashboard_operation_key, serve_usage_operation_fingerprint,
+    CliServeResponseCache, cached_serve_response, decode_dashboard_identity_mode,
+    decode_dashboard_output_path, resolve_dashboard_identity_mode, serve_collect_usage_outputs,
+    serve_dashboard_operation_key, serve_usage_operation_fingerprint,
 };
 use ariadusage_protocol::{Confidence, ProviderId, StatusIndicator};
 
@@ -792,9 +792,15 @@ fn shared_emails_stay_distinct_and_alias_replaces_the_email_label() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(labels, vec!["Work", "shared@example.com · Acme"]);
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["shared@example.com", "shared@example.com"]);
     let ids: Vec<&str> = rows.iter().map(|r| r["id"].as_str().unwrap()).collect();
     assert_eq!(ids, vec!["claude-swap:1", "claude-swap:2"]);
 
@@ -806,12 +812,24 @@ fn shared_emails_stay_distinct_and_alias_replaces_the_email_label() {
             weekly_work_days: None,
         }),
     );
-    let redacted_rows = redacted_providers[0]["accounts"].as_array().unwrap();
+    let redacted_claude = redacted_providers
+        .iter()
+        .find(|p| p["id"] == "claude")
+        .unwrap();
+    let redacted_rows = redacted_claude["accounts"].as_array().unwrap();
     let redacted_labels: Vec<&str> = redacted_rows
         .iter()
         .map(|r| r["label"].as_str().unwrap())
         .collect();
     assert_eq!(redacted_labels, vec!["Work", "redacted@example.com · Acme"]);
+    let redacted_emails: Vec<&str> = redacted_rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        redacted_emails,
+        vec!["redacted@example.com", "redacted@example.com"]
+    );
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:96 redacted dashboard mode rewrites email shaped aliases
@@ -842,7 +860,8 @@ fn redacted_dashboard_mode_rewrites_email_shaped_aliases() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -883,12 +902,18 @@ fn redacted_dashboard_mode_keeps_non_email_alias_text_around_an_address() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
         vec!["Work (redacted@example.com)", "redacted@example.com · Acme"]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:164 redacted dashboard mode keeps alias text around colon prefixed emails
@@ -919,12 +944,18 @@ fn redacted_dashboard_mode_keeps_alias_text_around_colon_prefixed_emails() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
         vec!["Work:redacted@example.com", "redacted@example.com · Acme"]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:198 redacted dashboard mode rewrites emails inside organization suffixes
@@ -955,7 +986,8 @@ fn redacted_dashboard_mode_rewrites_emails_inside_organization_suffixes() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -964,6 +996,11 @@ fn redacted_dashboard_mode_rewrites_emails_inside_organization_suffixes() {
             "redacted@example.com · Acme"
         ]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:227 redacted dashboard mode rewrites internal and domain literal addresses
@@ -1001,7 +1038,8 @@ fn redacted_dashboard_mode_rewrites_internal_and_domain_literal_addresses() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -1010,6 +1048,11 @@ fn redacted_dashboard_mode_rewrites_internal_and_domain_literal_addresses() {
             "redacted@example.com · redacted@[192.0.2.1]"
         ]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:257 redacted dashboard mode rewrites apostrophe local parts
@@ -1040,12 +1083,18 @@ fn redacted_dashboard_mode_rewrites_apostrophe_local_parts() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
         vec!["Work (redacted@example.com)", "redacted@example.com · Acme"]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:287 redacted dashboard mode rewrites unicode local parts
@@ -1073,9 +1122,15 @@ fn redacted_dashboard_mode_rewrites_unicode_local_parts() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(labels, vec!["redacted@例子.公司"]);
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@例子.公司"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:308 redacted dashboard mode rewrites quoted local parts
@@ -1106,7 +1161,8 @@ fn redacted_dashboard_mode_rewrites_quoted_local_parts() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -1115,6 +1171,11 @@ fn redacted_dashboard_mode_rewrites_quoted_local_parts() {
             "redacted@example.com · Acme"
         ]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:338 redacted dashboard mode rewrites quoted local parts that contain spaces
@@ -1145,7 +1206,8 @@ fn redacted_dashboard_mode_rewrites_quoted_local_parts_that_contain_spaces() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -1154,6 +1216,11 @@ fn redacted_dashboard_mode_rewrites_quoted_local_parts_that_contain_spaces() {
             "redacted@example.com · Acme"
         ]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:368 redacted dashboard mode rewrites slash separated addresses independently
@@ -1184,7 +1251,8 @@ fn redacted_dashboard_mode_rewrites_slash_separated_addresses_independently() {
             weekly_work_days: None,
         }),
     );
-    let rows = providers[0]["accounts"].as_array().unwrap();
+    let claude = providers.iter().find(|p| p["id"] == "claude").unwrap();
+    let rows = claude["accounts"].as_array().unwrap();
     let labels: Vec<&str> = rows.iter().map(|r| r["label"].as_str().unwrap()).collect();
     assert_eq!(
         labels,
@@ -1193,6 +1261,11 @@ fn redacted_dashboard_mode_rewrites_slash_separated_addresses_independently() {
             "redacted@example.com · Acme"
         ]
     );
+    let emails: Vec<&str> = rows
+        .iter()
+        .map(|r| r["identity"]["accountEmail"].as_str().unwrap())
+        .collect();
+    assert_eq!(emails, vec!["redacted@example.com", "redacted@example.com"]);
 }
 
 // upstream: DashboardClaudeSwapSnapshotTests.swift:398 dashboard identity flag decodes redacted full and rejects others
@@ -2300,18 +2373,8 @@ fn reported_incomplete_history_preserves_unknown_money_and_its_exclusion_count()
 }
 
 // ============================================================================
-// Section 6: DashboardSnapshotBuilderTests.swift (22 tests)
+// Section 6: DashboardSnapshotBuilderTests.swift (19 tests; 3 non-v1 Cursor/Amp tests documented in porting.md)
 // ============================================================================
-
-fn cost_collection_context() -> ServeCostCollectionContext {
-    ServeCostCollectionContext {
-        config_fingerprint: "dashboard-cost-policy".to_string(),
-        provider_timeout: None,
-        request_deadline: None,
-        now: Arc::new(Instant::now),
-        provider_operations: CliServeOperationCoordinator::new(),
-    }
-}
 
 fn builder_identity_payload(email: &str) -> ProviderPayload {
     ProviderPayload::new("claude", "web").with_usage(usage_snapshot(
@@ -2389,93 +2452,13 @@ fn first_identity(snapshot: &DashboardSnapshotPayload) -> serde_json::Value {
     obj["providers"][0]["identity"].clone()
 }
 
-type CostCallRecord = Vec<(String, Option<String>)>;
-
-// upstream: DashboardSnapshotBuilderTests.swift:7 dashboard cost collection does not fetch Cursor when cookie source is off
-#[tokio::test]
-async fn dashboard_cost_collection_does_not_fetch_cursor_when_cookie_source_is_off() {
-    let calls: Arc<Mutex<CostCallRecord>> = Arc::new(Mutex::new(Vec::new()));
-    let mut cursor = ProviderConfig::new(pid("cursor"));
-    cursor.enabled = Some(true);
-    cursor.cookie_source = Some(CookieSource::Off);
-    let config = Config::new(1, vec![ProviderEntry::Typed(cursor)]);
-
-    let c = Arc::clone(&calls);
-    let payload = collect_configured_cost_payloads(
-        &["cursor".to_string()],
-        &config,
-        &cost_collection_context(),
-        move |prov, header| {
-            let c = Arc::clone(&c);
-            Box::pin(async move {
-                c.lock().unwrap().push((prov.clone(), header));
-                ariadusage_engine::serve::dashboard::make_cost_payload(&prov, None, None)
-            })
-        },
-    )
-    .await;
-
-    assert!(calls.lock().unwrap().is_empty());
-    assert_eq!(payload.len(), 1);
-    assert_eq!(payload[0].provider, "cursor");
-    assert!(
-        payload[0]
-            .error
-            .as_ref()
-            .unwrap()
-            .message
-            .contains("cookie source is set to Off")
-    );
-}
-
-// upstream: DashboardSnapshotBuilderTests.swift:29 dashboard cost collection forwards configured Cursor manual cookie
-#[tokio::test]
-async fn dashboard_cost_collection_forwards_configured_cursor_manual_cookie() {
-    let calls: Arc<Mutex<CostCallRecord>> = Arc::new(Mutex::new(Vec::new()));
-    let mut cursor = ProviderConfig::new(pid("cursor"));
-    cursor.enabled = Some(true);
-    cursor.cookie_source = Some(CookieSource::Manual);
-    cursor.extra.insert(
-        "cookieHeader".to_string(),
-        serde_json::value::to_raw_value("  session=manual  ").unwrap(),
-    );
-    let config = Config::new(1, vec![ProviderEntry::Typed(cursor)]);
-
-    let c = Arc::clone(&calls);
-    let payload = collect_configured_cost_payloads(
-        &["cursor".to_string()],
-        &config,
-        &cost_collection_context(),
-        move |prov, header| {
-            let c = Arc::clone(&c);
-            Box::pin(async move {
-                c.lock().unwrap().push((prov.clone(), header));
-                ariadusage_engine::serve::dashboard::make_cost_payload(&prov, None, None)
-            })
-        },
-    )
-    .await;
-
-    let recorded = calls.lock().unwrap().clone();
-    assert_eq!(recorded.len(), 1);
-    assert_eq!(recorded[0].0, "cursor");
-    assert_eq!(recorded[0].1.as_deref(), Some("session=manual"));
-    assert_eq!(payload.len(), 1);
-    assert!(payload[0].error.is_none());
-}
-
-// upstream: DashboardSnapshotBuilderTests.swift:57 dashboard producer forwards its config to cost collection
+// partial-upstream: DashboardSnapshotBuilderTests.swift:57 dashboard producer forwards its config to cost collection
 #[tokio::test]
 async fn dashboard_producer_forwards_its_config_to_cost_collection() {
     let recorded = Arc::new(Mutex::new(None::<(Vec<String>, Config)>));
-    let mut cursor = ProviderConfig::new(pid("cursor"));
-    cursor.enabled = Some(true);
-    cursor.cookie_source = Some(CookieSource::Manual);
-    cursor.extra.insert(
-        "cookieHeader".to_string(),
-        serde_json::value::to_raw_value("session=manual").unwrap(),
-    );
-    let config = Config::new(1, vec![ProviderEntry::Typed(cursor)]);
+    let mut claude = ProviderConfig::new(pid("claude"));
+    claude.enabled = Some(true);
+    let config = Config::new(1, vec![ProviderEntry::Typed(claude)]);
 
     let r = Arc::clone(&recorded);
     let producer = DashboardSnapshotProducer::new(
@@ -2496,16 +2479,8 @@ async fn dashboard_producer_forwards_its_config_to_cost_collection() {
         .unwrap();
 
     let (provs, cfg) = recorded.lock().unwrap().clone().unwrap();
-    assert_eq!(provs, vec!["cursor".to_string()]);
-    let pc = cfg.provider_config("cursor").unwrap();
-    assert_eq!(pc.cookie_source, Some(CookieSource::Manual));
-    assert_eq!(
-        pc.extra
-            .get("cookieHeader")
-            .and_then(|v| serde_json::from_str::<String>(v.get()).ok())
-            .as_deref(),
-        Some("session=manual")
-    );
+    assert_eq!(provs, vec!["claude".to_string()]);
+    assert!(cfg.provider_config("claude").is_some());
 }
 
 // upstream: DashboardSnapshotBuilderTests.swift:86 producer defaults to full identity and keeps stable order and partial errors
@@ -2643,7 +2618,7 @@ fn shell_builder_emits_config_fields_only_without_fetch_collaborators() {
     assert_eq!(providers[1]["display"]["sortKey"], 10);
 }
 
-// upstream: DashboardSnapshotBuilderTests.swift:211 builds stable display-oriented dashboard snapshot
+// partial-upstream: DashboardSnapshotBuilderTests.swift:211 builds stable display-oriented dashboard snapshot
 #[test]
 fn builds_stable_display_oriented_dashboard_snapshot() {
     let generated_at = Timestamp::from_second(1_800_000_000).unwrap();
@@ -2728,7 +2703,7 @@ fn builds_stable_display_oriented_dashboard_snapshot() {
 
     assert_eq!(obj["schemaVersion"], 1);
     assert_eq!(obj["staleAfterSeconds"], 180);
-    assert_eq!(host["codexBarVersion"], "9.8.7");
+    assert_eq!(host["ariadusageVersion"], "9.8.7");
     assert_eq!(host["refreshIntervalSeconds"], 60);
     assert_eq!(host["usageBarsShowUsed"], false);
 
@@ -2785,62 +2760,6 @@ fn dashboard_identity_mode_none_emits_null_identity() {
     assert!(provider["status"].is_null());
     assert!(provider["credits"].is_null());
     assert!(provider["cost"].is_null());
-}
-
-// upstream: DashboardSnapshotBuilderTests.swift:385 dashboard labels amp subscription pools as provider specific windows
-#[test]
-fn dashboard_labels_amp_subscription_pools_as_provider_specific_windows() {
-    let now = Timestamp::from_second(1_700_000_000).unwrap();
-    let resets = now
-        .checked_add(jiff::SignedDuration::from_secs(29 * 24 * 60 * 60))
-        .unwrap();
-    let usage = usage_snapshot(
-        Some(rate_window(
-            3.0,
-            None,
-            Some(resets),
-            Some("renews in 29 days".to_string()),
-        )),
-        Some(rate_window(
-            0.0,
-            None,
-            Some(resets),
-            Some("renews in 29 days".to_string()),
-        )),
-        None,
-        None,
-        None,
-        None,
-        None,
-        now,
-        None,
-    );
-    let payload = ProviderPayload::new("amp", "cli").with_usage(usage);
-    let snapshot = DashboardSnapshotBuilder::make_snapshot(
-        &[payload],
-        &[],
-        &config_with_providers(vec![("amp", true)]),
-        DashboardIdentityMode::Redacted,
-        now,
-        60.0,
-        None,
-        &BTreeMap::new(),
-        false,
-        false,
-    );
-    let obj = json_object(&snapshot);
-    let windows = obj["providers"][0]["windows"].as_array().unwrap();
-    let kinds: Vec<&str> = windows
-        .iter()
-        .map(|w| w["kind"].as_str().unwrap())
-        .collect();
-    let labels: Vec<&str> = windows
-        .iter()
-        .map(|w| w["label"].as_str().unwrap())
-        .collect();
-
-    assert_eq!(kinds, vec!["other", "orb"]);
-    assert_eq!(labels, vec!["Other usage", "Orb usage"]);
 }
 
 // upstream: DashboardSnapshotBuilderTests.swift:429 dashboard identity mode redacted hides local part but keeps domain
@@ -3453,7 +3372,7 @@ async fn collector_preserves_discovery_warning_in_partial_and_completed_results_
                     rec.lock().unwrap().push(out);
                 }
             },
-            Arc::new(AtomicBool::new(false)),
+            tokio_util::sync::CancellationToken::new(),
         );
         let p_clone = payload.clone();
         let result =
@@ -4688,4 +4607,38 @@ fn live_account_expansion_is_an_explicit_serve_only_option() {
         ])
         .is_err()
     );
+}
+
+#[test]
+fn write_dashboard_snapshot_atomically_replaces_existing_file_and_cleans_staging() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing_parent = dir.path().join("nested/snapshot.json");
+    let err = write_dashboard_snapshot_atomically(b"{}", &missing_parent).unwrap_err();
+    assert!(err.contains("parent directories are not created"));
+
+    let target = dir.path().join("snapshot.json");
+    write_dashboard_snapshot_atomically(br#"{"schemaVersion":1,"first":true}"#, &target).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        r#"{"schemaVersion":1,"first":true}"#
+    );
+
+    write_dashboard_snapshot_atomically(br#"{"schemaVersion":1,"second":true}"#, &target).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        r#"{"schemaVersion":1,"second":true}"#
+    );
+
+    let entries: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["snapshot.json".to_string()]);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+    }
 }

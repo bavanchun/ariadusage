@@ -15,7 +15,6 @@ use axum::body::Body;
 use http::{HeaderName, HeaderValue, Request, Response, StatusCode};
 use http_body_util::BodyExt;
 use hyper::service::Service as HyperService;
-use hyper_util::rt::TokioTimer;
 use hyper_util::service::TowerToHyperService;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -452,6 +451,12 @@ impl CliLocalHttpConnectionGate {
         true
     }
 
+    #[must_use]
+    pub fn try_acquire_permit(&self) -> Option<CliLocalHttpConnectionPermit> {
+        self.try_acquire()
+            .then(|| CliLocalHttpConnectionPermit { gate: self.clone() })
+    }
+
     pub fn release(&self) {
         let mut guard = self.active.lock().unwrap_or_else(|e| e.into_inner());
         *guard = guard.saturating_sub(1);
@@ -460,6 +465,18 @@ impl CliLocalHttpConnectionGate {
     #[must_use]
     pub fn active_count(&self) -> usize {
         *self.active.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// RAII permit that releases a [`CliLocalHttpConnectionGate`] slot when dropped.
+#[derive(Debug)]
+pub struct CliLocalHttpConnectionPermit {
+    gate: CliLocalHttpConnectionGate,
+}
+
+impl Drop for CliLocalHttpConnectionPermit {
+    fn drop(&mut self) {
+        self.gate.release();
     }
 }
 
@@ -543,7 +560,6 @@ impl CliLocalHttpServer {
     pub async fn serve(self, mut shutdown_rx: watch::Receiver<bool>, handler: ServeRequestHandler) {
         let app = Self::build_axum_router(handler);
         let tower_service = ServiceBuilder::new().service(app);
-        let _timer = TokioTimer::new();
 
         loop {
             tokio::select! {
@@ -557,16 +573,16 @@ impl CliLocalHttpServer {
                     let Ok((stream, _peer)) = accepted else {
                         continue;
                     };
-                    if !self.connection_gate.try_acquire() {
+                    let Some(permit) = self.connection_gate.try_acquire_permit() else {
                         drop(stream);
                         continue;
-                    }
-                    let gate = self.connection_gate.clone();
+                    };
                     let allowed_hosts = self.allowed_hosts.clone();
                     let read_timeout_ms = self.read_timeout_ms;
                     let total_read_timeout_ms = self.total_read_timeout_ms;
                     let hyper_service = TowerToHyperService::new(tower_service.clone());
                     tokio::spawn(async move {
+                        let _permit = permit;
                         let _ = Self::handle_connection(
                             stream,
                             allowed_hosts,
@@ -575,7 +591,6 @@ impl CliLocalHttpServer {
                             hyper_service,
                         )
                         .await;
-                        gate.release();
                     });
                 }
             }
@@ -760,6 +775,7 @@ fn contains_header_terminator(buf: &[u8]) -> bool {
 fn canonical_header_name(lower: &str) -> String {
     match lower {
         "cache-control" => "Cache-Control".to_string(),
+        "content-security-policy" => "Content-Security-Policy".to_string(),
         "www-authenticate" => "WWW-Authenticate".to_string(),
         "content-type" => "Content-Type".to_string(),
         "content-length" => "Content-Length".to_string(),

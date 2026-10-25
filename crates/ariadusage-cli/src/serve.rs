@@ -15,15 +15,14 @@ use ariadusage_core::pipeline::{
     FetchContext, FetchInteraction, FetchPhase, FetchRuntime, fetch_outcome,
 };
 use ariadusage_engine::brokers::call::BrokerCall;
-use ariadusage_engine::brokers::net::{NetBroker, NetConfig};
+use ariadusage_engine::brokers::secret_store::{SecretId, SecretLookup};
 use ariadusage_engine::config_store::ConfigStore;
 use ariadusage_engine::paths;
-use ariadusage_engine::registry::ProviderRegistry;
 use ariadusage_engine::serve::accounts::FileManagedCodexAccountStore;
 use ariadusage_engine::serve::auth::{CliServeDashboardAuth, CliServeSecurity};
 use ariadusage_engine::serve::coordinator::CliServeOperationProgressSink;
 use ariadusage_engine::serve::dashboard::{
-    DashboardIdentityMode, DashboardManagedCodexAccounts, DashboardSnapshotBuilder,
+    CostPayload, DashboardIdentityMode, DashboardManagedCodexAccounts, DashboardSnapshotBuilder,
     ProviderErrorPayload, ProviderPayload, ProviderStatusPayload, UsageCommandOutput,
     provider_selection_list, write_dashboard_snapshot_atomically,
 };
@@ -32,14 +31,15 @@ use ariadusage_engine::serve::http_server::{
     DEFAULT_TOTAL_READ_TIMEOUT_MS,
 };
 use ariadusage_engine::serve::{
-    CliServeArgumentError, CliServeDashboardTokenResolution, CliServeHeapTrimmer, ServeRuntime,
-    clamped_serve_request_timeout, decode_dashboard_identity_mode, decode_serve_host,
-    decode_serve_port, decode_serve_refresh_interval, decode_serve_request_timeout,
-    handle_serve_request, resolve_dashboard_identity_mode, resolve_dashboard_token,
-    serve_collect_usage_outputs, serve_provider_deadline, serve_usage_operation_fingerprint,
+    COST_SUPPORTED_PROVIDERS, CliServeArgumentError, CliServeDashboardTokenResolution,
+    ServeCostCollectionContext, ServeRuntime, clamped_serve_request_timeout,
+    decode_dashboard_identity_mode, decode_serve_host, decode_serve_port,
+    decode_serve_refresh_interval, decode_serve_request_timeout, handle_serve_request,
+    resolve_dashboard_identity_mode, resolve_dashboard_token, serve_collect_cost_payloads,
+    serve_collect_usage_outputs, serve_cost_timeout_payload, serve_provider_deadline,
+    serve_request_deadline, serve_usage_operation_fingerprint,
 };
-use ariadusage_engine::status::ProviderStatusFetcher;
-use ariadusage_engine::{AppPreferences, EngineRuntime, TokioSleeper, build_default_secret_store};
+use ariadusage_engine::{AppPreferences, EngineRuntime, TokioSleeper};
 use ariadusage_protocol::{ProviderId, SecretString};
 use clap::Args;
 use jiff::Timestamp;
@@ -52,8 +52,9 @@ dashboard snapshot, with a built-in web UI at /.
 
 The server binds to 127.0.0.1 by default; `localhost` is normalized to 127.0.0.1.
 GET /dashboard/v1/snapshot requires \"Authorization: Bearer YOUR_TOKEN\" and fails
-closed (401) when no token is configured. Set the token with --dashboard-token or,
-preferably, the ARIADUSAGE_DASHBOARD_TOKEN environment variable (argv leaks via ps).
+closed (401) when no token is configured. Store the token in SecretStore with
+`ariadusage secret set --id serve.dashboardToken` or set the
+ARIADUSAGE_DASHBOARD_TOKEN environment variable (secrets are never passed on argv).
 
 A non-loopback --host requires both a dashboard token and --allow-plain-http.
 On a non-loopback host the token also gates /accounts, /usage, and /cost;
@@ -93,11 +94,12 @@ pub struct ServeCommandArgs {
     )]
     pub request_timeout: Option<String>,
 
-    /// Bearer token for /dashboard/v1/snapshot (prefer ARIADUSAGE_DASHBOARD_TOKEN)
+    /// Unsupported argv flag (rejected with an error pointing to SecretStore and ARIADUSAGE_DASHBOARD_TOKEN)
     #[arg(
         long = "dashboard-token",
         value_name = "token",
-        allow_hyphen_values = true
+        allow_hyphen_values = true,
+        hide = true
     )]
     pub dashboard_token: Option<String>,
 
@@ -125,7 +127,7 @@ pub struct ServeCommandArgs {
     pub log_level: Option<String>,
 
     /// Enable verbose logging
-    #[arg(long)]
+    #[arg(short = 'v', long)]
     pub verbose: bool,
 }
 
@@ -159,7 +161,7 @@ pub struct DashboardCommandArgs {
     pub log_level: Option<String>,
 
     /// Enable verbose logging
-    #[arg(long)]
+    #[arg(short = 'v', long)]
     pub verbose: bool,
 }
 
@@ -209,8 +211,14 @@ pub fn write_serve_cli_error(
 
 pub fn validate_serve_args(
     args: &ServeCommandArgs,
+    secret_store_token: Option<&SecretString>,
     env: &BTreeMap<String, String>,
 ) -> Result<ValidatedServeOptions, ServeCliError> {
+    if args.dashboard_token.is_some() {
+        return Err(ServeCliError::args(
+            CliServeArgumentError::UnsupportedDashboardTokenFlag.to_string(),
+        ));
+    }
     let Some(port) = decode_serve_port(args.port.as_deref()) else {
         return Err(ServeCliError::args(
             CliServeArgumentError::InvalidPort.to_string(),
@@ -234,7 +242,7 @@ pub fn validate_serve_args(
         ));
     };
 
-    let dashboard_bearer = match resolve_dashboard_token(args.dashboard_token.as_deref(), env) {
+    let dashboard_bearer = match resolve_dashboard_token(secret_store_token, env) {
         CliServeDashboardTokenResolution::Absent => None,
         CliServeDashboardTokenResolution::Token(t) => Some(t),
         CliServeDashboardTokenResolution::Empty { source } => {
@@ -254,7 +262,7 @@ pub fn validate_serve_args(
     };
     let dashboard_identity_mode = args.identity.as_ref().map(|_| decoded_identity);
     let bind_host = CliServeSecurity::bind_host(Some(&host));
-    let auth = CliServeDashboardAuth::new(dashboard_bearer.as_deref());
+    let auth = CliServeDashboardAuth::new(dashboard_bearer.as_ref());
     if let Err(startup_err) =
         CliServeSecurity::validate_startup(&bind_host, &auth, args.allow_plain_http)
     {
@@ -283,12 +291,25 @@ pub struct ValidatedServeOptions {
     pub all_accounts: bool,
 }
 
+fn allowlisted_serve_env(engine_runtime: &EngineRuntime) -> BTreeMap<String, String> {
+    engine_runtime
+        .base_environment()
+        .into_iter()
+        .map(|(k, v)| (k, v.expose_secret().to_owned()))
+        .collect()
+}
+
 pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
-    let env: BTreeMap<String, String> = std::env::vars().collect();
-    let validated = validate_serve_args(&args, &env)?;
+    if args.dashboard_token.is_some() {
+        return Err(ServeCliError::args(
+            CliServeArgumentError::UnsupportedDashboardTokenFlag.to_string(),
+        ));
+    }
     let config_path = paths::config_path()
         .map_err(|err| ServeCliError::runtime(format!("Failed to resolve config path: {err}")))?;
-    let store = ConfigStore::new(config_path);
+    let store = ConfigStore::new(config_path.clone());
+    let engine_runtime = ariadusage_cli::build_cli_runtime().map_err(ServeCliError::runtime)?;
+    let env = allowlisted_serve_env(&engine_runtime);
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -296,6 +317,22 @@ pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
         .map_err(|err| ServeCliError::runtime(format!("Failed to initialize runtime: {err}")))?;
 
     rt.block_on(async move {
+        let secret_call = BrokerCall {
+            interaction: FetchInteraction::Background,
+            cancel: CancellationToken::new(),
+            request_id: "cli-serve-dashboard-token".to_string(),
+        };
+        let secret_store_token = match engine_runtime
+            .secret_store()
+            .background(secret_call)
+            .lookup(&SecretId::serve_dashboard_token())
+            .await
+        {
+            SecretLookup::Found(secret) => Some(secret),
+            _ => None,
+        };
+        let validated = validate_serve_args(&args, secret_store_token.as_ref(), &env)?;
+
         let mut runtime = ServeRuntime::new(
             store,
             validated.refresh_interval,
@@ -306,12 +343,10 @@ pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
             validated.all_accounts,
             &validated.bind_host,
         );
-        runtime.managed_accounts_store =
-            FileManagedCodexAccountStore::new(FileManagedCodexAccountStore::default_path());
-        install_live_engine_fetchers(&mut runtime);
-
-        let trimmer =
-            CliServeHeapTrimmer::start(CliServeHeapTrimmer::DEFAULT_INTERVAL, Arc::new(|| {}));
+        runtime.managed_accounts_store = FileManagedCodexAccountStore::with_optional_path(
+            FileManagedCodexAccountStore::default_path(),
+        );
+        install_live_engine_fetchers(&mut runtime, Arc::clone(&engine_runtime), config_path);
 
         let server = CliLocalHttpServer::bind(
             &validated.bind_host,
@@ -353,9 +388,6 @@ pub fn run_serve_command(args: ServeCommandArgs) -> Result<(), ServeCliError> {
             )
             .await;
 
-        if let Some(t) = trimmer {
-            t.cancel();
-        }
         runtime.shutdown().await;
         Ok(())
     })
@@ -401,10 +433,11 @@ pub fn run_dashboard_command(args: DashboardCommandArgs) -> Result<(), ServeCliE
 
     let config_path = paths::config_path()
         .map_err(|err| ServeCliError::runtime(format!("Failed to resolve config path: {err}")))?;
-    let store = ConfigStore::new(config_path);
+    let store = ConfigStore::new(config_path.clone());
     let config = store
         .load_effective()
         .map_err(|err| ServeCliError::runtime(err.to_string()))?;
+    let engine_runtime = ariadusage_cli::build_cli_runtime().map_err(ServeCliError::runtime)?;
 
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -422,11 +455,14 @@ pub fn run_dashboard_command(args: DashboardCommandArgs) -> Result<(), ServeCliE
             false,
             "127.0.0.1",
         );
-        runtime.managed_accounts_store =
-            FileManagedCodexAccountStore::new(FileManagedCodexAccountStore::default_path());
-        install_live_engine_fetchers(&mut runtime);
+        runtime.managed_accounts_store = FileManagedCodexAccountStore::with_optional_path(
+            FileManagedCodexAccountStore::default_path(),
+        );
+        install_live_engine_fetchers(&mut runtime, Arc::clone(&engine_runtime), config_path);
 
         let started_at = Instant::now();
+        let request_deadline = serve_request_deadline(started_at, timeout);
+        let provider_timeout = ariadusage_engine::serve::serve_provider_timeout(timeout);
         let provider_deadline = serve_provider_deadline(started_at, timeout);
         let enabled = provider_selection_list(&config.enabled_providers());
         let usage_fp = serve_usage_operation_fingerprint("dashboard-cli", false, false);
@@ -441,19 +477,36 @@ pub fn run_dashboard_command(args: DashboardCommandArgs) -> Result<(), ServeCliE
         )
         .await;
 
+        let cost_provs: Vec<String> = enabled
+            .iter()
+            .filter(|p| COST_SUPPORTED_PROVIDERS.contains(&p.as_str()))
+            .cloned()
+            .collect();
+        let cost_ctx = ServeCostCollectionContext {
+            config_fingerprint: "dashboard-cli".to_string(),
+            provider_timeout,
+            request_deadline,
+            now: Arc::new(Instant::now),
+            provider_operations: runtime.cost_operations.clone(),
+        };
+        let c_fetcher = Arc::clone(&runtime.cost_fetcher);
+        let cfg_c = config.clone();
+        let cost_items = serve_collect_cost_payloads(&cost_provs, &cost_ctx, move |prov, sink| {
+            c_fetcher(prov, cfg_c.clone(), sink)
+        })
+        .await;
+
         let mut account_collections = BTreeMap::new();
         if enabled.iter().any(|p| p == "codex")
-            && let Some(coll) = DashboardManagedCodexAccounts::collect(
-                &config,
-                runtime.managed_accounts_store.path(),
-            )
+            && let Some(store_path) = runtime.managed_accounts_store.path()
+            && let Some(coll) = DashboardManagedCodexAccounts::collect(&config, store_path)
         {
             account_collections.insert("codex".to_string(), coll);
         }
 
         let snapshot = DashboardSnapshotBuilder::make_snapshot(
             &usage_out.payload,
-            &[],
+            &cost_items,
             &config,
             identity_mode,
             Timestamp::now(),
@@ -499,17 +552,68 @@ pub fn validate_dashboard_output_parent(output_path: &Path) -> Result<(), ServeC
     }
 }
 
-fn install_live_engine_fetchers(runtime: &mut ServeRuntime) {
+fn install_live_engine_fetchers(
+    runtime: &mut ServeRuntime,
+    engine_runtime: Arc<EngineRuntime>,
+    config_path: PathBuf,
+) {
+    let engine_for_usage = Arc::clone(&engine_runtime);
     runtime.usage_fetcher = Arc::new(
-        |provider: String,
-         config: Config,
-         _sink: CliServeOperationProgressSink<UsageCommandOutput>| {
-            Box::pin(async move { fetch_live_provider_usage(&provider, &config).await })
+        move |provider: String,
+              config: Config,
+              sink: CliServeOperationProgressSink<UsageCommandOutput>| {
+            let engine = Arc::clone(&engine_for_usage);
+            Box::pin(async move {
+                fetch_live_provider_usage(&provider, &config, &engine, sink.cancel_token()).await
+            })
+        },
+    );
+
+    let plain_env: BTreeMap<String, String> = engine_runtime
+        .base_environment()
+        .into_iter()
+        .map(|(k, v)| (k, v.expose_secret().to_owned()))
+        .collect();
+    runtime.cost_fetcher = Arc::new(
+        move |provider: String,
+              _config: Config,
+              sink: CliServeOperationProgressSink<CostPayload>| {
+            let env = plain_env.clone();
+            let cfg_path = config_path.clone();
+            let cancel = sink.cancel_token();
+            Box::pin(async move {
+                let prov_for_task = provider.clone();
+                let mut handle = tokio::task::spawn_blocking(move || {
+                    ariadusage_cli::cost::load_serve_cost_payload(
+                        &prov_for_task,
+                        env,
+                        Some(cfg_path),
+                    )
+                });
+                tokio::select! {
+                    res = &mut handle => match res {
+                        Ok(payload) => payload,
+                        Err(err) => ariadusage_engine::serve::serve_cost_error_payload(
+                            &provider,
+                            &err.to_string(),
+                        ),
+                    },
+                    () = cancel.cancelled() => {
+                        handle.abort();
+                        serve_cost_timeout_payload(&provider)
+                    }
+                }
+            })
         },
     );
 }
 
-async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> UsageCommandOutput {
+async fn fetch_live_provider_usage(
+    provider_raw: &str,
+    config: &Config,
+    engine_runtime: &EngineRuntime,
+    cancel: CancellationToken,
+) -> UsageCommandOutput {
     let Ok(provider_id) = ProviderId::new(provider_raw) else {
         let mut item = ProviderPayload::new(provider_raw, "auto");
         item.error = Some(ProviderErrorPayload::provider(format!(
@@ -522,28 +626,15 @@ async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> Usage
         };
     };
 
-    let Ok(net) = NetBroker::new(NetConfig::default()).map(Arc::new) else {
-        let mut item = ProviderPayload::new(provider_raw, "auto");
-        item.error = Some(ProviderErrorPayload::provider("network broker unavailable"));
-        return UsageCommandOutput {
-            sections: Vec::new(),
-            payload: vec![item],
-            exit_code: 1,
-        };
-    };
+    let net = engine_runtime.net_broker();
+    let secret_store = engine_runtime.secret_store();
+    let base_environment = engine_runtime.base_environment();
+    let registry = engine_runtime.registry_snapshot();
+    let status_fetcher = engine_runtime.status_fetcher();
 
-    let disable_keyring = std::env::var_os("ARIADUSAGE_DISABLE_KEYRING").as_deref()
-        == Some(std::ffi::OsStr::new("1"));
-    let secret_store = build_default_secret_store(config, disable_keyring).ok();
-    let base_environment: BTreeMap<String, SecretString> = std::env::vars()
-        .map(|(k, v)| (k, SecretString::new(v)))
-        .collect();
-
-    let registry = ProviderRegistry::default();
-    let status_fetcher = ProviderStatusFetcher::default();
     let status_call = BrokerCall {
         interaction: FetchInteraction::Background,
-        cancel: CancellationToken::new(),
+        cancel: cancel.clone(),
         request_id: format!("cli-serve-status-{}", provider_id.as_str()),
     };
 
@@ -555,7 +646,7 @@ async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> Usage
             .unwrap_or("")
             .to_string();
         status_fetcher
-            .fetch_for_descriptor(&net, &status_call, descriptor)
+            .fetch_for_descriptor(net, &status_call, descriptor)
             .await
             .ok()
             .flatten()
@@ -571,13 +662,13 @@ async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> Usage
 
     let prefs = AppPreferences::from_config(config);
     let inputs = EngineRuntime::resolve_plan_inputs_with_store(
-        secret_store.as_ref(),
+        Some(secret_store),
         &provider_id,
         config,
         &prefs,
         base_environment,
         FetchInteraction::Background,
-        CancellationToken::new(),
+        cancel.clone(),
         format!("cli-serve-secret-{}", provider_id.as_str()),
     )
     .await;
@@ -605,7 +696,7 @@ async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> Usage
         env: spec.environment,
         include_credits: true,
         selected_token_account: spec.selected_account.as_ref().map(|a| a.id.clone()),
-        cancel: CancellationToken::new(),
+        cancel,
     };
 
     let sleeper = TokioSleeper;
@@ -639,5 +730,68 @@ async fn fetch_live_provider_usage(provider_raw: &str, config: &Config) -> Usage
                 exit_code: 1,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_serve_args() -> ServeCommandArgs {
+        ServeCommandArgs {
+            host: None,
+            port: None,
+            refresh_interval: None,
+            request_timeout: None,
+            dashboard_token: None,
+            allow_plain_http: false,
+            identity: None,
+            all_accounts: false,
+            json_output: false,
+            log_level: None,
+            verbose: false,
+        }
+    }
+
+    #[test]
+    fn validate_serve_args_rejects_dashboard_token_flag_and_prefers_secret_store() {
+        let mut with_flag = default_serve_args();
+        with_flag.dashboard_token = Some("secret".to_string());
+        let err = validate_serve_args(&with_flag, None, &BTreeMap::new()).unwrap_err();
+        assert_eq!(err.code, 1);
+        assert_eq!(err.kind, "args");
+        assert!(
+            err.message
+                .contains("ariadusage secret set --id serve.dashboardToken")
+        );
+
+        let args = default_serve_args();
+        let store_secret = SecretString::new("store-token".to_string());
+        let mut env = BTreeMap::new();
+        env.insert(
+            "ARIADUSAGE_DASHBOARD_TOKEN".to_string(),
+            "env-token".to_string(),
+        );
+        let validated = validate_serve_args(&args, Some(&store_secret), &env).unwrap();
+        assert!(validated.auth.authorizes(Some("Bearer store-token")));
+        assert!(!validated.auth.authorizes(Some("Bearer env-token")));
+    }
+
+    #[test]
+    fn load_serve_cost_payload_scans_isolated_local_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut env = BTreeMap::new();
+        env.insert(
+            "HOME".to_string(),
+            temp.path().to_string_lossy().into_owned(),
+        );
+        env.insert(
+            "XDG_CACHE_HOME".to_string(),
+            temp.path().join("cache").to_string_lossy().into_owned(),
+        );
+        let payload = ariadusage_cli::cost::load_serve_cost_payload("codex", env, None);
+        assert_eq!(payload.provider, "codex");
+        assert_eq!(payload.source, "local");
+        assert!(payload.error.is_none());
     }
 }
